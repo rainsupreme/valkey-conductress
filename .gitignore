@@ -1,5 +1,7 @@
 *.pem
 config.py
+*.pyc
 *valkey-benchmark
 valkey-cli
-
+log.txt
+output.txt

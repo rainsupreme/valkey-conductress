@@ -3,3 +3,6 @@ server = "8.8.8.8"
 
 # ssh key ti use when accessing the server
 sshkeyfile = 'server-keyfile.pem'
+
+conductress_log = './log.txt'
+conductress_output = './output.txt'
