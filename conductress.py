@@ -14,16 +14,16 @@ plt.theme('pro')
 logging.basicConfig(filename=conductress_log, encoding='utf-8', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-def getCachedBuildPath(repo: str, hash_id: str) -> str:
+def get_cached_build_path(repo: str, hash_id: str) -> str:
     return os.path.join('~', 'build_cache', repo, hash_id)
 
-def getRepoBinaryPath(repo: str) -> str:
+def get_repo_binary_path(repo: str) -> str:
     return os.path.join('~',repo,'src')
 
 def human(number: float) -> str:
     return numerize.numerize(number)
 
-def humanByte(number: float) -> str:
+def human_byte(number: float) -> str:
     number = float(number)
     units = ('B','KB','MB','GB','TB','PB')
     unit_index = 0
@@ -35,7 +35,7 @@ def humanByte(number: float) -> str:
     else:
         return f'{number:,.1f}{units[unit_index]}'
 
-def humanTime(number: float) -> str:
+def human_time(number: float) -> str:
     number = float(number)
     divisors = [1, 60, 60, 24]
     units = 'smhd'
@@ -48,7 +48,7 @@ def humanTime(number: float) -> str:
     else:
         return f'{number:,.1f}{units[unit_index]}'
 
-def prettyHeader(text: str):
+def pretty_header(text: str):
     margin = 1
     text = ' '*margin + text + ' '*margin
 
@@ -62,72 +62,72 @@ def prettyHeader(text: str):
     print(divider)
     print(text)
 
-def runCommand(command: list):
+def run_command(command: list):
     result = subprocess.run(command, encoding='utf-8', stdout=subprocess.PIPE)
     return result.stdout
 
-def runServerCommand(command: list):
+def run_server_command(command: list):
     command = ['ssh', '-i', sshkeyfile, server] + command
-    return runCommand(command)
+    return run_command(command)
 
 class RealtimeCommand:
     def __init__(self, command: list):
         self.p = subprocess.Popen(command, stdout=subprocess.PIPE)
         os.set_blocking(self.p.stdout.fileno(), False)
-    def pollOutput(self):
+    def poll_output(self):
         output = self.p.stdout.read()
         if output != None:
             output = output.decode('utf-8')
         return output
-    def isRunning(self):
+    def is_running(self):
         return self.p.poll() == None
     def kill(self):
         self.p.kill()
 
-def getCurrentCommitHash(repo: str) -> str:
-    repo_path = getRepoBinaryPath(repo)
-    return runServerCommand(f'cd {repo_path}; git rev-parse HEAD'.split()).strip()
+def get_current_commit_hash(repo: str) -> str:
+    repo_path = get_repo_binary_path(repo)
+    return run_server_command(f'cd {repo_path}; git rev-parse HEAD'.split()).strip()
 
-def checkServerFileExists(path: str) -> bool:
+def check_server_file_exists(path: str) -> bool:
     command = f'[[ -f {path} ]] && echo 1 || echo 0;'.split()
-    result = runServerCommand(command)
+    result = run_server_command(command)
     return result.strip() == '1'
 
-def isBuildCached(repo: str, hash_id: str) -> bool:
-    return checkServerFileExists(os.path.join(getCachedBuildPath(repo, hash_id), valkey_binary))
+def is_build_cached(repo: str, hash_id: str) -> bool:
+    return check_server_file_exists(os.path.join(get_cached_build_path(repo, hash_id), valkey_binary))
 
-def ensureServerStopped():
-    runServerCommand(['pkill', '-f', valkey_binary])
+def ensure_server_stopped():
+    run_server_command(['pkill', '-f', valkey_binary])
 
-def ensureBuildCached(repo: str, commit_id: str) -> str:
-    repo_path = getRepoBinaryPath(repo)
-    runServerCommand(f'cd {repo_path}; git reset --hard && git fetch && git switch {commit_id} && git pull'.split())
-    hash_id = getCurrentCommitHash(repo)
+def ensure_build_cached(repo: str, commit_id: str) -> str:
+    repo_path = get_repo_binary_path(repo)
+    run_server_command(f'cd {repo_path}; git reset --hard && git fetch && git switch {commit_id} && git pull'.split())
+    hash_id = get_current_commit_hash(repo)
     
-    cached_build_path = getCachedBuildPath(repo, hash_id)
+    cached_build_path = get_cached_build_path(repo, hash_id)
     cached_binary_path = os.path.join(cached_build_path, valkey_binary)
 
-    if not isBuildCached(repo, hash_id):
+    if not is_build_cached(repo, hash_id):
         print(f"building {commit_id}... (no cached build)")
 
-        runServerCommand(f'cd {repo_path}; make distclean && make -j USE_FAST_FLOAT=yes'.split())
-        runServerCommand(f'mkdir -p {cached_build_path}'.split())
+        run_server_command(f'cd {repo_path}; make distclean && make -j USE_FAST_FLOAT=yes'.split())
+        run_server_command(f'mkdir -p {cached_build_path}'.split())
         build_binary = os.path.join(repo_path, valkey_binary)
-        runServerCommand(['cp', build_binary, cached_binary_path])
+        run_server_command(['cp', build_binary, cached_binary_path])
 
     return cached_binary_path
 
-def startServerWithArgs(repo: str, commit_id: str, args: list) -> str:
-    ensureServerStopped()
-    cached_binary_path = ensureBuildCached(repo, commit_id)
+def start_server_with_args(repo: str, commit_id: str, args: list) -> str:
+    ensure_server_stopped()
+    cached_binary_path = ensure_build_cached(repo, commit_id)
     command = [cached_binary_path, '--save', '--protected-mode', 'no', '--daemonize', 'yes'] + args
-    runServerCommand(command)
-    return getCurrentCommitHash(repo)
+    run_server_command(command)
+    return get_current_commit_hash(repo)
 
-def loadKeys(valsize: int, count: int, pipelining: int, test: str) -> None:
-    runCommand(f'./amz_valkey-benchmark -h {server} -d {valsize} --sequential {count} -c 650 -P {pipelining} --threads 50 -t {test} -q'.split())
+def load_keys(valsize: int, count: int, pipelining: int, test: str) -> None:
+    run_command(f'./amz_valkey-benchmark -h {server} -d {valsize} --sequential {count} -c 650 -P {pipelining} --threads 50 -t {test} -q'.split())
 
-def preloadKeysForPerfTests(valsize: int, test_list: list[str]) -> None:
+def preload_keys_for_perf_tests(valsize: int, test_list: list[str]) -> None:
     load_type_for_test = {
         'set': 'set',
         'get': 'set',
@@ -142,7 +142,7 @@ def preloadKeysForPerfTests(valsize: int, test_list: list[str]) -> None:
     
     print("preloading keys:", repr(load_types))
     for type in load_types:
-        loadKeys(valsize, perf_bench_keyspace, 4, type)
+        load_keys(valsize, perf_bench_keyspace, 4, type)
 
 def calc_percentile_averages(data: list, percentages, lowestVals=False) -> tuple:
     copy = data.copy()
@@ -160,7 +160,7 @@ def calc_percentile_averages(data: list, percentages, lowestVals=False) -> tuple
 
 class PerfBench:
     def __init__(self, server: str, repo: str, commit_id: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int):
-        self.title = f'{test} throughput, {repo}:{commit_id}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={humanTime(warmup)}, duration={humanTime(duration)}'
+        self.title = f'{test} throughput, {repo}:{commit_id}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={human_time(warmup)}, duration={human_time(duration)}'
 
         # settings
         self.server = server
@@ -188,14 +188,14 @@ class PerfBench:
         self.lat_data = []
 
         server_args = [] if io_threads == 1 else ['--io-threads', str(io_threads)]
-        self.commit_hash = startServerWithArgs(repo, commit_id, server_args)
-        preloadKeysForPerfTests(valsize, [test])
+        self.commit_hash = start_server_with_args(repo, commit_id, server_args)
+        preload_keys_for_perf_tests(valsize, [test])
 
-    def __readUpdates(self):
-        line = self.command.pollOutput()
+    def __read_updates(self):
+        line = self.command.poll_output()
         while line != None and line != '' and not line.isspace():
             if 'overall' not in line:
-                line = self.command.pollOutput()
+                line = self.command.poll_output()
                 continue
             # line looks like this: "GET: rps=140328.0 (overall: 141165.2) avg_msec=0.193 (overall: 0.191)"
             line = line.strip().split()
@@ -209,12 +209,12 @@ class PerfBench:
             self.val_buckets[bucket_key].append(rps)
             if self.count_buckets[bucket_key] > self.count_buckets[self.max_bucket]:
                 self.max_bucket = bucket_key
-            line = self.command.pollOutput()
+            line = self.command.poll_output()
 
-    def __updateMetrics(self):
+    def __update_metrics(self):
         graph_update_interval = 10.0
         now = time.monotonic()
-        if now > self.next_metric_update or not self.command.isRunning():
+        if now > self.next_metric_update or not self.command.is_running():
             self.next_metric_update += graph_update_interval
             if len(self.rps_data) == 0:
                 return
@@ -249,7 +249,7 @@ class PerfBench:
 
             plt.show()
 
-    def __recordResult(self):
+    def __record_result(self):
         logger.debug(f'{self.valsize}B {self.test} perf on {self.repo}:{self.commit_id}\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}')
 
         (avg_rps, avg_99_rps, avg_95_rps) = calc_percentile_averages(self.rps_data, (100, 99, 95))
@@ -291,9 +291,9 @@ class PerfBench:
         warming_up = True
         self.next_metric_update = self.start_time
         self.command = RealtimeCommand(self.command_string.split())
-        while self.command.isRunning():
-            self.__readUpdates()
-            self.__updateMetrics()
+        while self.command.is_running():
+            self.__read_updates()
+            self.__update_metrics()
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
             if now > self.end_time:
@@ -302,11 +302,11 @@ class PerfBench:
                 self.rps_data = []
                 self.lat_data = []
                 warming_up = False
-        self.__readUpdates()
-        self.__recordResult()
+        self.__read_updates()
+        self.__record_result()
 
-def infoCommand(section: str) -> dict:
-    result = runCommand(f'./valkey-cli -h {server} info {section}'.split())
+def info_command(section: str) -> dict:
+    result = run_command(f'./valkey-cli -h {server} info {section}'.split())
     result = result.strip().split('\n')
     keypairs = {}
     for item in result:
@@ -315,33 +315,33 @@ def infoCommand(section: str) -> dict:
             keypairs[key.strip()] = value.strip()
     return keypairs
 
-def measureUsedMemory() -> int:
-    info = infoCommand('memory')
+def measure_used_memory() -> int:
+    info = info_command('memory')
     return int(info['used_memory'])
 
-def memTest(repo: str, commit_id: str, valsize: int, test: str) -> None:
+def mem_test(repo: str, commit_id: str, valsize: int, test: str) -> None:
     count = 5 * million
-    prettyHeader(f'Memory efficiency testing {repo}:{commit_id} with {human(count)} {humanByte(valsize)} {test} elements')
+    pretty_header(f'Memory efficiency testing {repo}:{commit_id} with {human(count)} {human_byte(valsize)} {test} elements')
 
     args = ['--io-threads', '9']
-    startServerWithArgs(repo, commit_id, args)
+    start_server_with_args(repo, commit_id, args)
 
-    before_usage = measureUsedMemory()
+    before_usage = measure_used_memory()
 
-    print(f'loading {human(count)} {humanByte(valsize)} {test} elements')
-    loadKeys(valsize, count, 1, test)
+    print(f'loading {human(count)} {human_byte(valsize)} {test} elements')
+    load_keys(valsize, count, 1, test)
 
-    after_usage = measureUsedMemory()
+    after_usage = measure_used_memory()
 
     # output result
     total_usage = after_usage - before_usage
     per_key = float(total_usage) / count
     per_key_overhead = per_key - valsize
-    print(f'done testing {humanByte(valsize)} {test} elements: {per_key_overhead:.2f} overhead per key')
+    print(f'done testing {human_byte(valsize)} {test} elements: {per_key_overhead:.2f} overhead per key')
     with open(conductress_output,'a') as f:
         f.write(f'mem, {datetime.datetime.now()}, {test}, {repo}:{commit_id}, {repr(args)}, size={valsize}, total_usage={total_usage}, key_mem={per_key:.2f}, key_overhead={per_key_overhead:.2f}\n')
 
-def parseLazy(lazySpecifier: str) -> tuple[str, str]:
+def parse_lazy(lazySpecifier: str) -> tuple[str, str]:
     (repo, branch) = lazySpecifier.split(':')
     return (repo, branch)
 
@@ -367,7 +367,7 @@ def run_script():
     versions = ['valkey:unstable', 'valkey:8.0', 'valkey:7.2']
 
     for version in versions:
-        (repo, branch) = parseLazy(version)
+        (repo, branch) = parse_lazy(version)
         for size in sizes:
             for (io_threads, pipelining) in configs:
                 for test in tests:
