@@ -117,11 +117,12 @@ def ensureBuildCached(repo: str, commit_id: str) -> str:
 
     return cached_binary_path
 
-def startServerWithArgs(repo: str, commit_id: str, args: list) -> None:
+def startServerWithArgs(repo: str, commit_id: str, args: list) -> str:
     ensureServerStopped()
     cached_binary_path = ensureBuildCached(repo, commit_id)
     command = [cached_binary_path, '--save', '--protected-mode', 'no', '--daemonize', 'yes'] + args
     runServerCommand(command)
+    return getCurrentCommitHash(repo)
 
 def loadKeys(valsize: int, count: int, pipelining: int, test: str) -> None:
     runCommand(f'./amz_valkey-benchmark -h {server} -d {valsize} --sequential {count} -c 650 -P {pipelining} --threads 50 -t {test} -q'.split())
@@ -143,15 +144,29 @@ def preloadKeysForPerfTests(valsize: int, test_list: list[str]) -> None:
     for type in load_types:
         loadKeys(valsize, perf_bench_keyspace, 4, type)
 
+def calc_percentile_averages(data: list, percentages, lowestVals=False) -> tuple:
+    copy = data.copy()
+    copy.sort()
+    if lowestVals:
+        copy.reverse()
+
+    result = []
+    for percent in percentages:
+        start_index = len(copy) * (100 - percent) // 100
+        slice = copy[start_index:]
+        slice_avg = sum(slice) / len(slice)
+        result.append(slice_avg)
+    return tuple(result)
+
 class PerfBench:
-    def __init__(self, server: str, repo: str, commit_id: str, server_args: list, valsize: int, pipelining: int, test: str, warmup: int, duration: int):
-        self.title = f'{test} throughput, {repo}:{commit_id}, {repr(server_args)}, pipelining={pipelining}, size={valsize}, warmup={humanTime(warmup)}, duration={humanTime(duration)}'
+    def __init__(self, server: str, repo: str, commit_id: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int):
+        self.title = f'{test} throughput, {repo}:{commit_id}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={humanTime(warmup)}, duration={humanTime(duration)}'
 
         # settings
         self.server = server
         self.repo = repo
         self.commit_id = commit_id
-        self.server_args = server_args
+        self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining
         self.test = test
@@ -159,29 +174,35 @@ class PerfBench:
         self.duration = duration # seconds
 
         # statistics
-        self.bucket_size = 5000
+        self.bucket_size = 1000
         self.count_buckets = Counter()
         self.val_buckets = defaultdict(list)
         self.max_bucket = -1
-        self.mode_value = -1
+        self.mode_rps = -1.0
+        self.avg_rps = -1.0
 
         clients = 650
         threads = 64
         self.command_string = f'./valkey-benchmark -h {server} -d {valsize} -r {perf_bench_keyspace} -c {clients} -P {pipelining} --threads {threads} -t {test} -q -l -n {2000 * million}'
-        self.data = []
-        self.p90 = -1.0
+        self.rps_data = []
+        self.lat_data = []
 
-        startServerWithArgs(repo, commit_id, server_args)
+        server_args = [] if io_threads == 1 else ['--io-threads', str(io_threads)]
+        self.commit_hash = startServerWithArgs(repo, commit_id, server_args)
         preloadKeysForPerfTests(valsize, [test])
 
     def __readUpdates(self):
-        line = self.command.pollOutput().strip()
-        while line != None and line != '':
+        line = self.command.pollOutput()
+        while line != None and line != '' and not line.isspace():
             if 'overall' not in line:
                 line = self.command.pollOutput()
                 continue
-            rps = float(line.split()[1][4:])
-            self.data.append(rps)
+            # line looks like this: "GET: rps=140328.0 (overall: 141165.2) avg_msec=0.193 (overall: 0.191)"
+            line = line.strip().split()
+            rps = float(line[1][4:])
+            msec = float(line[-3][9:])
+            self.rps_data.append(rps)
+            self.lat_data.append(msec)
             
             bucket_key = int(rps - (rps % self.bucket_size))
             self.count_buckets[bucket_key] += 1
@@ -195,14 +216,16 @@ class PerfBench:
         now = time.monotonic()
         if now > self.next_metric_update or not self.command.isRunning():
             self.next_metric_update += graph_update_interval
-            if len(self.data) == 0:
+            if len(self.rps_data) == 0:
                 return
 
             # update metrics
-            avg = sum(self.data) / len(self.data)
-            mode_list = self.val_buckets[self.max_bucket] + self.val_buckets[self.max_bucket - self.bucket_size] + self.val_buckets[self.max_bucket + self.bucket_size]
+            self.avg_rps = sum(self.rps_data) / len(self.rps_data)
+            mode_band_center = self.max_bucket + self.bucket_size/2
+            mode_band_radius = 5000 # diameter is double this value
+            mode_list = [x for x in self.rps_data if x >= mode_band_center - mode_band_radius and x <= mode_band_center + mode_band_radius]
             if (len(mode_list)) > 0:
-                self.mode_value = sum(mode_list) / len(mode_list)
+                self.mode_rps = sum(mode_list) / len(mode_list)
 
             # update graph
             plt.clear_terminal()
@@ -211,24 +234,54 @@ class PerfBench:
             plt.subplots(2,1)
 
             plt.subplot(1,1)
-            plt.scatter(self.data)
+            plt.scatter(self.rps_data)
             plt.title(self.title)
             plt.xlim(left=1, right=self.duration*4)
-            plt.horizontal_line(avg, color='orange+')
-            plt.horizontal_line(self.mode_value, color='white')
+            plt.horizontal_line(self.avg_rps, color='orange+')
+            plt.horizontal_line(self.mode_rps, color='white')
             plt.frame(False)
 
             plt.subplot(2,1)
-            plt.hist(self.data, width=1, bins=40)
-            plt.vertical_line(avg, color='orange+')
-            plt.vertical_line(self.mode_value, color='white')
+            plt.hist(self.rps_data, width=1, bins=40)
+            plt.vertical_line(self.avg_rps, color='orange+')
+            plt.vertical_line(self.mode_rps, color='white')
             plt.frame(False)
 
             plt.show()
 
     def __recordResult(self):
+        logger.debug(f'{self.valsize}B {self.test} perf on {self.repo}:{self.commit_id}\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}')
+
+        (avg_rps, avg_99_rps, avg_95_rps) = calc_percentile_averages(self.rps_data, (100, 99, 95))
+        (avg_lat, avg_99_lat, avg_95_lat) = calc_percentile_averages(self.lat_data, (100, 99, 95), lowestVals=True)
+
+        result = {
+            'method': 'perf',
+            'repo': self.repo,
+            'commit': self.commit_id,
+            'commit_hash': self.commit_hash,
+            'test': self.test,
+            'warmup': self.warmup,
+            'duration': self.duration,
+            'endtime': datetime.datetime.now(),
+            'io-threads': self.io_threads,
+            'pipeline': self.pipelining,
+            'size': self.valsize,
+            'mode_rps': self.mode_rps,
+            'avg_rps': avg_rps,
+            'avg_99_rps': avg_99_rps,
+            'avg_95_rps': avg_95_rps,
+            'avg_lat': avg_lat,
+            'avg_99_lat': avg_99_lat,
+            'avg_95_lat': avg_95_lat,
+        }
+
+        fieldOrder = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
+
+        result_string = [f'{field}:{result[field]}' for field in fieldOrder]
+        result_string = '\t'.join(result_string) + '\n'
         with open(conductress_output,'a') as f:
-            f.write(f'perf, {datetime.datetime.now()}, {self.test}, mode_rps={self.mode_value}, warmup={self.warmup}, duration={self.duration}, {self.repo}:{self.commit_id}, {repr(self.server_args)}, pipelining={self.pipelining}, size={self.valsize}, data={repr(self.data)}\n')
+            f.write(result_string)
 
     def run(self):
         benchmark_update_interval = 0.1 # s
@@ -246,7 +299,8 @@ class PerfBench:
             if now > self.end_time:
                 self.command.kill()
             elif warming_up and now >= self.test_start_time:
-                self.data = []
+                self.rps_data = []
+                self.lat_data = []
                 warming_up = False
         self.__readUpdates()
         self.__recordResult()
@@ -291,72 +345,41 @@ def parseLazy(lazySpecifier: str) -> tuple[str, str]:
     (repo, branch) = lazySpecifier.split(':')
     return (repo, branch)
 
-class BenchTask:
-    def __init__(self, test: str, repo: str, commit_id: str, iothreads: int, pipelining: int, data_size: int, data_type: str):
-        self.test = test
-        self.repo = repo
-        self.commit_id = commit_id
-        self.iothreads = iothreads
-        self.pipelining = pipelining
-        self.data_size = data_size
-        self.data_type = data_type
+def run_script():
+    # sizelist = list(range(24, 96, 8)) + list(range(23, 95, 8))
+    # sizelist.sort()
+    # print(len(sizelist), 'sizes', sizelist)
+    # tests = ['get','set']
+    # for specifier in ['valkey:unstable', 'zuiderkwast:embed-128']:
+    #     (repo, branch) = parseLazy(specifier)
+    #     # perfTest(repo, branch, ['--io-threads', '9'], sizelist, 1, tests)
+    #     memEfficiencyTest(repo, branch, sizelist, 'set', 5 * million)
 
-    def from_string(string: str):
-        bits = [x.strip() for x in string.split(',')]
-        assert(len(bits) == 7)
-        return BenchTask(bits[0], bits[1], bits[2], int(bits[3]), int(bits[4]), int(bits[5]), bits[6])
+    # repolist = ['valkey', 'SoftlyRaining', 'zuiderkwast']
 
-    def runTest(self):
-        args = []
-        if (self.iothreads > 1):
-            args = ['--io-threads', str(self.iothreads)]
-        if (self.test == 'perf'):
-            perfTest(self.repo, self.commit_id, args, self.pipelining, self.data_type, self.data_size)
-        elif (self.test == 'mem'):
-            memTest(self.repo, self.commit_id, self.data_size, self.data_type)
-        else:
-            print(f'ERROR unknown testing method {self.test}')
-            logger.error(f'ERROR unknown testing method {self.test}')
-            exit()
+    # sizes = [512]
+    # configs = [(True, 4), (True, 1), (False, 4)]
+    # tests = ['set','get','sadd','hset','zadd','zrange']
+    # versions = ['valkey:7.2', 'valkey:8.0', 'valkey:unstable']
+    sizes = [512, 87, 8]
+    configs = [(9, 1)] # (io-threads, pipelining)
+    tests = ['set'] # ['set','get']
+    versions = ['valkey:unstable', 'valkey:8.0', 'valkey:7.2']
 
-def tryPopTaskFromQueueFile():
-    # TODO load queue file and try to pop file from it
-    return None
+    for version in versions:
+        (repo, branch) = parseLazy(version)
+        for size in sizes:
+            for (io_threads, pipelining) in configs:
+                for test in tests:
+                    test_runner = PerfBench(server, repo, branch, io_threads=io_threads, valsize=size, pipelining=pipelining, test=test, warmup=5*minute, duration=30*minute)
+                    test_runner.run()
 
-def watchQueue() -> None:
-    # pick off tasks from queue file and run them. Wait idly when file is empty.
-    while True:
-        print('getting task from queue', end='', flush=True)
-        task = None
-        while True:
-            task = tryPopTaskFromQueueFile()
-            if task != None:
-                break
-            time.sleep(60) # 1 minute
-            print('.', end='', flush=True)
-        task.runTest()
+    print('\n\nAll done 🌧 ♥')
 
+if __name__ == "__main__":
+    run_script()
 
-# sizelist = list(range(24, 96, 8)) + list(range(23, 95, 8))
-# sizelist.sort()
-# print(len(sizelist), 'sizes', sizelist)
-# tests = ['get','set']
-# for specifier in ['valkey:unstable', 'zuiderkwast:embed-128']:
-#     (repo, branch) = parseLazy(specifier)
-#     # perfTest(repo, branch, ['--io-threads', '9'], sizelist, 1, tests)
-#     memEfficiencyTest(repo, branch, sizelist, 'set', 5 * million)
-
-# repolist = ['valkey', 'SoftlyRaining', 'zuiderkwast']
-configs = [(True, 4), (True, 1), (False, 4)]
-tests = ['set','get','sadd','hset','zadd','zrange']
-versions = ['valkey:7.2', 'valkey:8.0', 'valkey:unstable']
-
-for (io_threads, pipelining) in configs:
-    args = ['--io-threads', '9'] if io_threads else []
-    for test in tests:
-        for version in versions:
-            (repo, branch) = parseLazy(version)
-            test_runner = PerfBench(server, repo, branch, server_args=args, valsize=512, pipelining=pipelining, test=test, warmup=5*minute, duration=60*minute)
-            test_runner.run()
-
-print('\n\nAll done 🌧 ♥')
+# TODO finish job queue
+# TODO can I get ZRANGE test to work?
+# TODO improve mode calculation?
+# TODO log thread/irq cpu affinity over time
