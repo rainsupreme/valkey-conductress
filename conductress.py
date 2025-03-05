@@ -9,6 +9,7 @@ from numerize import numerize
 # from typing import Optional, TextIO
 
 from config import *
+from task_queue import BenchmarkTask, TaskQueue
 
 plt.theme('pro')
 logging.basicConfig(filename=conductress_log, encoding='utf-8', level=logging.DEBUG)
@@ -187,6 +188,8 @@ class PerfBench:
         self.rps_data = []
         self.lat_data = []
 
+        print("preparing:", self.title)
+
         server_args = [] if io_threads == 1 else ['--io-threads', str(io_threads)]
         self.commit_hash = start_server_with_args(repo, commit_id, server_args)
         preload_keys_for_perf_tests(valsize, [test])
@@ -320,6 +323,9 @@ def measure_used_memory() -> int:
     return int(info['used_memory'])
 
 def mem_test(repo: str, commit_id: str, valsize: int, test: str) -> None:
+    # TODO need to refactor this to use output file and log as needed (and in matching format!)
+    assert(False)
+
     count = 5 * million
     pretty_header(f'Memory efficiency testing {repo}:{commit_id} with {human(count)} {human_byte(valsize)} {test} elements')
 
@@ -345,41 +351,34 @@ def parse_lazy(lazySpecifier: str) -> tuple[str, str]:
     (repo, branch) = lazySpecifier.split(':')
     return (repo, branch)
 
+def run_task(task: BenchmarkTask) -> None:
+    if task.bench_type == 'perf':
+        test_runner = PerfBench(server, task.repo, task.commit_id, io_threads=task.io_threads, valsize=task.val_size, pipelining=task.pipelining, test=task.test, warmup=task.warmup*minute, duration=task.duration*minute)
+        test_runner.run()
+    if task.bench_type == 'mem':
+        # ignored for memory useage test: warmup, duration, threading, pipelining
+        mem_test(task.repo, task.commit_id, valsize=task.val_size, test=task.test)
+    else:
+        logger.error(f'unrecognized benchmark type {task}')
+
 def run_script():
-    # sizelist = list(range(24, 96, 8)) + list(range(23, 95, 8))
-    # sizelist.sort()
-    # print(len(sizelist), 'sizes', sizelist)
-    # tests = ['get','set']
-    # for specifier in ['valkey:unstable', 'zuiderkwast:embed-128']:
-    #     (repo, branch) = parseLazy(specifier)
-    #     # perfTest(repo, branch, ['--io-threads', '9'], sizelist, 1, tests)
-    #     memEfficiencyTest(repo, branch, sizelist, 'set', 5 * million)
+    queue = TaskQueue()
 
-    # repolist = ['valkey', 'SoftlyRaining', 'zuiderkwast']
-
-    # sizes = [512]
-    # configs = [(True, 4), (True, 1), (False, 4)]
-    # tests = ['set','get','sadd','hset','zadd','zrange']
-    # versions = ['valkey:7.2', 'valkey:8.0', 'valkey:unstable']
-    sizes = [512, 87, 8]
-    configs = [(9, 1)] # (io-threads, pipelining)
-    tests = ['set'] # ['set','get']
-    versions = ['valkey:unstable', 'valkey:8.0', 'valkey:7.2']
-
-    for version in versions:
-        (repo, branch) = parse_lazy(version)
-        for size in sizes:
-            for (io_threads, pipelining) in configs:
-                for test in tests:
-                    test_runner = PerfBench(server, repo, branch, io_threads=io_threads, valsize=size, pipelining=pipelining, test=test, warmup=5*minute, duration=30*minute)
-                    test_runner.run()
-
-    print('\n\nAll done 🌧 ♥')
+    task = None
+    while True:
+        while task:
+            run_task(task)
+            task = queue.get_next_task()
+        print("waiting for new jobs in queue")
+        while not task:
+            time.sleep(4)
+            task = queue.get_next_task()
 
 if __name__ == "__main__":
     run_script()
 
-# TODO finish job queue
 # TODO can I get ZRANGE test to work?
-# TODO improve mode calculation?
 # TODO log thread/irq cpu affinity over time
+# TODO calculate some error bar metric (std dev.? variance? P95?)
+# TODO more instances, more machines, faster results, etc
+# TODO github action integration

@@ -4,3 +4,4 @@
 valkey-cli
 log.txt
 output.txt
+benchmark_queue/*
