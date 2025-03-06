@@ -14,3 +14,4 @@ sshkeyfile = 'server-keyfile.pem'
 
 conductress_log = './log.txt'
 conductress_output = './output.txt'
+conductress_data_dump = './testdump.txt'

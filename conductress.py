@@ -279,12 +279,19 @@ class PerfBench:
             'avg_95_lat': avg_95_lat,
         }
 
-        fieldOrder = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
+        result_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
 
-        result_string = [f'{field}:{result[field]}' for field in fieldOrder]
+        result_string = [f'{field}:{result[field]}' for field in result_fields]
         result_string = '\t'.join(result_string) + '\n'
         with open(conductress_output,'a') as f:
             f.write(result_string)
+
+        dump_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size'.split()
+        dump_string = [f'{field}:{result[field]}' for field in dump_fields]
+        dump_string = '\t'.join(dump_string)
+        with open(conductress_data_dump, 'a') as f:
+            f.write(dump_string)
+            f.write(f'\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}\n')
 
     def run(self):
         benchmark_update_interval = 0.1 # s
@@ -377,8 +384,11 @@ def run_script():
 if __name__ == "__main__":
     run_script()
 
-# TODO can I get ZRANGE test to work?
+# TODO redo memory efficiency tests
+# TODO perf profiling tests - end goal is flame graphs
 # TODO log thread/irq cpu affinity over time
 # TODO calculate some error bar metric (std dev.? variance? P95?)
 # TODO more instances, more machines, faster results, etc
+# TODO store results in some database?
+# TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration

@@ -186,46 +186,35 @@ def main():
 
 from itertools import product
 def rain():
-    # sizelist = list(range(24, 96, 8)) + list(range(23, 95, 8))
-    # sizelist.sort()
-    # print(len(sizelist), 'sizes', sizelist)
-    # tests = ['get','set']
-    # for specifier in ['valkey:unstable', 'zuiderkwast:embed-128']:
-    #     (repo, branch) = parseLazy(specifier)
-    #     # perfTest(repo, branch, ['--io-threads', '9'], sizelist, 1, tests)
-    #     memEfficiencyTest(repo, branch, sizelist, 'set', 5 * million)
-
-    # repolist = ['valkey', 'SoftlyRaining', 'zuiderkwast']
-
-    # sizes = [512]
-    # configs = [(True, 4), (True, 1), (False, 4)]
-    # tests = ['set','get','sadd','hset','zadd','zrange']
-    # versions = ['valkey:7.2', 'valkey:8.0', 'valkey:unstable']
-
     queue = TaskQueue()
 
-    sizes = [512, 87, 8]
+    # available_repos = ['valkey', 'SoftlyRaining', 'zuiderkwast', 'JimB123']
+
+    sizes = [512]
+    # pipelining = [4]
+    # io_threads = [9]
+    # tests = ['set','get']
+    # versions = ['unstable']
     pipelining = [1, 4]
     io_threads = [1, 9]
-    tests = ['set','get']
+    tests = ['zadd']
     versions = ['8.0','unstable']
     repos = ['valkey']
 
     all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos))
     for (size, pipe, thread, test, version, repo) in all_tests:
-        if pipe==1 and thread==9 and test=='get':
-            task = BenchmarkTask(
-                bench_type='perf',
-                test=test,
-                repo=repo,
-                commit_id=version,
-                val_size=size,
-                io_threads=thread,
-                pipelining=pipe,
-                warmup=5,
-                duration=60
-            )
-            queue.submit_task(task)
+        task = BenchmarkTask(
+            bench_type='perf',
+            test=test,
+            repo=repo,
+            commit_id=version,
+            val_size=size,
+            io_threads=thread,
+            pipelining=pipe,
+            warmup=5,
+            duration=60
+        )
+        queue.submit_task(task)
     print('\n\nAll done 🌧 ♥')
 
 if __name__ == "__main__":
