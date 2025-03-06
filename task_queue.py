@@ -127,6 +127,9 @@ def create_parser() -> ArgumentParser:
 
     # Add status command
     status_parser = subparsers.add_parser('status', help='Show queue status')
+
+    # Add a temp command just for me
+    rain_parser = subparsers.add_parser('rain', help='Rain nonsense, who knows')
     return parser
 
 def show_status(queue: TaskQueue):
@@ -154,6 +157,9 @@ def main():
     if args.command == 'status':
         show_status(queue)
         return
+    if args.command == 'rain':
+        rain()
+        return
 
     if args.command == 'perf':
         task = BenchmarkTask(
@@ -179,7 +185,7 @@ def main():
     print(f"Task queued successfully: {task}")
 
 from itertools import product
-def run_script():
+def rain():
     # sizelist = list(range(24, 96, 8)) + list(range(23, 95, 8))
     # sizelist.sort()
     # print(len(sizelist), 'sizes', sizelist)
@@ -207,22 +213,20 @@ def run_script():
 
     all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos))
     for (size, pipe, thread, test, version, repo) in all_tests:
-        if pipe==1 and thread==9:
-            continue
-        task = BenchmarkTask(
-            bench_type='perf',
-            test=test,
-            repo=repo,
-            commit_id=version,
-            val_size=size,
-            io_threads=thread,
-            pipelining=pipe,
-            warmup=5,
-            duration=60
-        )
-        queue.submit_task(task)
+        if pipe==1 and thread==9 and test=='get':
+            task = BenchmarkTask(
+                bench_type='perf',
+                test=test,
+                repo=repo,
+                commit_id=version,
+                val_size=size,
+                io_threads=thread,
+                pipelining=pipe,
+                warmup=5,
+                duration=60
+            )
+            queue.submit_task(task)
     print('\n\nAll done 🌧 ♥')
 
 if __name__ == "__main__":
     main()
-    # run_script()
