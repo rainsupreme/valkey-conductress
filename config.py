@@ -1,15 +1,11 @@
-million = 1000000
-minute = 60
-hour = 60*60
-
-perf_bench_keyspace = 3 * million
+perf_bench_keyspace = 3000000 # 3 million
 
 valkey_binary = 'valkey-server'
 
 # ip address of dedicated server for building and running Valkey server
 server = "172.31.70.82"
 
-# ssh key ti use when accessing the server
+# ssh key to use when accessing the server
 sshkeyfile = 'server-keyfile.pem'
 
 conductress_log = './log.txt'

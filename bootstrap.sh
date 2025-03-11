@@ -9,13 +9,6 @@ REQUIRED_PYTHON_PACKAGES=(
     "numerize"
 )
 
-# These files must be manually provided by the user - we ensure they exist
-REQUIRED_FILES=(
-    "./amz_valkey-benchmark"
-    "./valkey-benchmark"
-    "$SSH_KEY_FILE"
-)
-
 # list of repositories to clone on the server so they are available for testing
 # format of each line is "url.git||folderName"
 REPOSITORIES=(
@@ -35,11 +28,22 @@ command_exists() {
 
 echo "Starting server bootstrap process..."
 
-# Ensure pip is installed
+sudo yum update -y
+
+if ! command_exists make; then
+    echo "make not found. Installing development tools..."
+    sudo yum groupinstall -y "Development Tools"
+    sudo yum install -y cmake cmake3
+fi
+
+if ! command_exists git; then
+    echo "git not found. Installing git..."
+    sudo yum install -y git
+fi
+
 if ! command_exists pip; then
     echo "pip not found. Installing pip..."
-    
-    # Install pip
+
     sudo yum install -y python3-pip
     
     # Sometimes pip might need upgrading
@@ -53,14 +57,8 @@ for package in "${REQUIRED_PYTHON_PACKAGES[@]}"; do
 done
 
 echo "Checking for required files..."
-missing_files=0
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "$file" ]; then
-        echo "✗ Missing: $file"
-        ((missing_files++)) || true
-    fi
-done
-if [ $missing_files -gt 0 ]; then
+# SSH keyfile
+if [ ! -f "$SSH_KEY_FILE" ]; then
     echo "$missing_files files missing"
     exit 1
 fi
@@ -70,6 +68,35 @@ chmod 600 "$SSH_KEY_FILE" || {
     echo "Failed to set permissions on $SSH_KEY_FILE"
     exit 1
 }
+
+BUILDABLE_FILES=(
+    "./valkey-cli"
+    "./valkey-benchmark"
+)
+
+missing_files=0
+for file in "${BUILDABLE_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+        echo "✗ Missing: $file"
+        ((missing_files++)) || true
+    fi
+done
+if [ $missing_files -gt 0 ]; then
+    echo "retrieving and building needed binaries"
+    git clone https://github.com/SoftlyRaining/valkey.git sequential-benchmark
+
+    cd sequential-benchmark
+    git fetch
+    git switch sequential-benchmark
+    git pull
+    make distclean
+    make -j
+    cd ..
+
+    echo "copying needed binaries"
+    cp ./sequential-benchmark/src/valkey-cli .
+    cp ./sequential-benchmark/src/valkey-benchmark .
+fi
 
 echo "ensure server is in known-hosts"
 if ssh-keygen -F "$SERVER" >/dev/null 2>&1; then

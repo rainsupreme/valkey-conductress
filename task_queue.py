@@ -6,6 +6,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime
 
+from config import conductress_log
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -218,4 +220,5 @@ def rain():
     print('\n\nAll done 🌧 ♥')
 
 if __name__ == "__main__":
+    logging.basicConfig(filename=conductress_log, encoding='utf-8', level=logging.DEBUG)
     main()
