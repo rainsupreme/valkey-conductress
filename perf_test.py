@@ -10,8 +10,8 @@ from server import Server
 
 logger = logging.getLogger(__name__)
 
-def preload_keys_for_perf_tests(valsize: int, test_list: list[str]) -> None:
-    load_type_for_test = {
+class PerfBench:
+    __load_type_for_test = {
         'set': 'set',
         'get': 'set',
         'sadd': 'sadd',
@@ -19,20 +19,12 @@ def preload_keys_for_perf_tests(valsize: int, test_list: list[str]) -> None:
         'zadd': 'zadd',
         'zrange': 'zadd',
         }
-    
-    load_types = [load_type_for_test[x] for x in test_list]
-    load_types = set(load_types)
-    
-    print("preloading keys:", repr(load_types))
-    for type in load_types:
-        load_sequential_keys(valsize, perf_bench_keyspace, type)
 
-class PerfBench:
-    def __init__(self, server: str, repo: str, commit_id: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int):
+    def __init__(self, server_ip: str, repo: str, commit_id: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int, preload_keys: bool, has_expire: bool):
         self.title = f'{test} throughput, {repo}:{commit_id}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={human_time(warmup)}, duration={human_time(duration)}'
 
         # settings
-        self.server = server
+        self.server_ip = server_ip
         self.repo = repo
         self.commit_id = commit_id
         self.io_threads = io_threads
@@ -41,6 +33,8 @@ class PerfBench:
         self.test = test
         self.warmup = warmup # seconds
         self.duration = duration # seconds
+        self.preload_keys = preload_keys
+        self.has_expire = has_expire
 
         # statistics
         self.bucket_size = 1000
@@ -52,16 +46,20 @@ class PerfBench:
 
         clients = 650
         threads = 64
-        self.command_string = f'./valkey-benchmark -h {server} -d {valsize} -r {perf_bench_keyspace} -c {clients} -P {pipelining} --threads {threads} -t {test} -q -l -n {2000 * million}'
+        self.command_string = f'./valkey-benchmark -h {server_ip} -d {valsize} -r {perf_bench_keyspace} -c {clients} -P {pipelining} --threads {threads} -t {test} -q -l -n {2000 * million}'
         self.rps_data = []
         self.lat_data = []
 
         print("preparing:", self.title)
 
         server_args = [] if io_threads == 1 else ['--io-threads', str(io_threads)]
-        self.server = Server(repo, commit_id, server_args)
+        self.server = Server(server_ip, repo, commit_id, server_args)
         self.commit_hash = self.server.get_commit_hash()
-        preload_keys_for_perf_tests(valsize, [test])
+        if self.preload_keys:
+            self.server.fill_keyspace(self.valsize, perf_bench_keyspace, PerfBench.__load_type_for_test[self.test])
+            if self.has_expire:
+                self.server.expire_keyspace(perf_bench_keyspace)
+
 
     def __read_updates(self):
         line = self.command.poll_output()
@@ -138,7 +136,9 @@ class PerfBench:
             'endtime': datetime.datetime.now(),
             'io-threads': self.io_threads,
             'pipeline': self.pipelining,
+            'has_expire': self.has_expire,
             'size': self.valsize,
+            'preload_keys': not self.preload_keys,
             'mode_rps': self.mode_rps,
             'avg_rps': avg_rps,
             'avg_99_rps': avg_99_rps,
@@ -148,7 +148,7 @@ class PerfBench:
             'avg_95_lat': avg_95_lat,
         }
 
-        result_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
+        result_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline has_expire size preload_keys mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
 
         result_string = [f'{field}:{result[field]}' for field in result_fields]
         result_string = '\t'.join(result_string) + '\n'

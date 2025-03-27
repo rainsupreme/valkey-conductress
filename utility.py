@@ -89,6 +89,3 @@ def check_server_file_exists(path: str) -> bool:
     command = f'[[ -f {path} ]] && echo 1 || echo 0;'.split()
     result = run_server_command(command)
     return result.strip() == '1'
-
-def load_sequential_keys(valsize: int, count: int, test: str) -> None:
-    run_command(f'./valkey-benchmark -h {server} -d {valsize} --sequential -r {count} -n {count} -c 650 -P 4 --threads 50 -t {test} -q'.split())

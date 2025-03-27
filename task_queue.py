@@ -21,11 +21,14 @@ class BenchmarkTask:
     pipelining: int
     warmup: int
     duration: int
+    has_expire: bool
+    preload_keys: bool
+    expire_keys: bool
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
     
-    def __init__(self, bench_type, test, repo, commit_id, val_size, io_threads, pipelining, warmup, duration) -> 'BenchmarkTask':
+    def __init__(self, bench_type: str, test: str, repo: str, commit_id: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, has_expire: bool, preload_keys: bool) -> 'BenchmarkTask':
         self.bench_type = bench_type
         self.test = test
         self.repo = repo
@@ -35,10 +38,16 @@ class BenchmarkTask:
         self.pipelining = pipelining
         self.warmup = warmup
         self.duration = duration
+        self.has_expire = has_expire
+        self.preload_keys = preload_keys
 
     @staticmethod
-    def mem_task(repo: str, commit_id: str, val_size: int, test: str) -> 'BenchmarkTask':
-        return BenchmarkTask('mem', test, repo, commit_id, val_size, -1, -1, -1, -1)
+    def perf_task(test: str, repo: str, commit_id: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, has_expire: bool, preload_keys: bool):
+        return BenchmarkTask('perf', test, repo, commit_id, val_size, io_threads, pipelining, warmup, duration, has_expire, preload_keys)
+
+    @staticmethod
+    def mem_task(repo: str, commit_id: str, val_size: int, test: str, has_expire: bool) -> 'BenchmarkTask':
+        return BenchmarkTask('mem', test, repo, commit_id, val_size, -1, -1, -1, -1, has_expire, True)
 
     @classmethod
     def from_file(cls, filepath: Path) -> 'BenchmarkTask':
@@ -142,9 +151,9 @@ def show_status(queue: TaskQueue):
         return
     
     print(f"\nQueue Status: {len(tasks)} tasks pending\n")
-    print("Timestamp\t\t\ttype\ttest\trepo:commit\tthreads\tpipel.\tval size")
+    print("Timestamp\t\t\ttype\ttest\trepo:commit\tthreads\tpipel.\tvalsize\texpire")
     for (timestamp, task) in tasks:
-        print(f'{timestamp}\t{task.bench_type}\t{task.test}\t{task.repo}:{task.commit_id}\t{task.io_threads}\t{task.pipelining}\t{task.val_size}')
+        print(f'{timestamp}\t{task.bench_type}\t{task.test}\t{task.repo}:{task.commit_id}\t{task.io_threads}\t{task.pipelining}\t{task.val_size}\t{task.has_expire}')
 
 def main():
     parser = create_parser()
@@ -192,21 +201,27 @@ def rain():
 
     # available_repos = ['valkey', 'SoftlyRaining', 'zuiderkwast', 'JimB123']
 
-    sizes = [512]
-    # pipelining = [4]
-    # io_threads = [9]
-    # tests = ['set','get']
-    # versions = ['unstable']
-    pipelining = [1, 4]
-    io_threads = [1, 9]
-    tests = ['zadd']
-    versions = ['8.0','unstable']
     repos = ['valkey']
+    preload_keys = [True]
+    versions = ['7.2','8.0','8.1']
+    pipelining = [10]
+    io_threads = [9]
+    # sizes = [512, 87, 8]
+    sizes = [87]
 
-    all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos))
-    for (size, pipe, thread, test, version, repo) in all_tests:
-        task = BenchmarkTask(
-            bench_type='perf',
+    # pipelining = [1, 4]
+    # io_threads = [1, 9]
+    tests = ['get', 'set']
+
+    # sizes = list(range(8, 256, 8)) + list(range(16, 512+16, 16))
+    # sizes = list(set(sizes))
+    # tests = ['set']
+    # expire_keys = [True, False]
+    expire_keys = [False]
+
+    all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos, preload_keys, expire_keys))
+    for (size, pipe, thread, test, version, repo, preload, expire) in all_tests:
+        task = BenchmarkTask.perf_task(
             test=test,
             repo=repo,
             commit_id=version,
@@ -214,8 +229,17 @@ def rain():
             io_threads=thread,
             pipelining=pipe,
             warmup=5,
-            duration=60
+            duration=60,
+            has_expire=expire,
+            preload_keys=preload,
         )
+        # task = BenchmarkTask.mem_task(
+        #     repo=repo,
+        #     commit_id=version,
+        #     val_size=size,
+        #     test=test,
+        #     has_expire=expire,
+        # )
         queue.submit_task(task)
     print('\n\nAll done 🌧 ♥')
 
