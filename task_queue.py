@@ -23,7 +23,6 @@ class BenchmarkTask:
     duration: int
     has_expire: bool
     preload_keys: bool
-    expire_keys: bool
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -121,20 +120,23 @@ def create_parser() -> ArgumentParser:
     # Add perf command
     perf_parser = subparsers.add_parser('perf', help='Queue performance benchmark task')
     perf_parser.add_argument('--test', required=True, help='Test name')
-    perf_parser.add_argument('--repo', required=True, help='Repository')
+    perf_parser.add_argument('--repo', type=str, default="valkey", help='Repository')
     perf_parser.add_argument('--commit', required=True, help='Commit ID')
     perf_parser.add_argument('--size', type=int, required=True, help='Value size')
     perf_parser.add_argument('--threads', type=int, required=True, help='IO threads')
-    perf_parser.add_argument('--pipelining', type=int, required=True, help='Pipelining factor')
-    perf_parser.add_argument('--warmup', type=int, required=True, help='Warmup duration')
-    perf_parser.add_argument('--duration', type=int, required=True, help='Test duration')
+    perf_parser.add_argument('--pipe', type=int, required=True, help='Pipeline depth')
+    perf_parser.add_argument('--warmup', type=int, default=5, help='Warmup duration (minutes)')
+    perf_parser.add_argument('--duration', type=int, default=60, help='Test duration (minutes)')
+    perf_parser.add_argument('--preload', action=argparse.BooleanOptionalAction, default=True, help='Preload keys before running the test')
+    perf_parser.add_argument('--expire', action=argparse.BooleanOptionalAction, default=False, help='Add expiry data before test')
 
     # Add mem command
     mem_parser = subparsers.add_parser('mem', help='Queue memory benchmark task')
     mem_parser.add_argument('--test', required=True, help='Test name')
-    mem_parser.add_argument('--repo', required=True, help='Repository')
+    mem_parser.add_argument('--repo', type=str, default="valkey", help='Repository')
     mem_parser.add_argument('--commit', required=True, help='Commit ID')
     mem_parser.add_argument('--size', type=int, required=True, help='Value size')
+    mem_parser.add_argument('--expire', action=argparse.BooleanOptionalAction, default=False, help='Add expiry data before test')
 
     # Add status command
     status_parser = subparsers.add_parser('status', help='Show queue status')
@@ -173,8 +175,7 @@ def main():
         return
 
     if args.command == 'perf':
-        task = BenchmarkTask(
-            bench_type='perf',
+        task = BenchmarkTask.perf_task(
             test=args.test,
             repo=args.repo,
             commit_id=args.commit,
@@ -182,14 +183,17 @@ def main():
             io_threads=args.threads,
             pipelining=args.pipelining,
             warmup=args.warmup,
-            duration=args.duration
+            duration=args.duration,
+            has_expire=args.expire,
+            preload_keys=args.preload,
         )
     elif args.command == 'mem':
         task = BenchmarkTask.mem_task(
             repo=args.repo,
             commit_id=args.commit,
             val_size=args.size,
-            test=args.test
+            test=args.test,
+            has_expire=args.expire,
         )
 
     queue.submit_task(task)
@@ -203,15 +207,17 @@ def rain():
 
     repos = ['valkey']
     preload_keys = [True]
-    versions = ['7.2','8.0','8.1']
-    pipelining = [10]
-    io_threads = [9]
+    # versions = ['7.2','8.0','8.1']
+    versions = ['add716b7ddce48d4e13ebffe65401c7d0e26b91a']
+    pipelining = [4]
+    io_threads = [1]
     # sizes = [512, 87, 8]
-    sizes = [87]
+    sizes = [512]
+    tests = ['set']
 
     # pipelining = [1, 4]
     # io_threads = [1, 9]
-    tests = ['get', 'set']
+    # tests = ['get', 'set']
 
     # sizes = list(range(8, 256, 8)) + list(range(16, 512+16, 16))
     # sizes = list(set(sizes))
@@ -220,27 +226,28 @@ def rain():
     expire_keys = [False]
 
     all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos, preload_keys, expire_keys))
-    for (size, pipe, thread, test, version, repo, preload, expire) in all_tests:
-        task = BenchmarkTask.perf_task(
-            test=test,
-            repo=repo,
-            commit_id=version,
-            val_size=size,
-            io_threads=thread,
-            pipelining=pipe,
-            warmup=5,
-            duration=60,
-            has_expire=expire,
-            preload_keys=preload,
-        )
-        # task = BenchmarkTask.mem_task(
-        #     repo=repo,
-        #     commit_id=version,
-        #     val_size=size,
-        #     test=test,
-        #     has_expire=expire,
-        # )
-        queue.submit_task(task)
+    for i in range(100):
+        for (size, pipe, thread, test, version, repo, preload, expire) in all_tests:
+            task = BenchmarkTask.perf_task(
+                test=test,
+                repo=repo,
+                commit_id=version,
+                val_size=size,
+                io_threads=thread,
+                pipelining=pipe,
+                warmup=5,
+                duration=60,
+                has_expire=expire,
+                preload_keys=preload,
+            )
+            # task = BenchmarkTask.mem_task(
+            #     repo=repo,
+            #     commit_id=version,
+            #     val_size=size,
+            #     test=test,
+            #     has_expire=expire,
+            # )
+            queue.submit_task(task)
     print('\n\nAll done 🌧 ♥')
 
 if __name__ == "__main__":
