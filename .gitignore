@@ -6,4 +6,4 @@ log.txt
 output.txt
 testdump.txt
 benchmark_queue/*
-sequential-benchmark
+valkey

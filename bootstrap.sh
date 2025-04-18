@@ -83,19 +83,17 @@ for file in "${BUILDABLE_FILES[@]}"; do
 done
 if [ $missing_files -gt 0 ]; then
     echo "retrieving and building needed binaries"
-    git clone https://github.com/SoftlyRaining/valkey.git sequential-benchmark
+    git clone https://github.com/valkey-io/valkey.git valkey
 
-    cd sequential-benchmark
-    git fetch
-    git switch sequential-benchmark
+    cd valkey
     git pull
     make distclean
     make -j
     cd ..
 
     echo "copying needed binaries"
-    cp ./sequential-benchmark/src/valkey-cli .
-    cp ./sequential-benchmark/src/valkey-benchmark .
+    cp ./valkey/src/valkey-cli .
+    cp ./valkey/src/valkey-benchmark .
 fi
 
 echo "ensure server is in known-hosts"
