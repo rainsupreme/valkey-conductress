@@ -81,7 +81,7 @@ class PerfBench:
                 self.max_bucket = bucket_key
             line = self.command.poll_output()
 
-    def __update_metrics(self):
+    def __update_graph(self):
         graph_update_interval = 10.0
         now = time.monotonic()
         if now > self.next_metric_update or not self.command.is_running():
@@ -138,7 +138,7 @@ class PerfBench:
             'pipeline': self.pipelining,
             'has_expire': self.has_expire,
             'size': self.valsize,
-            'preload_keys': not self.preload_keys,
+            'preload_keys': self.preload_keys,
             'mode_rps': self.mode_rps,
             'avg_rps': avg_rps,
             'avg_99_rps': avg_99_rps,
@@ -172,7 +172,7 @@ class PerfBench:
         self.command = RealtimeCommand(self.command_string.split())
         while self.command.is_running():
             self.__read_updates()
-            self.__update_metrics()
+            self.__update_graph()
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
             if now > self.end_time:
