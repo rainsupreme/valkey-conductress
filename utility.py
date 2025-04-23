@@ -1,6 +1,7 @@
 import os
 import subprocess
 from numerize import numerize
+from pathlib import Path
 from config import sshkeyfile, server
 
 million = 1000000
@@ -63,8 +64,8 @@ def calc_percentile_averages(data: list, percentages, lowestVals=False) -> tuple
         result.append(slice_avg)
     return tuple(result)
 
-def run_command(command: list):
-    result = subprocess.run(command, encoding='utf-8', stdout=subprocess.PIPE)
+def run_command(command: list, cwd=None):
+    result = subprocess.run(command, encoding='utf-8', cwd=cwd, stdout=subprocess.PIPE)
     return result.stdout
 
 def run_server_command(command: list):
@@ -89,3 +90,7 @@ def check_server_file_exists(path: str) -> bool:
     command = f'[[ -f {path} ]] && echo 1 || echo 0;'.split()
     result = run_server_command(command)
     return result.strip() == '1'
+
+def scp_file_from_server(path: str, dest: Path) -> None:
+    command = ['scp', '-i', sshkeyfile, f'{server}:{path}', dest]
+    subprocess.run(command, encoding='utf-8')

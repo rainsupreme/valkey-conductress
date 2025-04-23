@@ -2,31 +2,24 @@ import datetime
 import logging
 import plotext as plt
 import time
-from collections import Counter, defaultdict
+from threading import Thread
 
 from config import perf_bench_keyspace, conductress_output, conductress_data_dump
 from utility import *
 from server import Server
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class PerfBench:
-    __load_type_for_test = {
-        'set': 'set',
-        'get': 'set',
-        'sadd': 'sadd',
-        'hset': 'hset',
-        'zadd': 'zadd',
-        'zrange': 'zadd',
-        }
-
-    def __init__(self, server_ip: str, repo: str, commit_id: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int, preload_keys: bool, has_expire: bool):
-        self.title = f'{test} throughput, {repo}:{commit_id}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={human_time(warmup)}, duration={human_time(duration)}'
+    def __init__(self, task_name: str, server_ip: str, repo: str, specifier: str, io_threads: int, valsize: int, pipelining: int, test: str, warmup: int, duration: int, preload_keys: bool, has_expire: bool, sample_rate: int = -1):
+        self.title = f'{test} throughput, {repo}:{specifier}, io-threads={io_threads}, pipelining={pipelining}, size={valsize}, warmup={human_time(warmup)}, duration={human_time(duration)}'
 
         # settings
+        self.task_name = task_name
         self.server_ip = server_ip
         self.repo = repo
-        self.commit_id = commit_id
+        self.specifier = specifier
         self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining
@@ -35,13 +28,13 @@ class PerfBench:
         self.duration = duration # seconds
         self.preload_keys = preload_keys
         self.has_expire = has_expire
+        self.sample_rate = sample_rate
+
+        self.profiling = self.sample_rate > 0
+        if (self.profiling):
+            self.title = f'==PROFILING==   {self.title}, profiling={self.sample_rate}Hz   ==PROFILING=='
 
         # statistics
-        self.bucket_size = 1000
-        self.count_buckets = Counter()
-        self.val_buckets = defaultdict(list)
-        self.max_bucket = -1
-        self.mode_rps = -1.0
         self.avg_rps = -1.0
 
         clients = 650
@@ -53,10 +46,10 @@ class PerfBench:
         print("preparing:", self.title)
 
         server_args = [] if io_threads == 1 else ['--io-threads', str(io_threads)]
-        self.server = Server(server_ip, repo, commit_id, server_args)
+        self.server = Server(server_ip, repo, specifier, server_args)
         self.commit_hash = self.server.get_commit_hash()
         if self.preload_keys:
-            self.server.fill_keyspace(self.valsize, perf_bench_keyspace, PerfBench.__load_type_for_test[self.test])
+            self.server.fill_keyspace(self.valsize, perf_bench_keyspace, self.test)
             if self.has_expire:
                 self.server.expire_keyspace(perf_bench_keyspace)
 
@@ -74,11 +67,6 @@ class PerfBench:
             self.rps_data.append(rps)
             self.lat_data.append(msec)
             
-            bucket_key = int(rps - (rps % self.bucket_size))
-            self.count_buckets[bucket_key] += 1
-            self.val_buckets[bucket_key].append(rps)
-            if self.count_buckets[bucket_key] > self.count_buckets[self.max_bucket]:
-                self.max_bucket = bucket_key
             line = self.command.poll_output()
 
     def __update_graph(self):
@@ -91,36 +79,35 @@ class PerfBench:
 
             # update metrics
             self.avg_rps = sum(self.rps_data) / len(self.rps_data)
-            mode_band_center = self.max_bucket + self.bucket_size/2
-            mode_band_radius = 5000 # diameter is double this value
-            mode_list = [x for x in self.rps_data if x >= mode_band_center - mode_band_radius and x <= mode_band_center + mode_band_radius]
-            if (len(mode_list)) > 0:
-                self.mode_rps = sum(mode_list) / len(mode_list)
 
             # update graph
             plt.clear_terminal()
             plt.clear_figure()
-            plt.theme('matrix')
-            plt.subplots(2,1)
+            plt.canvas_color('black')
+            plt.axes_color('black')
+            plt.ticks_color('orange')
 
-            plt.subplot(1,1)
-            plt.scatter(self.rps_data)
+            plt.scatter(self.rps_data, marker='braille', color='orange+')
+            plt.horizontal_line(self.avg_rps, color='white')
             plt.title(self.title)
-            plt.xlim(left=1, right=self.duration*4)
-            plt.horizontal_line(self.avg_rps, color='orange+')
-            plt.horizontal_line(self.mode_rps, color='white')
             plt.frame(False)
 
-            plt.subplot(2,1)
-            plt.hist(self.rps_data, width=1, bins=40)
-            plt.vertical_line(self.avg_rps, color='orange+')
-            plt.vertical_line(self.mode_rps, color='white')
-            plt.frame(False)
+            xticks = range(1, self.duration*4+1, 4*60*10)
+            xticks_labels = [f'{i//4//60}m' for i in xticks]
+            plt.xticks(xticks, xticks_labels)
+            plt.xlim(left=1, right=self.duration*4+1)
+
+            rps_min = min(self.rps_data)
+            rps_max = max(self.rps_data) + 999
+            inverval = int(rps_max-rps_min)//8
+            yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
+            ytick_labels = [f'{tick//1000}k' for tick in yticks]
+            plt.yticks(yticks, ytick_labels)
 
             plt.show()
 
     def __record_result(self):
-        logger.debug(f'{self.valsize}B {self.test} perf on {self.repo}:{self.commit_id}\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}')
+        logger.debug(f'{self.valsize}B {self.test} perf on {self.repo}:{self.specifier}\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}')
 
         (avg_rps, avg_99_rps, avg_95_rps) = calc_percentile_averages(self.rps_data, (100, 99, 95))
         (avg_lat, avg_99_lat, avg_95_lat) = calc_percentile_averages(self.lat_data, (100, 99, 95), lowestVals=True)
@@ -128,7 +115,7 @@ class PerfBench:
         result = {
             'method': 'perf',
             'repo': self.repo,
-            'commit': self.commit_id,
+            'specifier': self.specifier,
             'commit_hash': self.commit_hash,
             'test': self.test,
             'warmup': self.warmup,
@@ -139,7 +126,6 @@ class PerfBench:
             'has_expire': self.has_expire,
             'size': self.valsize,
             'preload_keys': self.preload_keys,
-            'mode_rps': self.mode_rps,
             'avg_rps': avg_rps,
             'avg_99_rps': avg_99_rps,
             'avg_95_rps': avg_95_rps,
@@ -148,19 +134,35 @@ class PerfBench:
             'avg_95_lat': avg_95_lat,
         }
 
-        result_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline has_expire size preload_keys mode_rps avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
+        result_fields = 'method repo specifier commit_hash test warmup duration endtime io-threads pipeline has_expire size preload_keys avg_rps avg_99_rps avg_95_rps avg_lat avg_99_lat avg_95_lat'.split()
 
         result_string = [f'{field}:{result[field]}' for field in result_fields]
         result_string = '\t'.join(result_string) + '\n'
         with open(conductress_output,'a') as f:
             f.write(result_string)
 
-        dump_fields = 'method repo commit commit_hash test warmup duration endtime io-threads pipeline size'.split()
+        dump_fields = 'method repo specifier commit_hash test warmup duration endtime io-threads pipeline size'.split()
         dump_string = [f'{field}:{result[field]}' for field in dump_fields]
         dump_string = '\t'.join(dump_string)
         with open(conductress_data_dump, 'a') as f:
             f.write(dump_string)
             f.write(f'\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}\n')
+
+    def __run_profiling(self):
+        print("Beginning Profile...")
+        run_server_command(f'sudo perf record -F {self.sample_rate} -a -g -o perf.data -- sleep {self.duration}'.split())
+
+        print("Profile complete, generating flamegraph...")
+        self.command.kill() # end the benchmark
+
+        test_dir = Path("results") / Path(self.task_name)
+        test_dir.mkdir(parents=True, exist_ok=False)
+
+        run_server_command("sudo chown $(whoami):$(whoami) perf.data".split())
+        perf_data = test_dir / "perf.data"
+        scp_file_from_server("perf.data", perf_data)
+        run_command(f"perf script report flamegraph".split(), cwd=perf_data.parent)
+        print("Done generating flamegraph")
 
     def run(self):
         benchmark_update_interval = 0.1 # s
@@ -175,11 +177,16 @@ class PerfBench:
             self.__update_graph()
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
-            if now > self.end_time:
+            if not self.profiling and now > self.end_time:
                 self.command.kill()
             elif warming_up and now >= self.test_start_time:
                 self.rps_data = []
                 self.lat_data = []
                 warming_up = False
+                if self.profiling:
+                    self.profiling_thread = Thread(target=self.__run_profiling)
+                    self.profiling_thread.start()
         self.__read_updates()
         self.__record_result()
+        if self.profiling:
+            self.profiling_thread.join()

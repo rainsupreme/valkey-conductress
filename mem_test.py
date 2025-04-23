@@ -11,21 +11,21 @@ logger = logging.getLogger(__name__)
 
 
 class MemBench:
-    def __init__(self, server_ip: str, repo: str, commit_id: str, test: str, has_expire: bool):
+    def __init__(self, server_ip: str, repo: str, specifier: str, test: str, has_expire: bool):
         """Tests memory efficiency for 5 million keys of the specified type. Returns bytes of overhead per item."""
-        self.title = f'{test} memory efficiency, {repo}:{commit_id}, has_expire={has_expire}'
+        self.title = f'{test} memory efficiency, {repo}:{specifier}, has_expire={has_expire}'
         pretty_header(self.title)
 
         # settings
         self.server_ip = server_ip
         self.repo = repo
-        self.commit_id = commit_id
+        self.specifier = specifier
         self.test = test
         self.has_expire = has_expire
 
     def test_single_size(self, valsize: int) -> float:
         args = ['--io-threads', '9']
-        valkey = Server(self.server_ip, self.repo, self.commit_id, args)
+        valkey = Server(self.server_ip, self.repo, self.specifier, args)
         commit_hash = valkey.get_commit_hash()
 
         before_usage = valkey.used_memory()
@@ -56,7 +56,7 @@ class MemBench:
         result = {
             'method': 'mem',
             'repo': self.repo,
-            'commit': self.commit_id,
+            'specifier': self.specifier,
             'commit_hash': commit_hash,
             'test': self.test,
             'count': count,
@@ -67,7 +67,7 @@ class MemBench:
             'per_key_overhead': per_key_overhead,
         }
 
-        result_fields = 'method repo commit commit_hash test count has_expire endtime size per_key_size per_key_overhead'.split()
+        result_fields = 'method repo specifier commit_hash test count has_expire endtime size per_key_size per_key_overhead'.split()
         result_string = [f'{field}:{result[field]}' for field in result_fields]
         result_string = '\t'.join(result_string) + '\n'
         with open(conductress_output,'a') as f:

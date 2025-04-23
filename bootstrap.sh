@@ -26,29 +26,19 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-echo "Starting server bootstrap process..."
+echo "⊹˚₊‧───Starting bootstrap/update───‧₊˚⊹"
 
+echo "Installing/updating required distro packages..."
 sudo yum update -y
-
-if ! command_exists make; then
-    echo "make not found. Installing development tools..."
-    sudo yum groupinstall -y "Development Tools"
-    sudo yum install -y cmake cmake3
-fi
-
-if ! command_exists git; then
-    echo "git not found. Installing git..."
-    sudo yum install -y git
-fi
-
-if ! command_exists pip; then
-    echo "pip not found. Installing pip..."
-
-    sudo yum install -y python3-pip
-    
-    # Sometimes pip might need upgrading
-    sudo python3 -m pip install --upgrade pip
-fi
+sudo yum groupinstall -y "Development Tools"
+sudo yum install -y \
+    cmake \
+    cmake3 \
+    git \
+    python3-pip \
+    perf \
+    js-d3-flame-graph
+sudo python3 -m pip install --upgrade pip
 
 echo "Installing required Python packages..."
 for package in "${REQUIRED_PYTHON_PACKAGES[@]}"; do
@@ -59,7 +49,8 @@ done
 echo "Checking for required files..."
 # SSH keyfile
 if [ ! -f "$SSH_KEY_FILE" ]; then
-    echo "$missing_files files missing"
+    echo "Missing SSH keyfile: $SSH_KEY_FILE"
+    echo "This must be manually copied to the server."
     exit 1
 fi
 
@@ -69,6 +60,7 @@ chmod 600 "$SSH_KEY_FILE" || {
     exit 1
 }
 
+echo "Checking for required binaries..."
 BUILDABLE_FILES=(
     "./valkey-cli"
     "./valkey-benchmark"
@@ -83,7 +75,9 @@ for file in "${BUILDABLE_FILES[@]}"; do
 done
 if [ $missing_files -gt 0 ]; then
     echo "retrieving and building needed binaries"
-    git clone https://github.com/valkey-io/valkey.git valkey
+    test -d "$target_dir" || {
+        git clone https://github.com/valkey-io/valkey.git valkey
+    }
 
     cd valkey
     git pull
@@ -117,6 +111,7 @@ ssh -i "$SSH_KEY_FILE" "ec2-user@$SERVER" << 'EOF'
         cmake \
         cmake3 \
         git \
+        perf \
 EOF
 
 echo "Cloning repositories on server ($SERVER)..."

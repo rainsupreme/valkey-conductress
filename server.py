@@ -23,9 +23,9 @@ class Server:
     def is_build_cached(cls, repo: str, hash_id: str) -> bool:
         return check_server_file_exists(os.path.join(Server.__get_cached_build_path(repo, hash_id), valkey_binary))
     
-    def __init__(self, server_ip: str, repo: str, commit_id: str, args: list) -> str:
+    def __init__(self, server_ip: str, repo: str, specifier: str, args: list) -> str:
         self.repo = repo
-        self.commit_id = commit_id
+        self.specifier = specifier
         self.args = args
         self.server_ip = server_ip
 
@@ -63,6 +63,15 @@ class Server:
         return self.commit_hash
 
     def fill_keyspace(self, valsize: int, keyspace_size: int, test: str) -> None:
+        load_type_for_test = {
+            'set': 'set',
+            'get': 'set',
+            'sadd': 'sadd',
+            'hset': 'hset',
+            'zadd': 'zadd',
+            'zrange': 'zadd',
+        }
+        test = load_type_for_test[test]
         run_command(f'./valkey-benchmark -h {self.server_ip} -d {valsize} --sequential -r {keyspace_size} -n {keyspace_size} -c 650 -P 4 --threads 50 -t {test} -q'.split())
 
     def expire_keyspace(self, keyspace_size: int) -> None:
@@ -70,16 +79,35 @@ class Server:
         day = 60 * 60 * 24
         run_command(f'./valkey-benchmark -h {self.server_ip} --sequential -r {keyspace_size} -n {keyspace_size} -c 650 -P 4 --threads 50 -q EXPIRE key:__rand_int__ {7 * day}'.split())
 
+    def should_pull_after_checkout(self, specifier) -> bool:
+        repo_path = Server.get_repo_binary_path(self.repo)
+        command= f'cd {repo_path}; git rev-parse --symbolic-full-name {specifier} --'
+        result = run_server_command(command.split()).strip()
+        if result == '':
+            raise ValueError(f"{specifier} is an invalid specifier in {self.repo} (empty result)")
+        if result == '--':
+            return False # a specific commit by hash, unstable~2, etc.
+        if result.startswith('refs/heads/'):
+            return True # local branch
+        if result.startswith('refs/remotes/'):
+            return True # remote reference
+        if result.startswith('refs/tags/'):
+            return False # tag
+        raise ValueError(f"{specifier} is an unhandled type of specifier in {self.repo} (got {repr(result)})")
+
     def __ensure_build_cached(self) -> str:
         repo_path = Server.get_repo_binary_path(self.repo)
-        run_server_command(f'cd {repo_path}; git reset --hard && git fetch && git switch {self.commit_id} && git pull'.split())
+        run_server_command(f'cd {repo_path}; git reset --hard && git fetch && git checkout {self.specifier}'.split())
+        if self.should_pull_after_checkout(self.specifier):
+            # ensure branch/etc is up to date with remote
+            run_server_command(f'cd {repo_path}; git pull'.split())
         self.commit_hash = self.__get_current_commit_hash()
         
         cached_build_path = Server.__get_cached_build_path(self.repo, self.commit_hash)
         cached_binary_path = os.path.join(cached_build_path, valkey_binary)
 
         if not Server.is_build_cached(self.repo, self.commit_hash):
-            logger.info(f"building {self.commit_id}... (no cached build)")
+            logger.info(f"building {self.specifier}... (no cached build)")
 
             run_server_command(f'cd {repo_path}; make distclean && make -j USE_FAST_FLOAT=yes'.split())
             run_server_command(f'mkdir -p {cached_build_path}'.split())
