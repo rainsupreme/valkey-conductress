@@ -2,7 +2,7 @@ import os
 import subprocess
 from numerize import numerize
 from pathlib import Path
-from config import sshkeyfile, server
+from config import sshkeyfile
 
 million = 1000000
 minute = 60
@@ -64,13 +64,11 @@ def calc_percentile_averages(data: list, percentages, lowestVals=False) -> tuple
         result.append(slice_avg)
     return tuple(result)
 
-def run_command(command: list, cwd=None):
-    result = subprocess.run(command, encoding='utf-8', cwd=cwd, stdout=subprocess.PIPE)
+def run_command(command: list, remote_ip=None, cwd=None, check=True):
+    if remote_ip != None:
+        command = ['ssh', '-i', sshkeyfile, remote_ip] + command
+    result = subprocess.run(command, check=check, encoding='utf-8', cwd=cwd, stdout=subprocess.PIPE)
     return result.stdout
-
-def run_server_command(command: list):
-    command = ['ssh', '-i', sshkeyfile, server] + command
-    return run_command(command)
 
 class RealtimeCommand:
     def __init__(self, command: list):
@@ -86,11 +84,5 @@ class RealtimeCommand:
     def kill(self):
         self.p.kill()
 
-def check_server_file_exists(path: str) -> bool:
-    command = f'[[ -f {path} ]] && echo 1 || echo 0;'.split()
-    result = run_server_command(command)
-    return result.strip() == '1'
-
-def scp_file_from_server(path: str, dest: Path) -> None:
-    command = ['scp', '-i', sshkeyfile, f'{server}:{path}', dest]
-    subprocess.run(command, encoding='utf-8')
+def hash_local_file(path: Path):
+    return run_command(['sha1sum', str(path)]).strip().split()[0]

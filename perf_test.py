@@ -1,3 +1,5 @@
+# throughput testing
+
 import datetime
 import logging
 import plotext as plt
@@ -93,7 +95,7 @@ class PerfBench:
             plt.frame(False)
 
             xticks = range(1, self.duration*4+1, 4*60*10)
-            xticks_labels = [f'{i//4//60}m' for i in xticks]
+            xticks_labels = [f'{human_time(i//4)}' for i in xticks]
             plt.xticks(xticks, xticks_labels)
             plt.xlim(left=1, right=self.duration*4+1)
 
@@ -101,7 +103,7 @@ class PerfBench:
             rps_max = max(self.rps_data) + 999
             inverval = int(rps_max-rps_min)//8
             yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
-            ytick_labels = [f'{tick//1000}k' for tick in yticks]
+            ytick_labels = [f'{human(tick)}' for tick in yticks]
             plt.yticks(yticks, ytick_labels)
 
             plt.show()
@@ -150,18 +152,18 @@ class PerfBench:
 
     def __run_profiling(self):
         print("Beginning Profile...")
-        run_server_command(f'sudo perf record -F {self.sample_rate} -a -g -o perf.data -- sleep {self.duration}'.split())
+        remote_perf_data_path = Path('perf.data')
+        local_perf_data_path = Path("results").resolve() / self.task_name / 'perf.data'
+
+        self.server.run_command(f'sudo perf record -F {self.sample_rate} -a -g -o {remote_perf_data_path} -- sleep {self.duration}'.split())
 
         print("Profile complete, generating flamegraph...")
         self.command.kill() # end the benchmark
 
-        test_dir = Path("results") / Path(self.task_name)
-        test_dir.mkdir(parents=True, exist_ok=False)
-
-        run_server_command("sudo chown $(whoami):$(whoami) perf.data".split())
-        perf_data = test_dir / "perf.data"
-        scp_file_from_server("perf.data", perf_data)
-        run_command(f"perf script report flamegraph".split(), cwd=perf_data.parent)
+        self.server.run_command(f"sudo chmod a+r {remote_perf_data_path}".split())
+        local_perf_data_path.parent.mkdir(parents=True, exist_ok=False)
+        self.server.scp_file_from_server(remote_perf_data_path, local_perf_data_path)
+        run_command(f"perf script report flamegraph".split(), cwd=local_perf_data_path.parent)
         print("Done generating flamegraph")
 
     def run(self):

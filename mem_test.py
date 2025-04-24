@@ -3,7 +3,7 @@
 import datetime
 import logging
 
-from config import conductress_log, conductress_output
+from config import conductress_output
 from server import Server
 from utility import *
 

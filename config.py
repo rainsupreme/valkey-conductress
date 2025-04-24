@@ -9,5 +9,5 @@ server = "172.31.70.82"
 sshkeyfile = 'server-keyfile.pem'
 
 conductress_log = './log.txt'
-conductress_output = './output.txt'
+conductress_output = './results/output.txt'
 conductress_data_dump = './testdump.txt'

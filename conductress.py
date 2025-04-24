@@ -2,24 +2,20 @@ import os
 import logging
 import time
 
-from config import conductress_log
-from utility import server, minute
+from config import server, conductress_log
+from utility import minute
 from task_queue import Task, TaskQueue
 from perf_test import PerfBench
 from mem_test import MemBench
 
 logger = logging.getLogger(__name__)
 
-def parse_lazy(lazySpecifier: str) -> tuple[str, str]:
-    (repo, branch) = lazySpecifier.split(':')
-    return (repo, branch)
-
 def run_task(task: Task) -> None:
     if task.type == 'perf':
         perf_test_runner = PerfBench(
             f'{task.timestamp}_{task.test}_{task.type}',
             server,
-            task.repo,
+            task.source,
             task.specifier,
             io_threads=task.io_threads,
             valsize=task.val_size,
@@ -36,7 +32,7 @@ def run_task(task: Task) -> None:
         # ignored for memory usage test: warmup, duration, threading, pipelining, preload, profiling_sample_rate
         mem_tester = MemBench(
             server,
-            task.repo,
+            task.source,
             task.specifier,
             task.test,
             task.has_expire,
@@ -62,9 +58,10 @@ if __name__ == "__main__":
     logging.basicConfig(filename=conductress_log, encoding='utf-8', level=logging.DEBUG)
     run_script()
 
-# TODO perf profiling tests - end goal is flame graphs
 # TODO log thread/irq cpu affinity over time
-# TODO calculate some error bar metric (std dev.? variance? P95?)
+# TODO calculate some error bar metric (std dev.? variance? P95?) - 2 std deviations is +/- 1% for single threaded server! Need to figure out multiple threads now.
 # TODO store results in some database?
 # TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration
+# TODO print or log - choose only one
+# TODO use pathlib instead of strings and os.path.join

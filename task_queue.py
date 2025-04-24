@@ -15,7 +15,7 @@ class Task:
     timestamp: str
     type: str  # 'perf' or 'mem'
     test: str
-    repo: str
+    source: str
     specifier: str
     val_size: int
     io_threads: int
@@ -29,11 +29,11 @@ class Task:
     def to_json(self) -> str:
         return json.dumps(asdict(self))
     
-    def __init__(self, type: str, timestamp: str, test: str, repo: str, specifier: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, profiling_sample_rate: int, has_expire: bool, preload_keys: bool) -> 'Task':
+    def __init__(self, type: str, timestamp: str, test: str, source: str, specifier: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, profiling_sample_rate: int, has_expire: bool, preload_keys: bool) -> 'Task':
         self.type = type
         self.timestamp = timestamp
         self.test = test
-        self.repo = repo
+        self.source = source
         self.specifier = specifier
         self.val_size = val_size
         self.io_threads = io_threads
@@ -44,15 +44,17 @@ class Task:
         self.has_expire = has_expire
         self.preload_keys = preload_keys
 
-    @staticmethod
-    def perf_task(test: str, repo: str, specifier: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, profiling_sample_rate: int, has_expire: bool, preload_keys: bool) -> 'Task':
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        return Task('perf', timestamp, test, repo, specifier, val_size, io_threads, pipelining, warmup, duration, profiling_sample_rate, has_expire, preload_keys)
+        assert self.source in ['manually_uploaded', 'valkey', 'SoftlyRaining', 'zuiderkwast', 'JimB123']
 
     @staticmethod
-    def mem_task(repo: str, specifier: str, val_size: int, test: str, has_expire: bool) -> 'Task':
+    def perf_task(test: str, source: str, specifier: str, val_size: int, io_threads: int, pipelining: int, warmup: int, duration: int, profiling_sample_rate: int, has_expire: bool, preload_keys: bool) -> 'Task':
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        return Task('mem', timestamp, test, repo, specifier, val_size, -1, -1, -1, -1, -1, has_expire, True)
+        return Task('perf', timestamp, test, source, specifier, val_size, io_threads, pipelining, warmup, duration, profiling_sample_rate, has_expire, preload_keys)
+
+    @staticmethod
+    def mem_task(source: str, specifier: str, val_size: int, test: str, has_expire: bool) -> 'Task':
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        return Task('mem', timestamp, test, source, specifier, val_size, -1, -1, -1, -1, -1, has_expire, True)
 
     @classmethod
     def from_file(cls, filepath: Path) -> 'Task':
@@ -120,23 +122,23 @@ def create_parser() -> ArgumentParser:
 
     # Perf command
     perf_parser = subparsers.add_parser('perf', help='Queue performance benchmark task')
-    perf_parser.add_argument('--test', required=True, help='Test name')
-    perf_parser.add_argument('--repo', type=str, default="valkey", help='Repository')
-    perf_parser.add_argument('--commit', required=True, help='Commit ID')
+    perf_parser.add_argument('--test', type=str, required=True, help='Test name')
+    perf_parser.add_argument('--source', type=str, default="valkey", help='Repository or "manually_uploaded"')
+    perf_parser.add_argument('--specifier', type=str, required=True, help='git specifier or local path if manual upload specified')
     perf_parser.add_argument('--size', type=int, required=True, help='Value size')
     perf_parser.add_argument('--threads', type=int, required=True, help='IO threads')
     perf_parser.add_argument('--pipe', type=int, required=True, help='Pipeline depth')
     perf_parser.add_argument('--warmup', type=int, default=5, help='Warmup duration (minutes)')
     perf_parser.add_argument('--duration', type=int, default=60, help='Test duration (minutes)')
-    perf_parser.add_argument('--sample_rate', type=int, required=True, help='Profiling sample rate (-1 for no profiling)')
+    perf_parser.add_argument('--sample_rate', type=int, default=-1, help='Profiling sample rate (-1 for no profiling)')
     perf_parser.add_argument('--preload', action=argparse.BooleanOptionalAction, default=True, help='Preload keys before running the test')
     perf_parser.add_argument('--expire', action=argparse.BooleanOptionalAction, default=False, help='Add expiry data before test')
 
     # Mem command
     mem_parser = subparsers.add_parser('mem', help='Queue memory benchmark task')
-    mem_parser.add_argument('--test', required=True, help='Test name')
-    mem_parser.add_argument('--repo', type=str, default="valkey", help='Repository')
-    mem_parser.add_argument('--commit', required=True, help='Commit ID')
+    mem_parser.add_argument('--test', type=str, required=True, help='Test name')
+    mem_parser.add_argument('--source', type=str, default="valkey", help='Repository or "manually_uploaded"')
+    mem_parser.add_argument('--specifier', type=str, required=True, help='git specifier or local path if manual upload specified')
     mem_parser.add_argument('--size', type=int, required=True, help='Value size')
     mem_parser.add_argument('--expire', action=argparse.BooleanOptionalAction, default=False, help='Add expiry data before test')
 
@@ -156,10 +158,10 @@ def show_status(queue: TaskQueue):
 
     print(f"\nQueue Status: {len(tasks)} tasks pending\n")
     print("Pending Tasks:")
-    print(f"{'Timestamp':<25}{'Type':<10}{'Test':<10}{'Repo:Specifier':<20}{'Threads':<10}{'Pipeline':<10}{'ValSize':<10}{'Expire':<10}{'Profiling':<10}")
+    print(f"{'Timestamp':<25}{'Type':<10}{'Test':<10}{'Source:Specifier':<20}{'Threads':<10}{'Pipeline':<10}{'ValSize':<10}{'Expire':<10}{'Profiling':<10}")
     print("-" * 114)
     for task in tasks:
-        print(f"{task.timestamp:<25}{task.type:<10}{task.test:<10}{f'{task.repo}:{task.specifier}':<20}{task.io_threads:<10}{task.pipelining:<10}{task.val_size:<10}{str(task.has_expire):<10}{str(task.profiling_sample_rate>0):<10}")
+        print(f"{task.timestamp:<25}{task.type:<10}{task.test:<10}{f'{task.source}:{task.specifier}':<20}{task.io_threads:<10}{task.pipelining:<10}{task.val_size:<10}{str(task.has_expire):<10}{str(task.profiling_sample_rate>0):<10}")
 
 def main():
     parser = create_parser()
@@ -181,8 +183,8 @@ def main():
     if args.command == 'perf':
         task = Task.perf_task(
             test=args.test,
-            repo=args.repo,
-            specifier=args.commit,
+            source=args.source,
+            specifier=args.specifier,
             val_size=args.size,
             io_threads=args.threads,
             pipelining=args.pipe,
@@ -194,10 +196,10 @@ def main():
         )
     elif args.command == 'mem':
         task = Task.mem_task(
-            repo=args.repo,
-            specifier=args.commit,
-            val_size=args.size,
             test=args.test,
+            source=args.source,
+            specifier=args.specifier,
+            val_size=args.size,
             has_expire=args.expire,
         )
     else:
@@ -213,10 +215,10 @@ def rain():
 
     # available_repos = ['valkey', 'SoftlyRaining', 'zuiderkwast', 'JimB123']
 
-    repos = ['valkey']
+    sources = ['valkey']
     preload_keys = [True]
     # versions = ['7.2','8.0','8.1']
-    versions = ['add716b7ddce48d4e13ebffe65401c7d0e26b91a']
+    specifiers = ['add716b7ddce48d4e13ebffe65401c7d0e26b91a']
     pipelining = [4]
     io_threads = [9]
     # sizes = [512, 87, 8]
@@ -233,13 +235,13 @@ def rain():
     # expire_keys = [True, False]
     expire_keys = [False]
 
-    all_tests = list(product(sizes, pipelining, io_threads, tests, versions, repos, preload_keys, expire_keys))
+    all_tests = list(product(sizes, pipelining, io_threads, tests, specifiers, sources, preload_keys, expire_keys))
     for i in range(100):
-        for (size, pipe, thread, test, version, repo, preload, expire) in all_tests:
+        for (size, pipe, thread, test, specifier, source, preload, expire) in all_tests:
             task = Task.perf_task(
                 test=test,
-                repo=repo,
-                specifier=version,
+                source=source,
+                specifier=specifier,
                 val_size=size,
                 io_threads=thread,
                 pipelining=pipe,
@@ -250,10 +252,10 @@ def rain():
                 preload_keys=preload,
             )
             # task = BenchmarkTask.mem_task(
-            #     repo=repo,
-            #     specifier=version,
-            #     val_size=size,
             #     test=test,
+            #     source=source,
+            #     specifier=specifier,
+            #     val_size=size,
             #     has_expire=expire,
             # )
             queue.submit_task(task)
