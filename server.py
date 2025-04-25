@@ -1,10 +1,12 @@
 import logging
 import os
 import subprocess
-from config import sshkeyfile, valkey_binary
+from config import sshkeyfile
 from utility import run_command, hash_local_file
 
 logger = logging.getLogger(__name__)
+
+valkey_binary = 'valkey-server'
 
 class Server:
     manual_upload_source = 'manually_uploaded' # special value indicating a binary was uploaded

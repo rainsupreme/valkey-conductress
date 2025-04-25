@@ -1,7 +1,8 @@
 #!/bin/bash
+YUM_OPTS="--setopt=subscription-manager.disable=1 --disableplugin=subscription-manager"
 
 # Get config values
-SERVER=$(python3 -c 'import config; print(config.server)')
+SERVERS=$(python3 -c 'import config; print(" ".join(config.servers))')
 SSH_KEY_FILE=$(python3 -c 'import config; print(config.sshkeyfile)')
 
 REQUIRED_PYTHON_PACKAGES=(
@@ -28,17 +29,23 @@ command_exists() {
 
 echo "⊹˚₊‧───Starting bootstrap/update───‧₊˚⊹"
 
+# remove default motd spam
+if [ -f /etc/motd.d/insights-client ]; then
+    echo "Removing insights-client motd"
+    sudo rm -f /etc/motd.d/insights-client
+fi
+
 echo "Installing/updating required distro packages..."
-sudo yum update -y
-sudo yum groupinstall -y "Development Tools"
-sudo yum install -y \
+sudo yum $YUM_OPTS update -y
+sudo yum $YUM_OPTS groupinstall -y "Development Tools"
+sudo yum $YUM_OPTS install -y \
     cmake \
     cmake3 \
     git \
     python3-pip \
     perf \
     js-d3-flame-graph
-sudo python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade pip
 
 echo "Installing required Python packages..."
 for package in "${REQUIRED_PYTHON_PACKAGES[@]}"; do
@@ -49,7 +56,7 @@ done
 echo "Checking for required files..."
 # SSH keyfile
 if [ ! -f "$SSH_KEY_FILE" ]; then
-    echo "Missing SSH keyfile: $SSH_KEY_FILE"
+    echo "Missing SSH keyfile: '$SSH_KEY_FILE'"
     echo "This must be manually copied to the server."
     exit 1
 fi
@@ -90,43 +97,56 @@ if [ $missing_files -gt 0 ]; then
     cp ./valkey/src/valkey-benchmark .
 fi
 
-echo "ensure server is in known-hosts"
-if ssh-keygen -F "$SERVER" >/dev/null 2>&1; then
-    echo "Fingerprint for $SERVER already exists in known_hosts"
-else
-    echo "Adding new fingerprint for $SERVER to known_hosts..."
-    mkdir -p ~/.ssh
-    ssh-keyscan -H "$SERVER" >> ~/.ssh/known_hosts 2>/dev/null
-    echo "Fingerprint added"
-fi
+for SERVER in $SERVERS; do
+    echo "ensure server $SERVER is in known-hosts"
+    if ssh-keygen -F "$SERVER" >/dev/null 2>&1; then
+        echo "Fingerprint for $SERVER already exists in known_hosts"
+    else
+        echo "Adding new fingerprint for $SERVER to known_hosts..."
+        mkdir -p ~/.ssh
+        ssh-keyscan -H "$SERVER" -T 10 >> ~/.ssh/known_hosts 2>/dev/null
+        echo "Fingerprint added"
+    fi
 
-echo "Setting up packages on server ($SERVER)..."
-ssh -i "$SSH_KEY_FILE" "ec2-user@$SERVER" << 'EOF'
-    set -e  # Exit on error
+    if ! ssh -i "$SSH_KEY_FILE" -q "ec2-user@$SERVER" exit 2>/dev/null; then
+        echo "Error: Cannot connect to $SERVER" >&2
+        exit 1
+    fi
 
-    echo "Installing required packages..."
-    sudo yum update -y
-    sudo yum groupinstall -y "Development Tools"
-    sudo yum install -y \
-        cmake \
-        cmake3 \
-        git \
-        perf \
-EOF
-
-echo "Cloning repositories on server ($SERVER)..."
-for repo_info in "${REPOSITORIES[@]}"; do
-    repo_url=${repo_info%%||*}
-    target_dir=${repo_info##*||}
-    echo "Checking $target_dir..."
-    
-    ssh -T -i "$SSH_KEY_FILE" "ec2-user@$SERVER" << EOF
+    echo "Setting up packages on server $SERVER..."
+    ssh -i "$SSH_KEY_FILE" "ec2-user@$SERVER" << EOF
         set -e  # Exit on error
-        test -d "$target_dir" || {
-            echo "Cloning $repo_url into $target_dir..."
-            git clone "$repo_url" "$target_dir"
-        }
+
+        # remove default motd spam
+        if [ -f /etc/motd.d/insights-client ]; then
+            echo "Removing insights-client motd"
+            sudo rm -f /etc/motd.d/insights-client
+        fi
+
+        echo "Installing required packages..."
+        sudo yum $YUM_OPTS update -y
+        sudo yum $YUM_OPTS groupinstall -y "Development Tools"
+        sudo yum $YUM_OPTS install -y \
+            cmake \
+            cmake3 \
+            git \
+            perf
 EOF
+
+    echo "Cloning repositories on server ($SERVER)..."
+    for repo_info in "${REPOSITORIES[@]}"; do
+        repo_url=${repo_info%%||*}
+        target_dir=${repo_info##*||}
+        echo "Checking $target_dir..."
+        
+        ssh -T -i "$SSH_KEY_FILE" "ec2-user@$SERVER" << EOF
+            set -e  # Exit on error
+            test -d "$target_dir" || {
+                echo "Cloning $repo_url into $target_dir..."
+                git clone "$repo_url" "$target_dir"
+            }
+EOF
+    done
 done
 
 echo "Bootstrap complete!"

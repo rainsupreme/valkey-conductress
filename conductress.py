@@ -2,7 +2,7 @@ import os
 import logging
 import time
 
-from config import server, conductress_log
+from config import servers, conductress_log
 from utility import minute
 from task_queue import Task, TaskQueue
 from perf_test import PerfBench
@@ -14,7 +14,7 @@ def run_task(task: Task) -> None:
     if task.type == 'perf':
         perf_test_runner = PerfBench(
             f'{task.timestamp}_{task.test}_{task.type}',
-            server,
+            servers[0],
             task.source,
             task.specifier,
             io_threads=task.io_threads,
@@ -31,7 +31,7 @@ def run_task(task: Task) -> None:
     elif task.type == 'mem':
         # ignored for memory usage test: warmup, duration, threading, pipelining, preload, profiling_sample_rate
         mem_tester = MemBench(
-            server,
+            servers[0],
             task.source,
             task.specifier,
             task.test,
