@@ -3,12 +3,7 @@ YUM_OPTS="--setopt=subscription-manager.disable=1 --disableplugin=subscription-m
 
 # Get config values
 SERVERS=$(python3 -c 'import config; print(" ".join(config.servers))')
-SSH_KEY_FILE=$(python3 -c 'import config; print(config.sshkeyfile)')
-
-REQUIRED_PYTHON_PACKAGES=(
-    "plotext"
-    "numerize"
-)
+SSH_KEY_FILE=$(python3 -c 'import config; print(config.SSH_KEYFILE)')
 
 # list of repositories to clone on the server so they are available for testing
 # format of each line is "url.git||folderName"
@@ -46,12 +41,8 @@ sudo yum $YUM_OPTS install -y \
     perf \
     js-d3-flame-graph
 python3 -m pip install --upgrade pip
-
-echo "Installing required Python packages..."
-for package in "${REQUIRED_PYTHON_PACKAGES[@]}"; do
-    echo "Installing $package..."
-    python3 -m pip install "$package"
-done
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 echo "Checking for required files..."
 # SSH keyfile

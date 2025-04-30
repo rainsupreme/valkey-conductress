@@ -1,0 +1,46 @@
+{
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.inlayHints.functionReturnTypes": true,
+    "python.analysis.inlayHints.variableTypes": true,
+
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.rulers": [110],
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.codeActionsOnSave": {
+        "source.addMissingImports": "always",
+        "source.fixAll": "always",
+        "source.fixAll.pylance": "always",
+        "source.organizeImports": "always",
+        "source.removeUnused": "always"
+    },
+
+    "black-formatter.args": [
+        "--line-length",
+        "110"
+    ],
+
+    "isort.args": ["--profile", "black"],
+    "isort.check": true,
+
+    "flake8.args": [
+        "--max-line-length=110",
+        "--extend-ignore=E203",  // Needed for compatibility with Black
+        "--exclude=.git,__pycache__"
+    ],
+
+    "pylint.args": [
+        "--max-line-length=110",
+    ],
+
+    "autoDocstring.docstringFormat": "google",
+    "autoDocstring.startOnNewLine": true,
+
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+
+    "files.trimTrailingWhitespace": true,
+    "files.trimFinalNewlines": true,
+    "files.insertFinalNewline": true
+}

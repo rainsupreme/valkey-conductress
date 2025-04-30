@@ -1,35 +1,45 @@
-import os
+"""Main entry point for Conductress, the benchmarking framework for Valkey.
+This script runs tasks from a queue, executing performance and memory tests"""
+
 import logging
 import time
 
-from config import servers, conductress_log
-from utility import minute
-from task_queue import Task, TaskQueue
-from perf_test import PerfBench
+from config import CONDUCTRESS_LOG, servers
 from mem_test import MemBench
+from perf_test import PerfBench
+from task_queue import Task, TaskQueue
+from utility import MINUTE
 
 logger = logging.getLogger(__name__)
 
+
 def run_task(task: Task) -> None:
-    if task.type == 'perf':
+    """Run a task"""
+    server_count = task.replicas + 1 if task.replicas > 0 else 1
+    assert (
+        len(servers) >= server_count
+    ), f"Not enough servers for {task.replicas} replicas. Found {len(servers)} servers."
+
+    if task.task_type == "perf":
         perf_test_runner = PerfBench(
-            f'{task.timestamp}_{task.test}_{task.type}',
-            servers[0],
+            f"{task.timestamp}_{task.test}_{task.task_type}",
+            servers[:server_count],
             task.source,
             task.specifier,
             io_threads=task.io_threads,
             valsize=task.val_size,
             pipelining=task.pipelining,
             test=task.test,
-            warmup=task.warmup*minute,
-            duration=task.duration*minute,
+            warmup=task.warmup * MINUTE,
+            duration=task.duration * MINUTE,
             preload_keys=task.preload_keys,
             has_expire=task.has_expire,
             sample_rate=task.profiling_sample_rate,
         )
         perf_test_runner.run()
-    elif task.type == 'mem':
-        # ignored for memory usage test: warmup, duration, threading, pipelining, preload, profiling_sample_rate
+    elif task.task_type == "mem":
+        # ignored for memory usage test:
+        # warmup, duration, threading, pipelining, preload, profiling_sample_rate
         mem_tester = MemBench(
             servers[0],
             task.source,
@@ -39,11 +49,12 @@ def run_task(task: Task) -> None:
         )
         mem_tester.test_single_size(task.val_size)
     else:
-        logger.error(f'unrecognized benchmark type {task.type}')
+        logger.error("unrecognized benchmark type %s", task.task_type)
 
-def run_script():
+
+def main():
+    """Main function - execute tasks from the queue."""
     queue = TaskQueue()
-
     task = None
     while True:
         while task:
@@ -54,14 +65,15 @@ def run_script():
             time.sleep(4)
             task = queue.get_next_task()
 
+
 if __name__ == "__main__":
-    logging.basicConfig(filename=conductress_log, encoding='utf-8', level=logging.DEBUG)
-    run_script()
+    logging.basicConfig(filename=CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
+    main()
 
 # TODO log thread/irq cpu affinity over time
-# TODO calculate some error bar metric (std dev.? variance? P95?) - 2 std deviations is +/- 1% for single threaded server! Need to figure out multiple threads now.
+# TODO calculate some error bar metric (std dev.? variance? P95?)
+#  - 2 std deviations is +/- 1% for single threaded server! Need to figure out multiple threads now.
 # TODO store results in some database?
 # TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration
 # TODO print or log - choose only one
-# TODO use pathlib instead of strings and os.path.join
