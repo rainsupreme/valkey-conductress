@@ -27,7 +27,7 @@ class MemBench:
     def test_single_size(self, valsize: int) -> float:
         """Test memory efficiency for a single item size."""
         args = ["--io-threads", "9"]
-        valkey = Server(self.server_ip, self.repo, self.specifier, args)
+        valkey = Server.with_build(self.server_ip, self.repo, self.specifier, args)
         commit_hash = valkey.get_build_hash()
 
         before_usage = valkey.used_memory()

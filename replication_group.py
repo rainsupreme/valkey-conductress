@@ -23,7 +23,7 @@ class ReplicationGroup:
         self.begin_replication()
 
     def __create_server(self, server_ip):
-        return Server(server_ip, self.binary_source, self.specifier, self.args)
+        return Server.with_build(server_ip, self.binary_source, self.specifier, self.args)
 
     def begin_replication(self):
         """Set up replication among the servers in the group."""

@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Static
 
-from config import CONDUCTRESS_LOG
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +74,7 @@ class Task:
         self.preload_keys = preload_keys
         self.replicas = replicas
 
-        assert self.source in [
-            "manually_uploaded",
-            "valkey",
-            "SoftlyRaining",
-            "zuiderkwast",
-            "JimB123",
-        ]
+        assert self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
 
     @staticmethod
     def perf_task(
@@ -278,7 +272,10 @@ def create_parser() -> ArgumentParser:
     perf_parser = subparsers.add_parser("perf", help="Queue performance benchmark task")
     perf_parser.add_argument("--test", type=str, required=True, help="Test name")
     perf_parser.add_argument(
-        "--source", type=str, default="valkey", help='Repository or "manually_uploaded"'
+        "--source",
+        choices=config.REPO_NAMES + [config.MANUALLY_UPLOADED],
+        default="valkey",
+        help=f"one of {str(config.REPO_NAMES)} or {config.MANUALLY_UPLOADED} to indicate manual upload",
     )
     perf_parser.add_argument(
         "--specifier",
@@ -320,7 +317,10 @@ def create_parser() -> ArgumentParser:
     mem_parser = subparsers.add_parser("mem", help="Queue memory benchmark task")
     mem_parser.add_argument("--test", type=str, required=True, help="Test name")
     mem_parser.add_argument(
-        "--source", type=str, default="valkey", help='Repository or "manually_uploaded"'
+        "--source",
+        choices=config.REPO_NAMES + [config.MANUALLY_UPLOADED],
+        default="valkey",
+        help=f"one of {str(config.REPO_NAMES)} or {config.MANUALLY_UPLOADED} to indicate manual upload",
     )
     mem_parser.add_argument(
         "--specifier",

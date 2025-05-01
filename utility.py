@@ -5,8 +5,6 @@ import subprocess
 from pathlib import Path
 from typing import Union
 
-from numerize import numerize
-
 from config import SSH_KEYFILE
 
 MILLION = 1_000_000
@@ -22,54 +20,90 @@ def get_console_width(default: int = 80) -> int:
         return default
 
 
-def human(number: float, decimals: int = 2) -> str:
-    """Convert a number to a human-readable format."""
-    return numerize.numerize(number, decimals=decimals)
-
-
-def human_byte(number: float) -> str:
-    """Convert bytes to human-readable format."""
+def __fit_number_to_unit(number: float, base: Union[int, tuple], units: tuple, decimals: int) -> str:
+    """Fit a number to a unit."""
     number = float(number)
-    units = ("B", "KB", "MB", "GB", "TB", "PB")
-    unit_index = 0
-    while number >= 512 and unit_index + 1 < len(units):
-        number /= 1024
-        unit_index += 1
+    if isinstance(base, int):
+        unit_index = 0
+        while number >= base / 2 and unit_index + 1 < len(units):
+            unit_index += 1
+            number /= base
+    else:
+        assert len(base) == len(units)
+        unit_index = 0
+        while unit_index + 1 < len(base) and number >= base[unit_index + 1] / 2:
+            unit_index += 1
+            number /= base[unit_index]
+
     if number.is_integer():
         return f"{number:,g}{units[unit_index]}"
     else:
-        return f"{number:,.1f}{units[unit_index]}"
+        return f"{number:,.{decimals}f}{units[unit_index]}"
 
 
-def human_time(number: float) -> str:
+def human(number: float, decimals: int = 1) -> str:
+    """Convert a number to a human-readable format."""
+    suffixes = ("", "K", "M", "G", "T", "P", "E", "Z", "Y")
+    return __fit_number_to_unit(number, 1000, suffixes, decimals)
+
+
+def human_byte(number: float, decimals: int = 1) -> str:
+    """Convert bytes to human-readable format."""
+    suffixes = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    return __fit_number_to_unit(number, 1024, suffixes, decimals)
+
+
+def human_time(number: float, decimals: int = 1) -> str:
     """Convert seconds to human-readable format."""
     number = float(number)
-    divisors = [1, 60, 60, 24]
-    units = "smhd"
-    unit_index = 0
-    while unit_index + 1 < len(units) and number >= divisors[unit_index + 1]:
-        unit_index += 1
-        number /= divisors[unit_index]
-    if number.is_integer():
-        return f"{number:,g}{units[unit_index]}"
-    else:
-        return f"{number:,.1f}{units[unit_index]}"
+    divisors = (1, 60, 60, 24)
+    units = tuple("smhd")
+    return __fit_number_to_unit(number, divisors, units, decimals)
+
+
+def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─"):
+    console_width = get_console_width()
+
+    # Decorative elements
+    left_decor = "⊹˚₊‧"
+    right_decor = "‧₊˚⊹"
+    fill = "─"
+
+    # Calculate padding needed
+    content_len = len(center) + 2  # +2 for spaces around text
+    decor_len = len(left_decor) + len(right_decor)
+    fill_len = console_width - content_len - decor_len
+
+    # Split fill chars evenly on each side
+    fill_str = fill * (fill_len // 2)
+
+    # Construct and print the header
+    header = f"{left_decor}{fill_str} {center} {fill_str}{right_decor}"
+    return header
+
+
+def print_inline_header(text: str):
+    """Print decorative header with inline centered text"""
+    print(__build_header("⊹˚₊‧", text, "‧₊˚⊹", "─"))
+
+
+def print_pretty_divider():
+    """Print a decorative header (no text)"""
+    print(__build_header("⊹˚₊‧", "•°•♥•°•", "‧₊˚⊹", "─"))
+
+
+def print_centered_text(text: str):
+    """Print text centered in the console."""
+    console_width = get_console_width()
+    padding = (console_width - len(text)) // 2
+    text = " " * padding + text + " " * padding
+    print(text)
 
 
 def print_pretty_header(text: str):
     """Print a header with a nice divider."""
-    console_width = get_console_width()
-    padding = (console_width - len(text)) // 2
-    text = " " * padding + text + " " * padding
-
-    endcap = "•"
-    center = "•°•♥•°•"
-    fill = "─"
-    fillsize = (console_width - len(center) - len(endcap) * 2) // 2
-    divider = endcap + fill * fillsize + center + fill * fillsize + endcap
-
-    print(divider)
-    print(text)
+    print_pretty_divider()
+    print_centered_text(text)
 
 
 def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list[float]:
@@ -89,20 +123,32 @@ def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list
 
 
 def run_command(
-    command: str,
+    command: Union[str, list[str]],
     remote_ip: Union[str, None] = None,
+    remote_pseudo_terminal: bool = True,
     cwd: Union[Path, None] = None,
     check: bool = True,
 ):
     """Run a console command and return its output."""
-    command_list = command.split()
-    if remote_ip is not None:
-        command_list = ["ssh", "-i", SSH_KEYFILE, remote_ip] + command_list
-        if cwd is not None:
-            command_list = ["cd", str(cwd), ";"] + command_list
-        result = subprocess.run(command_list, check=check, encoding="utf-8", stdout=subprocess.PIPE)
+    if isinstance(command, str):
+        command_list = command.split()
     else:
+        command_list = command
+
+    if remote_ip is None:  # local command
         result = subprocess.run(command_list, check=check, encoding="utf-8", cwd=cwd, stdout=subprocess.PIPE)
+        return result.stdout
+
+    # remote command
+    ssh_command = ["ssh", "-q"]
+    if not remote_pseudo_terminal:
+        ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
+    ssh_command += ["-i", SSH_KEYFILE, remote_ip]
+
+    if cwd is not None:
+        command_list = ["cd", str(cwd), ";"] + command_list
+
+    result = subprocess.run(ssh_command + command_list, check=check, encoding="utf-8", stdout=subprocess.PIPE)
     return result.stdout
 
 

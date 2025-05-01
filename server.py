@@ -1,10 +1,14 @@
 """Represents a server running a Valkey instance."""
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
+from typing import Optional
 
-from config import SSH_KEYFILE
+import asyncssh
+
+import config
 from utility import hash_file, run_command
 
 logger = logging.getLogger(__name__)
@@ -15,21 +19,37 @@ VALKEY_BINARY = "valkey-server"
 class Server:
     """Represents a server running a Valkey instance."""
 
-    manual_upload_source = "manually_uploaded"  # special value indicating a binary was uploaded
     build_cache_dir = Path("~") / "build_cache"
 
-    def __init__(self, ip: str, binary_source: str, specifier: str, args: list) -> None:
+    @classmethod
+    def with_build(cls, ip: str, binary_source: str, specifier: str, args: list[str]) -> "Server":
+        """Create a server instance and ensure it is running with the specified build."""
+        server = cls(ip)
+        server.start(binary_source, specifier, args)
+        return server
+
+    def __init__(self, ip: str) -> None:
+        self.ip = ip
+
+        self.source: Optional[str] = None
+        self.specifier: Optional[str] = None
+        self.args: Optional[list[str]] = None
+        self.hash: Optional[str] = None
+
+        self.ssh_connection: Optional[asyncssh.SSHClientConnection] = None
+
+    def start(self, binary_source: str, specifier: str, args: list[str]) -> None:
+        """Ensure specified build is running on the server."""
+        self.__ensure_stopped()
         self.source = binary_source
         self.specifier = specifier
         self.args = args
-        self.ip = ip
-
-        self.__ensure_stopped()
-        if self.source == Server.manual_upload_source:
+        if self.source == config.MANUALLY_UPLOADED:
             cached_binary_path = self.__ensure_binary_uploaded(self.specifier)
         else:
+            assert self.source in config.REPO_NAMES, f"Unknown source: {self.source}"
             cached_binary_path = self.__ensure_build_cached()
-        command = f"{cached_binary_path} --save --protected-mode no --daemonize yes " + " ".join(args)
+        command = f"{cached_binary_path} --save --protected-mode no --daemonize yes " + " ".join(self.args)
         self.run_host_command(command)
 
     def info(self, section: str) -> dict:
@@ -104,16 +124,44 @@ class Server:
 
     def run_host_command(self, command: str, check=True):
         """Run a terminal command on the server and return its output."""
-        return run_command(command, remote_ip=self.ip, check=check)
+        return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=False, check=check)
+
+    async def __ensure_ssh_connection(self) -> None:
+        """Ensure SSH connection to the server."""
+        if self.ssh_connection is None:
+            try:
+                self.ssh_connection = await asyncssh.connect(
+                    self.ip,
+                    client_keys=[config.SSH_KEYFILE],
+                )
+            except asyncssh.Error as e:
+                logger.error("SSH connection failed: %s", str(e))
+                raise
+
+    async def run_async_host_command(self, command: str, check=True):
+        """Run a terminal command on the server and return its output."""
+        await self.__ensure_ssh_connection()
+        assert self.ssh_connection is not None
+        result = await self.ssh_connection.run(command)
+        if check and result.exit_status is not None and result.exit_status != 0:
+            raise subprocess.CalledProcessError(result.exit_status, command, result.stdout, result.stderr)
+        assert result.stdout is not None
+        return result.stdout.strip()
+
+    def run_host_interactive_command(self, command: str, check=True):
+        """Run a terminal command on the server and return its output."""
+        return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=True, check=check)
 
     def run_valkey_command(self, command: str):
         """Run a valkey command on the server and return its output."""
         return run_command(f"./valkey-cli -h {self.ip} {command}")
 
     def __get_cached_build_path(self) -> Path:
+        assert self.source is not None and self.hash is not None
         return Server.build_cache_dir / self.source / self.hash
 
     def __get_source_binary_path(self) -> Path:
+        assert self.source is not None
         return Path("~") / self.source / "src"
 
     def __ensure_stopped(self):
@@ -167,14 +215,19 @@ class Server:
     def delete_entire_build_cache(server_ips) -> None:
         """Delete the entire build cache on all servers. This is a destructive operation."""
         for server_ip in server_ips:
-            run_command(f"rm -rf {Server.build_cache_dir}", remote_ip=server_ip, check=False)
+            run_command(
+                f"rm -rf {Server.build_cache_dir}",
+                remote_ip=server_ip,
+                remote_pseudo_terminal=False,
+                check=False,
+            )
 
     def scp_file_from_server(self, server_src: Path, local_dest: Path) -> None:
         """Copy a file from the server to the local machine."""
         command = [
             "scp",
             "-i",
-            SSH_KEYFILE,
+            config.SSH_KEYFILE,
             f"{self.ip}:{str(server_src)}",
             str(local_dest),
         ]
@@ -185,7 +238,7 @@ class Server:
         command = [
             "scp",
             "-i",
-            SSH_KEYFILE,
+            config.SSH_KEYFILE,
             str(local_src),
             f"{self.ip}:{str(server_dest)}",
         ]

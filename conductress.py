@@ -4,7 +4,7 @@ This script runs tasks from a queue, executing performance and memory tests"""
 import logging
 import time
 
-from config import CONDUCTRESS_LOG, servers
+from config import CONDUCTRESS_LOG, SERVERS
 from mem_test import MemBench
 from perf_test import PerfBench
 from task_queue import Task, TaskQueue
@@ -17,13 +17,13 @@ def run_task(task: Task) -> None:
     """Run a task"""
     server_count = task.replicas + 1 if task.replicas > 0 else 1
     assert (
-        len(servers) >= server_count
-    ), f"Not enough servers for {task.replicas} replicas. Found {len(servers)} servers."
+        len(SERVERS) >= server_count
+    ), f"Not enough servers for {task.replicas} replicas. Found {len(SERVERS)} servers."
 
     if task.task_type == "perf":
         perf_test_runner = PerfBench(
             f"{task.timestamp}_{task.test}_{task.task_type}",
-            servers[:server_count],
+            SERVERS[:server_count],
             task.source,
             task.specifier,
             io_threads=task.io_threads,
@@ -41,7 +41,7 @@ def run_task(task: Task) -> None:
         # ignored for memory usage test:
         # warmup, duration, threading, pipelining, preload, profiling_sample_rate
         mem_tester = MemBench(
-            servers[0],
+            SERVERS[0],
             task.source,
             task.specifier,
             task.test,
