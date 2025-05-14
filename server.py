@@ -1,15 +1,14 @@
 """Represents a server running a Valkey instance."""
 
-import asyncio
 import logging
 import subprocess
+import time
 from pathlib import Path
-from typing import Optional
-
-import asyncssh
+from threading import Thread
+from typing import Callable, Optional, Sequence
 
 import config
-from utility import hash_file, run_command
+from utility import RealtimeCommand, hash_file, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +19,17 @@ class Server:
     """Represents a server running a Valkey instance."""
 
     build_cache_dir = Path("~") / "build_cache"
+    remote_perf_data_path = Path("~")
 
     @classmethod
-    def with_build(cls, ip: str, binary_source: str, specifier: str, args: list[str]) -> "Server":
+    def with_build(
+        cls, ip: str, binary_source: str, specifier: str, io_threads: int, args: list[str]
+    ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
         server = cls(ip)
+        server.threads = io_threads
+        if io_threads > 1:
+            args += ["--io-threads", str(io_threads)]
         server.start(binary_source, specifier, args)
         return server
 
@@ -35,8 +40,10 @@ class Server:
         self.specifier: Optional[str] = None
         self.args: Optional[list[str]] = None
         self.hash: Optional[str] = None
+        self.threads: Optional[int] = None
 
-        self.ssh_connection: Optional[asyncssh.SSHClientConnection] = None
+        self.profiling_thread: Optional[Thread] = None
+        self.profiling_abort = False
 
     def start(self, binary_source: str, specifier: str, args: list[str]) -> None:
         """Ensure specified build is running on the server."""
@@ -49,19 +56,44 @@ class Server:
         else:
             assert self.source in config.REPO_NAMES, f"Unknown source: {self.source}"
             cached_binary_path = self.__ensure_build_cached()
+
         command = f"{cached_binary_path} --save --protected-mode no --daemonize yes " + " ".join(self.args)
         self.run_host_command(command)
+        self.wait_until_ready()
 
-    def info(self, section: str) -> dict:
+    def wait_until_ready(self) -> None:
+        """Wait until the server is ready to accept commands."""
+        for _ in range(10):
+            try:
+                out = self.run_valkey_command(["PING"])
+                if out.strip() == "PONG":
+                    return
+            except subprocess.CalledProcessError:
+                pass
+            time.sleep(1)
+
+        raise RuntimeError("Server did not start successfully")
+
+    def info(self, section: str) -> dict[str, str]:
         """Run the 'info' command on the server and return the specified section."""
-        result = run_command(f"./valkey-cli -h {self.ip} info {section}")
+        result, _ = run_command(f"./valkey-cli -h {self.ip} info {section}")
         result = result.strip().split("\n")
-        keypairs = {}
+        keypairs: dict[str, str] = {}
         for item in result:
             if ":" in item:
-                (key, value) = item.strip().split(":")
+                (key, value) = item.split(":")
                 keypairs[key.strip()] = value.strip()
         return keypairs
+
+    def is_primary(self) -> bool:
+        """Check if the server is a replica."""
+        info = self.info("replication")
+        return info.get("role") == "master"
+
+    def is_synced_replica(self) -> bool:
+        """Check if the server is a replica and in sync with the primary."""
+        info = self.info("replication")
+        return info.get("role") == "slave" and info.get("master_link_status") == "up"
 
     def used_memory(self) -> int:
         """Get the amount of memory used by the server."""
@@ -87,13 +119,27 @@ class Server:
         """
         return self.hash
 
-    def __valkey_benchmark_on_keyspace(self, keyspace_size: int, operation: str) -> None:
-        """Run the valkey benchmark on the keyspace."""
+    def __valkey_benchmark_on_keyspace(self, keyspace_size: int, operation: list[str]) -> None:
+        """Run valkey-benchmark, sequentially covering the entire keyspace."""
         run_command(
-            (
-                f"./valkey-benchmark -h {self.ip} -c 650 -P 4 --threads 50 -q "
-                f"--sequential -r {keyspace_size} -n {keyspace_size} {operation}"
-            )
+            [
+                "./valkey-benchmark",
+                "-h",
+                self.ip,
+                "-c",
+                "650",
+                "-P",
+                "4",
+                "--threads",
+                "50",
+                "-q",
+                "--sequential",
+                "-r",
+                str(keyspace_size),
+                "-n",
+                str(keyspace_size),
+            ]
+            + operation
         )
 
     def fill_keyspace(self, valsize: int, keyspace_size: int, test: str) -> None:
@@ -107,7 +153,7 @@ class Server:
             "zrange": "zadd",
         }
         test = load_type_for_test[test]
-        self.__valkey_benchmark_on_keyspace(keyspace_size, f"-d {valsize} -t {test}")
+        self.__valkey_benchmark_on_keyspace(keyspace_size, f"-d {valsize} -t {test}".split())
 
     def expire_keyspace(self, keyspace_size: int) -> None:
         """
@@ -115,46 +161,25 @@ class Server:
         No keys should actually expire in a test of any reasonable duration.
         """
         day = 60 * 60 * 24
-        self.__valkey_benchmark_on_keyspace(keyspace_size, f"EXPIRE key:__rand_int__ {7 * day}")
+        self.__valkey_benchmark_on_keyspace(keyspace_size, f"EXPIRE key:__rand_int__ {7 * day}".split())
 
     def check_file_exists(self, path: Path) -> bool:
         """Check if a file exists on the server."""
-        result = self.run_host_command(f"[[ -f {path} ]] && echo 1 || echo 0;")
+        result, _ = self.run_host_command(f"[[ -f {path} ]] && echo 1 || echo 0;")
         return result.strip() == "1"
 
     def run_host_command(self, command: str, check=True):
         """Run a terminal command on the server and return its output."""
         return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=False, check=check)
 
-    async def __ensure_ssh_connection(self) -> None:
-        """Ensure SSH connection to the server."""
-        if self.ssh_connection is None:
-            try:
-                self.ssh_connection = await asyncssh.connect(
-                    self.ip,
-                    client_keys=[config.SSH_KEYFILE],
-                )
-            except asyncssh.Error as e:
-                logger.error("SSH connection failed: %s", str(e))
-                raise
-
-    async def run_async_host_command(self, command: str, check=True):
-        """Run a terminal command on the server and return its output."""
-        await self.__ensure_ssh_connection()
-        assert self.ssh_connection is not None
-        result = await self.ssh_connection.run(command)
-        if check and result.exit_status is not None and result.exit_status != 0:
-            raise subprocess.CalledProcessError(result.exit_status, command, result.stdout, result.stderr)
-        assert result.stdout is not None
-        return result.stdout.strip()
-
-    def run_host_interactive_command(self, command: str, check=True):
+    def run_interactive_host_command(self, command: str, check=True):
         """Run a terminal command on the server and return its output."""
         return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=True, check=check)
 
-    def run_valkey_command(self, command: str):
+    def run_valkey_command(self, command: Sequence[str]):
         """Run a valkey command on the server and return its output."""
-        return run_command(f"./valkey-cli -h {self.ip} {command}")
+        response, _ = run_command(["./valkey-cli", "-h", self.ip] + list(command))
+        return response.strip()
 
     def __get_cached_build_path(self) -> Path:
         assert self.source is not None and self.hash is not None
@@ -167,13 +192,18 @@ class Server:
     def __ensure_stopped(self):
         self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
 
+        # clean up any rdb files from replication or snapshotting
+        # valkey will automatically load "dump.rdb" if it is present
+        self.run_host_command("rm -f *.rdb", check=False)
+
     def __is_binary_cached(self) -> bool:
         return self.check_file_exists(self.__get_cached_build_path() / VALKEY_BINARY)
 
     def __should_pull_after_checkout(self, specifier) -> bool:
         source_path = self.__get_source_binary_path()
         command = f"cd {source_path}; git rev-parse --symbolic-full-name {specifier} --"
-        result = self.run_host_command(command).strip()
+        result, _ = self.run_host_command(command)
+        result = result.strip()
         if result == "":
             raise ValueError(f"{specifier} is an invalid specifier in {self.source} (empty result)")
         if result == "--":
@@ -204,7 +234,11 @@ class Server:
         if not self.__is_binary_cached():
             logger.info("building %s... (no cached build)", self.specifier)
 
-            self.run_host_command(f"cd {source_path}; make distclean && make -j USE_FAST_FLOAT=yes")
+            self.run_host_command(
+                f"cd {source_path}; "
+                "make distclean && "
+                'make -j USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
+            )
             self.run_host_command(f"mkdir -p {cached_build_path}")
             build_binary = source_path / VALKEY_BINARY
             self.run_host_command(f"cp {build_binary} {cached_binary_path}")
@@ -260,4 +294,136 @@ class Server:
 
     def __get_current_commit_hash(self) -> str:
         source_path = self.__get_source_binary_path()
-        return self.run_host_command(f"cd {source_path}; git rev-parse HEAD").strip()
+        out, _ = self.run_host_command(f"cd {source_path}; git rev-parse HEAD")
+        return out.strip()
+
+    def profiling_start(self, sample_rate: int, end_callback: Optional[Callable[[], None]]) -> None:
+        """Start profiling the server using perf."""
+        if self.profiling_thread is not None:
+            raise RuntimeError("Profiling already started")
+
+        self.profiling_thread = Thread(target=self.__do_profile, args=(sample_rate, end_callback))
+        self.profiling_thread.start()
+
+    def is_profiling(self) -> bool:
+        """Check if profiling is currently running."""
+        if self.profiling_thread is None:
+            return False
+        if not self.profiling_thread.is_alive():
+            self.profiling_thread = None
+            return False
+        return True
+
+    def profiling_end(self) -> None:
+        """End profiling and generate a report."""
+        if self.profiling_thread is None:
+            raise RuntimeError("Profiling not started")
+        self.run_host_command("rm /tmp/perf_running")
+        self.profiling_thread.join()
+        self.profiling_thread = None
+
+    def __do_profile(self, sample_rate: int, end_callback: Optional[Callable[[], None]]) -> None:
+        """Profile performance using perf for specified duration. Leaves data file on server."""
+        self.run_host_command("touch /tmp/perf_running")
+        command = (
+            f"sudo perf record -F {sample_rate} -a -g -o {Server.remote_perf_data_path/'perf.data'} "
+            "-- sh -c 'while [ -f /tmp/perf_running ]; do sleep 1; done'"
+        )
+        self.run_host_command(command)
+        if end_callback is not None:
+            end_callback()
+
+    def profiling_report(self, task_name: str) -> None:
+        """Retrieve profile data from server and generate flamegraph report."""
+        self.run_host_command(
+            f"sudo chmod a+r {Server.remote_perf_data_path / 'perf.data'}",
+        )
+        self.run_host_command("perf script -i perf.data > out.perf")
+        print("collapsing stacks")
+        self.run_host_command(
+            f"{Server.remote_perf_data_path/'FlameGraph/stackcollapse-perf.pl'} out.perf > out.folded"
+        )
+        self.run_host_command("FlameGraph/flamegraph.pl out.folded > flamegraph.svg")
+
+        print("copying perf data from server")
+        test_results = Path("results").resolve() / task_name
+        test_results.mkdir(parents=True, exist_ok=True)
+
+        for file in ["perf.data", "flamegraph.svg"]:
+            remote_path = Server.remote_perf_data_path / file
+            local_path = test_results / file
+            self.scp_file_from_server(remote_path, local_path)
+
+    # async def get_valkey_server_threads(self) -> list[tuple[int, int]]:
+    #     """Get the PID and TID of all valkey-server threads."""
+    #     await self.__ensure_ssh_connection()
+    #     command = "ps -T -C valkey-server -o pid,spid,comm"
+    #     output, _ = self.run_host_command(command)
+    #     threads: list[tuple[int, int]] = []
+    #     for line in output.splitlines()[1:]:  # Skip header
+    #         parts = line.split()
+    #         if len(parts) >= 2:
+    #             pid, tid = parts[:2]
+    #             threads.append((int(pid), int(tid)))
+    #     return threads
+
+    # def get_network_irqs(self) -> list[tuple[int, str]]:
+    #     """Get network IRQs and their names."""
+    #     command = """
+    #     grep -E 'eth|eno' /proc/interrupts |
+    #     awk '{printf "%s %s\\n", $1, $NF}' |
+    #     tr -d :
+    #     """
+    #     output, _ = self.run_host_command(command)
+    #     irqs: list[tuple[int, str]] = []
+    #     for line in output.splitlines():
+    #         parts = line.split(maxsplit=1)
+    #         if len(parts) == 2:
+    #             irq, name = parts
+    #             irqs.append((int(irq), name))
+    #     return irqs
+
+    # def get_thread_cpus(self, thread_list: list[tuple[int, int]]) -> list[int]:
+    #     """Get the CPUs that last executed specific threads.
+
+    #     Args:
+    #         thread_list: List of (pid, tid) tuples
+
+    #     Returns:
+    #         list of CPUs to last execute threads (same order as input)
+    #     """
+    #     if not thread_list:
+    #         return []
+
+    #     commands = [f"cat /proc/{pid}/task/{tid}/stat" for pid, tid in thread_list]
+    #     combined_command = " & ".join(commands)
+    #     output, _ = self.run_host_command(combined_command)
+
+    #     # The 39th field (0-based index 38) contains the last executed CPU number
+    #     results = [int(x.split()[38]) for x in output.splitlines()]
+    #     assert len(results) == len(thread_list), "Mismatch in number of threads and output lines"
+    #     return results
+
+    # def get_irq_cpus(self, irq_list: list[int]) -> list[int]:
+    #     """Get the CPUs that last handled specific IRQs."""
+    #     if not irq_list:
+    #         return []
+
+    #     commands = [f"cat /proc/irq/{irq}/smp_affinity_list" for irq in irq_list]
+    #     combined_command = " & ".join(commands)
+    #     output, _ = self.run_host_command(combined_command)
+
+    #     results = [int(x.strip()) for x in output.splitlines()]
+    #     assert len(results) == len(irq_list), "Mismatch in number of IRQs and output lines"
+    #     return results
+
+    # def monitor_cpu_execution(self):
+    #     print("\nMonitoring current/last CPU execution:")
+    #     threads = self.get_valkey_server_threads()
+    #     irqs = self.get_network_irqs()
+
+    #     print("\nValkey-server threads:")
+    #     print(self.get_thread_cpus(threads))
+
+    #     print("\nNetwork IRQs:")
+    #     print(self.get_irq_cpus([irq for irq, _ in irqs]))

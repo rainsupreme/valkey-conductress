@@ -1,13 +1,19 @@
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
 import os
+import signal
 import subprocess
 from pathlib import Path
-from typing import Union
+from typing import Optional, Sequence, Union
 
 from config import SSH_KEYFILE
 
 MILLION = 1_000_000
+BILLION = 1_000_000_000
+
+MB = 1024 * 1024
+GB = 1024 * MB
+
 MINUTE = 60
 HOUR = 60 * MINUTE
 
@@ -123,59 +129,86 @@ def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list
 
 
 def run_command(
-    command: Union[str, list[str]],
+    command: Union[str, Sequence[str]],
     remote_ip: Union[str, None] = None,
     remote_pseudo_terminal: bool = True,
     cwd: Union[Path, None] = None,
     check: bool = True,
 ):
     """Run a console command and return its output."""
-    if isinstance(command, str):
-        command_list = command.split()
-    else:
-        command_list = command
-
     if remote_ip is None:  # local command
-        result = subprocess.run(command_list, check=check, encoding="utf-8", cwd=cwd, stdout=subprocess.PIPE)
-        return result.stdout
+        cmd_list = command.split() if isinstance(command, str) else command
+        result = subprocess.run(
+            cmd_list,
+            check=check,
+            encoding="utf-8",
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.stderr:
+            print(repr(result.stderr))
+        return result.stdout, result.stderr
+
+    if isinstance(command, str):
+        remote_command = command
+    else:
+        remote_command = " ".join(command)
+    if cwd is not None:
+        remote_command = f"cd {str(cwd)}; {remote_command}"
 
     # remote command
     ssh_command = ["ssh", "-q"]
     if not remote_pseudo_terminal:
         ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
-    ssh_command += ["-i", SSH_KEYFILE, remote_ip]
+    ssh_command += ["-i", SSH_KEYFILE, remote_ip, remote_command]
 
-    if cwd is not None:
-        command_list = ["cd", str(cwd), ";"] + command_list
-
-    result = subprocess.run(ssh_command + command_list, check=check, encoding="utf-8", stdout=subprocess.PIPE)
-    return result.stdout
+    result = subprocess.run(
+        ssh_command, check=check, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    return result.stdout, result.stderr
 
 
 class RealtimeCommand:
     """Run a local command in real-time and read its output."""
 
-    def __init__(self, command: str):
+    def __init__(self, command: str, remote: Optional[str] = None):
         self.command = command
+        self.remote = remote
         self.p = None
 
-    def start(self):
+    def __del__(self):
+        """Destructor - kill the process if it's still running."""
+        self.kill()
+
+    def start(self, ignore_output=False):
         """Start the command in a subprocess."""
         if self.p is not None:
             raise RuntimeError("Command already running")
-        self.p = subprocess.Popen(self.command.split(), stdout=subprocess.PIPE)
-        assert self.p.stdout is not None
-        os.set_blocking(self.p.stdout.fileno(), False)
+        command_list = self.command.split()
+        if self.remote is not None:
+            command_list = ["ssh", "-q", "-i", SSH_KEYFILE, self.remote] + command_list
+        output_dest = subprocess.DEVNULL if ignore_output else subprocess.PIPE
+        self.p = subprocess.Popen(command_list, stdout=output_dest, stderr=output_dest)
+        if not ignore_output:
+            assert self.p.stdout is not None
+            assert self.p.stderr is not None
+            os.set_blocking(self.p.stdout.fileno(), False)
+            os.set_blocking(self.p.stderr.fileno(), False)
 
-    def poll_output(self):
+    def poll_output(self) -> tuple[str, str]:
         """Read output since last poll."""
         if self.p is None:
             raise RuntimeError("Command not started")
         assert self.p.stdout is not None
-        output = self.p.stdout.read()
-        if output is not None:
-            output = output.decode("utf-8")
-        return output
+        assert self.p.stderr is not None
+        stdout = self.p.stdout.read()
+        stderr = self.p.stderr.read()
+        if stdout is not None:
+            stdout = stdout.decode("utf-8")
+        if stderr is not None:
+            stderr = stderr.decode("utf-8")
+        return stdout, stderr
 
     def is_running(self):
         """Check if the process is still running."""
@@ -185,12 +218,24 @@ class RealtimeCommand:
             return False  # process finished
         return True
 
+    def interrupt(self):
+        """Send interrupt signal to process"""
+        if self.p and self.p.poll() is None:
+            self.p.send_signal(signal.SIGINT)
+
+    def wait(self):
+        """Block until process has ended."""
+        if self.p:
+            self.p.wait()
+
     def kill(self):
         """Kill the procress."""
         if self.p:
             self.p.kill()
+            self.p.wait()
 
 
 def hash_file(path: Path):
     """Generate SHA1 hash of a local file."""
-    return run_command(f"sha1sum {str(path)}").strip().split()[0]
+    result, _ = run_command(f"sha1sum {str(path)}")
+    return result.strip().split()[0]

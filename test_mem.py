@@ -10,7 +10,7 @@ from utility import MILLION, human, human_byte, print_pretty_header
 logger = logging.getLogger(__name__)
 
 
-class MemBench:
+class TestMem:
     """Tests memory efficiency of the specified type. Result is bytes of overhead per item."""
 
     def __init__(self, server_ip: str, repo: str, specifier: str, test: str, has_expire: bool):
@@ -26,8 +26,8 @@ class MemBench:
 
     def test_single_size(self, valsize: int) -> float:
         """Test memory efficiency for a single item size."""
-        args = ["--io-threads", "9"]
-        valkey = Server.with_build(self.server_ip, self.repo, self.specifier, args)
+        threads = 9
+        valkey = Server.with_build(self.server_ip, self.repo, self.specifier, threads, [])
         commit_hash = valkey.get_build_hash()
 
         before_usage = valkey.used_memory()

@@ -3,7 +3,6 @@
 import datetime
 import logging
 import time
-from pathlib import Path
 from threading import Thread
 
 import plotext as plt
@@ -17,18 +16,17 @@ from config import (
 )
 from replication_group import ReplicationGroup
 from utility import (
-    MILLION,
+    BILLION,
     RealtimeCommand,
     calc_percentile_averages,
     human,
     human_time,
-    run_command,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class PerfBench:
+class TestPerf:
     """Benchmark the throughput of a Valkey server."""
 
     def __init__(
@@ -81,8 +79,10 @@ class PerfBench:
 
         print("preparing:", self.title)
 
-        server_args = [] if io_threads == 1 else ["--io-threads", str(io_threads)]
-        self.replication_group = ReplicationGroup(server_ips, binary_source, specifier, server_args)
+        self.replication_group = ReplicationGroup(server_ips, binary_source, specifier, io_threads, [])
+        self.replication_group.begin_replication()
+        self.replication_group.wait_for_repl_sync()
+
         self.server = self.replication_group.primary
         self.target_ip = self.server.ip
         self.commit_hash = self.server.get_build_hash()
@@ -94,25 +94,25 @@ class PerfBench:
         self.command_string = (
             f"./valkey-benchmark -h {self.target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-            f"--threads {PERF_BENCH_THREADS} -t {self.test} -q -l -n {2_000 * MILLION}"
+            f"--threads {PERF_BENCH_THREADS} -t {self.test} -q -l -n {2 * BILLION}"
         )
         self.command = RealtimeCommand(self.command_string)
 
     def __read_updates(self):
-        line = self.command.poll_output()
+        line, _ = self.command.poll_output()
         while line is not None and line != "" and not line.isspace():
             if "overall" not in line:
-                line = self.command.poll_output()
+                line, _ = self.command.poll_output()
                 continue
             # line looks like this:
             # "GET: rps=140328.0 (overall: 141165.2) avg_msec=0.193 (overall: 0.191)"
-            line = line.strip().split()
-            rps = float(line[1][4:])
-            msec = float(line[-3][9:])
+            parts = line.strip().split()
+            rps = float(parts[1][4:])
+            msec = float(parts[-3][9:])
             self.rps_data.append(rps)
             self.lat_data.append(msec)
 
-            line = self.command.poll_output()
+            line, _ = self.command.poll_output()
 
     def __update_graph(self):
         graph_update_interval = 10.0
@@ -208,23 +208,10 @@ class PerfBench:
             f.write(f"\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}\n")
 
     def __run_profiling(self):
-        remote_perf_data_path = Path("perf.data")
-        local_perf_data_path = Path("results").resolve() / self.task_name / "perf.data"
-
-        self.server.run_host_command(
-            (
-                f"sudo perf record -F {self.sample_rate} -a -g "
-                f"-o {remote_perf_data_path} -- sleep {self.duration}"
-            )
-        )
+        self.server.wait_for_profiling()
 
         print("Profile complete, generating flamegraph...")
-        self.command.kill()  # end the benchmark
-
-        self.server.run_host_command("sudo chmod a+r {remote_perf_data_path}")
-        local_perf_data_path.parent.mkdir(parents=True, exist_ok=False)
-        self.server.scp_file_from_server(remote_perf_data_path, local_perf_data_path)
-        run_command("perf script report flamegraph", cwd=local_perf_data_path.parent)
+        self.server.profiling_report(self.task_name)
         print("Done generating flamegraph")
 
     def run(self):
@@ -249,10 +236,10 @@ class PerfBench:
                 self.lat_data = []
                 warming_up = False
                 if self.profiling:
-                    self.profiling_thread = Thread(target=self.__run_profiling)
-                    self.profiling_thread.start()
+                    self.server.profiling_start(self.sample_rate, self.duration, self.command.kill())
 
         self.__read_updates()
         self.__record_result()
-        if self.profiling_thread:
-            self.profiling_thread.join()
+        if self.server.is_profiling():
+            self.server.wait_for_profiling()
+            self.server.profiling_report(self.task_name)

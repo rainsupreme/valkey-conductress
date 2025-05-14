@@ -15,6 +15,8 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Static
 
 import config
+from server import Server
+from utility import GB
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ class Task:
         has_expire: bool,
         preload_keys: bool,
         replicas: int,
+        keyspace: int,
     ) -> None:
         self.task_type = task_type
         self.timestamp = timestamp
@@ -73,6 +76,7 @@ class Task:
         self.has_expire = has_expire
         self.preload_keys = preload_keys
         self.replicas = replicas
+        self.keyspace = keyspace
 
         assert self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
 
@@ -108,6 +112,7 @@ class Task:
             has_expire,
             preload_keys,
             replicas,
+            -1,  # keyspace not used for perf tasks
         )
 
     @staticmethod
@@ -121,14 +126,45 @@ class Task:
             source,
             specifier,
             val_size,
-            -1,
-            -1,
-            -1,
-            -1,
-            -1,
+            -1,  # io_threads not used for mem tasks
+            -1,  # pipelining not used for mem tasks
+            -1,  # warmup not used for mem tasks
+            -1,  # duration not used for mem tasks
+            -1,  # profiling not used for mem tasks
             has_expire,
             True,
-            -1,
+            -1,  # replicas not used for mem tasks
+            -1,  # keyspace not used for mem tasks
+        )
+
+    @staticmethod
+    def sync_task(
+        test: str,
+        source: str,
+        specifier: str,
+        val_size: int,
+        val_count: int,
+        io_threads: int,
+        replicas: int,
+    ) -> "Task":
+        """Create a full sync task"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        return Task(
+            "sync",
+            timestamp,
+            test,
+            source,
+            specifier,
+            val_size,
+            io_threads,
+            -1,  # pipelining not used for sync
+            -1,  # warmup not used for sync
+            -1,  # duration not used for sync
+            -1,  # profiling not used for sync
+            False,  # expire not used for sync
+            True,  # preload always true for sync
+            replicas,
+            val_count,  # use val_count as keyspace
         )
 
     @classmethod
@@ -137,6 +173,9 @@ class Task:
         try:
             with filepath.open("r") as f:
                 data = json.load(f)
+            task = cls(**data)
+            if f"task_{task.timestamp}" != filepath.stem:
+                raise ValueError(f"Invalid task file name: {filepath.stem}")
             return cls(**data)
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"Task file not found: {filepath}") from exc
@@ -158,9 +197,7 @@ class TaskQueue:
 
     def submit_task(self, task: Task) -> None:
         """Add a new task to the queue"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        task_file = self.queue_dir / f"task_{timestamp}.json"
-
+        task_file = self.queue_dir / f"task_{task.timestamp}.json"
         task.save_to_file(task_file)
 
     def get_next_task(self) -> Optional[Task]:
@@ -172,14 +209,22 @@ class TaskQueue:
         task_file = tasks[0]
         try:
             task = Task.from_file(task_file)
-            task_file.unlink()  # Remove the task file after reading
             return task
         except (json.JSONDecodeError, FileNotFoundError):
-            # Handle corrupted or disappeared task files
+            # Handle corrupted task files
             if task_file.exists():
                 logger.error("unable to read - skipping %s", task_file)
                 task_file.unlink()
             return None
+
+    def finish_task(self, task: Task) -> None:
+        """Delete a task from the queue, indicating it has been completed"""
+        task_file = self.queue_dir / f"task_{task.timestamp}.json"
+        if task_file.exists():
+            task_file.unlink()
+        else:
+            print(f"Unable to delete task {task_file}")
+            logger.error("Task file not found: %s", task_file)
 
     def get_all_tasks(self) -> list[Task]:
         """Returns list of (timestamp, task) tuples, sorted by timestamp"""
@@ -336,7 +381,27 @@ def create_parser() -> ArgumentParser:
         help="Add expiry data before test",
     )
 
+    # Full sync command
+    sync_parser = subparsers.add_parser("sync", help="Queue full sync benchmark task")
+    sync_parser.add_argument(
+        "--source",
+        choices=config.REPO_NAMES + [config.MANUALLY_UPLOADED],
+        default="valkey",
+        help=f"one of {str(config.REPO_NAMES)} or {config.MANUALLY_UPLOADED} to indicate manual upload",
+    )
+    sync_parser.add_argument(
+        "--specifier",
+        type=str,
+        required=True,
+        help="git specifier or local path if manual upload specified",
+    )
+    sync_parser.add_argument("--threads", type=int, default=1, help="Number of IO threads")
+    sync_parser.add_argument("--valsize", type=int, required=True, help="Size of each value in bytes")
+    sync_parser.add_argument("--valcount", type=int, required=True, help="Number of values to sync")
+    sync_parser.add_argument("--replicas", type=int, default=1, help="Number of replica servers to sync to")
+
     subparsers.add_parser("status", help="Show queue status")
+    subparsers.add_parser("delete_build_cache", help="Delete cached Valkey builds on all servers")
     subparsers.add_parser("rain", help="Rain nonsense, who knows")
     return parser
 
@@ -352,6 +417,10 @@ def main():
 
     if args.command == "status":
         QueueStatusApp().run()
+        return
+    if args.command == "delete_build_cache":
+        print("Deleting all cached builds")
+        Server.delete_entire_build_cache(config.SERVERS)
         return
     if args.command == "rain":
         rain()
@@ -380,6 +449,16 @@ def main():
             val_size=args.size,
             has_expire=args.expire,
         )
+    elif args.command == "sync":
+        task = Task.sync_task(
+            test="set",
+            source=args.source,
+            specifier=args.specifier,
+            val_size=args.valsize,
+            val_count=args.valcount,
+            io_threads=args.threads,
+            replicas=args.replicas,
+        )
     else:
         print(f"Unknown command: {args.command}")
         return
@@ -392,65 +471,76 @@ def rain():
     """Rain nonsense, who knows. I'm lazy"""
     queue = TaskQueue()
 
-    sources = ["valkey"]
-    preload_keys = [True]
-    # versions = ['7.2','8.0','8.1']
-    specifiers = ["add716b7ddce48d4e13ebffe65401c7d0e26b91a"]
-    pipelining = [4]
-    io_threads = [9]
-    # sizes = [512, 87, 8]
-    sizes = [512]
-    tests = ["set"]
-
-    # pipelining = [1, 4]
-    # io_threads = [1, 9]
-    # tests = ['get', 'set']
-
-    # sizes = list(range(8, 256, 8)) + list(range(16, 512+16, 16))
-    # sizes = list(set(sizes))
-    # tests = ['set']
-    # expire_keys = [True, False]
-    expire_keys = [False]
-
-    all_tests = list(
-        product(
-            sizes,
-            pipelining,
-            io_threads,
-            tests,
-            specifiers,
-            sources,
-            preload_keys,
-            expire_keys,
-        )
+    task = Task.sync_task(
+        test="set",
+        source="valkey",
+        specifier="unstable",
+        val_size=512,
+        val_count=5 * GB // 512 * 2,  # should be enough data for about 2 minutes of syncing
+        io_threads=9,
+        replicas=1,
     )
-    for _ in range(100):
-        for size, pipe, thread, test, specifier, source, preload, expire in all_tests:
-            task = Task.perf_task(
-                test=test,
-                source=source,
-                specifier=specifier,
-                val_size=size,
-                io_threads=thread,
-                pipelining=pipe,
-                warmup=5,
-                duration=60,
-                profiling_sample_rate=-1,
-                has_expire=expire,
-                preload_keys=preload,
-                replicas=-1,
-            )
-            # task = BenchmarkTask.mem_task(
-            #     test=test,
-            #     source=source,
-            #     specifier=specifier,
-            #     val_size=size,
-            #     has_expire=expire,
-            # )
-            queue.submit_task(task)
-    print("\n\nAll done 🌧 ♥")
+    queue.submit_task(task)
+
+    # sources = ["valkey"]
+    # preload_keys = [True]
+    # # versions = ['7.2','8.0','8.1']
+    # specifiers = ["add716b7ddce48d4e13ebffe65401c7d0e26b91a"]
+    # pipelining = [4]
+    # io_threads = [9]
+    # # sizes = [512, 87, 8]
+    # sizes = [512]
+    # tests = ["set"]
+
+    # # pipelining = [1, 4]
+    # # io_threads = [1, 9]
+    # # tests = ['get', 'set']
+
+    # # sizes = list(range(8, 256, 8)) + list(range(16, 512+16, 16))
+    # # sizes = list(set(sizes))
+    # # tests = ['set']
+    # # expire_keys = [True, False]
+    # expire_keys = [False]
+
+    # all_tests = list(
+    #     product(
+    #         sizes,
+    #         pipelining,
+    #         io_threads,
+    #         tests,
+    #         specifiers,
+    #         sources,
+    #         preload_keys,
+    #         expire_keys,
+    #     )
+    # )
+    # for _ in range(100):
+    #     for size, pipe, thread, test, specifier, source, preload, expire in all_tests:
+    #         task = Task.perf_task(
+    #             test=test,
+    #             source=source,
+    #             specifier=specifier,
+    #             val_size=size,
+    #             io_threads=thread,
+    #             pipelining=pipe,
+    #             warmup=5,
+    #             duration=60,
+    #             profiling_sample_rate=-1,
+    #             has_expire=expire,
+    #             preload_keys=preload,
+    #             replicas=-1,
+    #         )
+    #         # task = BenchmarkTask.mem_task(
+    #         #     test=test,
+    #         #     source=source,
+    #         #     specifier=specifier,
+    #         #     val_size=size,
+    #         #     has_expire=expire,
+    #         # )
+    #         queue.submit_task(task)
+    print("All done 🌧 ♥")
 
 
 if __name__ == "__main__":
-    logging.basicConfig(filename=CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
+    logging.basicConfig(filename=config.CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
     main()

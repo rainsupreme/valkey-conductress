@@ -5,9 +5,10 @@ import logging
 import time
 
 from config import CONDUCTRESS_LOG, SERVERS
-from mem_test import MemBench
-from perf_test import PerfBench
 from task_queue import Task, TaskQueue
+from test_full_sync import TestFullSync
+from test_mem import TestMem
+from test_perf import TestPerf
 from utility import MINUTE
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ def run_task(task: Task) -> None:
     ), f"Not enough servers for {task.replicas} replicas. Found {len(SERVERS)} servers."
 
     if task.task_type == "perf":
-        perf_test_runner = PerfBench(
+        perf_test_runner = TestPerf(
             f"{task.timestamp}_{task.test}_{task.task_type}",
             SERVERS[:server_count],
             task.source,
@@ -40,7 +41,7 @@ def run_task(task: Task) -> None:
     elif task.task_type == "mem":
         # ignored for memory usage test:
         # warmup, duration, threading, pipelining, preload, profiling_sample_rate
-        mem_tester = MemBench(
+        mem_tester = TestMem(
             SERVERS[0],
             task.source,
             task.specifier,
@@ -48,6 +49,19 @@ def run_task(task: Task) -> None:
             task.has_expire,
         )
         mem_tester.test_single_size(task.val_size)
+    elif task.task_type == "sync":
+        # ignored for full sync test:
+        # warmup, duration, threading, pipelining, preload, profiling_sample_rate
+        full_sync_tester = TestFullSync(
+            f"{task.timestamp}_{task.test}_{task.task_type}",
+            SERVERS[:server_count],
+            task.source,
+            task.specifier,
+            io_threads=task.io_threads,
+            valsize=task.val_size,
+            valcount=task.keyspace,
+        )
+        full_sync_tester.run()
     else:
         logger.error("unrecognized benchmark type %s", task.task_type)
 
@@ -55,10 +69,11 @@ def run_task(task: Task) -> None:
 def main():
     """Main function - execute tasks from the queue."""
     queue = TaskQueue()
-    task = None
+    task = queue.get_next_task()
     while True:
         while task:
             run_task(task)
+            queue.finish_task(task)
             task = queue.get_next_task()
         print("waiting for new jobs in queue")
         while not task:

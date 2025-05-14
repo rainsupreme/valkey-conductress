@@ -22,12 +22,15 @@ CLIENT_YUM_PACKAGES = [
     "python3-pip",
     "perf",
     "js-d3-flame-graph",
+    "perl-open.noarch",  # needed for brendangregg/FlameGraph in rhel
 ]
 SERVER_YUM_PACKAGES = [
     "cmake",
     "cmake3",
     "git",
     "perf",
+    "js-d3-flame-graph",
+    "perl-open.noarch",  # needed for brendangregg/FlameGraph in rhel
 ]
 
 
@@ -79,15 +82,28 @@ def update_local_host():
             utility.run_command(f"cp {valkey/'src'/file} .")
 
 
+def ensure_server_git_repo(server_ip, repo_url, target_dir):
+    """Clone git repo if it doesn't exist on server"""
+    logger.info("Ensuring Repo %s...", target_dir)
+    remote_commands = f"""
+        if [ ! -d "{target_dir}" ]; then
+            git clone "{repo_url}" "{target_dir}"
+        fi
+    """
+    utility.run_command([remote_commands], remote_ip=server_ip, remote_pseudo_terminal=False)
+
+
 def update_server(server_ip):
     """Update a server with the required packages and repositories."""
     logger.info("ensure server %s is in known-hosts", server_ip)
-    if not utility.run_command(f"ssh-keygen -F {server_ip}", check=False):
+    std, _ = utility.run_command(f"ssh-keygen -F {server_ip}", check=False)
+    if not std:
         logger.warning("Adding new fingerprint for %s to known_hosts...", server_ip)
         Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
         utility.run_command(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
 
-    if utility.run_command("exit", remote_ip=server_ip, check=False):
+    std, _ = utility.run_command("exit", remote_ip=server_ip, check=False)
+    if std:
         logger.error("Error: Cannot connect to %s", server_ip)
         sys.exit(1)
 
@@ -100,15 +116,11 @@ def update_server(server_ip):
     """
     utility.run_command([remote_commands], remote_ip=server_ip)
 
+    ensure_server_git_repo(server_ip, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
+
     logger.info("Ensuring repos cloned on (%s)...", server_ip)
     for repo_url, target_dir in REPOSITORIES:
-        logger.info("Checking %s...", target_dir)
-        remote_commands = f"""
-            if [ ! -d "{target_dir}" ]; then
-                git clone "{repo_url}" "{target_dir}"
-            fi
-        """
-        utility.run_command([remote_commands], remote_ip=server_ip, remote_pseudo_terminal=False)
+        ensure_server_git_repo(server_ip, repo_url, target_dir)
 
 
 if __name__ == "__main__":
