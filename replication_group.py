@@ -23,25 +23,51 @@ class ReplicationGroup:
         # start servers in parallel (including building if necessary)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             self.servers = list(executor.map(self.__start_server, self.server_ips))
-        for server in self.servers:
-            server.wait_until_ready()
+        self.__ensure_no_unknown_replicas(self.servers)
 
         self.primary = self.servers[0]
         self.replicas = self.servers[1:]
 
-    def __start_server(self, server_ip):
-        return Server.with_build(server_ip, self.binary_source, self.specifier, self.threads, self.args)
+    def __del__(self) -> None:
+        """Clean up the servers when the group is deleted."""
+        for server in self.servers:
+            server.replicate(None)
+
+    def __start_server(self, server_ip) -> Server:
+        server = Server.with_build(server_ip, self.binary_source, self.specifier, self.threads, self.args)
+        server.replicate(None)
+        server.wait_until_ready()
+        return server
+
+    def __ensure_no_unknown_replicas(self, expected_servers: list[Server]) -> None:
+        """Ensure that there are no unknown replicas in the group."""
+        expected_ips = [server.ip for server in expected_servers]
+        unexpected_ips = []
+        for server in self.servers:
+            replicas = server.get_replicas()
+            unexpected_ips += [replica for replica in replicas if replica not in expected_ips]
+
+        if unexpected_ips:
+            print(f"Unexpected replicas found: {unexpected_ips}")
+            for unexpected in unexpected_ips:
+                Server(unexpected).replicate(None)
+
+            # Wait for a short time to allow the servers to process and gossip
+            time.sleep(0.5)
+
+            unexpected_ips = []
+            for server in self.servers:
+                replicas = server.get_replicas()
+                unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
+            assert not unexpected_ips, f"Unexpected replicas remain after cleanup: {unexpected_ips}"
 
     def begin_replication(self):
         """Set up replication among the servers in the group."""
-        # Assuming the first server is the primary and the rest are replicas
+        if not self.replicas:
+            return
         print("setting up replication")
         for replica in self.replicas:
-            command = ["replicaof", self.primary.ip, "6379"]
-            print(f"{replica.ip}: {' '.join(command)}")
-            response = replica.run_valkey_command(command)
-            print(f"{replica.ip}: {response}")
-            assert response == "OK", f"got {repr(response)}"
+            replica.replicate(self.primary.ip)
 
     def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""

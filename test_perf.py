@@ -89,13 +89,18 @@ class TestPerf:
         if self.preload_keys:
             self.server.fill_keyspace(self.valsize, PERF_BENCH_KEYSPACE, self.test)
             if self.has_expire:
-                self.server.expire_keyspace(PERF_BENCH_KEYSPACE)
+                self.server.expire_keyspace(PERF_BENCH_KEYSPACE, self.test)
 
         self.command_string = (
             f"./valkey-benchmark -h {self.target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-            f"--threads {PERF_BENCH_THREADS} -t {self.test} -q -l -n {2 * BILLION}"
+            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION}"
         )
+        if self.test == "zrank":
+            self.command_string += " -- ZRANK myzset element:__rand_int__"
+        else:
+            self.command_string += f" -t {self.test}"
+        print(repr(self.command_string))
         self.command = RealtimeCommand(self.command_string)
 
     def __read_updates(self):
@@ -106,11 +111,12 @@ class TestPerf:
                 continue
             # line looks like this:
             # "GET: rps=140328.0 (overall: 141165.2) avg_msec=0.193 (overall: 0.191)"
-            parts = line.strip().split()
-            rps = float(parts[1][4:])
-            msec = float(parts[-3][9:])
+            # or this:
+            # ZRANK myzset ele__rand_int__: rps=442912.0 (overall: 436252.6) avg_msec=5.868 (overall: 5.948)
+            rps = float(line.split("rps=")[1].split()[0])
+            avg_msec = float(line.split("avg_msec=")[1].split()[0])
             self.rps_data.append(rps)
-            self.lat_data.append(msec)
+            self.lat_data.append(avg_msec)
 
             line, _ = self.command.poll_output()
 
@@ -137,14 +143,17 @@ class TestPerf:
             plt.title(self.title)
             plt.frame(False)
 
-            xticks = range(1, self.duration * 4 + 1, 4 * 60 * 10)
+            xlabel_intervals = 4
+            point_count = self.duration * 4
+            xticks = range(0, point_count + 1, point_count // xlabel_intervals)
             xticks_labels = [f"{human_time(i//4)}" for i in xticks]
             plt.xticks(xticks, xticks_labels)
-            plt.xlim(left=1, right=self.duration * 4 + 1)
+            plt.xlim(left=0, right=point_count)
 
+            ylabel_intervals = 8
             rps_min = min(self.rps_data)
             rps_max = max(self.rps_data) + 999
-            inverval = int(rps_max - rps_min) // 8
+            inverval = int(rps_max - rps_min) // ylabel_intervals
             yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
             ytick_labels = [f"{human(tick, 0)}" for tick in yticks]
             plt.yticks(yticks, ytick_labels)
@@ -207,13 +216,6 @@ class TestPerf:
             f.write(dump_string)
             f.write(f"\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}\n")
 
-    def __run_profiling(self):
-        self.server.wait_for_profiling()
-
-        print("Profile complete, generating flamegraph...")
-        self.server.profiling_report(self.task_name)
-        print("Done generating flamegraph")
-
     def run(self):
         """Run the benchmark."""
         benchmark_update_interval = 0.1  # s
@@ -229,17 +231,18 @@ class TestPerf:
             self.__update_graph()
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
-            if not self.profiling and now > end_time:
+            if now > end_time:
                 self.command.kill()
+                if self.profiling:
+                    self.server.profiling_end()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 self.lat_data = []
                 warming_up = False
                 if self.profiling:
-                    self.server.profiling_start(self.sample_rate, self.duration, self.command.kill())
+                    self.server.profiling_start(self.sample_rate)
 
         self.__read_updates()
         self.__record_result()
-        if self.server.is_profiling():
-            self.server.wait_for_profiling()
+        if self.profiling:
             self.server.profiling_report(self.task_name)

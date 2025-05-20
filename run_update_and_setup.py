@@ -1,5 +1,6 @@
 """Updates/installs all packages and dependencies and sets up servers for use."""
 
+import concurrent.futures
 import logging
 import subprocess
 import sys
@@ -74,9 +75,12 @@ def update_local_host():
         logger.info("something was missing - retrieving and building needed binaries")
         valkey = Path("valkey")
         if not valkey.is_dir():
-            utility.run_command(f"git clone https://github.com/valkey-io/valkey.git {valkey}")
+            utility.run_command(f"git clone https://github.com/SoftlyRaining/valkey.git {valkey}")
 
-        utility.run_command("git reset --hard && git pull && make distclean && make -j", cwd=valkey)
+        utility.run_command("git fetch", cwd=valkey)
+        utility.run_command("git reset --hard origin/benchmark-multi-replace", cwd=valkey)
+        utility.run_command("make distclean", cwd=valkey)
+        utility.run_command("make -j", cwd=valkey)
 
         for file in buildable_files:
             utility.run_command(f"cp {valkey/'src'/file} .")
@@ -84,7 +88,7 @@ def update_local_host():
 
 def ensure_server_git_repo(server_ip, repo_url, target_dir):
     """Clone git repo if it doesn't exist on server"""
-    logger.info("Ensuring Repo %s...", target_dir)
+    logger.info("%s: Ensuring repo %s...", server_ip, target_dir)
     remote_commands = f"""
         if [ ! -d "{target_dir}" ]; then
             git clone "{repo_url}" "{target_dir}"
@@ -95,10 +99,10 @@ def ensure_server_git_repo(server_ip, repo_url, target_dir):
 
 def update_server(server_ip):
     """Update a server with the required packages and repositories."""
-    logger.info("ensure server %s is in known-hosts", server_ip)
+    logger.info("%s: ensure server is in known-hosts", server_ip)
     std, _ = utility.run_command(f"ssh-keygen -F {server_ip}", check=False)
     if not std:
-        logger.warning("Adding new fingerprint for %s to known_hosts...", server_ip)
+        logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
         Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
         utility.run_command(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
 
@@ -107,7 +111,7 @@ def update_server(server_ip):
         logger.error("Error: Cannot connect to %s", server_ip)
         sys.exit(1)
 
-    logger.info("Setting up packages on server %s...", server_ip)
+    logger.info("%s: Setting up packages...", server_ip)
     remote_commands = f"""
     set -e
     sudo yum update -y
@@ -118,7 +122,7 @@ def update_server(server_ip):
 
     ensure_server_git_repo(server_ip, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
-    logger.info("Ensuring repos cloned on (%s)...", server_ip)
+    logger.info("%s: Ensuring repos cloned...", server_ip)
     for repo_url, target_dir in REPOSITORIES:
         ensure_server_git_repo(server_ip, repo_url, target_dir)
 
@@ -131,6 +135,10 @@ if __name__ == "__main__":
     logger.info("⊹˚₊‧───Starting update/setup───‧₊˚⊹")
     remove_motd()
     update_local_host()
-    for server in SERVERS:
-        update_server(server)
+
+    # update servers in parallel
+    logger.info("Updating %d servers in parallel...", len(SERVERS))
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(update_server, SERVERS)
+
     logger.info("Update/setup complete!")

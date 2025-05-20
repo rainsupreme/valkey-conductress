@@ -467,77 +467,65 @@ def main():
     print(f"Task queued successfully: {task}")
 
 
-def rain():
+def rain() -> None:
     """Rain nonsense, who knows. I'm lazy"""
     queue = TaskQueue()
 
-    task = Task.sync_task(
-        test="set",
-        source="valkey",
-        specifier="unstable",
-        val_size=512,
-        val_count=5 * GB // 512 * 2,  # should be enough data for about 2 minutes of syncing
-        io_threads=9,
-        replicas=1,
-    )
-    queue.submit_task(task)
-
-    # sources = ["valkey"]
-    # preload_keys = [True]
-    # # versions = ['7.2','8.0','8.1']
-    # specifiers = ["add716b7ddce48d4e13ebffe65401c7d0e26b91a"]
-    # pipelining = [4]
-    # io_threads = [9]
-    # # sizes = [512, 87, 8]
-    # sizes = [512]
-    # tests = ["set"]
-
-    # # pipelining = [1, 4]
-    # # io_threads = [1, 9]
-    # # tests = ['get', 'set']
-
-    # # sizes = list(range(8, 256, 8)) + list(range(16, 512+16, 16))
-    # # sizes = list(set(sizes))
-    # # tests = ['set']
-    # # expire_keys = [True, False]
-    # expire_keys = [False]
-
-    # all_tests = list(
-    #     product(
-    #         sizes,
-    #         pipelining,
-    #         io_threads,
-    #         tests,
-    #         specifiers,
-    #         sources,
-    #         preload_keys,
-    #         expire_keys,
-    #     )
+    # task = Task.sync_task(
+    #     test="set",
+    #     source="valkey",
+    #     specifier="unstable",
+    #     val_size=512,
+    #     val_count=5 * GB // 512 * 2,  # should be enough data for about 2 minutes of syncing
+    #     io_threads=9,
+    #     replicas=1,
     # )
-    # for _ in range(100):
-    #     for size, pipe, thread, test, specifier, source, preload, expire in all_tests:
-    #         task = Task.perf_task(
-    #             test=test,
-    #             source=source,
-    #             specifier=specifier,
-    #             val_size=size,
-    #             io_threads=thread,
-    #             pipelining=pipe,
-    #             warmup=5,
-    #             duration=60,
-    #             profiling_sample_rate=-1,
-    #             has_expire=expire,
-    #             preload_keys=preload,
-    #             replicas=-1,
-    #         )
-    #         # task = BenchmarkTask.mem_task(
-    #         #     test=test,
-    #         #     source=source,
-    #         #     specifier=specifier,
-    #         #     val_size=size,
-    #         #     has_expire=expire,
-    #         # )
-    #         queue.submit_task(task)
+    # queue.submit_task(task)
+
+    sources: list[str] = ["SoftlyRaining"]
+    preload_keys: list[bool] = [True]
+    specifiers: list[str] = ["unstable", "zrank-refactor"]
+    pipelining: list[int] = [4]
+    io_threads: list[int] = [9]
+    sizes: list[int] = [512]
+    tests: list[str] = ["zrank"]
+    expire_keys: list[bool] = [False]
+
+    all_tests = list(
+        product(
+            sizes,
+            pipelining,
+            io_threads,
+            tests,
+            specifiers,
+            sources,
+            preload_keys,
+            expire_keys,
+        )
+    )
+    for size, pipe, thread, test, specifier, source, preload, expire in all_tests:
+        task = Task.perf_task(
+            test=test,
+            source=source,
+            specifier=specifier,
+            val_size=size,
+            io_threads=thread,
+            pipelining=pipe,
+            warmup=5,
+            duration=60,
+            profiling_sample_rate=-1,
+            has_expire=expire,
+            preload_keys=preload,
+            replicas=-1,
+        )
+        # task = BenchmarkTask.mem_task(
+        #     test=test,
+        #     source=source,
+        #     specifier=specifier,
+        #     val_size=size,
+        #     has_expire=expire,
+        # )
+        queue.submit_task(task)
     print("All done 🌧 ♥")
 
 

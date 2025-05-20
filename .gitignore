@@ -8,4 +8,5 @@ output.txt
 testdump.txt
 benchmark_queue/*
 valkey
+FlameGraph
 results

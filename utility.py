@@ -26,22 +26,37 @@ def get_console_width(default: int = 80) -> int:
         return default
 
 
-def __fit_number_to_unit(number: float, base: Union[int, tuple], units: tuple, decimals: int) -> str:
-    """Fit a number to a unit."""
+def __fit_number_to_unit(
+    number: float, base: Union[int, tuple], units: tuple, decimals: int, threshold: float
+) -> str:
+    """
+    Convert number to a human-readable format with appropriate units.
+
+    Args:
+        number (float): number to convert
+        base (Union[int, tuple]): base for conversion - int if constant divisor between units (e.g. 1000),
+            or tuple of bases for each unit if non-constant (as in time)
+        units (tuple): sequence of unit suffixes
+        decimals (int): decimals places to show
+        threshold (float, optional): Switches to next unit once result in that unit is >= threshold.
+
+    Returns:
+        str: formatted string
+    """
     number = float(number)
     if isinstance(base, int):
         unit_index = 0
-        while number >= base / 2 and unit_index + 1 < len(units):
+        while number >= base * threshold and unit_index + 1 < len(units):
             unit_index += 1
             number /= base
     else:
         assert len(base) == len(units)
         unit_index = 0
-        while unit_index + 1 < len(base) and number >= base[unit_index + 1] / 2:
+        while unit_index + 1 < len(base) and number >= base[unit_index + 1] * threshold:
             unit_index += 1
             number /= base[unit_index]
 
-    if number.is_integer():
+    if number.is_integer() or decimals == 0:
         return f"{number:,g}{units[unit_index]}"
     else:
         return f"{number:,.{decimals}f}{units[unit_index]}"
@@ -50,24 +65,31 @@ def __fit_number_to_unit(number: float, base: Union[int, tuple], units: tuple, d
 def human(number: float, decimals: int = 1) -> str:
     """Convert a number to a human-readable format."""
     suffixes = ("", "K", "M", "G", "T", "P", "E", "Z", "Y")
-    return __fit_number_to_unit(number, 1000, suffixes, decimals)
+    return __fit_number_to_unit(number, 1000, suffixes, decimals, threshold=0.5)
 
 
 def human_byte(number: float, decimals: int = 1) -> str:
     """Convert bytes to human-readable format."""
     suffixes = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
-    return __fit_number_to_unit(number, 1024, suffixes, decimals)
+    return __fit_number_to_unit(number, 1024, suffixes, decimals, threshold=0.5)
 
 
-def human_time(number: float, decimals: int = 1) -> str:
-    """Convert seconds to human-readable format."""
-    number = float(number)
+def human_time(number: float) -> str:
+    """
+    Format a number as time in seconds, minutes, hours, or days
+
+    Args:
+        number (float): seconds
+
+    Returns:
+        str: formatted string
+    """
     divisors = (1, 60, 60, 24)
     units = tuple("smhd")
-    return __fit_number_to_unit(number, divisors, units, decimals)
+    return __fit_number_to_unit(number, divisors, units, decimals=0, threshold=1)
 
 
-def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─"):
+def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─") -> str:
     console_width = get_console_width()
 
     # Decorative elements

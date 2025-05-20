@@ -5,14 +5,15 @@ import subprocess
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Callable, Optional, Sequence
+from typing import Optional, Sequence
 
 import config
-from utility import RealtimeCommand, hash_file, run_command
+from utility import hash_file, run_command
 
 logger = logging.getLogger(__name__)
 
 VALKEY_BINARY = "valkey-server"
+PERF_STATUS_FILE = "/tmp/perf_running"
 
 
 class Server:
@@ -47,7 +48,7 @@ class Server:
 
     def start(self, binary_source: str, specifier: str, args: list[str]) -> None:
         """Ensure specified build is running on the server."""
-        self.__ensure_stopped()
+        self.__ensure_stopped_and_clean()
         self.source = binary_source
         self.specifier = specifier
         self.args = args
@@ -94,6 +95,28 @@ class Server:
         """Check if the server is a replica and in sync with the primary."""
         info = self.info("replication")
         return info.get("role") == "slave" and info.get("master_link_status") == "up"
+
+    def get_replicas(self) -> list[str]:
+        """Get a list of replicas for the server."""
+        info = self.info("replication")
+        count = int(info.get("connected_slaves", 0))
+        replicas: list[str] = []
+        for i in range(count):
+            replica = info.get(f"slave{i}")
+            assert replica is not None, f"Replica {i} not found in replication info"
+            ip = replica.split(",")[0].split("=")[1]
+            replicas.append(ip)
+        return replicas
+
+    def replicate(self, primary_ip: Optional[str], port="6379") -> None:
+        """Set the server to replicate from the specified primary."""
+        if primary_ip is None:
+            primary_ip = "no"
+            port = "one"
+        command = ["replicaof", primary_ip, port]
+        response = self.run_valkey_command(command)
+        if response != "OK":
+            raise RuntimeError(f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}")
 
     def used_memory(self) -> int:
         """Get the amount of memory used by the server."""
@@ -150,18 +173,23 @@ class Server:
             "sadd": "sadd",
             "hset": "hset",
             "zadd": "zadd",
-            "zrange": "zadd",
+            "zrank": "zadd",
         }
         test = load_type_for_test[test]
         self.__valkey_benchmark_on_keyspace(keyspace_size, f"-d {valsize} -t {test}".split())
 
-    def expire_keyspace(self, keyspace_size: int) -> None:
+    def expire_keyspace(self, keyspace_size: int, test: str) -> None:
         """
         Adds expiry data to all keys in keyspace with a long duration.
         No keys should actually expire in a test of any reasonable duration.
         """
         day = 60 * 60 * 24
-        self.__valkey_benchmark_on_keyspace(keyspace_size, f"EXPIRE key:__rand_int__ {7 * day}".split())
+        if test == "set" or test == "get":
+            self.__valkey_benchmark_on_keyspace(keyspace_size, f"EXPIRE key:__rand_int__ {7 * day}".split())
+        else:
+            # other test types only have one key, and expire is (currently) only per-key
+            # Note: hash may get per-field expiry in the future
+            logger.warning("Expire keyspace not supported for test type %s. Skipping.", test)
 
     def check_file_exists(self, path: Path) -> bool:
         """Check if a file exists on the server."""
@@ -189,43 +217,40 @@ class Server:
         assert self.source is not None
         return Path("~") / self.source / "src"
 
-    def __ensure_stopped(self):
+    def __ensure_stopped_and_clean(self):
         self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
 
         # clean up any rdb files from replication or snapshotting
         # valkey will automatically load "dump.rdb" if it is present
         self.run_host_command("rm -f *.rdb", check=False)
+        # clean up any profiling files
+        self.__profiling_cleanup()
 
     def __is_binary_cached(self) -> bool:
         return self.check_file_exists(self.__get_cached_build_path() / VALKEY_BINARY)
 
-    def __should_pull_after_checkout(self, specifier) -> bool:
+    def __is_remote_branch(self, specifier) -> bool:
+        """Checks if specifier is a valid branch on origin. Fetches first."""
         source_path = self.__get_source_binary_path()
-        command = f"cd {source_path}; git rev-parse --symbolic-full-name {specifier} --"
+        command = (
+            f"cd {source_path} && git fetch --quiet --prune && "
+            f"git rev-parse --symbolic-full-name origin/{specifier} --"
+        )
         result, _ = self.run_host_command(command)
         result = result.strip()
+
         if result == "":
             raise ValueError(f"{specifier} is an invalid specifier in {self.source} (empty result)")
         if result == "--":
             return False  # a specific commit by hash, unstable~2, etc.
-        if result.startswith("refs/heads/"):
-            return True  # local branch
-        if result.startswith("refs/remotes/"):
-            return True  # remote reference
-        if result.startswith("refs/tags/"):
-            return False  # tag
-        raise ValueError(
-            f"{specifier} is an unhandled type of specifier in {self.source} (got {repr(result)})"
-        )
+
+        return result.startswith("refs/remotes/origin/")
 
     def __ensure_build_cached(self) -> Path:
         source_path = self.__get_source_binary_path()
-        self.run_host_command(
-            f"cd {source_path}; git reset --hard && git fetch && git checkout {self.specifier}"
-        )
-        if self.__should_pull_after_checkout(self.specifier):
-            # ensure branch/etc is up to date with remote
-            self.run_host_command(f"cd {source_path}; git pull")
+        is_branch = self.__is_remote_branch(self.specifier)
+        sync_target = f"origin/{self.specifier}" if is_branch else self.specifier
+        self.run_host_command(f"cd {source_path} && git reset --hard {sync_target}")
         self.hash = self.__get_current_commit_hash()
 
         cached_build_path = self.__get_cached_build_path()
@@ -297,41 +322,36 @@ class Server:
         out, _ = self.run_host_command(f"cd {source_path}; git rev-parse HEAD")
         return out.strip()
 
-    def profiling_start(self, sample_rate: int, end_callback: Optional[Callable[[], None]]) -> None:
+    def profiling_start(self, sample_rate: int) -> None:
         """Start profiling the server using perf."""
-        if self.profiling_thread is not None:
+        if self.is_profiling():
             raise RuntimeError("Profiling already started")
 
-        self.profiling_thread = Thread(target=self.__do_profile, args=(sample_rate, end_callback))
+        self.profiling_thread = Thread(target=self.__profiling_run, args=(sample_rate,))
         self.profiling_thread.start()
+
+    def __profiling_run(self, sample_rate: int) -> None:
+        """Profile performance using perf for specified duration. Leaves data file on server."""
+        self.run_host_command(f"touch {PERF_STATUS_FILE}")
+        command = (
+            f"sudo perf record -F {sample_rate} -a -g -o {Server.remote_perf_data_path/'perf.data'} "
+            f"-- sh -c 'while [ -f {PERF_STATUS_FILE} ]; do sleep 1; done'"
+        )
+        self.run_host_command(command)
 
     def is_profiling(self) -> bool:
         """Check if profiling is currently running."""
-        if self.profiling_thread is None:
-            return False
-        if not self.profiling_thread.is_alive():
-            self.profiling_thread = None
-            return False
-        return True
+        if self.profiling_thread and self.profiling_thread.is_alive():
+            return True
+        return False
 
     def profiling_end(self) -> None:
         """End profiling and generate a report."""
         if self.profiling_thread is None:
             raise RuntimeError("Profiling not started")
-        self.run_host_command("rm /tmp/perf_running")
+        self.run_host_command(f"rm {PERF_STATUS_FILE}")
         self.profiling_thread.join()
         self.profiling_thread = None
-
-    def __do_profile(self, sample_rate: int, end_callback: Optional[Callable[[], None]]) -> None:
-        """Profile performance using perf for specified duration. Leaves data file on server."""
-        self.run_host_command("touch /tmp/perf_running")
-        command = (
-            f"sudo perf record -F {sample_rate} -a -g -o {Server.remote_perf_data_path/'perf.data'} "
-            "-- sh -c 'while [ -f /tmp/perf_running ]; do sleep 1; done'"
-        )
-        self.run_host_command(command)
-        if end_callback is not None:
-            end_callback()
 
     def profiling_report(self, task_name: str) -> None:
         """Retrieve profile data from server and generate flamegraph report."""
@@ -353,6 +373,11 @@ class Server:
             remote_path = Server.remote_perf_data_path / file
             local_path = test_results / file
             self.scp_file_from_server(remote_path, local_path)
+
+    def __profiling_cleanup(self):
+        files = ["perf.data", "out.perf", "out.folded", "flamegraph.svg"]
+        command = " && ".join([f"rm -f {file}" for file in files])
+        self.run_host_command(command)
 
     # async def get_valkey_server_threads(self) -> list[tuple[int, int]]:
     #     """Get the PID and TID of all valkey-server threads."""
