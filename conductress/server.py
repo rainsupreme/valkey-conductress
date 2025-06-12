@@ -7,10 +7,8 @@ from pathlib import Path
 from threading import Thread
 from typing import Optional, Sequence
 
-import config
-from utility import hash_file, run_command
-
-logger = logging.getLogger(__name__)
+from . import config
+from .utility import hash_file, run_command
 
 VALKEY_BINARY = "valkey-server"
 PERF_STATUS_FILE = "/tmp/perf_running"
@@ -19,8 +17,17 @@ PERF_STATUS_FILE = "/tmp/perf_running"
 class Server:
     """Represents a server running a Valkey instance."""
 
-    build_cache_dir = Path("~") / "build_cache"
-    remote_perf_data_path = Path("~")
+    # These are remote paths - they exist on the valkey server
+    remote_build_cache = Path("~") / "build_cache"
+    remote_repos = Path("~")
+
+    # profiling related paths
+    flamegraph = Path("~") / "FlameGraph"
+    remote_perf_data = Path("~")
+    perf_data_path = remote_perf_data / "perf.data"
+    out_perf_path = remote_perf_data / "out.perf"
+    out_folded_path = remote_perf_data / "out.folded"
+    flamegraph_path = remote_perf_data / "flamegraph.svg"
 
     @classmethod
     def with_build(
@@ -36,6 +43,8 @@ class Server:
 
     def __init__(self, ip: str) -> None:
         self.ip = ip
+
+        self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
         self.source: Optional[str] = None
         self.specifier: Optional[str] = None
@@ -77,7 +86,7 @@ class Server:
 
     def info(self, section: str) -> dict[str, str]:
         """Run the 'info' command on the server and return the specified section."""
-        result, _ = run_command(f"./valkey-cli -h {self.ip} info {section}")
+        result, _ = run_command(f"{config.VALKEY_CLI} -h {self.ip} info {section}")
         result = result.strip().split("\n")
         keypairs: dict[str, str] = {}
         for item in result:
@@ -142,54 +151,28 @@ class Server:
         """
         return self.hash
 
-    def __valkey_benchmark_on_keyspace(self, keyspace_size: int, operation: list[str]) -> None:
+    def run_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
         """Run valkey-benchmark, sequentially covering the entire keyspace."""
-        run_command(
-            [
-                "./valkey-benchmark",
-                "-h",
-                self.ip,
-                "-c",
-                "650",
-                "-P",
-                "4",
-                "--threads",
-                "50",
-                "-q",
-                "--sequential",
-                "-r",
-                str(keyspace_size),
-                "-n",
-                str(keyspace_size),
-            ]
-            + operation
-        )
-
-    def fill_keyspace(self, valsize: int, keyspace_size: int, test: str) -> None:
-        """Load the keyspace with data for a specific test type."""
-        load_type_for_test = {
-            "set": "set",
-            "get": "set",
-            "sadd": "sadd",
-            "hset": "hset",
-            "zadd": "zadd",
-            "zrank": "zadd",
-        }
-        test = load_type_for_test[test]
-        self.__valkey_benchmark_on_keyspace(keyspace_size, f"-d {valsize} -t {test}".split())
-
-    def expire_keyspace(self, keyspace_size: int, test: str) -> None:
-        """
-        Adds expiry data to all keys in keyspace with a long duration.
-        No keys should actually expire in a test of any reasonable duration.
-        """
-        day = 60 * 60 * 24
-        if test == "set" or test == "get":
-            self.__valkey_benchmark_on_keyspace(keyspace_size, f"EXPIRE key:__rand_int__ {7 * day}".split())
-        else:
-            # other test types only have one key, and expire is (currently) only per-key
-            # Note: hash may get per-field expiry in the future
-            logger.warning("Expire keyspace not supported for test type %s. Skipping.", test)
+        sequential_command: list[str] = [
+            str(config.VALKEY_BENCHMARK),
+            "-h",
+            self.ip,
+            "-c",
+            "650",
+            "-P",
+            "4",
+            "--threads",
+            "50",
+            "-q",
+            "--sequential",
+            "-r",
+            str(keyspace_size),
+            "-n",
+            str(keyspace_size),
+        ]
+        sequential_command.extend(command.split())
+        self.logger.info("Benchmark Command: %s", " ".join(sequential_command))
+        run_command(sequential_command)
 
     def check_file_exists(self, path: Path) -> bool:
         """Check if a file exists on the server."""
@@ -198,24 +181,27 @@ class Server:
 
     def run_host_command(self, command: str, check=True):
         """Run a terminal command on the server and return its output."""
+        self.logger.info("Host command: %s", command)
         return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=False, check=check)
 
     def run_interactive_host_command(self, command: str, check=True):
         """Run a terminal command on the server and return its output."""
+        self.logger.info("Interactive host command: %s", command)
         return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=True, check=check)
 
     def run_valkey_command(self, command: Sequence[str]):
         """Run a valkey command on the server and return its output."""
-        response, _ = run_command(["./valkey-cli", "-h", self.ip] + list(command))
+        self.logger.info("Valkey cli command: %s", command)
+        response, _ = run_command([str(config.VALKEY_CLI), "-h", self.ip] + list(command))
         return response.strip()
 
     def __get_cached_build_path(self) -> Path:
         assert self.source is not None and self.hash is not None
-        return Server.build_cache_dir / self.source / self.hash
+        return Server.remote_build_cache / self.source / self.hash
 
     def __get_source_binary_path(self) -> Path:
         assert self.source is not None
-        return Path("~") / self.source / "src"
+        return Server.remote_repos / self.source / "src"
 
     def __ensure_stopped_and_clean(self):
         self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
@@ -229,27 +215,31 @@ class Server:
     def __is_binary_cached(self) -> bool:
         return self.check_file_exists(self.__get_cached_build_path() / VALKEY_BINARY)
 
-    def __is_remote_branch(self, specifier) -> bool:
+    def __normalize_specifier(self, specifier) -> str:
         """Checks if specifier is a valid branch on origin. Fetches first."""
         source_path = self.__get_source_binary_path()
-        command = (
-            f"cd {source_path} && git fetch --quiet --prune && "
-            f"git rev-parse --symbolic-full-name origin/{specifier} --"
-        )
-        result, _ = self.run_host_command(command)
+        self.run_host_command(f"cd {source_path} && git fetch --quiet --prune")
+        try:
+            result, _ = self.run_host_command(
+                f"cd {source_path} && git rev-parse --symbolic-full-name origin/{specifier} --"
+            )
+        except subprocess.CalledProcessError:
+            print(f"Failed to resolve {specifier} in {self.source}, trying as-is")
+            result, _ = self.run_host_command(
+                f"cd {source_path} && git rev-parse --symbolic-full-name {specifier} --"
+            )
         result = result.strip()
-
         if result == "":
             raise ValueError(f"{specifier} is an invalid specifier in {self.source} (empty result)")
         if result == "--":
-            return False  # a specific commit by hash, unstable~2, etc.
-
-        return result.startswith("refs/remotes/origin/")
+            return specifier
+        if result.startswith("refs/remotes/origin/"):
+            return f"origin/{specifier}"
+        return specifier
 
     def __ensure_build_cached(self) -> Path:
         source_path = self.__get_source_binary_path()
-        is_branch = self.__is_remote_branch(self.specifier)
-        sync_target = f"origin/{self.specifier}" if is_branch else self.specifier
+        sync_target = self.__normalize_specifier(self.specifier)
         self.run_host_command(f"cd {source_path} && git reset --hard {sync_target}")
         self.hash = self.__get_current_commit_hash()
 
@@ -257,7 +247,7 @@ class Server:
         cached_binary_path = cached_build_path / VALKEY_BINARY
 
         if not self.__is_binary_cached():
-            logger.info("building %s... (no cached build)", self.specifier)
+            self.logger.info("building %s:%s...", self.source, self.specifier)
 
             self.run_host_command(
                 f"cd {source_path}; "
@@ -275,7 +265,7 @@ class Server:
         """Delete the entire build cache on all servers. This is a destructive operation."""
         for server_ip in server_ips:
             run_command(
-                f"rm -rf {Server.build_cache_dir}",
+                f"rm -rf {Server.remote_build_cache}",
                 remote_ip=server_ip,
                 remote_pseudo_terminal=False,
                 check=False,
@@ -286,7 +276,7 @@ class Server:
         command = [
             "scp",
             "-i",
-            config.SSH_KEYFILE,
+            str(config.SSH_KEYFILE),
             f"{self.ip}:{str(server_src)}",
             str(local_dest),
         ]
@@ -297,7 +287,7 @@ class Server:
         command = [
             "scp",
             "-i",
-            config.SSH_KEYFILE,
+            str(config.SSH_KEYFILE),
             str(local_src),
             f"{self.ip}:{str(server_dest)}",
         ]
@@ -306,13 +296,12 @@ class Server:
     def __ensure_binary_uploaded(self, local_path) -> Path:
         self.hash = hash_file(local_path)
 
-        cached_build_path = self.__get_cached_build_path()
-        cached_binary_path = cached_build_path / VALKEY_BINARY
+        cached_binary_path = self.__get_cached_build_path() / VALKEY_BINARY
 
         if not self.__is_binary_cached():
-            logger.info("copying %s to server... (not cached)", local_path)
+            self.logger.info("copying %s to server... (not cached)", local_path)
 
-            self.run_host_command(f"mkdir -p {cached_build_path}")
+            self.run_host_command(f"mkdir -p {cached_binary_path.parent}")
             self.scp_file_to_server(local_path, cached_binary_path)
 
         return cached_binary_path
@@ -334,7 +323,7 @@ class Server:
         """Profile performance using perf for specified duration. Leaves data file on server."""
         self.run_host_command(f"touch {PERF_STATUS_FILE}")
         command = (
-            f"sudo perf record -F {sample_rate} -a -g -o {Server.remote_perf_data_path/'perf.data'} "
+            f"sudo perf record -F {sample_rate} -a -g -o {Server.perf_data_path} "
             f"-- sh -c 'while [ -f {PERF_STATUS_FILE} ]; do sleep 1; done'"
         )
         self.run_host_command(command)
@@ -356,26 +345,28 @@ class Server:
     def profiling_report(self, task_name: str) -> None:
         """Retrieve profile data from server and generate flamegraph report."""
         self.run_host_command(
-            f"sudo chmod a+r {Server.remote_perf_data_path / 'perf.data'}",
+            f"sudo chmod a+r {Server.perf_data_path}",
         )
-        self.run_host_command("perf script -i perf.data > out.perf")
+        self.run_host_command(f"perf script -i {Server.perf_data_path} > {Server.out_perf_path}")
         print("collapsing stacks")
         self.run_host_command(
-            f"{Server.remote_perf_data_path/'FlameGraph/stackcollapse-perf.pl'} out.perf > out.folded"
+            f"{Server.flamegraph/'stackcollapse-perf.pl'} "
+            f"{Server.out_perf_path} > {Server.out_folded_path}"
         )
-        self.run_host_command("FlameGraph/flamegraph.pl out.folded > flamegraph.svg")
+        self.run_host_command(
+            f"{Server.flamegraph/'flamegraph.pl'} {Server.out_folded_path} > {Server.flamegraph_path}"
+        )
 
         print("copying perf data from server")
-        test_results = Path("results").resolve() / task_name
+        test_results = config.CONDUCTRESS_RESULTS / task_name
         test_results.mkdir(parents=True, exist_ok=True)
 
-        for file in ["perf.data", "flamegraph.svg"]:
-            remote_path = Server.remote_perf_data_path / file
-            local_path = test_results / file
-            self.scp_file_from_server(remote_path, local_path)
+        for remote_file in [Server.perf_data_path, Server.flamegraph_path]:
+            local_file = test_results / remote_file.name
+            self.scp_file_from_server(remote_file, local_file)
 
     def __profiling_cleanup(self):
-        files = ["perf.data", "out.perf", "out.folded", "flamegraph.svg"]
+        files = [Server.perf_data_path, Server.out_perf_path, Server.out_folded_path, Server.flamegraph_path]
         command = " && ".join([f"rm -f {file}" for file in files])
         self.run_host_command(command)
 

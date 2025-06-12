@@ -6,8 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import config
-import utility
+from . import config, utility
+
+ROOT = config.PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def command_exists(cmd):
     return subprocess.call(f"command -v {cmd} > /dev/null 2>&1", shell=True) == 0
 
 
-def remove_motd():
+def remove_motd() -> None:
     """Remove the insights-client motd if it exists."""
     motd_path = Path("/etc/motd.d/insights-client")
     if motd_path.exists():
@@ -48,16 +49,20 @@ def remove_motd():
         motd_path.unlink()
 
 
-def update_local_host():
+def update_local_host() -> None:
     """Update the local host with the required packages and repositories."""
+    requirements = ROOT / "requirements.txt"
+    requirements_dev = ROOT / "requirements-dev.txt"
 
-    logger.info("Installing/updating required distro/pip packages...")
+    logger.info("Installing/updating required distro packages...")
     utility.run_command("sudo yum update -y")
     utility.run_command(["sudo", "yum", "groupinstall", "-y", "Development Tools"])
     utility.run_command("sudo yum install -y " + " ".join(CLIENT_YUM_PACKAGES))
+
+    logger.info("Installing/updating Python packages...")
     utility.run_command("python3 -m pip install --upgrade pip")
-    utility.run_command("pip install -r requirements.txt")
-    utility.run_command("pip install -r requirements-dev.txt")
+    utility.run_command(f"pip install -r {requirements}")
+    utility.run_command(f"pip install -r {requirements_dev}")
 
     logger.info("Checking for ssh keyfile")
     if not SSH_KEY_FILE.is_file():
@@ -70,10 +75,10 @@ def update_local_host():
         sys.exit(1)
 
     logger.info("Checking for required binaries...")
-    buildable_files = [Path("valkey-cli"), Path("valkey-benchmark")]
+    buildable_files: list[Path] = [config.VALKEY_CLI, config.VALKEY_BENCHMARK]
     if not all(file.is_file() for file in buildable_files):
         logger.info("something was missing - retrieving and building needed binaries")
-        valkey = Path("valkey")
+        valkey = ROOT / "valkey"
         if not valkey.is_dir():
             utility.run_command(f"git clone https://github.com/SoftlyRaining/valkey.git {valkey}")
 
@@ -83,7 +88,7 @@ def update_local_host():
         utility.run_command("make -j", cwd=valkey)
 
         for file in buildable_files:
-            utility.run_command(f"cp {valkey/'src'/file} .")
+            utility.run_command(f"cp {valkey/'src'/file.name} {file}")
 
 
 def ensure_server_git_repo(server_ip, repo_url, target_dir):

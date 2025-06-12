@@ -4,12 +4,12 @@ This script runs tasks from a queue, executing performance and memory tests"""
 import logging
 import time
 
-from config import CONDUCTRESS_LOG, SERVERS
-from task_queue import Task, TaskQueue
-from test_full_sync import TestFullSync
-from test_mem import TestMem
-from test_perf import TestPerf
-from utility import MINUTE
+from .config import CONDUCTRESS_LOG, SERVERS
+from .task_full_sync import TestFullSync
+from .task_mem_efficiency import TestMem
+from .task_perf_benchmark import TestPerf
+from .task_queue import Task, TaskQueue
+from .utility import MINUTE
 
 logger = logging.getLogger(__name__)
 
@@ -92,3 +92,4 @@ if __name__ == "__main__":
 # TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration
 # TODO print or log - choose only one
+# TODO add setup.py?

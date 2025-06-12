@@ -7,9 +7,20 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 650
 PERF_BENCH_THREADS = 64
 
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
+CONDUCTRESS_DATA_DUMP = PROJECT_ROOT / "testdump.txt"
+
+VALKEY_CLI = PROJECT_ROOT / "valkey-cli"
+VALKEY_BENCHMARK = PROJECT_ROOT / "valkey-benchmark"
+
+CONDUCTRESS_RESULTS = PROJECT_ROOT / "results"
+CONDUCTRESS_OUTPUT = CONDUCTRESS_RESULTS / "output.txt"
+
 # ssh key to use when accessing the server
 # Replace this with the path to your private key file
-SSH_KEYFILE = "server-keyfile.pem"
+SSH_KEYFILE = PROJECT_ROOT / "server-keyfile.pem"
 
 # Repositories to make available for testing
 # format: (git_url, directory_name)
@@ -27,14 +38,10 @@ REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 MANUALLY_UPLOADED = "manually_uploaded"
 assert MANUALLY_UPLOADED not in REPO_NAMES, "MANUALLY_UPLOADED must not overlap with any repository names"
 
-CONDUCTRESS_LOG = "./log.txt"
-CONDUCTRESS_OUTPUT = "./results/output.txt"
-CONDUCTRESS_DATA_DUMP = "./testdump.txt"
-
 
 def load_server_ips() -> list:
     """Load server IPs from a JSON configuration file."""
-    config_path = Path(__file__).parent / "servers.json"
+    config_path = PROJECT_ROOT / "servers.json"
     try:
         return json.loads(config_path.read_text())["valkey_servers"]
     except FileNotFoundError as exc:

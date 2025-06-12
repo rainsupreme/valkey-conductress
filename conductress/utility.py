@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-from config import SSH_KEYFILE
+from .config import SSH_KEYFILE
 
 MILLION = 1_000_000
 BILLION = 1_000_000_000
@@ -15,78 +15,104 @@ MB = 1024 * 1024
 GB = 1024 * MB
 
 MINUTE = 60
-HOUR = 60 * MINUTE
 
 
-def get_console_width(default: int = 80) -> int:
+def get_console_width() -> int:
     """Determine the width of the console."""
     try:
         return os.get_terminal_size().columns
     except OSError:
-        return default
+        return 80
 
 
-def __fit_number_to_unit(
-    number: float, base: Union[int, tuple], units: tuple, decimals: int, threshold: float
-) -> str:
-    """
-    Convert number to a human-readable format with appropriate units.
+class HumanNumber:
+    base: Union[int, Sequence[int]] = 1000
+    units: Sequence = ("", "K", "M", "G", "T", "P", "E", "Z", "Y")
+    threshold = 0.5  # Switch to next unit once result in that unit is >= threshold.
 
-    Args:
-        number (float): number to convert
-        base (Union[int, tuple]): base for conversion - int if constant divisor between units (e.g. 1000),
-            or tuple of bases for each unit if non-constant (as in time)
-        units (tuple): sequence of unit suffixes
-        decimals (int): decimals places to show
-        threshold (float, optional): Switches to next unit once result in that unit is >= threshold.
+    @classmethod
+    def to_human(cls, number: float, decimals: int = 1) -> str:
+        """
+        Convert number to a human-readable format with appropriate units.
 
-    Returns:
-        str: formatted string
-    """
-    number = float(number)
-    if isinstance(base, int):
+        Args:
+            number (float): number to convert
+            base (Union[int, tuple]): base for conversion - int if constant divisor between units (e.g. 1000),
+                or tuple of bases for each unit if non-constant (as in time)
+            units (tuple): sequence of unit suffixes
+            decimals (int): decimals places to show
+            threshold (float, optional): Switches to next unit once result in that unit is >= threshold.
+
+        Returns:
+            str: formatted string
+        """
+        number = float(number)
         unit_index = 0
-        while number >= base * threshold and unit_index + 1 < len(units):
-            unit_index += 1
-            number /= base
-    else:
-        assert len(base) == len(units)
-        unit_index = 0
-        while unit_index + 1 < len(base) and number >= base[unit_index + 1] * threshold:
-            unit_index += 1
-            number /= base[unit_index]
+        if isinstance(cls.base, int):
+            while number >= cls.base * cls.threshold and unit_index + 1 < len(cls.units):
+                unit_index += 1
+                number /= cls.base
+        else:
+            bases: Sequence[int] = cls.base
+            assert len(bases) == len(cls.units)
+            unit_index = 0
+            while unit_index + 1 < len(bases) and number >= bases[unit_index + 1] * cls.threshold:
+                unit_index += 1
+                number /= bases[unit_index]
 
-    if number.is_integer() or decimals == 0:
-        return f"{number:,g}{units[unit_index]}"
-    else:
-        return f"{number:,.{decimals}f}{units[unit_index]}"
+        if number.is_integer():
+            return f"{number:,g}{cls.units[unit_index]}"
+        else:
+            return f"{number:,.{decimals}f}{cls.units[unit_index]}"
+
+    @classmethod
+    def from_human(cls, human_string: str) -> float:
+        """
+        Convert a human-readable number with units back to a float.
+
+        Args:
+            input (str): input string with number and unit
+            base (Union[int, tuple]): base for conversion - int if constant divisor between units (e.g. 1000),
+                or tuple of bases for each unit if non-constant (as in time)
+            units (tuple): sequence of unit suffixes
+
+        Returns:
+            float: converted number
+        """
+        index = len(human_string)
+        while index > 0 and human_string[index - 1].isalpha():
+            index -= 1
+        unit = human_string[index:]
+        number = float(human_string[:index])
+        if unit == "":
+            return number
+        if unit not in cls.units:
+            raise ValueError(f"Invalid unit '{unit}'. Expected one of {cls.units} (case sensitive).")
+        if isinstance(cls.base, int):
+            for unit_suffix in cls.units:
+                if unit == unit_suffix:
+                    return number
+                number *= cls.base
+            return number
+        else:
+            assert len(cls.base) == len(cls.units)
+            for base, unit_suffix in zip(cls.base, cls.units):
+                print(number, base, unit_suffix)
+                number *= base
+                if unit == unit_suffix:
+                    return number
+            return number
 
 
-def human(number: float, decimals: int = 1) -> str:
-    """Convert a number to a human-readable format."""
-    suffixes = ("", "K", "M", "G", "T", "P", "E", "Z", "Y")
-    return __fit_number_to_unit(number, 1000, suffixes, decimals, threshold=0.5)
+class HumanByte(HumanNumber):
+    base = 1024
+    units = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
 
 
-def human_byte(number: float, decimals: int = 1) -> str:
-    """Convert bytes to human-readable format."""
-    suffixes = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
-    return __fit_number_to_unit(number, 1024, suffixes, decimals, threshold=0.5)
-
-
-def human_time(number: float) -> str:
-    """
-    Format a number as time in seconds, minutes, hours, or days
-
-    Args:
-        number (float): seconds
-
-    Returns:
-        str: formatted string
-    """
-    divisors = (1, 60, 60, 24)
-    units = tuple("smhd")
-    return __fit_number_to_unit(number, divisors, units, decimals=0, threshold=1)
+class HumanTime(HumanNumber):
+    base = (1, 60, 60, 24, 7)
+    units = ("s", "m", "h", "d", "w")
+    threshold = 1
 
 
 def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─") -> str:
@@ -123,8 +149,9 @@ def print_pretty_divider():
 def print_centered_text(text: str):
     """Print text centered in the console."""
     console_width = get_console_width()
-    padding = (console_width - len(text)) // 2
-    text = " " * padding + text + " " * padding
+    textlen = len(text)
+    padding = (console_width - textlen) // 2
+    text = " " * padding + text + " " * (console_width - textlen - padding)
     print(text)
 
 

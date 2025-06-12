@@ -3,7 +3,7 @@
 import concurrent.futures
 import time
 
-from server import Server
+from .server import Server
 
 
 class ReplicationGroup:
@@ -21,6 +21,7 @@ class ReplicationGroup:
         self.args = args
 
         # start servers in parallel (including building if necessary)
+        self.servers: list[Server] = []
         with concurrent.futures.ThreadPoolExecutor() as executor:
             self.servers = list(executor.map(self.__start_server, self.server_ips))
         self.__ensure_no_unknown_replicas(self.servers)

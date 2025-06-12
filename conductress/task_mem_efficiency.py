@@ -3,9 +3,9 @@
 import datetime
 import logging
 
-from config import CONDUCTRESS_OUTPUT
-from server import Server
-from utility import MILLION, human, human_byte, print_pretty_header
+from .config import CONDUCTRESS_OUTPUT
+from .server import Server
+from .utility import MILLION, HumanByte, HumanNumber, print_pretty_header
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,11 @@ class TestMem:
         before_usage = valkey.used_memory()
 
         count = 5 * MILLION
-        print(f"loading {human(count, 1)} {human_byte(valsize)} {self.test} elements")
-        valkey.fill_keyspace(valsize, count, self.test)
+        print(f"loading {HumanNumber.to_human(count)} {HumanByte.to_human(valsize)} {self.test} elements")
+        valkey.run_command_over_keyspace(count, f"-d {valsize} -t {self.test}")
         if self.has_expire:
             print("expiring elements")
-            valkey.expire_keyspace(count)
+            valkey.run_command_over_keyspace(count, f"-t {self.test}")
 
         after_usage = valkey.used_memory()
         (item_count, expire_count) = valkey.count_items_expires()
@@ -54,7 +54,7 @@ class TestMem:
         per_key = float(total_usage) / count
         per_key_overhead = per_key - valsize - keysize
         print(
-            f"done testing {human_byte(valsize)} {self.test} elements: "
+            f"done testing {HumanByte.to_human(valsize)} {self.test} elements: "
             f"{per_key_overhead:.2f} overhead per key"
         )
 

@@ -3,31 +3,66 @@
 import datetime
 import logging
 import time
-from threading import Thread
+from dataclasses import dataclass
+from typing import Optional
 
 import plotext as plt
 
-from config import (
+from .config import (
     CONDUCTRESS_DATA_DUMP,
     CONDUCTRESS_OUTPUT,
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
+    VALKEY_BENCHMARK,
 )
-from replication_group import ReplicationGroup
-from utility import (
+from .replication_group import ReplicationGroup
+from .utility import (
     BILLION,
+    HumanNumber,
+    HumanTime,
     RealtimeCommand,
     calc_percentile_averages,
-    human,
-    human_time,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class TestPerf:
     """Benchmark the throughput of a Valkey server."""
+
+    @dataclass
+    class Test:
+        """Defines an available test"""
+
+        name: str
+        preload_command: str
+        test_command: str
+        expire_command: Optional[str] = None
+
+    tests: dict[str, Test] = {
+        "set": Test(
+            name="set",
+            preload_command="-t set",
+            test_command="-t set",
+            expire_command=f"EXPIRE key:__rand_int__ {7*24*60*60}",
+        ),
+        "get": Test(
+            name="get",
+            preload_command="-t set",
+            test_command="-t get",
+            expire_command=f"EXPIRE key:__rand_int__ {7*24*60*60}",
+        ),
+        "sadd": Test(name="sadd", preload_command="-t sadd", test_command="-t sadd"),
+        "hset": Test(name="hset", preload_command="-t hset", test_command="-t hset"),
+        "zadd": Test(name="zadd", preload_command="-t zadd", test_command="-t zadd"),
+        "zrank": Test(
+            name="zrank", preload_command="-t zadd", test_command=" -- ZRANK myzset element:__rand_int__"
+        ),
+        "zcount": Test(
+            name="zcount",
+            preload_command="-t zadd",
+            test_command=" -- ZCOUNT myzset __rand_int__ __rand_int__",
+        ),
+    }
 
     def __init__(
         self,
@@ -45,10 +80,12 @@ class TestPerf:
         has_expire: bool,
         sample_rate: int = -1,
     ):
+        self.logger = logging.getLogger(self.__class__.__name__ + "." + test)
+
         self.title = (
             f"{test} throughput, {binary_source}:{specifier}, io-threads={io_threads}, "
-            f"pipelining={pipelining}, size={valsize}, warmup={human_time(warmup)}, "
-            f"duration={human_time(duration)}"
+            f"pipelining={pipelining}, size={valsize}, warmup={HumanTime.to_human(warmup)}, "
+            f"duration={HumanTime.to_human(duration)}"
         )
 
         # settings
@@ -59,7 +96,7 @@ class TestPerf:
         self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining
-        self.test = test
+        self.test: TestPerf.Test = TestPerf.tests[test]
         self.warmup = warmup  # seconds
         self.duration = duration  # seconds
         self.preload_keys = preload_keys
@@ -87,20 +124,20 @@ class TestPerf:
         self.target_ip = self.server.ip
         self.commit_hash = self.server.get_build_hash()
         if self.preload_keys:
-            self.server.fill_keyspace(self.valsize, PERF_BENCH_KEYSPACE, self.test)
+            self.server.run_command_over_keyspace(
+                PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
+            )
             if self.has_expire:
-                self.server.expire_keyspace(PERF_BENCH_KEYSPACE, self.test)
+                if not self.test.expire_command:
+                    self.logger.warning("Expire command not available, skipping expiration")
+                else:
+                    self.server.run_command_over_keyspace(PERF_BENCH_KEYSPACE, self.test.expire_command)
 
         self.command_string = (
-            f"./valkey-benchmark -h {self.target_ip} -d {self.valsize} "
+            f"{VALKEY_BENCHMARK} -h {self.target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION}"
+            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
         )
-        if self.test == "zrank":
-            self.command_string += " -- ZRANK myzset element:__rand_int__"
-        else:
-            self.command_string += f" -t {self.test}"
-        print(repr(self.command_string))
         self.command = RealtimeCommand(self.command_string)
 
     def __read_updates(self):
@@ -146,7 +183,7 @@ class TestPerf:
             xlabel_intervals = 4
             point_count = self.duration * 4
             xticks = range(0, point_count + 1, point_count // xlabel_intervals)
-            xticks_labels = [f"{human_time(i//4)}" for i in xticks]
+            xticks_labels = [f"{HumanTime.to_human(i//4)}" for i in xticks]
             plt.xticks(xticks, xticks_labels)
             plt.xlim(left=0, right=point_count)
 
@@ -155,22 +192,12 @@ class TestPerf:
             rps_max = max(self.rps_data) + 999
             inverval = int(rps_max - rps_min) // ylabel_intervals
             yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
-            ytick_labels = [f"{human(tick, 0)}" for tick in yticks]
+            ytick_labels = [f"{HumanNumber.to_human(tick, 0)}" for tick in yticks]
             plt.yticks(yticks, ytick_labels)
 
             plt.show()
 
     def __record_result(self):
-        logger.debug(
-            "%dB %s perf on %s:%s\trps_data=%s\tlat_data=%s",
-            self.valsize,
-            self.test,
-            self.binary_source,
-            self.specifier,
-            repr(self.rps_data),
-            repr(self.lat_data),
-        )
-
         avg_rps = calc_percentile_averages(self.rps_data, (100, 99, 95))
         avg_lat = calc_percentile_averages(self.lat_data, (100, 99, 95), lowest_vals=True)
 
@@ -179,7 +206,7 @@ class TestPerf:
             "source": self.binary_source,
             "specifier": self.specifier,
             "commit_hash": self.commit_hash,
-            "test": self.test,
+            "test": self.test.name,
             "warmup": self.warmup,
             "duration": self.duration,
             "endtime": datetime.datetime.now(),
@@ -220,6 +247,7 @@ class TestPerf:
         """Run the benchmark."""
         benchmark_update_interval = 0.1  # s
 
+        self.logger.info("Starting realtime command: %s", self.command_string)
         self.command.start()
         start_time = time.monotonic()
         test_start_time = start_time + self.warmup

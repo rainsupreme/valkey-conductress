@@ -2,8 +2,8 @@
 
 import time
 
-from replication_group import ReplicationGroup
-from utility import HOUR, MINUTE, human_byte, print_pretty_header
+from .replication_group import ReplicationGroup
+from .utility import HumanByte, print_pretty_header
 
 
 class TestFullSync:
@@ -32,7 +32,7 @@ class TestFullSync:
 
         self.title = (
             f"replication test, {binary_source}:{specifier}, "
-            f"io-threads={io_threads}, {human_byte(valsize * valcount)} data, "
+            f"io-threads={io_threads}, {HumanByte.to_human(valsize * valcount)} data, "
             f"{len(self.server_ips) - 1} replicas"
         )
         print_pretty_header(self.title)
@@ -43,7 +43,7 @@ class TestFullSync:
         )
 
         print("loading data onto primary")
-        self.replication_group.primary.fill_keyspace(self.valsize, self.valcount, "set")
+        self.replication_group.primary.run_command_over_keyspace(self.valcount, f"-d {self.valsize} -t set")
 
     def run(self) -> None:
         """Run the full sync test."""
@@ -51,7 +51,7 @@ class TestFullSync:
         print("beginning full sync...")
         self.replication_group.begin_replication()
         start = time.monotonic()
-        self.replication_group.replicas[0].profiling_start(3999, None)
+        self.replication_group.replicas[0].profiling_start(3999)
 
         in_sync = False
         while not in_sync:
@@ -70,7 +70,10 @@ class TestFullSync:
         user_data_size = self.valsize * self.valcount
         throughput = user_data_size / duration
         print(f"full sync took {duration:.2f} seconds")
-        print(f"full sync throughput: {human_byte(throughput)}/s " f"({human_byte(user_data_size)} total)")
+        print(
+            f"full sync throughput: {HumanByte.to_human(throughput)}/s "
+            f"({HumanByte.to_human(user_data_size)} total)"
+        )
 
         print("generating flamegraph")
         self.replication_group.replicas[0].profiling_report(self.task_name)
