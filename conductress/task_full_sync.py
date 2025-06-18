@@ -1,9 +1,12 @@
 """Test full sync throughput"""
 
+import datetime
+import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .replication_group import ReplicationGroup
-from .utility import HumanByte, print_pretty_header
+from .utility import HumanByte, print_pretty_header, record_task_result
 
 
 class TestFullSync:
@@ -18,8 +21,12 @@ class TestFullSync:
         io_threads: int,
         valsize: int,
         valcount: int,
+        profiling_sample_rate: int,
     ):
         """Initialize the test with a replication group."""
+
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         self.task_name = task_name
         self.server_ips = server_ips
         self.binary_source = binary_source
@@ -27,6 +34,7 @@ class TestFullSync:
         self.io_threads = io_threads
         self.valsize = valsize
         self.valcount = valcount
+        self.profiling_sample_rate = profiling_sample_rate
 
         assert len(self.server_ips) >= 2, "At least two server IPs are required"
 
@@ -37,21 +45,25 @@ class TestFullSync:
         )
         print_pretty_header(self.title)
 
-        print(f"setting up replication group with {len(self.server_ips)} servers")
+        self.logger.info("setting up replication group with %d servers", len(self.server_ips))
         self.replication_group = ReplicationGroup(
             self.server_ips, self.binary_source, self.specifier, self.io_threads, []
         )
 
-        print("loading data onto primary")
+        self.logger.info("loading data onto primary")
         self.replication_group.primary.run_command_over_keyspace(self.valcount, f"-d {self.valsize} -t set")
 
     def run(self) -> None:
         """Run the full sync test."""
+        profiling = self.profiling_sample_rate > 0
 
-        print("beginning full sync...")
+        self.logger.info("beginning full sync...")
         self.replication_group.begin_replication()
         start = time.monotonic()
-        self.replication_group.replicas[0].profiling_start(3999)
+
+        if profiling:
+            for server in self.replication_group.servers:
+                server.profiling_start(self.profiling_sample_rate)
 
         in_sync = False
         while not in_sync:
@@ -63,20 +75,41 @@ class TestFullSync:
             )
             time.sleep(0.25)
         end = time.monotonic()
-        print("full sync complete, ending profiling")
-        self.replication_group.replicas[0].profiling_end()
+        self.logger.info("full sync complete")
+        if profiling:
+            for server in self.replication_group.servers:
+                server.profiling_stop()
 
         duration = end - start
         user_data_size = self.valsize * self.valcount
         throughput = user_data_size / duration
-        print(f"full sync took {duration:.2f} seconds")
-        print(
-            f"full sync throughput: {HumanByte.to_human(throughput)}/s "
-            f"({HumanByte.to_human(user_data_size)} total)"
+
+        # record result
+        result = {
+            "sync_duration": end - start,
+            "user_data_size": self.valsize * self.valcount,
+            "throughput": user_data_size / duration,
+        }
+        record_task_result(
+            "sync",
+            self.binary_source,
+            self.specifier,
+            self.replication_group.primary.get_build_hash() or "",
+            throughput,
+            datetime.datetime.now(),
+            result,
         )
 
-        print("generating flamegraph")
-        self.replication_group.replicas[0].profiling_report(self.task_name)
-        print("flamegraph done")
+        if profiling:
+            self.__profiling_reports()
 
-        # TODO log stats and results
+    def __profiling_reports(self):
+        """This takes some time, so we have all hosts perform the task in parallel."""
+        self.logger.info("generating flamegraphs")
+        tasks = [
+            (self.replication_group.primary, "primary"),
+            *[(replica, f"replica{i}") for i, replica in enumerate(self.replication_group.replicas)],
+        ]
+        with ThreadPoolExecutor() as executor:
+            executor.map(lambda t: t[0].profiling_report(self.task_name, t[1]), tasks)
+        self.logger.info("flamegraphs done")

@@ -1,12 +1,14 @@
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
+import json
 import os
 import signal
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-from .config import SSH_KEYFILE
+from .config import CONDUCTRESS_DATA_DUMP, CONDUCTRESS_OUTPUT, SSH_KEYFILE
 
 MILLION = 1_000_000
 BILLION = 1_000_000_000
@@ -79,29 +81,28 @@ class HumanNumber:
         Returns:
             float: converted number
         """
+        human_string = human_string.strip()
         index = len(human_string)
         while index > 0 and human_string[index - 1].isalpha():
             index -= 1
-        unit = human_string[index:]
+        unit = human_string[index:].lower()
         number = float(human_string[:index])
         if unit == "":
             return number
-        if unit not in cls.units:
-            raise ValueError(f"Invalid unit '{unit}'. Expected one of {cls.units} (case sensitive).")
+        lower_units = (x.lower() for x in cls.units)
         if isinstance(cls.base, int):
-            for unit_suffix in cls.units:
+            for unit_suffix in lower_units:
                 if unit == unit_suffix:
                     return number
                 number *= cls.base
-            return number
         else:
             assert len(cls.base) == len(cls.units)
-            for base, unit_suffix in zip(cls.base, cls.units):
+            for base, unit_suffix in zip(cls.base, lower_units):
                 print(number, base, unit_suffix)
                 number *= base
                 if unit == unit_suffix:
                     return number
-            return number
+        raise ValueError(f"Invalid unit '{unit}'. Expected one of {cls.units} (case insensitive).")
 
 
 class HumanByte(HumanNumber):
@@ -177,6 +178,56 @@ def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list
     return result
 
 
+def record_task_result(
+    method: str, source: str, specifier: str, commit_hash: str, score: float, endtime: datetime, data
+) -> None:
+    """
+    Uniform method for recording results
+
+    Args:
+        method (str): task type (perf-get, mem, sync, etc)
+        source (str): usually the repo name
+        specifier (str): branch name, tag, or hash
+        commit_hash (str): actual commit used
+        score (float): summarize result in 1 key number
+        endtime (datetime): timestamp for task completion
+        data (_type_): more detailed result info - format depends on the task
+    """
+    result = {
+        "method": method,
+        "source": source,
+        "specifier": specifier,
+        "commit_hash": commit_hash,
+        "score": score,
+        "end_time": str(endtime),
+        "data": data,
+    }
+    with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
+        f.write(json.dumps(result))
+        f.write("\n")
+
+
+def dump_task_data(method: str, commit_hash: str, endtime: datetime, data):
+    """
+    Uniform method for dumping all data collected
+
+    Args:
+        method (str): task type (perf-get, mem, sync, etc)
+        commit_hash (str): actual commit used
+        endtime (datetime): timestamp for task completion
+        data (_type_): All data recorded - format depends on the task
+    """
+    result = {
+        "method": method,
+        "commit_hash": commit_hash,
+        "end_time": str(endtime),
+        "data": data,
+    }
+    with open(CONDUCTRESS_DATA_DUMP, "a", encoding="utf-8") as f:
+        f.write(json.dumps(result))
+        f.write("\n")
+
+
 def run_command(
     command: Union[str, Sequence[str]],
     remote_ip: Union[str, None] = None,
@@ -210,7 +261,7 @@ def run_command(
     ssh_command = ["ssh", "-q"]
     if not remote_pseudo_terminal:
         ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
-    ssh_command += ["-i", SSH_KEYFILE, remote_ip, remote_command]
+    ssh_command += ["-i", str(SSH_KEYFILE), remote_ip, remote_command]
 
     result = subprocess.run(
         ssh_command, check=check, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE

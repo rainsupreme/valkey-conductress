@@ -334,16 +334,26 @@ class Server:
             return True
         return False
 
-    def profiling_end(self) -> None:
-        """End profiling and generate a report."""
+    def profiling_stop(self) -> None:
+        """Signals profiling to stop. Use profiling_wait() to ensure that it actually finishes."""
         if self.profiling_thread is None:
-            raise RuntimeError("Profiling not started")
-        self.run_host_command(f"rm {PERF_STATUS_FILE}")
+            return
+        self.run_host_command(f"rm -f {PERF_STATUS_FILE}")
+
+    def profiling_wait(self) -> None:
+        """Block until profiling finishes. Call profiling_stop() first or you'll wait forever"""
+        if self.profiling_thread is None:
+            return
         self.profiling_thread.join()
         self.profiling_thread = None
 
-    def profiling_report(self, task_name: str) -> None:
-        """Retrieve profile data from server and generate flamegraph report."""
+    def profiling_report(self, task_name: str, server_name: str) -> None:
+        """Retrieve profile data from server and generate flamegraph report.
+        Stops profiling first if needed"""
+        if self.is_profiling():
+            self.profiling_stop()
+        self.profiling_wait()
+
         self.run_host_command(
             f"sudo chmod a+r {Server.perf_data_path}",
         )
@@ -362,7 +372,8 @@ class Server:
         test_results.mkdir(parents=True, exist_ok=True)
 
         for remote_file in [Server.perf_data_path, Server.flamegraph_path]:
-            local_file = test_results / remote_file.name
+            filename = f"{server_name}-{remote_file.name}"
+            local_file = test_results / filename
             self.scp_file_from_server(remote_file, local_file)
 
     def __profiling_cleanup(self):

@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 from itertools import product
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional, TypeVar, Union
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -28,6 +28,7 @@ from textual.widgets.selection_list import Selection
 from . import config
 from .task_perf_benchmark import TestPerf
 from .task_queue import Task, TaskQueue
+from .utility import HumanByte, HumanNumber
 
 logger = logging.getLogger(__name__)
 
@@ -162,20 +163,77 @@ class SourceSpeciferValidator(Validator):
         return specifiers, None
 
 
+T = TypeVar("T", bound=HumanNumber)
+
+
 class CommaSeparatedIntsValidator(Validator):
-    """Validator for comma-separated positive integers"""
+    """Validator for comma-separated positive integers. Suffixes (K, M, etc) accepted."""
+
+    def __init__(self, number_type: type[T]):
+        super().__init__()
+        self.number_type = number_type
+
+    def parse_ints(self, value: str) -> list[int]:
+        if not value:
+            raise ValueError("Input cannot be empty")
+        numbers = [self.number_type.from_human(x) for x in value.split(",")]
+        if any(x < 0 for x in numbers):
+            raise ValueError("All numbers must be positive")
+        if not all(x.is_integer() for x in numbers):
+            raise ValueError("All numbers must be integers")
+        return [int(x) for x in numbers]
 
     def validate(self, value: str) -> ValidationResult:
         """Validate the comma-separated numbers input"""
-        if not value:
-            return self.failure("Input cannot be empty")
         try:
-            numbers = [int(x) for x in value.split(",")]
-            if any(x <= 0 for x in numbers):
-                return self.failure("All numbers must be positive")
+            self.parse_ints(value)
         except ValueError:
-            return self.failure("Invalid input format")
+            return self.failure()
         return self.success()
+
+
+class NumberListField:
+    def __init__(self, label, input_id, default, placeholder, number_type: type[T]):
+        self.label = label
+        self.id = input_id
+        self.default = default
+        self.placeholder = placeholder
+        self.number_type = number_type
+
+        self.input = Input(
+            value=self.default,
+            placeholder=self.placeholder,
+            id=self.id,
+            classes="form-input",
+            validators=[CommaSeparatedIntsValidator(self.number_type)],
+        )
+
+    def widgets(self) -> Iterator[Union[Input, Label]]:
+        yield Label(self.label, classes="form-label")
+        yield self.input
+
+    def values(self) -> list[int]:
+        return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
+
+
+class PipeliningField(NumberListField):
+    def __init__(self):
+        super().__init__("Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber)
+
+
+class IOThreadsField(NumberListField):
+    def __init__(self):
+        super().__init__("IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber)
+
+
+class SizesField(NumberListField):
+    def __init__(self):
+        super().__init__("Sizes (comma-separated)", "sizes", "0.5KB", "256, 1KB", HumanByte)
+
+
+class CountsField(NumberListField):
+    def __init__(self):
+        super().__init__("Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber)
 
 
 class BaseTaskForm(ScrollableContainer):
@@ -196,6 +254,13 @@ class BaseTaskForm(ScrollableContainer):
 class PerfTaskForm(BaseTaskForm):
     """Form for creating a performance test task"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.pipelining = PipeliningField()
+        self.io_threads = IOThreadsField()
+        self.sizes = SizesField()
+
     def compose(self) -> ComposeResult:
         yield Label(
             f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
@@ -212,32 +277,9 @@ class PerfTaskForm(BaseTaskForm):
             validators=[SourceSpeciferValidator()],
         )
 
-        yield Label("Pipelining (comma-separated)", classes="form-label")
-        yield Input(
-            value="4",
-            placeholder="1, 4, 8",
-            id="pipelining",
-            classes="form-input",
-            validators=[CommaSeparatedIntsValidator()],
-        )
-
-        yield Label("IO Threads (comma-separated)", classes="form-label")
-        yield Input(
-            value="9",
-            placeholder="1, 9",
-            id="io-threads",
-            classes="form-input",
-            validators=[CommaSeparatedIntsValidator()],
-        )
-
-        yield Label("Sizes (comma-separated)", classes="form-label")
-        yield Input(
-            value="512",
-            placeholder="256, 512",
-            id="sizes",
-            classes="form-input",
-            validators=[CommaSeparatedIntsValidator()],
-        )
+        for field in (self.pipelining, self.io_threads, self.sizes):
+            for widget in field.widgets():
+                yield widget
 
         yield Horizontal(
             Switch(animate=False, value=True, id="preload-keys"),
@@ -257,30 +299,18 @@ class PerfTaskForm(BaseTaskForm):
 
         yield Button("Submit", variant="primary", id="submit-perf-task")
 
-        yield Pretty("", id="validation-errors")
-
     def on_mount(self) -> None:
         """Called when the form is mounted"""
         self.query_one("#test-list", SelectionList).border_title = "Tests"
-
-    @on(Input.Changed)
-    def show_validation(self, event: Input.Changed) -> None:
-        """Show validation errors"""
-        if not event.validation_result:
-            return
-        if event.validation_result.is_valid:
-            self.query_one("#validation-errors", Pretty).update("")
-        else:
-            self.query_one("#validation-errors", Pretty).update(event.validation_result.failure_descriptions)
 
     @on(Button.Pressed, "#submit-perf-task")
     def submit_task(self) -> None:
         """Submit the task to the queue"""
         try:
             source_specifier_list = self.query_one("#specifiers", Input).value
-            pipelining: list[int] = [int(x) for x in self.query_one("#pipelining", Input).value.split(",")]
-            io_threads: list[int] = [int(x) for x in self.query_one("#io-threads", Input).value.split(",")]
-            sizes: list[int] = [int(x) for x in self.query_one("#sizes", Input).value.split(",")]
+            pipelining: list[int] = self.pipelining.values()
+            io_threads: list[int] = self.io_threads.values()
+            sizes: list[int] = self.sizes.values()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
@@ -332,6 +362,12 @@ class PerfTaskForm(BaseTaskForm):
 class MemTaskForm(BaseTaskForm):
     """Form for creating a performance test task"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.sizes = SizesField()
+
+    # TODO test this
     def compose(self) -> ComposeResult:
         yield Label(
             f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
@@ -348,14 +384,8 @@ class MemTaskForm(BaseTaskForm):
             validators=[SourceSpeciferValidator()],
         )
 
-        yield Label("Sizes (comma-separated)", classes="form-label")
-        yield Input(
-            value="512",
-            placeholder="256, 512",
-            id="sizes",
-            classes="form-input",
-            validators=[CommaSeparatedIntsValidator()],
-        )
+        for widget in self.sizes.widgets():
+            yield widget
 
         yield Horizontal(
             Switch(animate=False, value=False, id="expire-keys"),
@@ -373,28 +403,16 @@ class MemTaskForm(BaseTaskForm):
 
         yield Button("Submit", variant="primary", id="submit-mem-task")
 
-        yield Pretty("", id="validation-errors")
-
     def on_mount(self) -> None:
         """Called when the form is mounted"""
         self.query_one("#test-list", SelectionList).border_title = "Tests"
-
-    @on(Input.Changed)
-    def show_validation(self, event: Input.Changed) -> None:
-        """Show validation errors"""
-        if not event.validation_result:
-            return
-        if event.validation_result.is_valid:
-            self.query_one("#validation-errors", Pretty).update("")
-        else:
-            self.query_one("#validation-errors", Pretty).update(event.validation_result.failure_descriptions)
 
     @on(Button.Pressed, "#submit-mem-task")
     def submit_task(self) -> None:
         """Submit the task to the queue"""
         try:
             source_specifier_list = self.query_one("#specifiers", Input).value
-            sizes: list[int] = [int(x) for x in self.query_one("#sizes", Input).value.split(",")]
+            sizes: list[int] = self.sizes.values()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
         except ValueError as e:
@@ -430,8 +448,90 @@ class MemTaskForm(BaseTaskForm):
 class SyncTaskForm(BaseTaskForm):
     """Form for creating a full sync benchmark task"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.io_threads = IOThreadsField()
+        self.sizes = SizesField()
+        self.counts = CountsField()
+
     def compose(self) -> ComposeResult:
-        yield Static("TODO: implement sync task form")
+        yield Label(
+            f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
+            classes="form-label",
+        )
+        yield Input(
+            placeholder=(
+                f"{config.REPO_NAMES[0]}:unstable, "
+                f"{config.REPO_NAMES[-1]}:sha1-hash, "
+                f"{config.MANUALLY_UPLOADED}:local-path"
+            ),
+            id="specifiers",
+            classes="form-input",
+            validators=[SourceSpeciferValidator()],
+        )
+
+        yield Label("Replicas: 1")  # TODO allow configurable replica count
+        yield Label("Test: set")  # TODO allow configurable data type
+
+        for field in (self.io_threads, self.sizes, self.counts):
+            for widget in field.widgets():
+                yield widget
+
+        yield Horizontal(
+            Switch(animate=False, value=False, id="profiling"),
+            Static("Profiling", classes="switch-label"),
+            classes="switch-container",
+        )
+
+        yield Button("Submit", variant="primary", id="submit-sync-task")
+
+    @on(Button.Pressed, "#submit-sync-task")
+    def submit_task(self) -> None:
+        """Submit the task to the queue"""
+
+        replicas = 1
+        test = "set"
+
+        try:
+            source_specifier_list = self.query_one("#specifiers", Input).value
+            io_threads: list[int] = self.io_threads.values()
+            sizes: list[int] = self.sizes.values()
+            counts: list[int] = self.counts.values()
+            profiling: bool = self.query_one("#profiling", Switch).value
+        except ValueError as e:
+            self.notify(f"Invalid input: {e}", severity="error")
+            return
+
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        if error:
+            self.notify(f"source:specifier list: {error}", severity="error")
+            return
+
+        all_tests = list(
+            product(
+                sizes,
+                counts,
+                io_threads,
+                specifiers,
+            )
+        )
+        profiling_sample_rate = 3999 if profiling else -1
+
+        tasks = []
+        for size, count, thread, specifier in all_tests:
+            task = Task.sync_task(
+                test=test,
+                source=specifier[0],
+                specifier=specifier[1],
+                val_size=size,
+                val_count=count,
+                io_threads=thread,
+                replicas=replicas,
+                profiling_sample_rate=profiling_sample_rate,
+            )
+            tasks.append(task)
+        self.queue_tasks(tasks)
 
 
 if __name__ == "__main__":

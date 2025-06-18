@@ -25,6 +25,10 @@ class TestHumanNumber:
     def test_from_human(self):
         result = HumanNumber.from_human("1.5K")
         assert result == 1500
+        result = HumanNumber.from_human("3m")
+        assert result == 3_000_000
+        result = HumanNumber.from_human("3M")
+        assert result == 3_000_000
 
     def test_integer_display(self):
         assert HumanNumber.to_human(1000) == "1K"
@@ -68,6 +72,9 @@ class TestHumanTime:
         assert HumanTime.from_human("1.5m") == 90
         assert HumanTime.from_human("1d") == 86400
         assert HumanTime.from_human("1w") == 604800
+
+        assert HumanTime.from_human("1D") == 86400
+        assert HumanTime.from_human("1W") == 604800
 
     @pytest.mark.parametrize(
         "seconds,expected",

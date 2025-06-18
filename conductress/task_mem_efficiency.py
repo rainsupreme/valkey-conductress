@@ -3,9 +3,14 @@
 import datetime
 import logging
 
-from .config import CONDUCTRESS_OUTPUT
 from .server import Server
-from .utility import MILLION, HumanByte, HumanNumber, print_pretty_header
+from .utility import (
+    MILLION,
+    HumanByte,
+    HumanNumber,
+    print_pretty_header,
+    record_task_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +29,7 @@ class TestMem:
         self.test = test
         self.has_expire = has_expire
 
-    def test_single_size(self, valsize: int) -> float:
+    def test_single_size(self, valsize: int):
         """Test memory efficiency for a single item size."""
         threads = 9
         valkey = Server.with_build(self.server_ip, self.repo, self.specifier, threads, [])
@@ -59,25 +64,20 @@ class TestMem:
         )
 
         result = {
-            "method": "mem",
-            "repo": self.repo,
-            "specifier": self.specifier,
-            "commit_hash": commit_hash,
-            "test": self.test,
             "count": count,
             "has_expire": self.has_expire,
-            "endtime": datetime.datetime.now(),
-            "size": valsize,
+            "total_usage": total_usage,
+            "key_size": keysize,
+            "val_size": valsize,
             "per_key_size": per_key,
             "per_key_overhead": per_key_overhead,
         }
-
-        result_fields = (
-            "method repo specifier commit_hash test count has_expire "
-            "endtime size per_key_size per_key_overhead"
+        record_task_result(
+            f"mem-{self.test}",
+            self.repo,
+            self.specifier,
+            commit_hash or "",
+            per_key_overhead,
+            datetime.datetime.now(),
+            result,
         )
-        result_list = [f"{field}:{result[field]}" for field in result_fields.split()]
-        result_string = "\t".join(result_list) + "\n"
-        with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
-            f.write(result_string)
-        return per_key_overhead

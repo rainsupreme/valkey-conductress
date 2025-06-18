@@ -137,6 +137,7 @@ class Task:
         val_count: int,
         io_threads: int,
         replicas: int,
+        profiling_sample_rate: int,
     ) -> "Task":
         """Create a full sync task"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -151,7 +152,7 @@ class Task:
             -1,  # pipelining not used for sync
             -1,  # warmup not used for sync
             -1,  # duration not used for sync
-            -1,  # profiling not used for sync
+            profiling_sample_rate,
             False,  # expire not used for sync
             True,  # preload always true for sync
             replicas,

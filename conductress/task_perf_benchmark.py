@@ -9,8 +9,6 @@ from typing import Optional
 import plotext as plt
 
 from .config import (
-    CONDUCTRESS_DATA_DUMP,
-    CONDUCTRESS_OUTPUT,
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
@@ -23,6 +21,8 @@ from .utility import (
     HumanTime,
     RealtimeCommand,
     calc_percentile_averages,
+    dump_task_data,
+    record_task_result,
 )
 
 
@@ -198,50 +198,39 @@ class TestPerf:
             plt.show()
 
     def __record_result(self):
+        completion_time = datetime.datetime.now()
+        name = f"perf-{self.test.name}"
+        commit_hash = self.commit_hash or ""
+
         avg_rps = calc_percentile_averages(self.rps_data, (100, 99, 95))
         avg_lat = calc_percentile_averages(self.lat_data, (100, 99, 95), lowest_vals=True)
 
         result = {
-            "method": "perf",
-            "source": self.binary_source,
-            "specifier": self.specifier,
-            "commit_hash": self.commit_hash,
-            "test": self.test.name,
             "warmup": self.warmup,
             "duration": self.duration,
-            "endtime": datetime.datetime.now(),
             "io-threads": self.io_threads,
             "pipeline": self.pipelining,
             "has_expire": self.has_expire,
             "size": self.valsize,
             "preload_keys": self.preload_keys,
-            "avg_rps": avg_rps[0],
-            "avg_99_rps": avg_rps[1],
-            "avg_95_rps": avg_rps[2],
-            "avg_lat": avg_lat[0],
-            "avg_99_lat": avg_lat[1],
-            "avg_95_lat": avg_lat[2],
+            "rps": avg_rps,
+            "latency": avg_lat,
         }
-
-        field_order = (
-            "method source specifier commit_hash test warmup duration endtime "
-            "io-threads pipeline has_expire size preload_keys avg_rps avg_99_rps "
-            "avg_95_rps avg_lat avg_99_lat avg_95_lat"
+        record_task_result(
+            name,
+            self.binary_source,
+            self.specifier,
+            commit_hash,
+            avg_rps[0],
+            completion_time,
+            result,
         )
 
-        result_string = [f"{field}:{result[field]}" for field in field_order.split()]
-        result_string = "\t".join(result_string) + "\n"
-        with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
-            f.write(result_string)
-
-        dump_field_order = (
-            "method source specifier commit_hash test warmup duration endtime io-threads pipeline size"
-        )
-        dump_string = [f"{field}:{result[field]}" for field in dump_field_order.split()]
-        dump_string = "\t".join(dump_string)
-        with open(CONDUCTRESS_DATA_DUMP, "a", encoding="utf-8") as f:
-            f.write(dump_string)
-            f.write(f"\trps_data={repr(self.rps_data)}\tlat_data={repr(self.lat_data)}\n")
+        dump_data = {
+            "rps_data": self.rps_data,
+            "lat_data": self.lat_data,
+        }
+        dump_task_data(name, commit_hash, completion_time, dump_data)
 
     def run(self):
         """Run the benchmark."""
@@ -260,9 +249,9 @@ class TestPerf:
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
             if now > end_time:
-                self.command.kill()
                 if self.profiling:
-                    self.server.profiling_end()
+                    self.server.profiling_stop()
+                self.command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 self.lat_data = []
@@ -273,4 +262,4 @@ class TestPerf:
         self.__read_updates()
         self.__record_result()
         if self.profiling:
-            self.server.profiling_report(self.task_name)
+            self.server.profiling_report(self.task_name, "primary")
