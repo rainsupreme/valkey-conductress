@@ -39,7 +39,7 @@ MANUALLY_UPLOADED = "manually_uploaded"
 assert MANUALLY_UPLOADED not in REPO_NAMES, "MANUALLY_UPLOADED must not overlap with any repository names"
 
 
-def load_server_ips() -> list:
+def load_server_ips() -> list[str]:
     """Load server IPs from a JSON configuration file."""
     config_path = PROJECT_ROOT / "servers.json"
     try:

@@ -210,7 +210,3 @@ class TestPercentileAverages:
         data = [-4, -3, -2, -1]
         result = calc_percentile_averages(data, [50])
         assert result == [-1.5]
-
-
-# TODO test run_command
-# TODO test RealtimeCommand

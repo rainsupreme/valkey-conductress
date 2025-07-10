@@ -1,3 +1,5 @@
 asyncssh
 plotext
 textual
+invoke
+fabric

@@ -39,10 +39,10 @@ class TestMem:
 
         count = 5 * MILLION
         print(f"loading {HumanNumber.to_human(count)} {HumanByte.to_human(valsize)} {self.test} elements")
-        valkey.run_command_over_keyspace(count, f"-d {valsize} -t {self.test}")
+        valkey.run_valkey_command_over_keyspace(count, f"-d {valsize} -t {self.test}")
         if self.has_expire:
             print("expiring elements")
-            valkey.run_command_over_keyspace(count, f"-t {self.test}")
+            valkey.run_valkey_command_over_keyspace(count, f"-t {self.test}")
 
         after_usage = valkey.used_memory()
         (item_count, expire_count) = valkey.count_items_expires()

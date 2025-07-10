@@ -10,7 +10,7 @@ class ReplicationGroup:
     """A group of servers that can be used for replication testing."""
 
     def __init__(
-        self, server_ips: list, binary_source: str, specifier: str, threads: int, args: list
+        self, server_ips: list[str], binary_source: str, specifier: str, threads: int, args: list[str]
     ) -> None:
         assert len(server_ips) >= 1, "At least one server IP is required"
 
@@ -86,4 +86,4 @@ class ReplicationGroup:
     def end_replication(self):
         """End replication for all servers in the group."""
         for server in self.servers:
-            server.run_valkey_command(["replicaof", "no", "one"])
+            server.run_valkey_command("replicaof no one")

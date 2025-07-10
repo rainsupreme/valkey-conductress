@@ -51,7 +51,9 @@ class TestFullSync:
         )
 
         self.logger.info("loading data onto primary")
-        self.replication_group.primary.run_command_over_keyspace(self.valcount, f"-d {self.valsize} -t set")
+        self.replication_group.primary.run_valkey_command_over_keyspace(
+            self.valcount, f"-d {self.valsize} -t set"
+        )
 
     def run(self) -> None:
         """Run the full sync test."""

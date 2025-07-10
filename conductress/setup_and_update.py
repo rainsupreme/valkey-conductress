@@ -5,8 +5,9 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from typing import Sequence, Union
 
-from . import config, utility
+from . import config
 
 ROOT = config.PROJECT_ROOT
 
@@ -14,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 # Get config values
 SERVERS = config.SERVERS
-SSH_KEY_FILE = Path(config.SSH_KEYFILE)
+SSH_KEYFILE = config.SSH_KEYFILE
 REPOSITORIES = config.REPOSITORIES
 
-CLIENT_YUM_PACKAGES = [
+YUM_PACKAGES = [
     "cmake",
     "cmake3",
     "git",
@@ -26,14 +27,47 @@ CLIENT_YUM_PACKAGES = [
     "js-d3-flame-graph",
     "perl-open.noarch",  # needed for brendangregg/FlameGraph in rhel
 ]
-SERVER_YUM_PACKAGES = [
-    "cmake",
-    "cmake3",
-    "git",
-    "perf",
-    "js-d3-flame-graph",
-    "perl-open.noarch",  # needed for brendangregg/FlameGraph in rhel
-]
+
+
+def run_command(
+    command: Union[str, Sequence[str]],
+    remote_ip: Union[str, None] = None,
+    remote_pseudo_terminal: bool = True,
+    cwd: Union[Path, None] = None,
+    check: bool = True,
+):
+    """Run a console command and return its output."""
+    if remote_ip is None:  # local command
+        cmd_list = command.split() if isinstance(command, str) else command
+        result = subprocess.run(
+            cmd_list,
+            check=check,
+            encoding="utf-8",
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.stderr:
+            print(repr(result.stderr))
+        return result.stdout, result.stderr
+
+    if isinstance(command, str):
+        remote_command = command
+    else:
+        remote_command = " ".join(command)
+    if cwd is not None:
+        remote_command = f"cd {str(cwd)}; {remote_command}"
+
+    # remote command
+    ssh_command = ["ssh", "-q"]
+    if not remote_pseudo_terminal:
+        ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
+    ssh_command += ["-i", str(SSH_KEYFILE), remote_ip, remote_command]
+
+    result = subprocess.run(
+        ssh_command, check=check, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    return result.stdout, result.stderr
 
 
 def command_exists(cmd):
@@ -55,23 +89,23 @@ def update_local_host() -> None:
     requirements_dev = ROOT / "requirements-dev.txt"
 
     logger.info("Installing/updating required distro packages...")
-    utility.run_command("sudo yum update -y")
-    utility.run_command(["sudo", "yum", "groupinstall", "-y", "Development Tools"])
-    utility.run_command("sudo yum install -y " + " ".join(CLIENT_YUM_PACKAGES))
+    run_command("sudo yum update -y")
+    run_command(["sudo", "yum", "groupinstall", "-y", "Development Tools"])
+    run_command("sudo yum install -y " + " ".join(YUM_PACKAGES))
 
     logger.info("Installing/updating Python packages...")
-    utility.run_command("python3 -m pip install --upgrade pip")
-    utility.run_command(f"pip install -r {requirements}")
-    utility.run_command(f"pip install -r {requirements_dev}")
+    run_command("python3 -m pip install --upgrade pip")
+    run_command(f"pip install -r {requirements}")
+    run_command(f"pip install -r {requirements_dev}")
 
     logger.info("Checking for ssh keyfile")
-    if not SSH_KEY_FILE.is_file():
-        logger.error("Missing SSH keyfile: '%s' (this must be manually copied to the server)", SSH_KEY_FILE)
+    if not SSH_KEYFILE.is_file():
+        logger.error("Missing SSH keyfile: '%s' (this must be manually copied to the server)", SSH_KEYFILE)
         sys.exit(1)
     try:
-        Path(SSH_KEY_FILE).chmod(0o600)
+        Path(SSH_KEYFILE).chmod(0o600)
     except PermissionError:
-        logger.error("Failed to set permissions on %s", SSH_KEY_FILE)
+        logger.error("Failed to set permissions on %s", SSH_KEYFILE)
         sys.exit(1)
 
     logger.info("Checking for required binaries...")
@@ -80,15 +114,15 @@ def update_local_host() -> None:
         logger.info("something was missing - retrieving and building needed binaries")
         valkey = ROOT / "valkey"
         if not valkey.is_dir():
-            utility.run_command(f"git clone https://github.com/SoftlyRaining/valkey.git {valkey}")
+            run_command(f"git clone https://github.com/SoftlyRaining/valkey.git {valkey}")
 
-        utility.run_command("git fetch", cwd=valkey)
-        utility.run_command("git reset --hard origin/benchmark-multi-replace", cwd=valkey)
-        utility.run_command("make distclean", cwd=valkey)
-        utility.run_command("make -j", cwd=valkey)
+        run_command("git fetch", cwd=valkey)
+        run_command("git reset --hard origin/benchmark-multi-replace", cwd=valkey)
+        run_command("make distclean", cwd=valkey)
+        run_command("make -j", cwd=valkey)
 
         for file in buildable_files:
-            utility.run_command(f"cp {valkey/'src'/file.name} {file}")
+            run_command(f"cp {valkey/'src'/file.name} {file}")
 
 
 def ensure_server_git_repo(server_ip, repo_url, target_dir):
@@ -99,19 +133,19 @@ def ensure_server_git_repo(server_ip, repo_url, target_dir):
             git clone "{repo_url}" "{target_dir}"
         fi
     """
-    utility.run_command([remote_commands], remote_ip=server_ip, remote_pseudo_terminal=False)
+    run_command([remote_commands], remote_ip=server_ip, remote_pseudo_terminal=False)
 
 
 def update_server(server_ip):
     """Update a server with the required packages and repositories."""
     logger.info("%s: ensure server is in known-hosts", server_ip)
-    std, _ = utility.run_command(f"ssh-keygen -F {server_ip}", check=False)
+    std, _ = run_command(f"ssh-keygen -F {server_ip}", check=False)
     if not std:
         logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
         Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
-        utility.run_command(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
+        run_command(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
 
-    std, _ = utility.run_command("exit", remote_ip=server_ip, check=False)
+    std, _ = run_command("exit", remote_ip=server_ip, check=False)
     if std:
         logger.error("Error: Cannot connect to %s", server_ip)
         sys.exit(1)
@@ -121,9 +155,9 @@ def update_server(server_ip):
     set -e
     sudo yum update -y
     sudo yum groupinstall -y "Development Tools"
-    sudo yum install -y {" ".join(SERVER_YUM_PACKAGES)}
+    sudo yum install -y {" ".join(YUM_PACKAGES)}
     """
-    utility.run_command([remote_commands], remote_ip=server_ip)
+    run_command([remote_commands], remote_ip=server_ip)
 
     ensure_server_git_repo(server_ip, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 

@@ -5,7 +5,6 @@ import os
 import signal
 import subprocess
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, Sequence, Union
 
 from .config import CONDUCTRESS_DATA_DUMP, CONDUCTRESS_OUTPUT, SSH_KEYFILE
@@ -228,47 +227,6 @@ def dump_task_data(method: str, commit_hash: str, endtime: datetime, data):
         f.write("\n")
 
 
-def run_command(
-    command: Union[str, Sequence[str]],
-    remote_ip: Union[str, None] = None,
-    remote_pseudo_terminal: bool = True,
-    cwd: Union[Path, None] = None,
-    check: bool = True,
-):
-    """Run a console command and return its output."""
-    if remote_ip is None:  # local command
-        cmd_list = command.split() if isinstance(command, str) else command
-        result = subprocess.run(
-            cmd_list,
-            check=check,
-            encoding="utf-8",
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if result.stderr:
-            print(repr(result.stderr))
-        return result.stdout, result.stderr
-
-    if isinstance(command, str):
-        remote_command = command
-    else:
-        remote_command = " ".join(command)
-    if cwd is not None:
-        remote_command = f"cd {str(cwd)}; {remote_command}"
-
-    # remote command
-    ssh_command = ["ssh", "-q"]
-    if not remote_pseudo_terminal:
-        ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
-    ssh_command += ["-i", str(SSH_KEYFILE), remote_ip, remote_command]
-
-    result = subprocess.run(
-        ssh_command, check=check, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    return result.stdout, result.stderr
-
-
 class RealtimeCommand:
     """Run a local command in real-time and read its output."""
 
@@ -333,9 +291,3 @@ class RealtimeCommand:
         if self.p:
             self.p.kill()
             self.p.wait()
-
-
-def hash_file(path: Path):
-    """Generate SHA1 hash of a local file."""
-    result, _ = run_command(f"sha1sum {str(path)}")
-    return result.strip().split()[0]

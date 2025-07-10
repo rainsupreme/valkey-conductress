@@ -1,14 +1,17 @@
 """Represents a server running a Valkey instance."""
 
 import logging
-import subprocess
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Optional, Sequence
+from typing import Optional
+
+from fabric import Connection
+from invoke import run
+from invoke.exceptions import UnexpectedExit
+from invoke.runners import Result as RunResult
 
 from . import config
-from .utility import hash_file, run_command
 
 VALKEY_BINARY = "valkey-server"
 PERF_STATUS_FILE = "/tmp/perf_running"
@@ -46,6 +49,8 @@ class Server:
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
+        self.ssh: Connection = Connection(self.ip, connect_kwargs={"key_filename": str(config.SSH_KEYFILE)})
+
         self.source: Optional[str] = None
         self.specifier: Optional[str] = None
         self.args: Optional[list[str]] = None
@@ -75,10 +80,10 @@ class Server:
         """Wait until the server is ready to accept commands."""
         for _ in range(10):
             try:
-                out = self.run_valkey_command(["PING"])
-                if out.strip() == "PONG":
+                out = self.run_valkey_command("PING")
+                if out == "PONG":
                     return
-            except subprocess.CalledProcessError:
+            except UnexpectedExit:
                 pass
             time.sleep(1)
 
@@ -86,10 +91,12 @@ class Server:
 
     def info(self, section: str) -> dict[str, str]:
         """Run the 'info' command on the server and return the specified section."""
-        result, _ = run_command(f"{config.VALKEY_CLI} -h {self.ip} info {section}")
-        result = result.strip().split("\n")
+        stdout = self.run_valkey_command(f"info {section}")
+        if stdout is None:
+            raise RuntimeError(f"Failed to run 'info {section}' on server {self.ip}")
+        out = stdout.strip().split("\n")
         keypairs: dict[str, str] = {}
-        for item in result:
+        for item in out:
             if ":" in item:
                 (key, value) = item.split(":")
                 keypairs[key.strip()] = value.strip()
@@ -122,8 +129,7 @@ class Server:
         if primary_ip is None:
             primary_ip = "no"
             port = "one"
-        command = ["replicaof", primary_ip, port]
-        response = self.run_valkey_command(command)
+        response = self.run_valkey_command(f"replicaof {primary_ip} {port}")
         if response != "OK":
             raise RuntimeError(f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}")
 
@@ -151,49 +157,33 @@ class Server:
         """
         return self.hash
 
-    def run_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
-        """Run valkey-benchmark, sequentially covering the entire keyspace."""
-        sequential_command: list[str] = [
-            str(config.VALKEY_BENCHMARK),
-            "-h",
-            self.ip,
-            "-c",
-            "650",
-            "-P",
-            "4",
-            "--threads",
-            "50",
-            "-q",
-            "--sequential",
-            "-r",
-            str(keyspace_size),
-            "-n",
-            str(keyspace_size),
-        ]
-        sequential_command.extend(command.split())
-        self.logger.info("Benchmark Command: %s", " ".join(sequential_command))
-        run_command(sequential_command)
-
     def check_file_exists(self, path: Path) -> bool:
         """Check if a file exists on the server."""
         result, _ = self.run_host_command(f"[[ -f {path} ]] && echo 1 || echo 0;")
         return result.strip() == "1"
 
-    def run_host_command(self, command: str, check=True):
+    def run_host_command(self, command: str, check=True) -> tuple[str, str]:
         """Run a terminal command on the server and return its output."""
         self.logger.info("Host command: %s", command)
-        return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=False, check=check)
+        result: RunResult = self.ssh.run(command, hide=True, warn=not check)
+        return result.stdout, result.stderr
 
-    def run_interactive_host_command(self, command: str, check=True):
-        """Run a terminal command on the server and return its output."""
-        self.logger.info("Interactive host command: %s", command)
-        return run_command(command, remote_ip=self.ip, remote_pseudo_terminal=True, check=check)
-
-    def run_valkey_command(self, command: Sequence[str]):
+    def run_valkey_command(self, command: str) -> Optional[str]:
         """Run a valkey command on the server and return its output."""
         self.logger.info("Valkey cli command: %s", command)
-        response, _ = run_command([str(config.VALKEY_CLI), "-h", self.ip] + list(command))
-        return response.strip()
+        cli_command: str = f"{str(config.VALKEY_CLI)} -h {self.ip} " + command
+        result = run(cli_command, hide=True)
+        return result.stdout.strip() if result else None
+
+    def run_valkey_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
+        """Run valkey-benchmark, sequentially covering the entire keyspace."""
+        sequential_command: str = (
+            f"{str(config.VALKEY_BENCHMARK)} -h {self.ip} -c 650 -P 4 "
+            f"--threads 50 -q --sequential -r {keyspace_size} -n {keyspace_size} "
+        )
+        sequential_command += command
+        self.logger.info("Benchmark Command: %s", sequential_command)
+        run(sequential_command, hide=True)
 
     def __get_cached_build_path(self) -> Path:
         assert self.source is not None and self.hash is not None
@@ -223,7 +213,7 @@ class Server:
             result, _ = self.run_host_command(
                 f"cd {source_path} && git rev-parse --symbolic-full-name origin/{specifier} --"
             )
-        except subprocess.CalledProcessError:
+        except UnexpectedExit:
             print(f"Failed to resolve {specifier} in {self.source}, trying as-is")
             result, _ = self.run_host_command(
                 f"cd {source_path} && git rev-parse --symbolic-full-name {specifier} --"
@@ -264,37 +254,25 @@ class Server:
     def delete_entire_build_cache(server_ips) -> None:
         """Delete the entire build cache on all servers. This is a destructive operation."""
         for server_ip in server_ips:
-            run_command(
-                f"rm -rf {Server.remote_build_cache}",
-                remote_ip=server_ip,
-                remote_pseudo_terminal=False,
-                check=False,
-            )
+            with Connection(server_ip, connect_kwargs={"key_filename": str(config.SSH_KEYFILE)}) as conn:
+                conn.run(
+                    f"rm -rf {Server.remote_build_cache}",
+                    hide=True,
+                    warn=True,
+                )
 
-    def scp_file_from_server(self, server_src: Path, local_dest: Path) -> None:
+    def get(self, server_src: Path, local_dest: Path) -> None:
         """Copy a file from the server to the local machine."""
-        command = [
-            "scp",
-            "-i",
-            str(config.SSH_KEYFILE),
-            f"{self.ip}:{str(server_src)}",
-            str(local_dest),
-        ]
-        subprocess.run(command, check=True, encoding="utf-8")
+        self.ssh.get(server_src, local=local_dest)
 
-    def scp_file_to_server(self, local_src: Path, server_dest: Path) -> None:
+    def put(self, local_src: Path, server_dest: Path) -> None:
         """Copy a file from the local machine to the server."""
-        command = [
-            "scp",
-            "-i",
-            str(config.SSH_KEYFILE),
-            str(local_src),
-            f"{self.ip}:{str(server_dest)}",
-        ]
-        subprocess.run(command, check=True, encoding="utf-8")
+        self.ssh.put(local_src, remote=server_dest)
 
     def __ensure_binary_uploaded(self, local_path) -> Path:
-        self.hash = hash_file(local_path)
+        result = run(f"sha1sum {str(local_path)}")
+        assert result is not None, "Failed to run sha1sum on local binary"
+        self.hash = result.stdout.strip().split()[0]
 
         cached_binary_path = self.__get_cached_build_path() / VALKEY_BINARY
 
@@ -302,7 +280,7 @@ class Server:
             self.logger.info("copying %s to server... (not cached)", local_path)
 
             self.run_host_command(f"mkdir -p {cached_binary_path.parent}")
-            self.scp_file_to_server(local_path, cached_binary_path)
+            self.put(local_path, cached_binary_path)
 
         return cached_binary_path
 
@@ -374,7 +352,7 @@ class Server:
         for remote_file in [Server.perf_data_path, Server.flamegraph_path]:
             filename = f"{server_name}-{remote_file.name}"
             local_file = test_results / filename
-            self.scp_file_from_server(remote_file, local_file)
+            self.get(remote_file, local_file)
 
     def __profiling_cleanup(self):
         files = [Server.perf_data_path, Server.out_perf_path, Server.out_folded_path, Server.flamegraph_path]

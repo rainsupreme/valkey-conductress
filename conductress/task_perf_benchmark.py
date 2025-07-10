@@ -17,6 +17,7 @@ from .config import (
 from .replication_group import ReplicationGroup
 from .utility import (
     BILLION,
+    HumanByte,
     HumanNumber,
     HumanTime,
     RealtimeCommand,
@@ -67,7 +68,7 @@ class TestPerf:
     def __init__(
         self,
         task_name: str,
-        server_ips: list,
+        server_ips: list[str],
         binary_source: str,
         specifier: str,
         io_threads: int,
@@ -84,7 +85,7 @@ class TestPerf:
 
         self.title = (
             f"{test} throughput, {binary_source}:{specifier}, io-threads={io_threads}, "
-            f"pipelining={pipelining}, size={valsize}, warmup={HumanTime.to_human(warmup)}, "
+            f"pipelining={pipelining}, size={HumanByte.to_human(valsize)}, warmup={HumanTime.to_human(warmup)}, "
             f"duration={HumanTime.to_human(duration)}"
         )
 
@@ -124,14 +125,16 @@ class TestPerf:
         self.target_ip = self.server.ip
         self.commit_hash = self.server.get_build_hash()
         if self.preload_keys:
-            self.server.run_command_over_keyspace(
+            self.server.run_valkey_command_over_keyspace(
                 PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
             )
             if self.has_expire:
                 if not self.test.expire_command:
                     self.logger.warning("Expire command not available, skipping expiration")
                 else:
-                    self.server.run_command_over_keyspace(PERF_BENCH_KEYSPACE, self.test.expire_command)
+                    self.server.run_valkey_command_over_keyspace(
+                        PERF_BENCH_KEYSPACE, self.test.expire_command
+                    )
 
         self.command_string = (
             f"{VALKEY_BENCHMARK} -h {self.target_ip} -d {self.valsize} "
