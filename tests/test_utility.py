@@ -1,6 +1,6 @@
 import pytest
 
-from conductress.utility import (
+from src.utility import (
     HumanByte,
     HumanNumber,
     HumanTime,
@@ -103,7 +103,7 @@ class TestPrintFunctions:
 
     @pytest.fixture
     def mock_console_width(self, monkeypatch):
-        monkeypatch.setattr("conductress.utility.get_console_width", lambda: TEST_CONSOLE_WIDTH)
+        monkeypatch.setattr("src.utility.get_console_width", lambda: TEST_CONSOLE_WIDTH)
         return TEST_CONSOLE_WIDTH
 
     @pytest.fixture
@@ -118,13 +118,13 @@ class TestPrintFunctions:
     def test_inline_header(self, mock_console_width, captured_print):
         print_inline_header("Test")
         printed_text = captured_print()
-        assert len(printed_text) == TEST_CONSOLE_WIDTH
+        assert len(printed_text) == mock_console_width
         assert "Test" in printed_text
 
     def test_pretty_divider(self, mock_console_width, captured_print):
         print_pretty_divider()
         printed_text = captured_print()
-        assert abs(len(printed_text) - TEST_CONSOLE_WIDTH) <= 1  # Allow for odd lengths
+        assert abs(len(printed_text) - mock_console_width) <= 1  # Allow for odd lengths
         assert printed_text == printed_text[::-1]  # Check if it's symmetric
 
     def test_centered_text(self, mock_console_width, captured_print):
@@ -133,11 +133,11 @@ class TestPrintFunctions:
         printed_text = captured_print()
 
         # Verify length
-        assert len(printed_text) == TEST_CONSOLE_WIDTH
+        assert len(printed_text) == mock_console_width
 
         # Verify centering
         left_space = printed_text.index(test_text)
-        right_space = TEST_CONSOLE_WIDTH - (left_space + len(test_text))
+        right_space = mock_console_width - (left_space + len(test_text))
         assert abs(left_space - right_space) <= 1  # Allow for odd lengths
 
     @pytest.mark.parametrize(
@@ -150,7 +150,7 @@ class TestPrintFunctions:
         ],
     )
     def test_various_text_lengths(self, monkeypatch, captured_print, text, width):
-        monkeypatch.setattr("conductress.utility.get_console_width", lambda: width)
+        monkeypatch.setattr("src.utility.get_console_width", lambda: width)
         print_centered_text(text)
         printed_text = captured_print()
         assert len(printed_text) == width

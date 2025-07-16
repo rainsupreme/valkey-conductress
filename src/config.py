@@ -18,6 +18,8 @@ VALKEY_BENCHMARK = PROJECT_ROOT / "valkey-benchmark"
 CONDUCTRESS_RESULTS = PROJECT_ROOT / "results"
 CONDUCTRESS_OUTPUT = CONDUCTRESS_RESULTS / "output.txt"
 
+CONDUCTRESS_QUEUE = PROJECT_ROOT / "benchmark_queue"
+
 # ssh key to use when accessing the server
 # Replace this with the path to your private key file
 SSH_KEYFILE = PROJECT_ROOT / "server-keyfile.pem"

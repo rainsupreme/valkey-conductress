@@ -8,15 +8,17 @@ from typing import Optional
 
 import plotext as plt
 
-from .config import (
+from src.config import (
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
     VALKEY_BENCHMARK,
 )
-from .replication_group import ReplicationGroup
-from .utility import (
+from src.replication_group import ReplicationGroup
+from src.task_queue import BaseTaskData, BaseTaskRunner
+from src.utility import (
     BILLION,
+    MINUTE,
     HumanByte,
     HumanNumber,
     HumanTime,
@@ -27,7 +29,49 @@ from .utility import (
 )
 
 
-class TestPerf:
+@dataclass
+class PerfTaskData(BaseTaskData):
+    """data class for performance benchmark task"""
+
+    test: str
+    val_size: int
+    io_threads: int
+    pipelining: int
+    warmup: int
+    duration: int
+    profiling_sample_rate: int
+    has_expire: bool
+    preload_keys: bool
+
+    def short_description(self) -> str:
+        profiling = self.profiling_sample_rate > 0
+        return (
+            f"{HumanByte.to_human(self.val_size)} {self.test} items for "
+            f"{HumanTime.to_human(self.duration)}, {self.io_threads} threads"
+            f", {self.pipelining} pipelined"
+            f"{', profiling' if profiling else ''}"
+        )
+
+    def prepare_task_runner(self, server_ips) -> "PerfTaskRunner":
+        """Return the task runner for this task."""
+        return PerfTaskRunner(
+            f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_perf",
+            server_ips,
+            self.source,
+            self.specifier,
+            io_threads=self.io_threads,
+            valsize=self.val_size,
+            pipelining=self.pipelining,
+            test=self.test,
+            warmup=self.warmup * MINUTE,
+            duration=self.duration * MINUTE,
+            preload_keys=self.preload_keys,
+            has_expire=self.has_expire,
+            sample_rate=self.profiling_sample_rate,
+        )
+
+
+class PerfTaskRunner(BaseTaskRunner):
     """Benchmark the throughput of a Valkey server."""
 
     @dataclass
@@ -81,11 +125,13 @@ class TestPerf:
         has_expire: bool,
         sample_rate: int = -1,
     ):
+
         self.logger = logging.getLogger(self.__class__.__name__ + "." + test)
 
         self.title = (
             f"{test} throughput, {binary_source}:{specifier}, io-threads={io_threads}, "
-            f"pipelining={pipelining}, size={HumanByte.to_human(valsize)}, warmup={HumanTime.to_human(warmup)}, "
+            f"pipelining={pipelining}, size={HumanByte.to_human(valsize)}, "
+            f"warmup={HumanTime.to_human(warmup)}, "
             f"duration={HumanTime.to_human(duration)}"
         )
 
@@ -97,7 +143,7 @@ class TestPerf:
         self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining
-        self.test: TestPerf.Test = TestPerf.tests[test]
+        self.test: PerfTaskRunner.Test = PerfTaskRunner.tests[test]
         self.warmup = warmup  # seconds
         self.duration = duration  # seconds
         self.preload_keys = preload_keys

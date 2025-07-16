@@ -21,16 +21,12 @@ class Server:
     """Represents a server running a Valkey instance."""
 
     # These are remote paths - they exist on the valkey server
-    remote_build_cache = Path("~") / "build_cache"
-    remote_repos = Path("~")
-
+    path_root = Path("~")
+    remote_build_cache = path_root / "build_cache"
     # profiling related paths
-    flamegraph = Path("~") / "FlameGraph"
-    remote_perf_data = Path("~")
-    perf_data_path = remote_perf_data / "perf.data"
-    out_perf_path = remote_perf_data / "out.perf"
-    out_folded_path = remote_perf_data / "out.folded"
-    flamegraph_path = remote_perf_data / "flamegraph.svg"
+    flamegraph = path_root / "FlameGraph"
+    perf_data_path = path_root / "perf.data"
+    flamegraph_path = path_root / "flamegraph.svg"
 
     @classmethod
     def with_build(
@@ -191,7 +187,7 @@ class Server:
 
     def __get_source_binary_path(self) -> Path:
         assert self.source is not None
-        return Server.remote_repos / self.source / "src"
+        return Server.path_root / self.source / "src"
 
     def __ensure_stopped_and_clean(self):
         self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
@@ -261,13 +257,15 @@ class Server:
                     warn=True,
                 )
 
-    def get(self, server_src: Path, local_dest: Path) -> None:
+    def get_file(self, server_src: Path, local_dest: Path) -> None:
         """Copy a file from the server to the local machine."""
-        self.ssh.get(server_src, local=local_dest)
+        server_str = self.run_host_command(f"echo {server_src}")[0].strip()
+        self.ssh.get(server_str, local=str(local_dest))
 
-    def put(self, local_src: Path, server_dest: Path) -> None:
+    def put_file(self, local_src: Path, server_dest: Path) -> None:
         """Copy a file from the local machine to the server."""
-        self.ssh.put(local_src, remote=server_dest)
+        server_str = self.run_host_command(f"echo {server_dest}")[0].strip()
+        self.ssh.put(str(local_src), remote=server_str)
 
     def __ensure_binary_uploaded(self, local_path) -> Path:
         result = run(f"sha1sum {str(local_path)}")
@@ -280,7 +278,7 @@ class Server:
             self.logger.info("copying %s to server... (not cached)", local_path)
 
             self.run_host_command(f"mkdir -p {cached_binary_path.parent}")
-            self.put(local_path, cached_binary_path)
+            self.put_file(local_path, cached_binary_path)
 
         return cached_binary_path
 
@@ -328,6 +326,10 @@ class Server:
     def profiling_report(self, task_name: str, server_name: str) -> None:
         """Retrieve profile data from server and generate flamegraph report.
         Stops profiling first if needed"""
+
+        out_perf_path = Server.path_root / "out.perf"
+        out_folded_path = Server.path_root / "out.folded"
+
         if self.is_profiling():
             self.profiling_stop()
         self.profiling_wait()
@@ -335,15 +337,15 @@ class Server:
         self.run_host_command(
             f"sudo chmod a+r {Server.perf_data_path}",
         )
-        self.run_host_command(f"perf script -i {Server.perf_data_path} > {Server.out_perf_path}")
+        self.run_host_command(f"perf script -i {Server.perf_data_path} > {out_perf_path}")
         print("collapsing stacks")
         self.run_host_command(
-            f"{Server.flamegraph/'stackcollapse-perf.pl'} "
-            f"{Server.out_perf_path} > {Server.out_folded_path}"
+            f"{Server.flamegraph/'stackcollapse-perf.pl'} " f"{out_perf_path} > {out_folded_path}"
         )
         self.run_host_command(
-            f"{Server.flamegraph/'flamegraph.pl'} {Server.out_folded_path} > {Server.flamegraph_path}"
+            f"{Server.flamegraph/'flamegraph.pl'} {out_folded_path} > {Server.flamegraph_path}"
         )
+        self.run_host_command(f"rm -f {out_perf_path} {out_folded_path}")
 
         print("copying perf data from server")
         test_results = config.CONDUCTRESS_RESULTS / task_name
@@ -352,11 +354,10 @@ class Server:
         for remote_file in [Server.perf_data_path, Server.flamegraph_path]:
             filename = f"{server_name}-{remote_file.name}"
             local_file = test_results / filename
-            self.get(remote_file, local_file)
+            self.get_file(remote_file, local_file)
 
     def __profiling_cleanup(self):
-        files = [Server.perf_data_path, Server.out_perf_path, Server.out_folded_path, Server.flamegraph_path]
-        command = " && ".join([f"rm -f {file}" for file in files])
+        command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path}"
         self.run_host_command(command)
 
     # async def get_valkey_server_threads(self) -> list[tuple[int, int]]:

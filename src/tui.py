@@ -16,7 +16,6 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    Pretty,
     SelectionList,
     Static,
     Switch,
@@ -25,9 +24,12 @@ from textual.widgets import (
 )
 from textual.widgets.selection_list import Selection
 
+from src.tasks.task_full_sync import SyncTaskData
+from src.tasks.task_mem_efficiency import MemTaskData
+from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
+
 from . import config
-from .task_perf_benchmark import TestPerf
-from .task_queue import Task, TaskQueue
+from .task_queue import BaseTaskData, TaskQueue
 from .utility import HumanByte, HumanNumber
 
 logger = logging.getLogger(__name__)
@@ -106,26 +108,21 @@ class BenchmarkApp(App):
             table.add_columns(
                 "Timestamp",
                 "Type",
-                "Test",
                 "Source:Specifier",
-                "Threads",
-                "Pipeline",
-                "ValSize",
-                "Expire",
-                "Profiling",
+                "Description",
+                "Note",
             )
 
         for task in tasks:
+            task_type = task.task_type
+            if task_type.endswith("TaskData"):
+                task_type = task_type[:-8]
             table.add_row(
                 task.timestamp,
-                task.task_type,
-                task.test,
+                task_type,
                 f"{task.source}:{task.specifier}",
-                str(task.io_threads),
-                str(task.pipelining),
-                str(task.val_size),
-                str(task.has_expire),
-                str(task.profiling_sample_rate > 0),
+                task.short_description(),
+                task.note,
             )
 
         # Update the status message
@@ -243,7 +240,7 @@ class BaseTaskForm(ScrollableContainer):
         self.update_queue_view = update_queue_fn
         self.queue = TaskQueue()
 
-    def queue_tasks(self, tasks: list[Task]) -> None:
+    def queue_tasks(self, tasks: list[BaseTaskData]) -> None:
         """Queue the tasks and update the view"""
         for task in tasks:
             self.queue.submit_task(task)
@@ -291,11 +288,14 @@ class PerfTaskForm(BaseTaskForm):
             classes="switch-container",
         )
 
-        tests = tuple(Selection[str](name, name) for name in TestPerf.tests)
+        tests = tuple(Selection[str](name, name) for name in PerfTaskRunner.tests)
         yield SelectionList[str](
             *tests,
             id="test-list",
         )
+
+        yield Label("Note (optional)", classes="form-label")
+        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
 
         yield Button("Submit", variant="primary", id="submit-perf-task")
 
@@ -315,6 +315,7 @@ class PerfTaskForm(BaseTaskForm):
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
             profiling: bool = self.query_one("#profiling", Switch).value
+            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
@@ -339,21 +340,22 @@ class PerfTaskForm(BaseTaskForm):
         )
         profiling_sample_rate = 399 if profiling else -1
 
-        tasks = []
+        tasks: list[BaseTaskData] = []
         for size, pipe, thread, test, specifier in all_tests:
-            task = Task.perf_task(
-                test=test,
+            task = PerfTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
+                replicas=-1,  # TODO configurable replicas
+                note=note,
                 val_size=size,
                 io_threads=thread,
                 pipelining=pipe,
+                test=test,
                 warmup=5,
                 duration=60,
                 profiling_sample_rate=profiling_sample_rate,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
-                replicas=-1,
             )
             tasks.append(task)
         self.queue_tasks(tasks)
@@ -367,7 +369,6 @@ class MemTaskForm(BaseTaskForm):
 
         self.sizes = SizesField()
 
-    # TODO test this
     def compose(self) -> ComposeResult:
         yield Label(
             f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
@@ -394,12 +395,15 @@ class MemTaskForm(BaseTaskForm):
         )
 
         tests = tuple(
-            Selection[str](name, name) for name in TestPerf.tests
+            Selection[str](name, name) for name in PerfTaskRunner.tests
         )  # TODO shouldn't this be TestMem or something?
         yield SelectionList[str](
             *tests,
             id="test-list",
         )
+
+        yield Label("Note (optional)", classes="form-label")
+        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
 
         yield Button("Submit", variant="primary", id="submit-mem-task")
 
@@ -415,6 +419,7 @@ class MemTaskForm(BaseTaskForm):
             sizes: list[int] = self.sizes.values()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
+            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
@@ -436,10 +441,16 @@ class MemTaskForm(BaseTaskForm):
             )
         )
 
-        tasks = []
+        tasks: list[BaseTaskData] = []
         for size, test, specifier in all_tests:
-            task = Task.mem_task(
-                source=specifier[0], specifier=specifier[1], val_size=size, test=test, has_expire=expire_keys
+            task = MemTaskData(
+                source=specifier[0],
+                specifier=specifier[1],
+                val_size=size,
+                type=test,
+                has_expire=expire_keys,
+                replicas=1,
+                note=note,  # TODO configurable note
             )
             tasks.append(task)
         self.queue_tasks(tasks)
@@ -484,6 +495,9 @@ class SyncTaskForm(BaseTaskForm):
             classes="switch-container",
         )
 
+        yield Label("Note (optional)", classes="form-label")
+        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
+
         yield Button("Submit", variant="primary", id="submit-sync-task")
 
     @on(Button.Pressed, "#submit-sync-task")
@@ -499,6 +513,7 @@ class SyncTaskForm(BaseTaskForm):
             sizes: list[int] = self.sizes.values()
             counts: list[int] = self.counts.values()
             profiling: bool = self.query_one("#profiling", Switch).value
+            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
@@ -518,17 +533,18 @@ class SyncTaskForm(BaseTaskForm):
         )
         profiling_sample_rate = 3999 if profiling else -1
 
-        tasks = []
+        tasks: list[BaseTaskData] = []
         for size, count, thread, specifier in all_tests:
-            task = Task.sync_task(
-                test=test,
+            task = SyncTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
                 val_size=size,
                 val_count=count,
                 io_threads=thread,
                 replicas=replicas,
+                test=test,
                 profiling_sample_rate=profiling_sample_rate,
+                note=note,
             )
             tasks.append(task)
         self.queue_tasks(tasks)

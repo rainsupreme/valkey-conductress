@@ -4,12 +4,44 @@ import datetime
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
-from .replication_group import ReplicationGroup
-from .utility import HumanByte, print_pretty_header, record_task_result
+from src.replication_group import ReplicationGroup
+from src.task_queue import BaseTaskData, BaseTaskRunner
+from src.utility import HumanByte, HumanNumber, print_pretty_header, record_task_result
 
 
-class TestFullSync:
+@dataclass
+class SyncTaskData(BaseTaskData):
+    test: str
+    val_size: int
+    val_count: int
+    io_threads: int
+    profiling_sample_rate: int
+
+    def short_description(self) -> str:
+        profiling = self.profiling_sample_rate > 0
+        return (
+            f"{HumanNumber.to_human(self.val_count)} {HumanByte.to_human(self.val_size)} {self.test} items, "
+            f"{self.replicas} replica"
+            f"{', profiling' if profiling else ''}"
+        )
+
+    def prepare_task_runner(self, server_ips: list[str]) -> "SyncTaskRunner":
+        """Return the task runner for this task."""
+        return SyncTaskRunner(
+            f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_sync",
+            server_ips,
+            self.source,
+            self.specifier,
+            io_threads=self.io_threads,
+            valsize=self.val_size,
+            valcount=self.val_count,
+            profiling_sample_rate=self.profiling_sample_rate,
+        )
+
+
+class SyncTaskRunner(BaseTaskRunner):
     """Benchmark full sync throughput"""
 
     def __init__(
