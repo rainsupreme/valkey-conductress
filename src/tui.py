@@ -25,7 +25,7 @@ from textual.widgets import (
 from textual.widgets.selection_list import Selection
 
 from src.tasks.task_full_sync import SyncTaskData
-from src.tasks.task_mem_efficiency import MemTaskData
+from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
 
 from . import config
@@ -394,9 +394,7 @@ class MemTaskForm(BaseTaskForm):
             classes="switch-container",
         )
 
-        tests = tuple(
-            Selection[str](name, name) for name in PerfTaskRunner.tests
-        )  # TODO shouldn't this be TestMem or something?
+        tests = tuple(Selection[str](name, name) for name in MemTaskRunner.tests)
         yield SelectionList[str](
             *tests,
             id="test-list",
@@ -435,22 +433,21 @@ class MemTaskForm(BaseTaskForm):
 
         all_tests = list(
             product(
-                sizes,
                 tests,
                 specifiers,
             )
         )
 
         tasks: list[BaseTaskData] = []
-        for size, test, specifier in all_tests:
+        for test, specifier in all_tests:
             task = MemTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
-                val_size=size,
+                val_sizes=sizes,
                 type=test,
                 has_expire=expire_keys,
                 replicas=1,
-                note=note,  # TODO configurable note
+                note=note,
             )
             tasks.append(task)
         self.queue_tasks(tasks)

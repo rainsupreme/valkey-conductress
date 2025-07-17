@@ -129,11 +129,6 @@ class Server:
         if response != "OK":
             raise RuntimeError(f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}")
 
-    def used_memory(self) -> int:
-        """Get the amount of memory used by the server."""
-        info = self.info("memory")
-        return int(info["used_memory"])
-
     def count_items_expires(self) -> tuple[int, int]:
         """Count total items and items with expiry in the keyspace."""
         info = self.info("keyspace")
