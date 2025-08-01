@@ -80,7 +80,7 @@ def remove_motd() -> None:
     motd_path = Path("/etc/motd.d/insights-client")
     if motd_path.exists():
         logger.info("Removing insights-client motd")
-        motd_path.unlink()
+        subprocess.call(f"sudo rm {motd_path}", shell=True)
 
 
 def update_local_host() -> None:
