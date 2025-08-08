@@ -160,13 +160,54 @@ class SourceSpeciferValidator(Validator):
         return specifiers, None
 
 
-T = TypeVar("T", bound=HumanNumber)
+HumanNumberType = TypeVar("HumanNumberType", bound=HumanNumber)
+
+
+class RangeListValidator(Validator):
+    """Validator for list of ranges: [1,500,1:5,1:256:8]"""
+
+    def __init__(self, number_type: type[HumanNumberType]):
+        super().__init__()
+        self.number_type = number_type
+
+    def validate(self, value: str) -> ValidationResult:
+        _, error = self.parse_range_list(value)
+        if error:
+            return self.failure(error)
+        return self.success()
+
+    def parse_range_list(self, input_str: str) -> tuple[list[int], Optional[str]]:
+        if not input_str:
+            return [], "input cannot be empty"
+
+        try:
+            ranges = [
+                [int(self.number_type.from_human(num)) for num in rangespec.split(":")]
+                for rangespec in input_str.split(",")
+            ]
+        except ValueError as e:
+            return [], str(e)
+
+        result = []
+        print(repr(ranges))
+        for rangespec in ranges:
+            print(len(rangespec), rangespec)
+            if len(rangespec) == 1:
+                result += rangespec
+                print("appending", result)
+            elif len(rangespec) == 3:
+                if rangespec[2] == 0:
+                    return [], "range step (start:end:step) value must not be zero"
+                result.extend(range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2]))
+            else:
+                return [], "ranges are of the format value, or start:end:step"
+        return result, None
 
 
 class CommaSeparatedIntsValidator(Validator):
     """Validator for comma-separated positive integers. Suffixes (K, M, etc) accepted."""
 
-    def __init__(self, number_type: type[T]):
+    def __init__(self, number_type: type[HumanNumberType]):
         super().__init__()
         self.number_type = number_type
 
@@ -190,12 +231,21 @@ class CommaSeparatedIntsValidator(Validator):
 
 
 class NumberListField:
-    def __init__(self, label, input_id, default, placeholder, number_type: type[T]):
+    def __init__(
+        self,
+        label,
+        input_id,
+        default,
+        placeholder,
+        number_type: type[HumanNumberType],
+        allow_ranges: bool = False,
+    ):
         self.label = label
         self.id = input_id
         self.default = default
         self.placeholder = placeholder
         self.number_type = number_type
+        self.allow_ranges = allow_ranges
 
         self.input = Input(
             value=self.default,
@@ -210,7 +260,11 @@ class NumberListField:
         yield self.input
 
     def values(self) -> list[int]:
-        return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
+        if self.allow_ranges:
+            value_list, _ = RangeListValidator(self.number_type).parse_range_list(self.input.value)
+            return value_list
+        else:
+            return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
 
 
 class PipeliningField(NumberListField):
@@ -225,7 +279,14 @@ class IOThreadsField(NumberListField):
 
 class SizesField(NumberListField):
     def __init__(self):
-        super().__init__("Sizes (comma-separated)", "sizes", "0.5KB", "256, 1KB", HumanByte)
+        super().__init__(
+            "Sizes (comma separated values or start:stop:step ranges)",
+            "sizes",
+            "0.5KB",
+            "256, 1KB, 1KB:16KB:2KB",
+            HumanByte,
+            allow_ranges=True,
+        )
 
 
 class CountsField(NumberListField):
