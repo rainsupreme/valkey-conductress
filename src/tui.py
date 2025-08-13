@@ -507,7 +507,7 @@ class MemTaskForm(BaseTaskForm):
                 val_sizes=sizes,
                 type=test,
                 has_expire=expire_keys,
-                replicas=1,
+                replicas=-1,
                 note=note,
             )
             tasks.append(task)
