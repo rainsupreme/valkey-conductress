@@ -30,18 +30,19 @@ class Server:
 
     @classmethod
     def with_build(
-        cls, ip: str, binary_source: str, specifier: str, io_threads: int, args: list[str]
+        cls, ip: str, port: int, binary_source: str, specifier: str, io_threads: int, args: list[str]
     ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
-        server = cls(ip)
+        server = cls(ip, port)
         server.threads = io_threads
         if io_threads > 1:
             args += ["--io-threads", str(io_threads)]
         server.start(binary_source, specifier, args)
         return server
 
-    def __init__(self, ip: str) -> None:
+    def __init__(self, ip: str, port: int = 6379) -> None:
         self.ip = ip
+        self.port = port
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
@@ -68,7 +69,10 @@ class Server:
             assert self.source in config.REPO_NAMES, f"Unknown source: {self.source}"
             cached_binary_path = self.__ensure_build_cached()
 
-        command = f"{cached_binary_path} --save --protected-mode no --daemonize yes " + " ".join(self.args)
+        command = (
+            f"{cached_binary_path} --port {self.port} --save --protected-mode no --daemonize yes "
+            + " ".join(self.args)
+        )
         self.run_host_command(command)
         self.wait_until_ready()
 
@@ -162,14 +166,14 @@ class Server:
     def run_valkey_command(self, command: str) -> Optional[str]:
         """Run a valkey command on the server and return its output."""
         self.logger.info("Valkey cli command: %s", command)
-        cli_command: str = f"{str(config.VALKEY_CLI)} -h {self.ip} " + command
+        cli_command: str = f"{str(config.VALKEY_CLI)} -h {self.ip} -p {self.port} " + command
         result = run(cli_command, hide=True)
         return result.stdout.strip() if result else None
 
     def run_valkey_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
         """Run valkey-benchmark, sequentially covering the entire keyspace."""
         sequential_command: str = (
-            f"{str(config.VALKEY_BENCHMARK)} -h {self.ip} -c 650 -P 4 "
+            f"{str(config.VALKEY_BENCHMARK)} -h {self.ip} -p {self.port} -c 650 -P 4 "
             f"--threads 50 -q --sequential -r {keyspace_size} -n {keyspace_size} "
         )
         sequential_command += command
@@ -184,8 +188,22 @@ class Server:
         assert self.source is not None
         return Server.path_root / self.source / "src"
 
-    def __ensure_stopped_and_clean(self):
+    def kill_all_valkey_instances_on_host(self):
         self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
+
+    def __ensure_stopped_and_clean(self):
+        process_id, _ = self.run_host_command(f"lsof -ti :{self.port}", check=False)
+        process_id = process_id.strip()
+        if not process_id:
+            return
+
+        # ensure process using the port is one of our expected valkey processes
+        # (in case an unexpected process is already using the port for some reason)
+        name, _ = self.run_host_command(f"ps -p {process_id}")
+        name = name.strip().split()[-1]
+        assert name == VALKEY_BINARY
+
+        self.run_host_command(f"kill -9 {process_id}")
 
         # clean up any rdb files from replication or snapshotting
         # valkey will automatically load "dump.rdb" if it is present

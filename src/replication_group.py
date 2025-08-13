@@ -35,7 +35,10 @@ class ReplicationGroup:
             server.replicate(None)
 
     def __start_server(self, server_ip) -> Server:
-        server = Server.with_build(server_ip, self.binary_source, self.specifier, self.threads, self.args)
+        port = 6379
+        server = Server.with_build(
+            server_ip, port, self.binary_source, self.specifier, self.threads, self.args
+        )
         server.replicate(None)
         server.wait_until_ready()
         return server

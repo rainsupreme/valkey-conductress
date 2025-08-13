@@ -99,7 +99,8 @@ class MemTaskRunner(BaseTaskRunner):
 
     def test_single_size_overhead(self, val_size: int) -> dict[str, float]:
         """Test memory efficiency for a single item size."""
-        valkey = Server.with_build(self.server_ip, self.repo, self.specifier, io_threads=9, args=[])
+        port = 6379
+        valkey = Server.with_build(self.server_ip, port, self.repo, self.specifier, io_threads=9, args=[])
         self.commit_hash = valkey.get_build_hash()
 
         before_memory = valkey.info("memory")

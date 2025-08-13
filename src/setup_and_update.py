@@ -2,14 +2,16 @@
 
 import concurrent.futures
 import logging
+import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Optional, Union
 
 from . import config
 
 ROOT = config.PROJECT_ROOT
+DEV = True
 
 logger = logging.getLogger(__name__)
 
@@ -18,86 +20,53 @@ SERVERS = config.SERVERS
 SSH_KEYFILE = config.SSH_KEYFILE
 REPOSITORIES = config.REPOSITORIES
 
-YUM_PACKAGES = [
-    "cmake",
-    "cmake3",
-    "git",
-    "python3-pip",
-    "perf",
-    "js-d3-flame-graph",
-    "perl-open.noarch",  # needed for brendangregg/FlameGraph in rhel
-]
+
+def load_requirements(name: str) -> list[str]:
+    with open(f"requirements/{name}.txt", "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    # strip comments
+    lines = [line.split("#")[0].strip() for line in lines]
+
+    return lines
 
 
-def run_command(
-    command: Union[str, Sequence[str]],
-    remote_ip: Union[str, None] = None,
-    remote_pseudo_terminal: bool = True,
-    cwd: Union[Path, None] = None,
-    check: bool = True,
-):
-    """Run a console command and return its output."""
-    if remote_ip is None:  # local command
-        cmd_list = command.split() if isinstance(command, str) else command
-        result = subprocess.run(
-            cmd_list,
-            check=check,
-            encoding="utf-8",
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if result.stderr:
-            print(repr(result.stderr))
-        return result.stdout, result.stderr
+def get_linux_distro() -> str:
+    with open("/etc/os-release", "r", encoding="utf-8") as f:
+        data = f.readlines()
+    data = [line for line in data if line.startswith("NAME")]
+    assert len(data) == 1
+    distro = data[0].split('"')[1]
+    return distro
 
-    if isinstance(command, str):
-        remote_command = command
-    else:
-        remote_command = " ".join(command)
-    if cwd is not None:
-        remote_command = f"cd {str(cwd)}; {remote_command}"
 
-    # remote command
-    ssh_command = ["ssh", "-q"]
-    if not remote_pseudo_terminal:
-        ssh_command += ["-T"]  # disable pseudo-terminal allocation for non-interactive sessions
-    ssh_command += ["-i", str(SSH_KEYFILE), remote_ip, remote_command]
-
+def subprocess_command(command: str) -> None:
+    cmd_list = command.split()
     result = subprocess.run(
-        ssh_command, check=check, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        cmd_list, check=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
-    return result.stdout, result.stderr
+    if result.stderr:
+        print(repr(result.stderr))
 
 
-def command_exists(cmd):
-    """Check if a command exists in the system."""
-    return subprocess.call(f"command -v {cmd} > /dev/null 2>&1", shell=True) == 0
+# ======== ensure fabric installed and imported ========
+try:
+    from fabric import Connection
+    from invoke import run
+except ImportError:
+    subprocess_command("sudo dnf install -y python3-pip")
+    subprocess_command("python3 -m pip install --upgrade pip")
+    subprocess_command("pip install fabric invoke")
+    try:
+        from fabric import Connection
+        from invoke import run
+    except ImportError:
+        logger.error("Fabric is not installed even after attempting installation.")
+        sys.exit(1)
 
 
-def remove_motd() -> None:
-    """Remove the insights-client motd if it exists."""
-    motd_path = Path("/etc/motd.d/insights-client")
-    if motd_path.exists():
-        logger.info("Removing insights-client motd")
-        subprocess.call(f"sudo rm {motd_path}", shell=True)
-
-
-def update_local_host() -> None:
-    """Update the local host with the required packages and repositories."""
-    requirements = ROOT / "requirements.txt"
-    requirements_dev = ROOT / "requirements-dev.txt"
-
-    logger.info("Installing/updating required distro packages...")
-    run_command("sudo yum update -y")
-    run_command(["sudo", "yum", "groupinstall", "-y", "Development Tools"])
-    run_command("sudo yum install -y " + " ".join(YUM_PACKAGES))
-
-    logger.info("Installing/updating Python packages...")
-    run_command("python3 -m pip install --upgrade pip")
-    run_command(f"pip install -r {requirements}")
-    run_command(f"pip install -r {requirements_dev}")
-
+def ensure_ssh_key() -> None:
+    """Ensure ssh keyfile is present"""
     logger.info("Checking for ssh keyfile")
     if not SSH_KEYFILE.is_file():
         logger.error("Missing SSH keyfile: '%s' (this must be manually copied to the server)", SSH_KEYFILE)
@@ -108,62 +77,108 @@ def update_local_host() -> None:
         logger.error("Failed to set permissions on %s", SSH_KEYFILE)
         sys.exit(1)
 
-    logger.info("Checking for required binaries...")
-    buildable_files: list[Path] = [config.VALKEY_CLI, config.VALKEY_BENCHMARK]
-    if not all(file.is_file() for file in buildable_files):
-        logger.info("something was missing - retrieving and building needed binaries")
-        valkey = ROOT / "valkey"
-        if not valkey.is_dir():
-            run_command(f"git clone https://github.com/SoftlyRaining/valkey.git {valkey}")
 
-        run_command("git fetch", cwd=valkey)
-        run_command("git reset --hard origin/benchmark-multi-replace", cwd=valkey)
-        run_command("make distclean", cwd=valkey)
-        run_command("make -j", cwd=valkey)
-
-        for file in buildable_files:
-            run_command(f"cp {valkey/'src'/file.name} {file}")
+def ensure_server_ssh_fingerprints() -> None:
+    """Ensure all servers are in known_hosts"""
+    logger.info("Ensuring all servers known")
+    for server_ip in SERVERS:
+        result = run(f"ssh-keygen -F {server_ip}", hide=True)
+        if not result or not result.stdout:
+            logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
+            Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
+            run(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null", hide=True)
 
 
-def ensure_server_git_repo(server_ip, repo_url, target_dir):
-    """Clone git repo if it doesn't exist on server"""
-    logger.info("%s: Ensuring repo %s...", server_ip, target_dir)
-    remote_commands = f"""
-        if [ ! -d "{target_dir}" ]; then
-            git clone "{repo_url}" "{target_dir}"
-        fi
-    """
-    run_command([remote_commands], remote_ip=server_ip, remote_pseudo_terminal=False)
+def path_exists(conn: Connection, path: Union[str, Path], expected_type: Optional[str] = None) -> bool:
+    """Check if a path exists and get its type"""
+    try:
+        path_stat = conn.sftp().stat(str(path))
+
+        if expected_type:
+            if stat.S_ISDIR(path_stat.st_mode):
+                assert expected_type == "directory"
+            elif stat.S_ISREG(path_stat.st_mode):
+                assert expected_type == "file"
+            else:
+                assert expected_type == "other"
+        return True
+    except FileNotFoundError:
+        return False
 
 
-def update_server(server_ip):
-    """Update a server with the required packages and repositories."""
-    logger.info("%s: ensure server is in known-hosts", server_ip)
-    std, _ = run_command(f"ssh-keygen -F {server_ip}", check=False)
-    if not std:
-        logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
-        Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
-        run_command(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
+def remove_motd(conn: Connection) -> None:
+    """Remove the insights-client motd if it exists."""
+    motd_path = "/etc/motd.d/insights-client"
+    if path_exists(conn, motd_path, expected_type="file"):
+        logger.info("%s: Removing insights-client motd", conn.host)
+        conn.sudo(f"rm {motd_path}")
 
-    std, _ = run_command("exit", remote_ip=server_ip, check=False)
-    if std:
-        logger.error("Error: Cannot connect to %s", server_ip)
-        sys.exit(1)
 
-    logger.info("%s: Setting up packages...", server_ip)
-    remote_commands = f"""
-    set -e
-    sudo yum update -y
-    sudo yum groupinstall -y "Development Tools"
-    sudo yum install -y {" ".join(YUM_PACKAGES)}
-    """
-    run_command([remote_commands], remote_ip=server_ip)
+def update_pip_packages(conn: Connection):
+    packages = load_requirements("pip-requirements")
+    if DEV:
+        packages += load_requirements("pip-requirements-dev")
+    conn.run("python3 -m pip install --upgrade pip", hide=True)
+    conn.run(f"pip install {' '.join(packages)}", hide=True)
 
-    ensure_server_git_repo(server_ip, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
-    logger.info("%s: Ensuring repos cloned...", server_ip)
+def update_dnf_host(conn: Connection):
+    packages = load_requirements("rhel-requirements")
+    logger.info("%s: Updating os packages")
+    conn.sudo("dnf update -y")
+    conn.sudo('dnf groupinstall -y "Development Tools"')
+    conn.sudo(f"dnf install -y {' '.join(packages)}")
+
+
+def ensure_git_repo_cloned(conn: Connection, repo_url, target_dir):
+    logger.info("%s: Ensuring repo %s...", conn.host, target_dir)
+    if not path_exists(conn, target_dir, expected_type="directory"):
+        result = conn.run(f'git clone "{repo_url}" "{target_dir}"', hide=True)
+        assert result
+
+
+def ensure_conductress(conn: Connection, pull=False):
+    conductress_path = Path("conductress")
+
+    if not path_exists(conn, conductress_path, expected_type="directory"):
+        ensure_git_repo_cloned(
+            conn, "https://github.com/SoftlyRaining/valkey-conductress.git", conductress_path
+        )
+    if pull:
+        logger.info("%s: pulling conductress", conn.host)
+        with conn.cd(conductress_path):
+            conn.run("git pull")
+
+    if not path_exists(conn, conductress_path / config.VALKEY_CLI, "file") or not path_exists(
+        conn, conductress_path / config.VALKEY_BENCHMARK, "file"
+    ):
+        logger.info("%s: retrieving and building needed binaries", conn.host)
+        valkey_path = conductress_path / "valkey"
+        ensure_git_repo_cloned(conn, "https://github.com/valkey-io/valkey.git", valkey_path)
+
+        with conn.cd(valkey_path):
+            conn.run("git fetch")
+            conn.run("git reset --hard origin/unstable", hide=True)
+            conn.run("make distclean", hide=True)
+            conn.run("make -j", hide=True)
+
+        conn.run(f"cp {valkey_path / 'src/valkey-cli'} {conductress_path / config.VALKEY_CLI}", hide=True)
+        conn.run(
+            f"cp {valkey_path / 'src/valkey-benchmark'} {conductress_path / config.VALKEY_BENCHMARK}",
+            hide=True,
+        )
+
+
+def update_host(conn: Connection):
+    """Perform all updates on host at specified connection"""
+    update_pip_packages(conn)
+    update_dnf_host(conn)
+    ensure_conductress(conn)
+    ensure_git_repo_cloned(conn, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
+
+    logger.info("%s: Ensuring config repos cloned...", conn.host)
     for repo_url, target_dir in REPOSITORIES:
-        ensure_server_git_repo(server_ip, repo_url, target_dir)
+        ensure_git_repo_cloned(conn, repo_url, target_dir)
 
 
 if __name__ == "__main__":
@@ -172,12 +187,21 @@ if __name__ == "__main__":
     ch.setLevel(logging.INFO)
     logger.addHandler(ch)
     logger.info("⊹˚₊‧───Starting update/setup───‧₊˚⊹")
-    remove_motd()
-    update_local_host()
 
-    # update servers in parallel
-    logger.info("Updating %d servers in parallel...", len(SERVERS))
+    ensure_ssh_key()
+    ensure_server_ssh_fingerprints()
+
+    logger.info("Connecting to all servers")
+    connections = [Connection("localhost", connect_kwargs={"key_filename": str(config.SSH_KEYFILE)})]
+    connections += [
+        Connection(host, connect_kwargs={"key_filename": str(config.SSH_KEYFILE)}) for host in SERVERS
+    ]
+
+    logger.info("Updating all servers in parallel")
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        executor.map(update_server, SERVERS)
+        executor.map(update_host, connections)
+    # for c in connections:
+    #     logger.info("Updating %s", c.host)
+    #     update_host(c)
 
     logger.info("Update/setup complete!")

@@ -1,7 +1,7 @@
 black
-pylint
 flake8
-mypy
 isort
+mypy
+pylint
 pytest
 pytest-cov
