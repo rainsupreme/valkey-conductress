@@ -201,6 +201,7 @@ def record_task_result(
         "end_time": str(endtime),
         "data": data,
     }
+    os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
     with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
         f.write(json.dumps(result))
         f.write("\n")

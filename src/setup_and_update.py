@@ -82,7 +82,7 @@ def ensure_server_ssh_fingerprints() -> None:
     """Ensure all servers are in known_hosts"""
     logger.info("Ensuring all servers known")
     for server_ip in SERVERS:
-        result = run(f"ssh-keygen -F {server_ip}", hide=True)
+        result = run(f"ssh-keygen -F {server_ip}", hide=True, warn=True)
         if not result or not result.stdout:
             logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
             Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
@@ -171,8 +171,8 @@ def ensure_conductress(conn: Connection, pull=False):
 
 def update_host(conn: Connection):
     """Perform all updates on host at specified connection"""
-    update_pip_packages(conn)
     update_dnf_host(conn)
+    update_pip_packages(conn)
     ensure_conductress(conn)
     ensure_git_repo_cloned(conn, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
