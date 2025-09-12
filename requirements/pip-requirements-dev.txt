@@ -5,3 +5,4 @@ mypy
 pylint
 pytest
 pytest-cov
+pytest-asyncio

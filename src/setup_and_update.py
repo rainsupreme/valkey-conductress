@@ -1,12 +1,14 @@
 """Updates/installs all packages and dependencies and sets up servers for use."""
 
-import concurrent.futures
+import asyncio
 import logging
-import stat
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
+
+from asyncssh import SSHClientConnection
 
 from . import config
 
@@ -51,18 +53,55 @@ def subprocess_command(command: str) -> None:
 
 # ======== ensure fabric installed and imported ========
 try:
-    from fabric import Connection
-    from invoke import run
+    import asyncssh
 except ImportError:
     subprocess_command("sudo dnf install -y python3-pip")
     subprocess_command("python3 -m pip install --upgrade pip")
-    subprocess_command("pip install fabric invoke")
+    subprocess_command("pip install asyncssh")
     try:
-        from fabric import Connection
-        from invoke import run
+        import asyncssh
     except ImportError:
-        logger.error("Fabric is not installed even after attempting installation.")
+        logger.error(
+            "asyncssh is not available even after installation. Try again - python may need to be restarted."
+        )
         sys.exit(1)
+from src.utility import async_run
+
+
+@dataclass
+class Host:
+    name: str
+    conn: asyncssh.SSHClientConnection
+
+    async def run(self, command: str) -> str:
+        result = await self.conn.run(command)
+        assert (
+            result.exit_status == 0
+        ), f"Command failed: {command} on {self.name} with exit status {result.exit_status}"
+        out = result.stdout
+        if not out:
+            return ""
+        if isinstance(out, memoryview):
+            return bytes(out).decode()
+        if isinstance(out, bytes) or isinstance(out, bytearray):
+            return out.decode()
+        return out
+
+    @classmethod
+    async def from_name(cls, name: str) -> "Host":
+        """Create a Host instance from a host name."""
+        if name == "localhost":
+            conn: SSHClientConnection = await asyncssh.connect(
+                name,
+                client_keys=[str(SSH_KEYFILE)],
+                known_hosts=None,  # Disable known hosts check for localhost
+            )
+        else:
+            conn: SSHClientConnection = await asyncssh.connect(
+                name,
+                client_keys=[str(SSH_KEYFILE)],
+            )
+        return cls(name=name, conn=conn)
 
 
 def ensure_ssh_key() -> None:
@@ -78,107 +117,121 @@ def ensure_ssh_key() -> None:
         sys.exit(1)
 
 
-def ensure_server_ssh_fingerprints() -> None:
+async def ensure_server_known(server_ip: str):
+    stdout, _ = await async_run(f"ssh-keygen -F {server_ip}")
+    logger.info("%s: ensuring known", server_ip)
+    if not stdout:
+        logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
+        Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
+        await async_run(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null")
+
+
+async def ensure_server_ssh_fingerprints() -> None:
     """Ensure all servers are in known_hosts"""
-    logger.info("Ensuring all servers known")
-    for server_ip in SERVERS:
-        result = run(f"ssh-keygen -F {server_ip}", hide=True, warn=True)
-        if not result or not result.stdout:
-            logger.warning("%s: Adding new fingerprint to known_hosts...", server_ip)
-            Path.home().joinpath(".ssh").mkdir(parents=True, exist_ok=True)
-            run(f"ssh-keyscan -H {server_ip} -T 10 >> ~/.ssh/known_hosts 2>/dev/null", hide=True)
+    await asyncio.gather(*(ensure_server_known(server_ip) for server_ip in SERVERS))
 
 
-def path_exists(conn: Connection, path: Union[str, Path], expected_type: Optional[str] = None) -> bool:
+async def path_exists(host: Host, path: Union[str, Path], expected_type: Optional[str] = None) -> bool:
     """Check if a path exists and get its type"""
-    try:
-        path_stat = conn.sftp().stat(str(path))
 
-        if expected_type:
-            if stat.S_ISDIR(path_stat.st_mode):
-                assert expected_type == "directory"
-            elif stat.S_ISREG(path_stat.st_mode):
-                assert expected_type == "file"
-            else:
-                assert expected_type == "other"
-        return True
-    except FileNotFoundError:
+    commands = [f'test -{arg} "{path}"; echo $?' for arg in "efdL"]
+    result = await host.run(" && ".join(commands))
+    result = [int(x) == 0 for x in result.strip().split("\n")]  # return code 0 means test evaluated to true
+    if not result[0]:
         return False
+    if expected_type:
+        if expected_type == "file":
+            assert result[1], f"Expected {path} to be a file. ({result})"
+        elif expected_type == "directory":
+            assert result[2], f"Expected {path} to be a directory. ({result})"
+        elif expected_type == "symlink":
+            assert result[3], f"Expected {path} to be a symlink. ({result})"
+        else:
+            raise ValueError(f"Unknown expected_type: {expected_type}")
+    return True
 
 
-def remove_motd(conn: Connection) -> None:
+async def remove_motd(host: Host) -> None:
     """Remove the insights-client motd if it exists."""
     motd_path = "/etc/motd.d/insights-client"
-    if path_exists(conn, motd_path, expected_type="file"):
-        logger.info("%s: Removing insights-client motd", conn.host)
-        conn.sudo(f"rm {motd_path}")
+    if await path_exists(host, motd_path, expected_type="file"):
+        logger.info("%s: Removing insights-client motd", host.name)
+        await host.run(f"sudo rm {motd_path}")
 
 
-def update_pip_packages(conn: Connection):
+async def update_pip_packages(host: Host):
     packages = load_requirements("pip-requirements")
     if DEV:
         packages += load_requirements("pip-requirements-dev")
-    conn.run("python3 -m pip install --upgrade pip", hide=True)
-    conn.run(f"pip install {' '.join(packages)}", hide=True)
+    await host.run("python3 -m pip install --upgrade pip")
+    await host.run(f"pip install {' '.join(packages)}")
 
 
-def update_dnf_host(conn: Connection):
+async def update_dnf_packages(host: Host):
     packages = load_requirements("rhel-requirements")
-    logger.info("%s: Updating os packages")
-    conn.sudo("dnf update -y")
-    conn.sudo('dnf groupinstall -y "Development Tools"')
-    conn.sudo(f"dnf install -y {' '.join(packages)}")
+    logger.info("%s: Updating os packages", host.name)
+    await host.run("sudo dnf update -y")
+    devtools = host.run('sudo dnf groupinstall -y "Development Tools"')
+    packages = host.run(f"sudo dnf install -y {' '.join(packages)}")
+    await asyncio.gather(devtools, packages)
 
 
-def ensure_git_repo_cloned(conn: Connection, repo_url, target_dir):
-    logger.info("%s: Ensuring repo %s...", conn.host, target_dir)
-    if not path_exists(conn, target_dir, expected_type="directory"):
-        result = conn.run(f'git clone "{repo_url}" "{target_dir}"', hide=True)
-        assert result
+async def ensure_git_repo_cloned(host: Host, repo_url, target_dir):
+    logger.info("%s: Ensuring repo %s...", host.name, target_dir)
+    if not await path_exists(host, target_dir, expected_type="directory"):
+        logger.info("%s: Cloning repo %s", host.name, repo_url)
+        await host.run(f'git clone "{repo_url}" "{target_dir}"')
 
 
-def ensure_conductress(conn: Connection, pull=False):
+async def ensure_conductress(host: Host, pull=False):
     conductress_path = Path("conductress")
 
-    if not path_exists(conn, conductress_path, expected_type="directory"):
-        ensure_git_repo_cloned(
-            conn, "https://github.com/SoftlyRaining/valkey-conductress.git", conductress_path
+    if not await path_exists(host, conductress_path, expected_type="directory"):
+        await ensure_git_repo_cloned(
+            host, "https://github.com/SoftlyRaining/valkey-conductress.git", conductress_path
         )
     if pull:
-        logger.info("%s: pulling conductress", conn.host)
-        with conn.cd(conductress_path):
-            conn.run("git pull")
+        logger.info("%s: pulling conductress", host.name)
+        await host.run(f"cd {conductress_path} && git pull")
 
-    if not path_exists(conn, conductress_path / config.VALKEY_CLI, "file") or not path_exists(
-        conn, conductress_path / config.VALKEY_BENCHMARK, "file"
+    if not all(
+        await asyncio.gather(
+            path_exists(host, conductress_path / config.VALKEY_CLI, "file"),
+            path_exists(host, conductress_path / config.VALKEY_BENCHMARK, "file"),
+        )
     ):
-        logger.info("%s: retrieving and building needed binaries", conn.host)
+        logger.info("%s: retrieving and building needed binaries", host.name)
         valkey_path = conductress_path / "valkey"
-        ensure_git_repo_cloned(conn, "https://github.com/valkey-io/valkey.git", valkey_path)
+        await ensure_git_repo_cloned(host, "https://github.com/valkey-io/valkey.git", valkey_path)
 
-        with conn.cd(valkey_path):
-            conn.run("git fetch")
-            conn.run("git reset --hard origin/unstable", hide=True)
-            conn.run("make distclean", hide=True)
-            conn.run("make -j", hide=True)
+        await host.run(
+            f"cd {valkey_path} && git fetch && git reset --hard origin/unstable && make distclean && make -j"
+        )
 
-        conn.run(f"cp {valkey_path / 'src/valkey-cli'} {conductress_path / config.VALKEY_CLI}", hide=True)
-        conn.run(
-            f"cp {valkey_path / 'src/valkey-benchmark'} {conductress_path / config.VALKEY_BENCHMARK}",
-            hide=True,
+        await asyncio.gather(
+            host.run(f"cp {valkey_path / 'src/valkey-cli'} {conductress_path / config.VALKEY_CLI}"),
+            host.run(
+                f"cp {valkey_path / 'src/valkey-benchmark'} {conductress_path / config.VALKEY_BENCHMARK}"
+            ),
         )
 
 
-def update_host(conn: Connection):
+async def update_host(name: str):
     """Perform all updates on host at specified connection"""
-    update_dnf_host(conn)
-    update_pip_packages(conn)
-    ensure_conductress(conn)
-    ensure_git_repo_cloned(conn, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
+    host = await Host.from_name(name)
+    await update_dnf_packages(host)
+    await update_pip_packages(host)
+    await ensure_conductress(host)
+    await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
-    logger.info("%s: Ensuring config repos cloned...", conn.host)
-    for repo_url, target_dir in REPOSITORIES:
-        ensure_git_repo_cloned(conn, repo_url, target_dir)
+    logger.info("%s: Ensuring config repos cloned...", host.name)
+    await asyncio.gather(
+        *(ensure_git_repo_cloned(host, repo_url, target_dir) for repo_url, target_dir in REPOSITORIES)
+    )
+
+
+async def update_host_list(names: list[str]) -> None:
+    await asyncio.gather(*(update_host(name) for name in names))
 
 
 if __name__ == "__main__":
@@ -189,19 +242,8 @@ if __name__ == "__main__":
     logger.info("⊹˚₊‧───Starting update/setup───‧₊˚⊹")
 
     ensure_ssh_key()
-    ensure_server_ssh_fingerprints()
+    asyncio.run(ensure_server_ssh_fingerprints())
 
-    logger.info("Connecting to all servers")
-    connections = [Connection("localhost", connect_kwargs={"key_filename": str(config.SSH_KEYFILE)})]
-    connections += [
-        Connection(host, connect_kwargs={"key_filename": str(config.SSH_KEYFILE)}) for host in SERVERS
-    ]
-
-    logger.info("Updating all servers in parallel")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        executor.map(update_host, connections)
-    # for c in connections:
-    #     logger.info("Updating %s", c.host)
-    #     update_host(c)
+    asyncio.run(update_host_list(["localhost"] + SERVERS))
 
     logger.info("Update/setup complete!")

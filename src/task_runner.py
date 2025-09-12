@@ -1,6 +1,7 @@
 """Main entry point for Conductress, the benchmarking framework for Valkey.
 This script runs tasks from a queue, executing performance and memory tests"""
 
+import asyncio
 import logging
 import time
 from threading import Thread
@@ -17,10 +18,8 @@ class TaskRunner:
 
     def __init__(self) -> None:
         self.task: Optional[BaseTaskData] = None
-        self.thread = Thread(target=self.__run)
-        self.thread.start()
 
-    def __run_task(self, task_data: BaseTaskData) -> None:
+    async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task"""
         server_count = task_data.replicas + 1 if task_data.replicas > 0 else 1
         assert (
@@ -28,15 +27,15 @@ class TaskRunner:
         ), f"Not enough servers for {task_data.replicas} replicas. Found {len(SERVERS)} servers."
 
         task_runner = task_data.prepare_task_runner(SERVERS[:server_count])
-        task_runner.run()
+        await task_runner.run()
 
-    def __run(self):
+    async def run(self):
         """Main function - execute tasks from the queue."""
         queue = TaskQueue()
         self.task = queue.get_next_task()
         while True:
             while self.task:
-                self.__run_task(self.task)
+                await self.__run_task(self.task)
                 queue.finish_task(self.task)
                 self.task = queue.get_next_task()
             print("waiting for new jobs in queue")
@@ -48,7 +47,7 @@ class TaskRunner:
 if __name__ == "__main__":
     logging.basicConfig(filename=CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
     runner = TaskRunner()
-    runner.thread.join()  # wait for thread to exit
+    asyncio.run(runner.run())
 
 # TODO log thread/irq cpu affinity over time
 # TODO calculate some error bar metric (std dev.? variance? P95?)
@@ -57,4 +56,3 @@ if __name__ == "__main__":
 # TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration
 # TODO print or log - choose only one
-# TODO add setup.py?

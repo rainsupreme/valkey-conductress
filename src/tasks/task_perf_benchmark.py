@@ -47,7 +47,7 @@ class PerfTaskData(BaseTaskData):
         profiling = self.profiling_sample_rate > 0
         return (
             f"{HumanByte.to_human(self.val_size)} {self.test} items for "
-            f"{HumanTime.to_human(self.duration)}, {self.io_threads} threads"
+            f"{HumanTime.to_human(self.duration * MINUTE)}, {self.io_threads} threads"
             f", {self.pipelining} pipelined"
             f"{', profiling' if profiling else ''}"
         )
