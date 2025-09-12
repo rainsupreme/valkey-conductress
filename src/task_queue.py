@@ -93,7 +93,7 @@ class BaseTaskRunner(ABC):
     """Base class for task runners"""
 
     @abstractmethod
-    def run(self) -> None:
+    async def run(self) -> None:
         """Run the task"""
         raise NotImplementedError("Subclasses must implement this method.")
 

@@ -1,13 +1,22 @@
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
+import asyncio
 import json
 import os
+import shlex
 import signal
 import subprocess
 from datetime import datetime
 from typing import Optional, Sequence, Union
 
-from .config import CONDUCTRESS_DATA_DUMP, CONDUCTRESS_OUTPUT, SSH_KEYFILE
+import asyncssh
+
+from .config import (
+    CONDUCTRESS_DATA_DUMP,
+    CONDUCTRESS_OUTPUT,
+    SERVER_PORT_RANGE_START,
+    SSH_KEYFILE,
+)
 
 MILLION = 1_000_000
 BILLION = 1_000_000_000
@@ -264,9 +273,9 @@ class RealtimeCommand:
         stdout = self.p.stdout.read()
         stderr = self.p.stderr.read()
         if stdout is not None:
-            stdout = stdout.decode("utf-8")
+            stdout = stdout.decode()
         if stderr is not None:
-            stderr = stderr.decode("utf-8")
+            stderr = stderr.decode()
         return stdout, stderr
 
     def is_running(self):
@@ -292,3 +301,40 @@ class RealtimeCommand:
         if self.p:
             self.p.kill()
             self.p.wait()
+
+
+async def async_run(command: str, check=True) -> tuple[str, str]:
+    """run a command locally and get the output"""
+    split = shlex.split(command)
+    process = await asyncio.create_subprocess_exec(
+        *split, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+
+    stdout_bytes, stderr_bytes = await process.communicate()
+    stdout = stdout_bytes.decode()
+    stderr = stderr_bytes.decode()
+
+    if check and process.returncode != 0:
+        raise RuntimeError(f"Command failed with exit code {process.returncode}: {stderr}")
+
+    return stdout, stderr
+
+
+async def get_host_proc_count(host_ip: str) -> int:
+    """get the number of processors available on the specified host"""
+    conn = await asyncssh.connect(host_ip, client_keys=[str(SSH_KEYFILE)])
+    result: asyncssh.SSHCompletedProcess = await conn.run("nproc", check=False)
+    output = result.stdout
+    assert output
+    if isinstance(output, bytes):
+        return int(output.decode())
+    else:
+        return int(output)
+
+
+def port_generator():
+    """get next port to use"""
+    next_port = SERVER_PORT_RANGE_START
+    while True:
+        yield next_port
+        next_port += 1

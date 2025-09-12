@@ -7,6 +7,9 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 650
 PERF_BENCH_THREADS = 64
 
+# when multiple valkey instances run on one host, they will start at this port number and count up
+# (e.g. 9000, 9001, 9002, etc)
+SERVER_PORT_RANGE_START = 9000
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
