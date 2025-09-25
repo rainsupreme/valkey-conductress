@@ -18,9 +18,10 @@ class TestHumanNumber:
         assert HumanNumber.to_human(1500) == "1.5K"
         assert HumanNumber.to_human(1000000) == "1M"
 
-    def test_decimal_places(self):
-        assert HumanNumber.to_human(1234, decimals=0) == "1K"
-        assert HumanNumber.to_human(1234, decimals=2) == "1.23K"
+    def test_min_digits(self):
+        assert HumanNumber.to_human(1234, min_digits=1) == "1K"
+        assert HumanNumber.to_human(1234, min_digits=2) == "1.2K"
+        assert HumanNumber.to_human(1234, min_digits=3) == "1.23K"
 
     def test_from_human(self):
         result = HumanNumber.from_human("1.5K")
@@ -42,8 +43,9 @@ class TestHumanByte:
         assert HumanByte.to_human(1024 * 1024 * 1024) == "1GB"
 
     def test_partial_units(self):
-        assert HumanByte.to_human(1536) == "1.5KB"
-        assert HumanByte.to_human(1536, decimals=2) == "1.50KB"
+        assert HumanByte.to_human(1567) == "1.5KB"
+        assert HumanByte.to_human(1567, min_digits=1) == "2KB"
+        assert HumanByte.to_human(1567, min_digits=3) == "1.53KB"
 
     def test_from_human_bytes(self):
         assert HumanByte.from_human("1.5KB") == 1024 * 1.5

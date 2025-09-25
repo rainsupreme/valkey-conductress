@@ -1,8 +1,6 @@
 import asyncio
-from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 from src.config import REPO_NAMES
 from src.server import Server
@@ -20,9 +18,10 @@ class TestServerIntegration:
         asyncio.run(Server("127.0.0.1").kill_all_valkey_instances_on_host())
 
     @pytest.mark.asyncio
-    async def test_start_and_ping(self):
-        valkey_server = Server("127.0.0.1")
-        await valkey_server.start(TEST_REPO, TEST_SPECIFIER, [])
+    async def test_start_and_ping(self) -> None:
+        valkey_server: Server = await Server.with_build(
+            "127.0.0.1", DEFAULT_PORT, TEST_REPO, TEST_SPECIFIER, io_threads=-1
+        )
         # Server should be ready when start() returns
         pong = await valkey_server.run_valkey_command("PING")
         assert pong == "PONG"
@@ -30,11 +29,12 @@ class TestServerIntegration:
     @pytest.mark.asyncio
     async def test_two_servers_same_host(self) -> None:
         count = 2
-        servers: list[Server] = [Server("127.0.0.1", port) for port in range(TEST_PORTS, TEST_PORTS + count)]
-
-        for instance in servers:
-            print("starting server on port", instance.port)
-            await instance.start(TEST_REPO, TEST_SPECIFIER, [])
+        servers: list[Server] = await asyncio.gather(
+            *[
+                Server.with_build("127.0.0.1", port, TEST_REPO, TEST_SPECIFIER, -1)
+                for port in range(TEST_PORTS, TEST_PORTS + count)
+            ]
+        )
 
         for index, instance in enumerate(servers):
             await instance.run_valkey_command(f"SADD server{index} {index}online")
@@ -53,8 +53,9 @@ class TestServerIntegration:
 
     @pytest.mark.asyncio
     async def test_old_state_cleaned(self) -> None:
-        valkey_server = Server("127.0.0.1")
-        await valkey_server.start(TEST_REPO, TEST_SPECIFIER, [])
+        valkey_server = await Server.with_build(
+            "127.0.0.1", DEFAULT_PORT, TEST_REPO, TEST_SPECIFIER, io_threads=-1
+        )
 
         info: dict[str, str] = await valkey_server.info("keyspace")
         assert not info
@@ -64,7 +65,8 @@ class TestServerIntegration:
 
         # start a new server - should replace previous server
         del valkey_server
-        valkey_server = Server("127.0.0.1")
-        await valkey_server.start(TEST_REPO, TEST_SPECIFIER, [])
+        valkey_server = await Server.with_build(
+            "127.0.0.1", DEFAULT_PORT, TEST_REPO, TEST_SPECIFIER, io_threads=-1
+        )
         info = await valkey_server.info("keyspace")
         assert not info

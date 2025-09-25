@@ -161,39 +161,13 @@ class PerfTaskRunner(BaseTaskRunner):
         self.rps_data: list[float] = []
         self.lat_data: list[float] = []
 
-        print("preparing:", self.title)
+        self.commit_hash = ""
 
-        self.replication_group = ReplicationGroup(server_ips, binary_source, specifier, io_threads, [])
-        self.replication_group.begin_replication()
-        self.replication_group.wait_for_repl_sync()
-
-        self.server = self.replication_group.primary
-        self.target_ip = self.server.ip
-        self.commit_hash = self.server.get_build_hash()
-        if self.preload_keys:
-            self.server.run_valkey_command_over_keyspace(
-                PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
-            )
-            if self.has_expire:
-                if not self.test.expire_command:
-                    self.logger.warning("Expire command not available, skipping expiration")
-                else:
-                    self.server.run_valkey_command_over_keyspace(
-                        PERF_BENCH_KEYSPACE, self.test.expire_command
-                    )
-
-        self.command_string = (
-            f"{VALKEY_BENCHMARK} -h {self.target_ip} -d {self.valsize} "
-            f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
-        )
-        self.command = RealtimeCommand(self.command_string)
-
-    def __read_updates(self):
-        line, _ = self.command.poll_output()
+    async def __read_updates(self, command: RealtimeCommand):
+        line, _ = command.poll_output()
         while line is not None and line != "" and not line.isspace():
             if "overall" not in line:
-                line, _ = self.command.poll_output()
+                line, _ = command.poll_output()
                 continue
             # line looks like this:
             # "GET: rps=140328.0 (overall: 141165.2) avg_msec=0.193 (overall: 0.191)"
@@ -204,12 +178,12 @@ class PerfTaskRunner(BaseTaskRunner):
             self.rps_data.append(rps)
             self.lat_data.append(avg_msec)
 
-            line, _ = self.command.poll_output()
+            line, _ = command.poll_output()
 
-    def __update_graph(self):
+    def __update_graph(self, command: RealtimeCommand):
         graph_update_interval = 10.0
         now = time.monotonic()
-        if now > self.next_metric_update or not self.command.is_running():
+        if now > self.next_metric_update or not command.is_running():
             self.next_metric_update = now + graph_update_interval
             if len(self.rps_data) == 0:
                 return
@@ -241,7 +215,7 @@ class PerfTaskRunner(BaseTaskRunner):
             rps_max = max(self.rps_data) + 999
             inverval = int(rps_max - rps_min) // ylabel_intervals
             yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
-            ytick_labels = [f"{HumanNumber.to_human(tick, 0)}" for tick in yticks]
+            ytick_labels = [f"{HumanNumber.to_human(tick, 3)}" for tick in yticks]
             plt.yticks(yticks, ytick_labels)
 
             plt.show()
@@ -249,7 +223,6 @@ class PerfTaskRunner(BaseTaskRunner):
     def __record_result(self):
         completion_time = datetime.datetime.now()
         name = f"perf-{self.test.name}"
-        commit_hash = self.commit_hash or ""
 
         avg_rps = calc_percentile_averages(self.rps_data, (100, 99, 95))
         avg_lat = calc_percentile_averages(self.lat_data, (100, 99, 95), lowest_vals=True)
@@ -269,7 +242,7 @@ class PerfTaskRunner(BaseTaskRunner):
             name,
             self.binary_source,
             self.specifier,
-            commit_hash,
+            self.commit_hash,
             avg_rps[0],
             completion_time,
             result,
@@ -279,36 +252,70 @@ class PerfTaskRunner(BaseTaskRunner):
             "rps_data": self.rps_data,
             "lat_data": self.lat_data,
         }
-        dump_task_data(name, commit_hash, completion_time, dump_data)
+        dump_task_data(name, self.commit_hash, completion_time, dump_data)
 
-    def run(self):
+    async def run(self):
         """Run the benchmark."""
         benchmark_update_interval = 0.1  # s
 
-        self.logger.info("Starting realtime command: %s", self.command_string)
-        self.command.start()
+        # setup
+        print("preparing:", self.title)
+
+        replication_group = ReplicationGroup(
+            self.server_ips, self.binary_source, self.specifier, self.io_threads
+        )
+        await replication_group.start()
+        assert replication_group.primary
+        await replication_group.begin_replication()
+        await replication_group.wait_for_repl_sync()
+        server = replication_group.primary
+        target_ip = server.ip
+        self.commit_hash = server.get_build_hash() or ""
+        if self.preload_keys:
+            await server.run_valkey_command_over_keyspace(
+                PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
+            )
+            if self.has_expire:
+                if not self.test.expire_command:
+                    self.logger.warning("Expire command not available, skipping expiration")
+                else:
+                    await server.run_valkey_command_over_keyspace(
+                        PERF_BENCH_KEYSPACE, self.test.expire_command
+                    )
+
+        command_string = (
+            f"{VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+            f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
+        )
+        command = RealtimeCommand(command_string)
+
+        # run benchmark
+        self.logger.info("Starting realtime command: %s", command_string)
+        command.start()
         start_time = time.monotonic()
         test_start_time = start_time + self.warmup
         end_time = test_start_time + self.duration
         warming_up = True
 
-        while self.command.is_running():
-            self.__read_updates()
-            self.__update_graph()
+        print("started rt cmd")
+        while command.is_running():
+            await self.__read_updates(command)
+            self.__update_graph(command)
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
             if now > end_time:
                 if self.profiling:
-                    self.server.profiling_stop()
-                self.command.kill()
+                    await server.profiling_stop()
+                command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 self.lat_data = []
                 warming_up = False
                 if self.profiling:
-                    self.server.profiling_start(self.sample_rate)
+                    server.profiling_start(self.sample_rate)  # TODO port thread to async
 
-        self.__read_updates()
+        await self.__read_updates(command)
         self.__record_result()
         if self.profiling:
-            self.server.profiling_report(self.task_name, "primary")
+            await server.profiling_report(self.task_name, "primary")
