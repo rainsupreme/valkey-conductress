@@ -41,7 +41,7 @@ class HumanNumber:
     threshold = 0.5  # Switch to next unit once result in that unit is >= threshold.
 
     @classmethod
-    def to_human(cls, number: float, decimals: int = 1) -> str:
+    def to_human(cls, number: float, min_digits: int = 2) -> str:
         """
         Convert number to a human-readable format with appropriate units.
 
@@ -50,12 +50,14 @@ class HumanNumber:
             base (Union[int, tuple]): base for conversion - int if constant divisor between units (e.g. 1000),
                 or tuple of bases for each unit if non-constant (as in time)
             units (tuple): sequence of unit suffixes
-            decimals (int): decimals places to show
+            min_digits (int): minimum digits to show. (a minimum of 2 might produce 100K or 1.1M but not 1M)
             threshold (float, optional): Switches to next unit once result in that unit is >= threshold.
 
         Returns:
             str: formatted string
         """
+        assert min_digits > 0
+
         number = float(number)
         unit_index = 0
         if isinstance(cls.base, int):
@@ -73,6 +75,11 @@ class HumanNumber:
         if number.is_integer():
             return f"{number:,g}{cls.units[unit_index]}"
         else:
+            decimals = min_digits
+            t = number
+            while t >= 1 and decimals > 0:
+                t //= 10
+                decimals -= 1
             return f"{number:,.{decimals}f}{cls.units[unit_index]}"
 
     @classmethod

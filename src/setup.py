@@ -73,11 +73,15 @@ class Host:
     name: str
     conn: asyncssh.SSHClientConnection
 
-    async def run(self, command: str) -> str:
+    async def run(self, command: str, check=True) -> str:
         result = await self.conn.run(command)
-        assert (
-            result.exit_status == 0
-        ), f"Command failed: {command} on {self.name} with exit status {result.exit_status}"
+        if result.exit_status != 0:
+            print(
+                f"Command failed: {command} on {self.name} with exit status {result.exit_status} (stderr below)"
+            )
+            print(result.stderr)
+            if check:
+                raise Exception(result.stderr)
         out = result.stdout
         if not out:
             return ""
@@ -170,7 +174,7 @@ async def update_pip_packages(host: Host):
 async def update_dnf_packages(host: Host):
     packages = load_requirements("rhel-requirements")
     logger.info("%s: Updating os packages", host.name)
-    await host.run("sudo dnf update -y")
+    await host.run("sudo dnf update -y", check=False)
     devtools = host.run('sudo dnf groupinstall -y "Development Tools"')
     packages = host.run(f"sudo dnf install -y {' '.join(packages)}")
     await asyncio.gather(devtools, packages)
@@ -221,7 +225,7 @@ async def update_host(name: str):
     host = await Host.from_name(name)
     await update_dnf_packages(host)
     await update_pip_packages(host)
-    await ensure_conductress(host)
+    await ensure_conductress(host, pull=(name != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
     logger.info("%s: Ensuring config repos cloned...", host.name)

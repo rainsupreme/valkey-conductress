@@ -68,6 +68,8 @@ class Server:
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
         """Ensure specified build is running on the server."""
         await self.__ensure_stopped_and_clean()
+        await asyncio.sleep(1)
+        # TODO delay between killing all instances and starting another to ensure it doesn't get killed?
 
         self.threads = io_threads
         self.args = []
@@ -78,7 +80,8 @@ class Server:
             f"{cached_binary_path} --port {self.port} --save --protected-mode no --daemonize yes "
             + " ".join(self.args)
         )
-        await self.run_host_command(command)
+        out, err = await self.run_host_command(command)
+        print(out, err)
         await self.wait_until_ready()
 
     async def ensure_binary_cached(
@@ -106,9 +109,11 @@ class Server:
         for _ in range(10):
             try:
                 out = await self.run_valkey_command("PING")
+                print(out)
                 if out == "PONG":
                     return
             except asyncssh.ProcessError:
+                print("cli error")
                 pass
             time.sleep(1)
 
@@ -298,15 +303,18 @@ class Server:
         if not await self.__is_binary_cached():
             self.logger.info("building %s:%s...", self.source, self.specifier)
 
-            build = self.run_host_command(
-                f"cd {source_path}; "
-                "make distclean && "
-                'make -j USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
-            )
-            cache_dir = self.run_host_command(f"mkdir -p {cached_build_path}")
-            await asyncio.gather(build, cache_dir)
-
+            try:
+                await self.run_host_command(
+                    f"cd {source_path}; "
+                    "make distclean && "
+                    'make -j USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
+                )
+            except asyncssh.ProcessError as e:
+                self.logger.error("Build failed %d:\n%s", e.returncode, e.stderr)
+                raise e
             build_binary = source_path / VALKEY_BINARY
+
+            await self.run_host_command(f"mkdir -p {cached_build_path}")
             await self.run_host_command(f"cp {build_binary} {cached_binary_path}")
 
         return cached_binary_path

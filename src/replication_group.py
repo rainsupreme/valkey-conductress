@@ -8,7 +8,10 @@ from .server import Server
 
 
 class ReplicationGroup:
-    """A group of servers that can be used for replication testing."""
+    """A group of servers that can be used for replication testing. Cluster mode is assumed disabled."""
+
+    # This assumes that servers are all on different hosts, and uses the standard port number.
+    # It would need to be modified to support multiple instances on the same host.
 
     def __init__(self, server_ips: list[str], binary_source: str, specifier: str, threads: int) -> None:
         assert len(server_ips) >= 1, "At least one server IP is required"
@@ -20,12 +23,7 @@ class ReplicationGroup:
 
         self.servers: list[Server] = []
         self.primary: Optional[Server] = None
-        self.replicas: Optional[list[Server]] = None
-
-    def __del__(self) -> None:
-        """Clean up the servers when the group is deleted."""
-        for server in self.servers:
-            server.replicate(None)
+        self.replicas: list[Server] = []
 
     async def start(self) -> None:
         """start servers in parallel (including building if necessary)"""
@@ -57,30 +55,33 @@ class ReplicationGroup:
         if unexpected_ips:
             print(f"Unexpected replicas found: {unexpected_ips}")
             for unexpected in unexpected_ips:
-                await Server(unexpected).replicate(None)  # TODO port?
+                await Server(unexpected).replicate(None)
 
             # Wait for a short time to allow the servers to process and gossip
             time.sleep(0.5)
 
             unexpected_ips = []
             for server in self.servers:
-                replicas = server.get_replicas()
+                replicas = await server.get_replicas()
                 unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
             assert not unexpected_ips, f"Unexpected replicas remain after cleanup: {unexpected_ips}"
 
-    def begin_replication(self):
+    async def begin_replication(self):
         """Set up replication among the servers in the group."""
-        if not self.replicas:
-            return
+        assert self.primary
         print("setting up replication")
-        for replica in self.replicas:
-            replica.replicate(self.primary.ip)
+        await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
 
-    def wait_for_repl_sync(self):
+    async def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""
+        assert self.primary
+        if not self.replicas:
+            print("waiting for replication sync, but there are no replicas")
+            return
+
         for replica in self.replicas:
             while True:
-                info = replica.info("replication")
+                info = await replica.info("replication")
                 if (
                     "master_link_status" in info
                     and info["master_link_status"] == "up"
@@ -89,7 +90,10 @@ class ReplicationGroup:
                     break
                 time.sleep(1)
 
-    def end_replication(self):
+    async def end_replication(self):
         """End replication for all servers in the group."""
-        for server in self.servers:
-            server.run_valkey_command("replicaof no one")
+        await asyncio.gather(*[server.replicate(None) for server in self.servers])
+
+    async def kill_all_valkey_instances(self) -> None:
+        """Kills server processes on all servers in group."""
+        await asyncio.gather(*[server.kill_all_valkey_instances_on_host() for server in self.servers])
