@@ -322,6 +322,7 @@ async def async_run(command: str, check=True) -> tuple[str, str]:
     stderr = stderr_bytes.decode()
 
     if check and process.returncode != 0:
+        print(f"Command ({command}) failed with exit code {process.returncode}: {stderr}")
         raise RuntimeError(f"Command failed with exit code {process.returncode}: {stderr}")
 
     return stdout, stderr

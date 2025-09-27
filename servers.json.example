@@ -1,6 +1,16 @@
 {
     "valkey_servers": [
-        "10.0.0.x",
-        "10.0.0.y"
+        {
+            "ip": "10.0.0.x",
+            "username": "login-username"
+            "name": "arm-prototype"
+        },
+        {
+            "ip": "10.0.0.y",
+            "name": "grandmas-pc"
+        },
+        {
+            "ip": "10.0.0.y"
+        },
     ]
 }

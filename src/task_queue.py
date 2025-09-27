@@ -22,6 +22,7 @@ class BaseTaskData(ABC):
     specifier: str
     replicas: int
     note: str
+    requirements: dict
     task_type: str = field(init=False)
     timestamp: datetime = field(
         default_factory=datetime.now,
@@ -55,7 +56,7 @@ class BaseTaskData(ABC):
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
-    def prepare_task_runner(self, server_ips: list[str]) -> "BaseTaskRunner":
+    def prepare_task_runner(self, server_infos: list[config.ServerInfo]) -> "BaseTaskRunner":
         """Return the task runner for this task."""
         raise NotImplementedError("Subclasses must implement this method.")
 

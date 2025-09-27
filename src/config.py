@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from attr import dataclass
+
 PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 650
 PERF_BENCH_THREADS = 64
@@ -11,12 +13,13 @@ PERF_BENCH_THREADS = 64
 # (e.g. 9000, 9001, 9002, etc)
 SERVER_PORT_RANGE_START = 9000
 
+# TODO fix paths for remote hosts?
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
 CONDUCTRESS_DATA_DUMP = PROJECT_ROOT / "testdump.txt"
 
-VALKEY_CLI = PROJECT_ROOT / "valkey-cli"
-VALKEY_BENCHMARK = PROJECT_ROOT / "valkey-benchmark"
+VALKEY_CLI = "valkey-cli"
+VALKEY_BENCHMARK = "valkey-benchmark"
 
 CONDUCTRESS_RESULTS = PROJECT_ROOT / "results"
 CONDUCTRESS_OUTPUT = CONDUCTRESS_RESULTS / "output.txt"
@@ -44,13 +47,26 @@ MANUALLY_UPLOADED = "manually_uploaded"
 assert MANUALLY_UPLOADED not in REPO_NAMES, "MANUALLY_UPLOADED must not overlap with any repository names"
 
 
-def load_server_ips() -> list[str]:
+@dataclass
+class ServerInfo:
+    """Information about a server used in benchmarking."""
+
+    ip: str
+    """IPv4 address of the server."""
+    username: str = ""
+    """username to connect with"""
+    name: str = ""
+    """A unique descriptive name"""
+
+
+def load_server_ips() -> list[ServerInfo]:
     """Load server IPs from a JSON configuration file."""
     config_path = PROJECT_ROOT / "servers.json"
     try:
-        return json.loads(config_path.read_text())["valkey_servers"]
+        data = json.loads(config_path.read_text())["valkey_servers"]
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Configuration file {config_path} not found.") from exc
+    return [ServerInfo(**entry) for entry in data]
 
 
 SERVERS = load_server_ips()

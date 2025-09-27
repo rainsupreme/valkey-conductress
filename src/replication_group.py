@@ -4,6 +4,8 @@ import asyncio
 import time
 from typing import Optional
 
+from src.config import ServerInfo
+
 from .server import Server
 
 
@@ -13,10 +15,12 @@ class ReplicationGroup:
     # This assumes that servers are all on different hosts, and uses the standard port number.
     # It would need to be modified to support multiple instances on the same host.
 
-    def __init__(self, server_ips: list[str], binary_source: str, specifier: str, threads: int) -> None:
-        assert len(server_ips) >= 1, "At least one server IP is required"
+    def __init__(
+        self, server_infos: list[ServerInfo], binary_source: str, specifier: str, threads: int
+    ) -> None:
+        assert len(server_infos) >= 1, "At least one server IP is required"
 
-        self.server_ips = server_ips
+        self.server_infos = server_infos
         self.binary_source = binary_source
         self.specifier = specifier
         self.threads = threads
@@ -28,17 +32,17 @@ class ReplicationGroup:
     async def start(self) -> None:
         """start servers in parallel (including building if necessary)"""
         self.servers: list[Server] = await asyncio.gather(
-            *[self.__start_server(ip) for ip in self.server_ips]
+            *[self.__start_server(info.ip, info.username) for info in self.server_infos]
         )
         await self.__ensure_no_unknown_replicas(self.servers)
 
         self.primary = self.servers[0]
         self.replicas = self.servers[1:]
 
-    async def __start_server(self, server_ip) -> Server:
+    async def __start_server(self, server_ip, username) -> Server:
         port = 6379
         server: Server = await Server.with_build(
-            server_ip, port, self.binary_source, self.specifier, self.threads
+            server_ip, port, username, self.binary_source, self.specifier, self.threads
         )
         await server.replicate(None)
         await server.wait_until_ready()

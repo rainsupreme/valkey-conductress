@@ -12,7 +12,9 @@ from src.config import (
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
+    PROJECT_ROOT,
     VALKEY_BENCHMARK,
+    ServerInfo,
 )
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
@@ -52,11 +54,11 @@ class PerfTaskData(BaseTaskData):
             f"{', profiling' if profiling else ''}"
         )
 
-    def prepare_task_runner(self, server_ips) -> "PerfTaskRunner":
+    def prepare_task_runner(self, server_infos) -> "PerfTaskRunner":
         """Return the task runner for this task."""
         return PerfTaskRunner(
             f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_perf",
-            server_ips,
+            server_infos,
             self.source,
             self.specifier,
             io_threads=self.io_threads,
@@ -112,7 +114,7 @@ class PerfTaskRunner(BaseTaskRunner):
     def __init__(
         self,
         task_name: str,
-        server_ips: list[str],
+        server_infos: list[ServerInfo],
         binary_source: str,
         specifier: str,
         io_threads: int,
@@ -137,7 +139,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # settings
         self.task_name = task_name
-        self.server_ips = server_ips
+        self.server_infos = server_infos
         self.binary_source = binary_source
         self.specifier = specifier
         self.io_threads = io_threads
@@ -262,7 +264,7 @@ class PerfTaskRunner(BaseTaskRunner):
         print("preparing:", self.title)
 
         replication_group = ReplicationGroup(
-            self.server_ips, self.binary_source, self.specifier, self.io_threads
+            self.server_infos, self.binary_source, self.specifier, self.io_threads
         )
         await replication_group.start()
         assert replication_group.primary
@@ -284,7 +286,7 @@ class PerfTaskRunner(BaseTaskRunner):
                     )
 
         command_string = (
-            f"{VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+            f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
             f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
         )
