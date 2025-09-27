@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from src import task_queue
+from src.config import ServerInfo
 
 
 class DummyConfig(types.ModuleType):
@@ -35,18 +36,18 @@ class MockTaskData(task_queue.BaseTaskData):
     def short_description(self) -> str:
         return "Mock task"
 
-    def prepare_task_runner(self, server_ips: list[str]) -> "task_queue.BaseTaskRunner":
-        return MockTaskRunner(server_ips)
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "task_queue.BaseTaskRunner":
+        return MockTaskRunner(server_infos)
 
 
 class MockTaskRunner(task_queue.BaseTaskRunner):
     """Mock task runner for testing purposes."""
 
-    def __init__(self, server_ips: list[str]):
-        self.server_ips = server_ips
+    def __init__(self, server_infos: list[ServerInfo]):
+        self.server_infos = server_infos
 
-    def run(self):
-        print(f"Running mock task on servers: {self.server_ips}")
+    async def run(self):
+        print(f"Running mock task on servers: {self.server_infos}")
 
 
 def make_task():
@@ -55,6 +56,7 @@ def make_task():
         specifier="spec",
         replicas=1,
         note="test",
+        requirements={},
         extra_data="extra_info",
     )
 
@@ -82,6 +84,7 @@ def test_invalid_repo_fails():
             specifier="spec",
             replicas=1,
             note="test",
+            requirements={},
             extra_data="mock_info",
         )
 

@@ -408,6 +408,7 @@ class PerfTaskForm(BaseTaskForm):
                 specifier=specifier[1],
                 replicas=-1,  # TODO configurable replicas
                 note=note,
+                requirements={},
                 val_size=size,
                 io_threads=thread,
                 pipelining=pipe,
@@ -509,6 +510,7 @@ class MemTaskForm(BaseTaskForm):
                 has_expire=expire_keys,
                 replicas=-1,
                 note=note,
+                requirements={},
             )
             tasks.append(task)
         self.queue_tasks(tasks)
@@ -603,6 +605,7 @@ class SyncTaskForm(BaseTaskForm):
                 test=test,
                 profiling_sample_rate=profiling_sample_rate,
                 note=note,
+                requirements={},
             )
             tasks.append(task)
         self.queue_tasks(tasks)

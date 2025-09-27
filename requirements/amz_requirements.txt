@@ -1,0 +1,7 @@
+cmake
+git
+# js-d3-flame-graph # TODO ensure profile flamegraphs work on amz linux
+lsof
+perf
+perl-open # needed for brendangregg/FlameGraph in rhel
+python3-pip

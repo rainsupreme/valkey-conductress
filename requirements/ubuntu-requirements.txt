@@ -1,0 +1,9 @@
+build-essential
+cmake
+git
+# js-d3-flame-graph # TODO ensure flame graphs work on ubuntu
+lsof
+linux-tools-common
+linux-tools-`uname -r`
+python3-pip
+python3-venv

@@ -31,10 +31,10 @@ class Server:
 
     @classmethod
     async def with_build(
-        cls, ip: str, port: int, binary_source: str, specifier: str, io_threads: int
+        cls, ip: str, port: int, username: str, binary_source: str, specifier: str, io_threads: int
     ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
-        server = cls(ip, port)
+        server = cls(ip, port, username)
 
         cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier)
         await server.start(cached_binary_path, io_threads)
@@ -47,9 +47,10 @@ class Server:
         await server.start(binary_path, io_threads)
         return server
 
-    def __init__(self, ip: str, port: int = 6379) -> None:
+    def __init__(self, ip: str, port: int = 6379, username="") -> None:
         self.ip = ip
         self.port = port
+        self.username = username
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
@@ -114,7 +115,6 @@ class Server:
                     return
             except asyncssh.ProcessError:
                 print("cli error")
-                pass
             time.sleep(1)
 
         raise RuntimeError("Server did not start successfully")
@@ -192,6 +192,10 @@ class Server:
                 self.ssh = await asyncssh.connect(
                     self.ip, client_keys=[str(config.SSH_KEYFILE)], known_hosts=None
                 )
+            elif self.username:
+                self.ssh = await asyncssh.connect(
+                    self.ip, username=self.username, client_keys=[str(config.SSH_KEYFILE)]
+                )
             else:
                 self.ssh = await asyncssh.connect(self.ip, client_keys=[str(config.SSH_KEYFILE)])
 
@@ -219,14 +223,16 @@ class Server:
     async def run_valkey_command(self, command: str) -> Optional[str]:
         """Run a valkey command on the server and return its output."""
         self.logger.info("Valkey cli command: %s", command)
-        cli_command: str = f"{str(config.VALKEY_CLI)} -h {self.ip} -p {self.port} " + command
+        cli_command: str = (
+            f"{str(config.PROJECT_ROOT / config.VALKEY_CLI)} -h {self.ip} -p {self.port} " + command
+        )
         stdout, _ = await async_run(cli_command, check=False)
         return stdout.strip() if stdout else None
 
     async def run_valkey_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
         """Run valkey-benchmark, sequentially covering the entire keyspace."""
         sequential_command: str = (
-            f"{str(config.VALKEY_BENCHMARK)} -h {self.ip} -p {self.port} -c 32 -P 20 "
+            f"{str(config.PROJECT_ROOT / config.VALKEY_BENCHMARK)} -h {self.ip} -p {self.port} -c 32 -P 20 "
             f"--threads 8 -q --sequential -r {keyspace_size} -n {keyspace_size} "
         )
         sequential_command += command
