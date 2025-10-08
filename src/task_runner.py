@@ -49,10 +49,13 @@ if __name__ == "__main__":
     runner = TaskRunner()
     asyncio.run(runner.run())
 
-# TODO log thread/irq cpu affinity over time
 # TODO calculate some error bar metric (std dev.? variance? P95?)
 #  - 2 std deviations is +/- 1% for single threaded server! Need to figure out multiple threads now.
 # TODO store results in some database?
 # TODO fill in perf timeline of specified branch (unstable)
 # TODO github action integration
 # TODO print or log - choose only one
+
+# TODO make tasks run as separate processes/scripts called by conductress
+# TODO log status and data as files
+# TODO write tests for tasks

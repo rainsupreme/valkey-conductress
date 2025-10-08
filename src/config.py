@@ -6,7 +6,7 @@ from pathlib import Path
 from attr import dataclass
 
 PERF_BENCH_KEYSPACE = 3_000_000
-PERF_BENCH_CLIENTS = 650
+PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 64
 
 # when multiple valkey instances run on one host, they will start at this port number and count up
