@@ -61,28 +61,171 @@ class Server:
         self.args: Optional[list[str]] = None
         self.hash: Optional[str] = None
         self.threads: Optional[int] = None
+
         self.server_started: bool = False
+        self.numa_node = -1  # numa node for valkey, net irqs, and net interface
+        self.numa_cpus = []
+        self.net_irq_cpus: list[int] = []
 
         self.profiling_thread: Optional[Thread] = None
         self.profiling_abort = False
 
+    async def __ensure_net_irqs_pinned(self):
+        # determine network interface for specified ip
+        stdout, _ = await self.run_host_command(f"ip -4 -o addr show | grep {self.ip}")
+        net_interface = stdout.strip().split()[1]
+        if net_interface == "lo":
+            logging.info("Connected via loopback - no network IRQs to pin")
+            self.net_irq_cpus = []
+            return
+
+        # ensure irqbalance is disabled and not running
+        await self.run_host_command("sudo systemctl stop irqbalance")
+        await self.run_host_command("sudo systemctl disable irqbalance")
+        await self.run_host_command("sudo pkill irqbalance", check=False)
+
+        # get the numa node for interface
+        stdout, _ = await self.run_host_command(f'cat "/sys/class/net/{net_interface}/device/numa_node"')
+        self.numa_node = int(stdout.strip())
+
+        # get the cores for that numa node
+        stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
+        num_cpus = len(stdout.strip().split("\n"))
+        self.numa_cpus = [
+            int(x.split(",")[1]) for x in stdout.strip().split("\n") if x.startswith(f"{self.numa_node},")
+        ]
+        self.numa_cpus.sort()
+
+        # get IRQ interrupts for interface
+        stdout, _ = await self.run_host_command(f"grep -i {net_interface} /proc/interrupts")
+        net_irqs = [int(irq.split(":")[0].strip()) for irq in stdout.strip().split("\n")]
+
+        # pin IRQs to cores
+        self.net_irq_cpus = []
+        for i, irq in enumerate(net_irqs):
+            # Use the last CPUs in the NUMA node for network IRQs
+            irq_cpu = self.numa_cpus[-(i + 1)]
+            self.net_irq_cpus.append(irq_cpu)
+            # Create affinity mask with just this CPU enabled
+            digits = (num_cpus + 3) // 4
+            mask = 1 << irq_cpu
+            mask = f"{mask:X}".zfill(digits)
+            if digits > 8:
+                # Insert commas between every 8 hex digits
+                mask = ",".join(mask[i : i + 8] for i in range(0, len(mask), 8))
+
+            # Set the IRQ affinity using the mask
+            stdout, _ = await self.run_host_command(
+                f"sudo sh -c 'echo {mask} > /proc/irq/{irq}/smp_affinity'"
+            )
+        logging.info(
+            "Pinned net IRQs %s for %s to CPUs %s (Numa node %d)",
+            net_irqs,
+            net_interface,
+            self.numa_cpus[-len(net_irqs) :],
+            self.numa_node,
+        )
+
+        # warn if server threads and IRQ cores will overlap
+        if not self.threads or self.threads <= 0:
+            self.threads = 1
+        if len(net_irqs) + self.threads > len(self.numa_cpus):
+            logging.warning(
+                "%d network IRQs and %d Valkey threads but only %d cores available.",
+                len(net_irqs),
+                self.threads,
+                len(self.numa_cpus),
+            )
+
+    async def __ensure_socket_limit_sufficient(self) -> None:
+        """Ensure the file descriptor limit (also used for sockets) is not too low"""
+        # Increase max open files to allow more benchmark connections
+        desired_fileno_limit = 65536
+
+        fileno_limit, _ = await async_run("ulimit -n")
+        if int(fileno_limit) >= desired_fileno_limit:
+            return  # already good
+
+        stdout, _ = await async_run("cat /etc/security/limits.conf")
+        lines = [line.split() for line in stdout.split("\n") if "nofile" in line]
+        lines = [line for line in lines if line[0] == "*"]
+        if lines:
+            configured_limit = min([int(line[3]) for line in lines])
+            if configured_limit < desired_fileno_limit:
+                self.logger.error(
+                    "Insufficient socket number limit already configured (need %d, limit is %d)",
+                    desired_fileno_limit,
+                    configured_limit,
+                )
+                assert configured_limit >= desired_fileno_limit, "Insufficient socket number limit configured"
+            else:
+                print("Max open files already increased (try new session - log out and log in?)")
+                assert not lines, "Max open files already increased (try new session - log out and log in?)"
+
+        await async_run(
+            f"sudo sh -c \"echo '* soft nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
+        )
+        await async_run(
+            f"sudo sh -c \"echo '* hard nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
+        )
+
+        fileno_limit, _ = await async_run("ulimit -n")
+        assert (
+            int(fileno_limit) == desired_fileno_limit
+        ), "Increased files/sockets not available. (try new session - log out and log in?)"
+        logging.info("Increased max open files/sockets to %s", fileno_limit)
+
+    async def __pre_start(self) -> None:
+        """Configuration and preparation before starting Valkey server"""
+        await self.__ensure_net_irqs_pinned()
+        await self.__ensure_socket_limit_sufficient()
+
+        # Enable memory overcommit
+        await self.run_host_command("sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'")
+
+        # Increase max open files to allow more benchmark connections
+        desired_fileno_limit = 65536
+        fileno_limit, _ = await async_run("ulimit -n")
+        if int(fileno_limit) < desired_fileno_limit:
+            stdout, _ = await async_run("cat /etc/security/limits.conf")
+            lines = [line for line in stdout.split("\n") if "nofile" in line and line.startswith("*")]
+            assert not lines, "Max open files already increased"
+
+            await async_run(
+                f"sudo sh -c \"echo '* soft nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
+            )
+            await async_run(
+                f"sudo sh -c \"echo '* hard nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
+            )
+
+            fileno_limit, _ = await async_run("ulimit -n")
+            assert (
+                int(fileno_limit) == desired_fileno_limit
+            ), "Increased files/sockets not available. (try new session - log out and log in?)"
+            logging.info("Increased max open files/sockets to %s", fileno_limit)
+
+        await self.__ensure_stopped_and_clean()
+        await asyncio.sleep(1)  # short delay to it doesn't get our new server (TODO verify this)
+
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
         """Ensure specified build is running on the server."""
-        await self.__ensure_stopped_and_clean()
-        await asyncio.sleep(1)
-        # TODO delay between killing all instances and starting another to ensure it doesn't get killed?
-
         self.threads = io_threads
+        await self.__pre_start()
+
         self.args = []
         if io_threads > 1:
             self.args += ["--io-threads", str(io_threads)]
-        self.server_started = True
+
+        # Pin Valkey process to first CPUs (avoiding network IRQ CPUs)
+        valkey_cpus = ",".join(str(cpu) for cpu in self.numa_cpus[:io_threads])
         command = (
-            f"{cached_binary_path} --port {self.port} --save --protected-mode no --daemonize yes "
-            + " ".join(self.args)
+            f"taskset -c {valkey_cpus} {cached_binary_path} --port {self.port} "
+            f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
         out, err = await self.run_host_command(command)
+        self.server_started = True
         print(out, err)
+
         await self.wait_until_ready()
 
     async def ensure_binary_cached(
@@ -447,77 +590,3 @@ class Server:
     async def __profiling_cleanup(self):
         command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path}"
         await self.run_host_command(command)
-
-    # async def get_valkey_server_threads(self) -> list[tuple[int, int]]:
-    #     """Get the PID and TID of all valkey-server threads."""
-    #     await self.__ensure_ssh_connection()
-    #     command = "ps -T -C valkey-server -o pid,spid,comm"
-    #     output, _ = self.run_host_command(command)
-    #     threads: list[tuple[int, int]] = []
-    #     for line in output.splitlines()[1:]:  # Skip header
-    #         parts = line.split()
-    #         if len(parts) >= 2:
-    #             pid, tid = parts[:2]
-    #             threads.append((int(pid), int(tid)))
-    #     return threads
-
-    # def get_network_irqs(self) -> list[tuple[int, str]]:
-    #     """Get network IRQs and their names."""
-    #     command = """
-    #     grep -E 'eth|eno' /proc/interrupts |
-    #     awk '{printf "%s %s\\n", $1, $NF}' |
-    #     tr -d :
-    #     """
-    #     output, _ = self.run_host_command(command)
-    #     irqs: list[tuple[int, str]] = []
-    #     for line in output.splitlines():
-    #         parts = line.split(maxsplit=1)
-    #         if len(parts) == 2:
-    #             irq, name = parts
-    #             irqs.append((int(irq), name))
-    #     return irqs
-
-    # def get_thread_cpus(self, thread_list: list[tuple[int, int]]) -> list[int]:
-    #     """Get the CPUs that last executed specific threads.
-
-    #     Args:
-    #         thread_list: List of (pid, tid) tuples
-
-    #     Returns:
-    #         list of CPUs to last execute threads (same order as input)
-    #     """
-    #     if not thread_list:
-    #         return []
-
-    #     commands = [f"cat /proc/{pid}/task/{tid}/stat" for pid, tid in thread_list]
-    #     combined_command = " & ".join(commands)
-    #     output, _ = self.run_host_command(combined_command)
-
-    #     # The 39th field (0-based index 38) contains the last executed CPU number
-    #     results = [int(x.split()[38]) for x in output.splitlines()]
-    #     assert len(results) == len(thread_list), "Mismatch in number of threads and output lines"
-    #     return results
-
-    # def get_irq_cpus(self, irq_list: list[int]) -> list[int]:
-    #     """Get the CPUs that last handled specific IRQs."""
-    #     if not irq_list:
-    #         return []
-
-    #     commands = [f"cat /proc/irq/{irq}/smp_affinity_list" for irq in irq_list]
-    #     combined_command = " & ".join(commands)
-    #     output, _ = self.run_host_command(combined_command)
-
-    #     results = [int(x.strip()) for x in output.splitlines()]
-    #     assert len(results) == len(irq_list), "Mismatch in number of IRQs and output lines"
-    #     return results
-
-    # def monitor_cpu_execution(self):
-    #     print("\nMonitoring current/last CPU execution:")
-    #     threads = self.get_valkey_server_threads()
-    #     irqs = self.get_network_irqs()
-
-    #     print("\nValkey-server threads:")
-    #     print(self.get_thread_cpus(threads))
-
-    #     print("\nNetwork IRQs:")
-    #     print(self.get_irq_cpus([irq for irq, _ in irqs]))
