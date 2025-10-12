@@ -252,7 +252,6 @@ class PerfTaskRunner(BaseTaskRunner):
 
         dump_data = {
             "rps_data": self.rps_data,
-            "lat_data": self.lat_data,
         }
         dump_task_data(name, self.commit_hash, completion_time, dump_data)
 
