@@ -136,6 +136,7 @@ class TaskQueue:
         else:
             print(f"Unable to delete task {task_file}")
             logger.error("Task file not found: %s", task_file)
+            exit() # we would loop indefinitely on the task if we can't clear it
 
     def get_all_tasks(self) -> list[BaseTaskData]:
         """Returns list of (timestamp, task) tuples, sorted by timestamp"""
