@@ -9,6 +9,14 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 64
 
+# Memory efficiency test configuration
+MEM_TEST_ITEM_COUNT = 5_000_000  # 5 million items for memory tests
+MEM_TEST_KEY_SIZE = 16  # Size of "key:__rand_int__" pattern
+MEM_TEST_MAX_CONCURRENT = (
+    9  # Max concurrent server instances # TODO max session limit typically 10 by default
+)
+MEM_TEST_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days expiration
+
 # when multiple valkey instances run on one host, they will start at this port number and count up
 # (e.g. 9000, 9001, 9002, etc)
 SERVER_PORT_RANGE_START = 9000
@@ -16,7 +24,6 @@ SERVER_PORT_RANGE_START = 9000
 # TODO fix paths for remote hosts?
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
-CONDUCTRESS_DATA_DUMP = PROJECT_ROOT / "testdump.txt"
 
 VALKEY_CLI = "valkey-cli"
 VALKEY_BENCHMARK = "valkey-benchmark"

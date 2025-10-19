@@ -1,8 +1,10 @@
 """Conductress TUI application for Valkey benchmarking tasks."""
 
+import glob
 import logging
 from datetime import datetime
 from itertools import product
+from pathlib import Path
 from typing import Callable, Iterator, Optional, TypeVar, Union
 
 from textual import on
@@ -24,6 +26,7 @@ from textual.widgets import (
 )
 from textual.widgets.selection_list import Selection
 
+from src.file_protocol import FileProtocol
 from src.tasks.task_full_sync import SyncTaskData
 from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
@@ -71,7 +74,8 @@ class BenchmarkApp(App):
         yield Header()
         with TabbedContent(initial="tab-create-task", id="root-tabs"):
             with TabPane("Status", id="tab-status"):
-                yield Static("TODO: implement view of current tasks")
+                yield Static("Last update: Never", id="status-table-status")
+                yield DataTable(id="status-table", cursor_type="row")
             with TabPane("Queue", id="tab-queue"):
                 yield Static("Last update: Never", id="queue-table-status")
                 yield DataTable(id="queue-table", cursor_type="row")
@@ -93,6 +97,11 @@ class BenchmarkApp(App):
 
     def refresh_data(self) -> None:
         """Refresh the table data."""
+        self._refresh_queue_data()
+        self._refresh_status_data()
+
+    def _refresh_queue_data(self) -> None:
+        """Refresh the queue table data."""
         queue = TaskQueue()
         tasks = queue.get_all_tasks()
 
@@ -128,6 +137,72 @@ class BenchmarkApp(App):
         # Update the status message
         status.update(f"Last update: {datetime.now().strftime('%H:%M')}")
 
+    def _refresh_status_data(self) -> None:
+        """Refresh the status table data."""
+
+        # Find all active benchmark directories
+        benchmark_dirs = glob.glob("/tmp/benchmark_*")
+
+        tabs = self.query_one("#root-tabs", TabbedContent)
+        table = self.query_one("#status-table", DataTable)
+        status_label = self.query_one("#status-table-status", Static)
+
+        running_tasks = []
+
+        for dir_path in benchmark_dirs:
+            try:
+                # Extract task ID from directory name
+                task_id = Path(dir_path).name.replace("benchmark_", "")
+                protocol = FileProtocol(task_id, Path("/tmp"))
+
+                # Read status if available
+                task_status = protocol.read_status()
+                if task_status:
+                    # Calculate progress
+                    progress = "N/A"
+                    if (
+                        task_status.steps_total
+                        and task_status.steps_completed is not None
+                    ):
+                        pct = (
+                            task_status.steps_completed / task_status.steps_total
+                        ) * 100
+                        progress = f"{pct:.0f}% ({task_status.steps_completed}/{task_status.steps_total})"
+
+                    running_tasks.append(
+                        {
+                            "task_id": task_id,
+                            "state": task_status.state,
+                            "pid": task_status.pid or "N/A",
+                            "progress": progress,
+                        }
+                    )
+            except Exception:
+                # Skip directories that don't have valid protocol files
+                continue
+
+        tabs.get_tab("tab-status").label = f"Status ({len(running_tasks)})"
+
+        table.clear()
+
+        if not table.columns:
+            table.add_columns(
+                "Task ID",
+                "State",
+                "PID",
+                "Progress",
+            )
+
+        for task in running_tasks:
+            table.add_row(
+                task["task_id"],
+                task["state"],
+                str(task["pid"]),
+                task["progress"],
+            )
+
+        status_label.update(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
+
 
 class SourceSpeciferValidator(Validator):
     """Validator for source:specifier list input"""
@@ -140,7 +215,9 @@ class SourceSpeciferValidator(Validator):
         return self.success()
 
     @staticmethod
-    def parse_source_specifier_list(input_str: str) -> tuple[list[tuple[str, str]], Optional[str]]:
+    def parse_source_specifier_list(
+        input_str: str,
+    ) -> tuple[list[tuple[str, str]], Optional[str]]:
         """Parse the source:specifier list into two separate lists"""
         if not input_str:
             return [], "list cannot be empty"
@@ -198,7 +275,9 @@ class RangeListValidator(Validator):
             elif len(rangespec) == 3:
                 if rangespec[2] == 0:
                     return [], "range step (start:end:step) value must not be zero"
-                result.extend(range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2]))
+                result.extend(
+                    range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2])
+                )
             else:
                 return [], "ranges are of the format value, or start:end:step"
         return result, None
@@ -261,20 +340,28 @@ class NumberListField:
 
     def values(self) -> list[int]:
         if self.allow_ranges:
-            value_list, _ = RangeListValidator(self.number_type).parse_range_list(self.input.value)
+            value_list, _ = RangeListValidator(self.number_type).parse_range_list(
+                self.input.value
+            )
             return value_list
         else:
-            return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
+            return CommaSeparatedIntsValidator(self.number_type).parse_ints(
+                self.input.value
+            )
 
 
 class PipeliningField(NumberListField):
     def __init__(self):
-        super().__init__("Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber)
+        super().__init__(
+            "Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber
+        )
 
 
 class IOThreadsField(NumberListField):
     def __init__(self):
-        super().__init__("IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber)
+        super().__init__(
+            "IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber
+        )
 
 
 class SizesField(NumberListField):
@@ -291,7 +378,9 @@ class SizesField(NumberListField):
 
 class CountsField(NumberListField):
     def __init__(self):
-        super().__init__("Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber)
+        super().__init__(
+            "Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber
+        )
 
 
 class BaseTaskForm(ScrollableContainer):
@@ -385,7 +474,9 @@ class PerfTaskForm(BaseTaskForm):
             self.notify("No tests selected", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
+            source_specifier_list
+        )
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -488,7 +579,9 @@ class MemTaskForm(BaseTaskForm):
             self.notify("No tests selected", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
+            source_specifier_list
+        )
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -578,7 +671,9 @@ class SyncTaskForm(BaseTaskForm):
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
+            source_specifier_list
+        )
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -612,6 +707,8 @@ class SyncTaskForm(BaseTaskForm):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(filename=config.CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
+    logging.basicConfig(
+        filename=config.CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG
+    )
     app = BenchmarkApp()
     app.run()

@@ -6,9 +6,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from src.config import ServerInfo
+from src.file_protocol import BenchmarkResults, BenchmarkStatus
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.utility import HumanByte, HumanNumber, print_pretty_header, record_task_result
+from src.utility import HumanByte, HumanNumber, print_pretty_header
 
 
 @dataclass
@@ -27,11 +29,12 @@ class SyncTaskData(BaseTaskData):
             f"{', profiling' if profiling else ''}"
         )
 
-    def prepare_task_runner(self, server_ips: list[str]) -> "SyncTaskRunner":
+    def prepare_task_runner(self, server_infos: list) -> "SyncTaskRunner":
         """Return the task runner for this task."""
+        task_id = f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_sync"
         return SyncTaskRunner(
-            f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_sync",
-            server_ips,
+            task_id,
+            [info.ip for info in server_infos],
             self.source,
             self.specifier,
             io_threads=self.io_threads,
@@ -56,10 +59,10 @@ class SyncTaskRunner(BaseTaskRunner):
         profiling_sample_rate: int,
     ):
         """Initialize the test with a replication group."""
+        super().__init__(task_name)
 
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        self.task_name = task_name
         self.server_ips = server_ips
         self.binary_source = binary_source
         self.specifier = specifier
@@ -77,22 +80,39 @@ class SyncTaskRunner(BaseTaskRunner):
         )
         print_pretty_header(self.title)
 
-        self.logger.info("setting up replication group with %d servers", len(self.server_ips))
-        self.replication_group = ReplicationGroup(
-            self.server_ips, self.binary_source, self.specifier, self.io_threads, []
-        )
+        # Initialize status
+        self.status = BenchmarkStatus(steps_total=4)  # setup, load data, sync, results
+        self.file_protocol.write_status(self.status)
 
-        self.logger.info("loading data onto primary")
-        self.replication_group.primary.run_valkey_command_over_keyspace(
-            self.valcount, f"-d {self.valsize} -t set"
-        )
+        self.replication_group = None
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Run the full sync test."""
         profiling = self.profiling_sample_rate > 0
 
+        # Setup replication group
+        self.logger.info("setting up replication group with %d servers", len(self.server_ips))
+        server_infos = [ServerInfo(ip=ip) for ip in self.server_ips]
+        self.replication_group = ReplicationGroup(
+            server_infos, self.binary_source, self.specifier, self.io_threads
+        )
+
+        # Update progress: setup complete
+        self.status.state = "running"
+        self.status.steps_completed = 1
+        self.file_protocol.write_status(self.status)
+
+        self.logger.info("loading data onto primary")
+        await self.replication_group.primary.run_valkey_command_over_keyspace(
+            self.valcount, f"-d {self.valsize} -t set"
+        )
+
+        # Update progress: data loading complete
+        self.status.steps_completed = 2
+        self.file_protocol.write_status(self.status)
+
         self.logger.info("beginning full sync...")
-        self.replication_group.begin_replication()
+        await self.replication_group.begin_replication()
         start = time.monotonic()
 
         if profiling:
@@ -101,7 +121,7 @@ class SyncTaskRunner(BaseTaskRunner):
 
         in_sync = False
         while not in_sync:
-            replica_info = self.replication_group.replicas[0].info("replication")
+            replica_info = await self.replication_group.replicas[0].info("replication")
             in_sync = (
                 "master_link_status" in replica_info
                 and replica_info["master_link_status"] == "up"
@@ -112,7 +132,7 @@ class SyncTaskRunner(BaseTaskRunner):
         self.logger.info("full sync complete")
         if profiling:
             for server in self.replication_group.servers:
-                server.profiling_stop()
+                await server.profiling_stop()
 
         duration = end - start
         user_data_size = self.valsize * self.valcount
@@ -124,15 +144,24 @@ class SyncTaskRunner(BaseTaskRunner):
             "user_data_size": self.valsize * self.valcount,
             "throughput": user_data_size / duration,
         }
-        record_task_result(
-            "sync",
-            self.binary_source,
-            self.specifier,
-            self.replication_group.primary.get_build_hash() or "",
-            throughput,
-            datetime.datetime.now(),
-            result,
+        # Write results to file protocol (replaces record_task_result)
+        completion_time = datetime.datetime.now()
+        results_data = BenchmarkResults(
+            method="sync",
+            source=self.binary_source,
+            specifier=self.specifier,
+            commit_hash=self.replication_group.primary.get_build_hash() or "",
+            score=throughput,
+            end_time=str(completion_time),
+            data=result,
         )
+        self.file_protocol.write_results(results_data)
+
+        # Update progress: sync and results complete
+        self.status.state = "completed"
+        self.status.steps_completed = 4
+        self.status.end_time = time.time()
+        self.file_protocol.write_status(self.status)
 
         if profiling:
             self.__profiling_reports()

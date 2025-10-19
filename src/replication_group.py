@@ -16,7 +16,11 @@ class ReplicationGroup:
     # It would need to be modified to support multiple instances on the same host.
 
     def __init__(
-        self, server_infos: list[ServerInfo], binary_source: str, specifier: str, threads: int
+        self,
+        server_infos: list[ServerInfo],
+        binary_source: str,
+        specifier: str,
+        threads: int,
     ) -> None:
         assert len(server_infos) >= 1, "At least one server IP is required"
 
@@ -48,13 +52,17 @@ class ReplicationGroup:
         await server.wait_until_ready()
         return server
 
-    async def __ensure_no_unknown_replicas(self, expected_servers: list[Server]) -> None:
+    async def __ensure_no_unknown_replicas(
+        self, expected_servers: list[Server]
+    ) -> None:
         """Ensure that there are no unknown replicas in the group."""
         expected_ips = [server.ip for server in expected_servers]
         unexpected_ips = []
         for server in self.servers:
             replicas = await server.get_replicas()
-            unexpected_ips += [replica for replica in replicas if replica not in expected_ips]
+            unexpected_ips += [
+                replica for replica in replicas if replica not in expected_ips
+            ]
 
         if unexpected_ips:
             print(f"Unexpected replicas found: {unexpected_ips}")
@@ -67,14 +75,20 @@ class ReplicationGroup:
             unexpected_ips = []
             for server in self.servers:
                 replicas = await server.get_replicas()
-                unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
-            assert not unexpected_ips, f"Unexpected replicas remain after cleanup: {unexpected_ips}"
+                unexpected_ips += [
+                    replica for replica in replicas if replica not in expected_servers
+                ]
+            assert (
+                not unexpected_ips
+            ), f"Unexpected replicas remain after cleanup: {unexpected_ips}"
 
     async def begin_replication(self):
         """Set up replication among the servers in the group."""
         assert self.primary
         print("setting up replication")
-        await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
+        await asyncio.gather(
+            *[replica.replicate(self.primary.ip) for replica in self.replicas]
+        )
 
     async def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""
@@ -100,4 +114,6 @@ class ReplicationGroup:
 
     async def kill_all_valkey_instances(self) -> None:
         """Kills server processes on all servers in group."""
-        await asyncio.gather(*[server.kill_all_valkey_instances_on_host() for server in self.servers])
+        await asyncio.gather(
+            *[server.kill_all_valkey_instances_on_host() for server in self.servers]
+        )

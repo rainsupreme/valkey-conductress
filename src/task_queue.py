@@ -48,7 +48,9 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
-        assert self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
+        assert (
+            self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
+        )
 
     @abstractmethod
     def short_description(self) -> str:
@@ -56,7 +58,9 @@ class BaseTaskData(ABC):
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
-    def prepare_task_runner(self, server_infos: list[config.ServerInfo]) -> "BaseTaskRunner":
+    def prepare_task_runner(
+        self, server_infos: list[config.ServerInfo]
+    ) -> "BaseTaskRunner":
         """Return the task runner for this task."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -92,6 +96,11 @@ class BaseTaskData(ABC):
 
 class BaseTaskRunner(ABC):
     """Base class for task runners"""
+
+    def __init__(self, task_name: str):
+        from .file_protocol import FileProtocol
+
+        self.file_protocol = FileProtocol(task_name)
 
     @abstractmethod
     async def run(self) -> None:
@@ -136,7 +145,7 @@ class TaskQueue:
         else:
             print(f"Unable to delete task {task_file}")
             logger.error("Task file not found: %s", task_file)
-            exit() # we would loop indefinitely on the task if we can't clear it
+            exit()  # we would loop indefinitely on the task if we can't clear it
 
     def get_all_tasks(self) -> list[BaseTaskData]:
         """Returns list of (timestamp, task) tuples, sorted by timestamp"""

@@ -1,22 +1,15 @@
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
 import asyncio
-import json
 import os
 import shlex
 import signal
 import subprocess
-from datetime import datetime
 from typing import Optional, Sequence, Union
 
 import asyncssh
 
-from .config import (
-    CONDUCTRESS_DATA_DUMP,
-    CONDUCTRESS_OUTPUT,
-    SERVER_PORT_RANGE_START,
-    SSH_KEYFILE,
-)
+from .config import SERVER_PORT_RANGE_START, SSH_KEYFILE
 
 MILLION = 1_000_000
 BILLION = 1_000_000_000
@@ -61,14 +54,19 @@ class HumanNumber:
         number = float(number)
         unit_index = 0
         if isinstance(cls.base, int):
-            while number >= cls.base * cls.threshold and unit_index + 1 < len(cls.units):
+            while number >= cls.base * cls.threshold and unit_index + 1 < len(
+                cls.units
+            ):
                 unit_index += 1
                 number /= cls.base
         else:
             bases: Sequence[int] = cls.base
             assert len(bases) == len(cls.units)
             unit_index = 0
-            while unit_index + 1 < len(bases) and number >= bases[unit_index + 1] * cls.threshold:
+            while (
+                unit_index + 1 < len(bases)
+                and number >= bases[unit_index + 1] * cls.threshold
+            ):
                 unit_index += 1
                 number /= bases[unit_index]
 
@@ -117,7 +115,9 @@ class HumanNumber:
                 number *= base
                 if unit == unit_suffix:
                     return number
-        raise ValueError(f"Invalid unit '{unit}'. Expected one of {cls.units} (case insensitive).")
+        raise ValueError(
+            f"Invalid unit '{unit}'. Expected one of {cls.units} (case insensitive)."
+        )
 
 
 class HumanByte(HumanNumber):
@@ -131,7 +131,9 @@ class HumanTime(HumanNumber):
     threshold = 1
 
 
-def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─") -> str:
+def __build_header(
+    left_decor: str, center: str, right_decor: str, fill: str = "─"
+) -> str:
     console_width = get_console_width()
 
     # Decorative elements
@@ -191,57 +193,6 @@ def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list
         section_avg = sum(section) / len(section)
         result.append(section_avg)
     return result
-
-
-def record_task_result(
-    method: str, source: str, specifier: str, commit_hash: str, score: float, endtime: datetime, data
-) -> None:
-    """
-    Uniform method for recording results
-
-    Args:
-        method (str): task type (perf-get, mem, sync, etc)
-        source (str): usually the repo name
-        specifier (str): branch name, tag, or hash
-        commit_hash (str): actual commit used
-        score (float): summarize result in 1 key number
-        endtime (datetime): timestamp for task completion
-        data (_type_): more detailed result info - format depends on the task
-    """
-    result = {
-        "method": method,
-        "source": source,
-        "specifier": specifier,
-        "commit_hash": commit_hash,
-        "score": score,
-        "end_time": str(endtime),
-        "data": data,
-    }
-    os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
-    with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
-        f.write(json.dumps(result))
-        f.write("\n")
-
-
-def dump_task_data(method: str, commit_hash: str, endtime: datetime, data):
-    """
-    Uniform method for dumping all data collected
-
-    Args:
-        method (str): task type (perf-get, mem, sync, etc)
-        commit_hash (str): actual commit used
-        endtime (datetime): timestamp for task completion
-        data (_type_): All data recorded - format depends on the task
-    """
-    result = {
-        "method": method,
-        "commit_hash": commit_hash,
-        "end_time": str(endtime),
-        "data": data,
-    }
-    with open(CONDUCTRESS_DATA_DUMP, "a", encoding="utf-8") as f:
-        f.write(json.dumps(result))
-        f.write("\n")
 
 
 class RealtimeCommand:
@@ -322,8 +273,12 @@ async def async_run(command: str, check=True) -> tuple[str, str]:
     stderr = stderr_bytes.decode()
 
     if check and process.returncode != 0:
-        print(f"Command ({command}) failed with exit code {process.returncode}: {stderr}")
-        raise RuntimeError(f"Command failed with exit code {process.returncode}: {stderr}")
+        print(
+            f"Command ({command}) failed with exit code {process.returncode}: {stderr}"
+        )
+        raise RuntimeError(
+            f"Command failed with exit code {process.returncode}: {stderr}"
+        )
 
     return stdout, stderr
 

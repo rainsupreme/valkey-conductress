@@ -36,7 +36,9 @@ class MockTaskData(task_queue.BaseTaskData):
     def short_description(self) -> str:
         return "Mock task"
 
-    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "task_queue.BaseTaskRunner":
+    def prepare_task_runner(
+        self, server_infos: list[ServerInfo]
+    ) -> "task_queue.BaseTaskRunner":
         return MockTaskRunner(server_infos)
 
 
@@ -44,6 +46,7 @@ class MockTaskRunner(task_queue.BaseTaskRunner):
     """Mock task runner for testing purposes."""
 
     def __init__(self, server_infos: list[ServerInfo]):
+        super().__init__("mock_task")
         self.server_infos = server_infos
 
     async def run(self):
