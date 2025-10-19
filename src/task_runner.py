@@ -7,7 +7,10 @@ import time
 from threading import Thread
 from typing import Optional
 
+from src.task_queue import BaseTaskRunner
+
 from .config import CONDUCTRESS_LOG, SERVERS
+from .file_protocol import FileProtocol
 from .task_queue import BaseTaskData, TaskQueue
 
 logger = logging.getLogger(__name__)
@@ -26,11 +29,26 @@ class TaskRunner:
             len(SERVERS) >= server_count
         ), f"Not enough servers for {task_data.replicas} replicas. Found {len(SERVERS)} servers."
 
-        task_runner = task_data.prepare_task_runner(SERVERS[:server_count])
-        await task_runner.run()
+        task_runner: BaseTaskRunner = task_data.prepare_task_runner(
+            SERVERS[:server_count]
+        )
+        try:
+            await task_runner.run()
+            # Task completed successfully, mark as completed and clean up immediately
+            task_runner.file_protocol.mark_completed_and_cleanup()
+        except Exception:
+            # Task failed, just clean up without marking as completed
+            task_runner.file_protocol.cleanup()
+            raise
 
     async def run(self):
         """Main function - execute tasks from the queue."""
+        # Clean up any orphaned benchmark directories on startup
+        cleaned_count = FileProtocol.cleanup_orphaned_tasks()
+        if cleaned_count > 0:
+            logger.info(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
+            print(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
+        
         queue = TaskQueue()
         self.task = queue.get_next_task()
         while True:

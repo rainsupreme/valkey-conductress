@@ -69,8 +69,18 @@ class TestRangeListValidator:
             (HumanNumber, "1:5:2", [1, 3, 5], None),
             (HumanNumber, "10K:20K:5K", [10_000, 15_000, 20_000], None),
             (HumanNumber, "1,2:6:2", [1, 2, 4, 6], None),
-            (HumanNumber, "1:3", None, "ranges are of the format value, or start:end:step"),
-            (HumanNumber, "1:5:0", None, "range step (start:end:step) value must not be zero"),
+            (
+                HumanNumber,
+                "1:3",
+                None,
+                "ranges are of the format value, or start:end:step",
+            ),
+            (
+                HumanNumber,
+                "1:5:0",
+                None,
+                "range step (start:end:step) value must not be zero",
+            ),
             (HumanNumber, "", [], "input cannot be empty"),
             (HumanNumber, "abc", [], "could not convert string to float"),
             (HumanNumber, "1:abc:2", [], "could not convert string to float"),
@@ -78,12 +88,19 @@ class TestRangeListValidator:
             (HumanByte, "1KB", [1024], None),
             (HumanByte, "1KB:3KB:1KB", [1024, 2048, 3072], None),
             (HumanByte, "1KB,2KB:4KB:1KB", [1024, 2048, 3072, 4096], None),
-            (HumanByte, "1KB:2KB", None, "ranges are of the format value, or start:end:step"),
+            (
+                HumanByte,
+                "1KB:2KB",
+                None,
+                "ranges are of the format value, or start:end:step",
+            ),
             (HumanByte, "-1KB", [-1024], None),
             (HumanByte, "0.5MB:128KB:-128KB", [524288, 393216, 262144, 131072], None),
         ],
     )
-    def test_parse_range_list(self, number_type, input_str, expected_result, expected_error):
+    def test_parse_range_list(
+        self, number_type, input_str, expected_result, expected_error
+    ):
         validator = RangeListValidator(number_type)
         result, error = validator.parse_range_list(input_str)
         if expected_error is None:
@@ -137,7 +154,9 @@ class TestRangeListValidator:
         ("repo1:abc,repoX:def", [], "Invalid source: repoX"),
     ],
 )
-def test_parse_source_specifier_list(input_str, expected_result, expected_error, monkeypatch):
+def test_parse_source_specifier_list(
+    input_str, expected_result, expected_error, monkeypatch
+):
     # Patch config.REPO_NAMES and config.MANUALLY_UPLOADED for test
     class DummyConfig:
         REPO_NAMES = ["repo1", "repo2"]

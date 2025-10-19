@@ -16,6 +16,12 @@ from src.config import (
     VALKEY_BENCHMARK,
     ServerInfo,
 )
+from src.file_protocol import (
+    BenchmarkResults,
+    BenchmarkStatus,
+    FileProtocol,
+    MetricData,
+)
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
 from src.utility import (
@@ -25,9 +31,6 @@ from src.utility import (
     HumanNumber,
     HumanTime,
     RealtimeCommand,
-    calc_percentile_averages,
-    dump_task_data,
-    record_task_result,
 )
 
 
@@ -54,10 +57,11 @@ class PerfTaskData(BaseTaskData):
             f"{', profiling' if profiling else ''}"
         )
 
-    def prepare_task_runner(self, server_infos) -> "PerfTaskRunner":
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "PerfTaskRunner":
         """Return the task runner for this task."""
+        task_id = f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_perf"
         return PerfTaskRunner(
-            f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_perf",
+            task_id,
             server_infos,
             self.source,
             self.specifier,
@@ -102,7 +106,9 @@ class PerfTaskRunner(BaseTaskRunner):
         "hset": Test(name="hset", preload_command="-t hset", test_command="-t hset"),
         "zadd": Test(name="zadd", preload_command="-t zadd", test_command="-t zadd"),
         "zrank": Test(
-            name="zrank", preload_command="-t zadd", test_command=" -- ZRANK myzset element:__rand_int__"
+            name="zrank",
+            preload_command="-t zadd",
+            test_command=" -- ZRANK myzset element:__rand_int__",
         ),
         "zcount": Test(
             name="zcount",
@@ -127,6 +133,7 @@ class PerfTaskRunner(BaseTaskRunner):
         has_expire: bool,
         sample_rate: int = -1,
     ):
+        super().__init__(task_name)
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + test)
 
@@ -138,7 +145,6 @@ class PerfTaskRunner(BaseTaskRunner):
         )
 
         # settings
-        self.task_name = task_name
         self.server_infos = server_infos
         self.binary_source = binary_source
         self.specifier = specifier
@@ -161,9 +167,11 @@ class PerfTaskRunner(BaseTaskRunner):
         self.next_metric_update = time.monotonic()  # now
         self.avg_rps = -1.0
         self.rps_data: list[float] = []
-        self.lat_data: list[float] = []
 
         self.commit_hash = ""
+
+        # Initialize status
+        self.status = BenchmarkStatus(steps_total=self.warmup + self.duration)
 
     async def __read_updates(self, command: RealtimeCommand):
         line, _ = command.poll_output()
@@ -176,9 +184,11 @@ class PerfTaskRunner(BaseTaskRunner):
             # or this:
             # ZRANK myzset ele__rand_int__: rps=442912.0 (overall: 436252.6) avg_msec=5.868 (overall: 5.948)
             rps = float(line.split("rps=")[1].split()[0])
-            avg_msec = float(line.split("avg_msec=")[1].split()[0])
             self.rps_data.append(rps)
-            self.lat_data.append(avg_msec)
+
+            # Write metric to file protocol
+            metric = MetricData(metrics={"rps": rps})
+            self.file_protocol.append_metric(metric)
 
             line, _ = command.poll_output()
 
@@ -226,8 +236,8 @@ class PerfTaskRunner(BaseTaskRunner):
         completion_time = datetime.datetime.now()
         name = f"perf-{self.test.name}"
 
-        avg_rps = calc_percentile_averages(self.rps_data, (100, 99, 95))
-        avg_lat = calc_percentile_averages(self.lat_data, (100, 99, 95), lowest_vals=True)
+        assert len(self.rps_data) > 0, "No results recorded"
+        avg_rps = sum(self.rps_data) / len(self.rps_data)
 
         result = {
             "warmup": self.warmup,
@@ -238,22 +248,30 @@ class PerfTaskRunner(BaseTaskRunner):
             "size": self.valsize,
             "preload_keys": self.preload_keys,
             "rps": avg_rps,
-            "latency": avg_lat,
         }
-        record_task_result(
-            name,
-            self.binary_source,
-            self.specifier,
-            self.commit_hash,
-            avg_rps[0],
-            completion_time,
-            result,
-        )
 
-        dump_data = {
-            "rps_data": self.rps_data,
+        # Write results to file protocol
+        detailed_data = {
+            "warmup": self.warmup,
+            "duration": self.duration,
+            "io-threads": self.io_threads,
+            "pipeline": self.pipelining,
+            "has_expire": self.has_expire,
+            "size": self.valsize,
+            "preload_keys": self.preload_keys,
+            "avg_rps": avg_rps,
         }
-        dump_task_data(name, self.commit_hash, completion_time, dump_data)
+
+        results = BenchmarkResults(
+            method=f"perf-{self.test.name}",
+            source=self.binary_source,
+            specifier=self.specifier,
+            commit_hash=self.commit_hash,
+            score=avg_rps,
+            end_time=str(completion_time),
+            data=detailed_data,
+        )
+        self.file_protocol.write_results(results)
 
     async def run(self):
         """Run the benchmark."""
@@ -261,6 +279,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # setup
         print("preparing:", self.title)
+
+        # Write initial status
+        self.file_protocol.write_status(self.status)
 
         replication_group = ReplicationGroup(
             self.server_infos, self.binary_source, self.specifier, self.io_threads
@@ -278,7 +299,9 @@ class PerfTaskRunner(BaseTaskRunner):
             )
             if self.has_expire:
                 if not self.test.expire_command:
-                    self.logger.warning("Expire command not available, skipping expiration")
+                    self.logger.warning(
+                        "Expire command not available, skipping expiration"
+                    )
                 else:
                     await server.run_valkey_command_over_keyspace(
                         PERF_BENCH_KEYSPACE, self.test.expire_command
@@ -299,24 +322,49 @@ class PerfTaskRunner(BaseTaskRunner):
         end_time = test_start_time + self.duration
         warming_up = True
 
+        # Update status to running
+        self.status.state = "running"
+        self.file_protocol.write_status(self.status)
+
         print("started rt cmd")
+        last_heartbeat = time.time()
         while command.is_running():
             await self.__read_updates(command)
             self.__update_graph(command)
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
+
+            # Update heartbeat and progress every 5 seconds
+            if time.time() - last_heartbeat > 5.0:
+                # Update progress based on total elapsed time (warmup + test)
+                elapsed_total_time = now - start_time
+                self.status.steps_completed = min(
+                    int(elapsed_total_time), self.warmup + self.duration
+                )
+
+                self.file_protocol.write_status(self.status)
+                last_heartbeat = time.time()
+
             if now > end_time:
                 if self.profiling:
                     await server.profiling_stop()
                 command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
-                self.lat_data = []
                 warming_up = False
                 if self.profiling:
-                    server.profiling_start(self.sample_rate)  # TODO port thread to async
+                    server.profiling_start(
+                        self.sample_rate
+                    )  # TODO port thread to async
 
         await self.__read_updates(command)
         self.__record_result()
+
+        # Write final status
+        self.status.state = "completed"
+        self.status.end_time = time.time()
+        self.status.steps_completed = self.warmup + self.duration  # 100% complete
+        self.file_protocol.write_status(self.status)
+
         if self.profiling:
             await server.profiling_report(self.task_name, "primary")

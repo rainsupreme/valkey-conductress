@@ -37,7 +37,11 @@ def load_requirements(name: str) -> list[str]:
 def subprocess_command(command: str) -> None:
     cmd_list = command.split()
     result = subprocess.run(
-        cmd_list, check=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        cmd_list,
+        check=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     if result.stderr:
         print(repr(result.stderr))
@@ -135,7 +139,10 @@ def ensure_ssh_key() -> None:
     """Ensure ssh keyfile is present"""
     logger.info("Checking for ssh keyfile")
     if not SSH_KEYFILE.is_file():
-        logger.error("Missing SSH keyfile: '%s' (this must be manually copied to the server)", SSH_KEYFILE)
+        logger.error(
+            "Missing SSH keyfile: '%s' (this must be manually copied to the server)",
+            SSH_KEYFILE,
+        )
         sys.exit(1)
     try:
         Path(SSH_KEYFILE).chmod(0o600)
@@ -249,7 +256,9 @@ async def ensure_conductress(host: Host, pull=False):
 
     if not await path_exists(host, conductress_path, expected_type="directory"):
         await ensure_git_repo_cloned(
-            host, "https://github.com/SoftlyRaining/valkey-conductress.git", conductress_path
+            host,
+            "https://github.com/SoftlyRaining/valkey-conductress.git",
+            conductress_path,
         )
     if pull:
         host.log_info_msg("pulling conductress")
