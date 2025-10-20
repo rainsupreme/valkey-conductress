@@ -11,6 +11,7 @@ from src.task_queue import BaseTaskRunner
 
 from .config import CONDUCTRESS_LOG, SERVERS
 from .file_protocol import FileProtocol
+from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ class TaskRunner:
         if cleaned_count > 0:
             logger.info(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
             print(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
+        
+        # Kill all valkey instances on all servers
+        await asyncio.gather(*[Server(server.ip).kill_all_valkey_instances_on_host() for server in SERVERS])
         
         queue = TaskQueue()
         self.task = queue.get_next_task()

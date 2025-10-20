@@ -22,6 +22,7 @@ class ReplicationGroup:
         specifier: str,
         threads: int,
     ) -> None:
+        """Initialize a replication group with server configuration."""
         assert len(server_infos) >= 1, "At least one server IP is required"
 
         self.server_infos = server_infos
@@ -34,7 +35,7 @@ class ReplicationGroup:
         self.replicas: list[Server] = []
 
     async def start(self) -> None:
-        """start servers in parallel (including building if necessary)"""
+        """Start servers in parallel (including building if necessary)"""
         self.servers: list[Server] = await asyncio.gather(
             *[self.__start_server(info.ip, info.username) for info in self.server_infos]
         )
@@ -44,6 +45,7 @@ class ReplicationGroup:
         self.replicas = self.servers[1:]
 
     async def __start_server(self, server_ip, username) -> Server:
+        """Start a single server instance."""
         port = 6379
         server: Server = await Server.with_build(
             server_ip, port, username, self.binary_source, self.specifier, self.threads
@@ -52,17 +54,13 @@ class ReplicationGroup:
         await server.wait_until_ready()
         return server
 
-    async def __ensure_no_unknown_replicas(
-        self, expected_servers: list[Server]
-    ) -> None:
+    async def __ensure_no_unknown_replicas(self, expected_servers: list[Server]) -> None:
         """Ensure that there are no unknown replicas in the group."""
         expected_ips = [server.ip for server in expected_servers]
         unexpected_ips = []
         for server in self.servers:
             replicas = await server.get_replicas()
-            unexpected_ips += [
-                replica for replica in replicas if replica not in expected_ips
-            ]
+            unexpected_ips += [replica for replica in replicas if replica not in expected_ips]
 
         if unexpected_ips:
             print(f"Unexpected replicas found: {unexpected_ips}")
@@ -75,20 +73,14 @@ class ReplicationGroup:
             unexpected_ips = []
             for server in self.servers:
                 replicas = await server.get_replicas()
-                unexpected_ips += [
-                    replica for replica in replicas if replica not in expected_servers
-                ]
-            assert (
-                not unexpected_ips
-            ), f"Unexpected replicas remain after cleanup: {unexpected_ips}"
+                unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
+            assert not unexpected_ips, f"Unexpected replicas remain after cleanup: {unexpected_ips}"
 
     async def begin_replication(self):
         """Set up replication among the servers in the group."""
         assert self.primary
         print("setting up replication")
-        await asyncio.gather(
-            *[replica.replicate(self.primary.ip) for replica in self.replicas]
-        )
+        await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
 
     async def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""
@@ -112,8 +104,10 @@ class ReplicationGroup:
         """End replication for all servers in the group."""
         await asyncio.gather(*[server.replicate(None) for server in self.servers])
 
+    async def stop_all_servers(self) -> None:
+        """Stop all server instances in this replication group."""
+        await asyncio.gather(*[server.stop() for server in self.servers])
+
     async def kill_all_valkey_instances(self) -> None:
-        """Kills server processes on all servers in group."""
-        await asyncio.gather(
-            *[server.kill_all_valkey_instances_on_host() for server in self.servers]
-        )
+        """Kill server processes on all servers in group."""
+        await asyncio.gather(*[server.kill_all_valkey_instances_on_host() for server in self.servers])

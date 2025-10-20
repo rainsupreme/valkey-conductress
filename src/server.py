@@ -243,6 +243,23 @@ class Server:
 
         return allocated
 
+    async def _pin_valkey_threads(self):
+        """Pin individual Valkey threads to specific CPUs after server starts"""
+        # Get the main process PID
+        pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
+        main_pid = pid_out.strip()
+        
+        # Get all thread IDs for the process
+        threads_out, _ = await self.run_host_command(f"ps -T -p {main_pid} -o tid --no-headers")
+        thread_ids = [tid.strip() for tid in threads_out.strip().split('\n')]
+        
+        # Pin each thread to its designated CPU
+        for i, tid in enumerate(thread_ids):
+            if i < len(self.server_cpus):
+                cpu = self.server_cpus[i]
+                await self.run_host_command(f"taskset -cp {cpu} {tid}")
+                logging.info("Pinned thread %s to CPU %d", tid, cpu)
+
     def _release_server_cpus(self):
         """Release CPUs allocated to this server"""
         if self.server_cpus:
@@ -398,7 +415,7 @@ class Server:
         # Enable memory overcommit
         await self.run_host_command("sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'")
 
-        await self.__ensure_stopped_and_clean()
+        await self.stop()
         await asyncio.sleep(1)  # short delay to it doesn't get our new server (TODO verify this)
 
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
@@ -415,16 +432,20 @@ class Server:
         if self.threads > 1:
             self.args += ["--io-threads", str(self.threads)]
 
-        # Pin Valkey process to allocated CPUs
-        valkey_cpus = ",".join(str(cpu) for cpu in self.server_cpus)
+        # Pin main process to first CPU in range
+        main_cpu = self.server_cpus[0]
         command = (
-            f"taskset -c {valkey_cpus} {cached_binary_path} --port {self.port} "
+            f"taskset -c {main_cpu} {cached_binary_path} --port {self.port} "
             f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
         out, err = await self.run_host_command(command)
         self.server_started = True
 
         await self.wait_until_ready()
+        
+        # Pin individual threads to specific CPUs after server starts
+        if self.threads > 1:
+            await self._pin_valkey_threads()
 
     async def wait_until_ready(self) -> None:
         """Wait until the server is ready to accept commands."""
@@ -446,7 +467,7 @@ class Server:
         # Clear all CPU allocations for this host
         self._allocated_cpus[self.ip].clear()
 
-    async def __ensure_stopped_and_clean(self):
+    async def stop(self):
         self.server_started = False
 
         # Release allocated CPUs
