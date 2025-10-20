@@ -165,6 +165,9 @@ class SyncTaskRunner(BaseTaskRunner):
 
         if profiling:
             self.__profiling_reports()
+        
+        # Clean up all servers and release CPUs
+        await self.replication_group.stop_all_servers()
 
     def __profiling_reports(self):
         """This takes some time, so we have all hosts perform the task in parallel."""

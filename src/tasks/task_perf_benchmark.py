@@ -368,3 +368,6 @@ class PerfTaskRunner(BaseTaskRunner):
 
         if self.profiling:
             await server.profiling_report(self.task_name, "primary")
+        
+        # Clean up all servers and release CPUs
+        await replication_group.stop_all_servers()
