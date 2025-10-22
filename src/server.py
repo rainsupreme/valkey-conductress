@@ -21,6 +21,9 @@ PERF_STATUS_FILE = "/tmp/perf_running"
 class Server:
     """Represents a server running a Valkey instance."""
 
+    # Expected Valkey background threads (excluding main thread and io_thd_* threads)
+    EXPECTED_BACKGROUND_THREADS = {'bio_close_file', 'bio_aof', 'bio_lazy_free', 'bio_rdb_save', 'jemalloc_bg_thd'}
+
     # Class-level CPU allocation tracking per host
     # key is server ip
     _allocated_cpus: dict[str, set[int]] = defaultdict(set)
@@ -145,8 +148,12 @@ class Server:
 
     async def _pin_network_irqs(self, net_interface: str):
         """Find and pin network IRQs to specific CPUs"""
+        # Skip for loopback interface - no IRQs to pin
+        if net_interface == "lo":
+            return
+            
         # Skip if IRQs already configured on this host
-        if self.ip in self._cpu_counts:
+        if self.ip in self._irq_cpus and self._irq_cpus[self.ip]:
             logging.info(
                 "Network IRQs already configured on %s, using existing CPUs %s",
                 self.ip,
@@ -170,8 +177,10 @@ class Server:
             mask = 1 << irq_cpu
             mask = f"{mask:X}".zfill(digits)
             if digits > 8:
-                # Insert commas between every 8 hex digits
+                # Insert commas between every 8 hex digits from the right
+                mask = mask[::-1]  # Reverse for right-to-left processing
                 mask = ",".join(mask[i : i + 8] for i in range(0, len(mask), 8))
+                mask = mask[::-1]  # Reverse back to normal order
 
             # Set the IRQ affinity using the mask
             await self.run_host_command(f"sudo sh -c 'echo {mask} > /proc/irq/{irq}/smp_affinity'")
@@ -210,25 +219,28 @@ class Server:
 
         # Prefer CPUs from the same NUMA node first
         preferred = set(self._numa_cpus[self.ip]) & available
+        
+        # Allocate CPUs: 1 main + I/O threads + background threads
+        needed_cpus = 1 + self.threads + len(self.EXPECTED_BACKGROUND_THREADS)
 
-        if len(preferred) >= self.threads:
+        if len(preferred) >= needed_cpus:
             # Use preferred CPUs from same NUMA node
-            allocated = sorted(preferred)[: self.threads]
-        elif len(available) >= self.threads:
+            allocated = sorted(preferred)[:needed_cpus]
+        elif len(available) >= needed_cpus:
             # Fallback to any available CPUs from other NUMA nodes
             logging.warning(
                 "Not enough CPUs in NUMA node %d, using CPUs from other nodes",
                 self._numa_nodes[self.ip],
             )
-            allocated = sorted(available)[: self.threads]
+            allocated = sorted(available)[:needed_cpus]
         else:
             # Not enough CPUs available
             logging.error(
                 "Only %d CPUs available, need %d for server threads",
                 len(available),
-                self.threads,
+                needed_cpus,
             )
-            assert False, f"Insufficient CPUs: need {self.threads}, available {len(available)}"
+            assert False, f"Insufficient CPUs: need {needed_cpus}, available {len(available)}"
 
         # Mark CPUs as allocated
         self._allocated_cpus[self.ip].update(allocated)
@@ -244,21 +256,72 @@ class Server:
         return allocated
 
     async def _pin_valkey_threads(self):
-        """Pin individual Valkey threads to specific CPUs after server starts"""
+        """Pin individual Valkey I/O threads to specific CPUs after server starts"""
         # Get the main process PID
         pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
         main_pid = pid_out.strip()
         
-        # Get all thread IDs for the process
-        threads_out, _ = await self.run_host_command(f"ps -T -p {main_pid} -o tid --no-headers")
-        thread_ids = [tid.strip() for tid in threads_out.strip().split('\n')]
+        # Get thread details including names
+        threads_out, _ = await self.run_host_command(f"ps -T -p {main_pid} -o tid,comm --no-headers")
         
-        # Pin each thread to its designated CPU
-        for i, tid in enumerate(thread_ids):
-            if i < len(self.server_cpus):
-                cpu = self.server_cpus[i]
-                await self.run_host_command(f"taskset -cp {cpu} {tid}")
-                logging.info("Pinned thread %s to CPU %d", tid, cpu)
+        # Pin main thread to first CPU
+        main_cpu = self.server_cpus[0]
+        try:
+            await self.run_host_command(f"taskset -cp {main_cpu} {main_pid}")
+            logging.info("Pinned main thread %s to CPU %d", main_pid, main_cpu)
+        except Exception as e:
+            logging.error("Failed to pin main thread %s to CPU %d: %s", main_pid, main_cpu, e)
+        
+        # Pin I/O threads and background threads to specific CPUs
+        io_thread_cpu_index = 1  # Start from second CPU (first is for main thread)
+        bg_thread_cpu_index = self.threads + 1  # Background threads after I/O threads
+        expected_threads = {'valkey-server'} | self.EXPECTED_BACKGROUND_THREADS
+        unexpected_threads = []
+        
+        for line in threads_out.strip().split('\n'):
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                tid, comm = parts[0], parts[1]
+                
+                # Skip main thread (already pinned)
+                if tid == main_pid:
+                    continue
+                
+                # Pin I/O threads (io_thd_*)
+                if comm.startswith('io_thd_'):
+                    if io_thread_cpu_index < len(self.server_cpus):
+                        cpu = self.server_cpus[io_thread_cpu_index]
+                        try:
+                            await self.run_host_command(f"taskset -cp {cpu} {tid}")
+                            logging.info("Pinned I/O thread %s (%s) to CPU %d", tid, comm, cpu)
+                            io_thread_cpu_index += 1
+                        except Exception as e:
+                            logging.error("Failed to pin I/O thread %s to CPU %d: %s", tid, cpu, e)
+                    else:
+                        logging.warning("No CPU available for I/O thread %s (%s)", tid, comm)
+                
+                # Pin background threads (bio_*, jemalloc_bg_thd) to separate CPUs
+                elif comm.startswith('bio_') or comm == 'jemalloc_bg_thd':
+                    if bg_thread_cpu_index < len(self.server_cpus):
+                        cpu = self.server_cpus[bg_thread_cpu_index]
+                        try:
+                            await self.run_host_command(f"taskset -cp {cpu} {tid}")
+                            logging.info("Pinned background thread %s (%s) to CPU %d", tid, comm, cpu)
+                            bg_thread_cpu_index += 1
+                        except Exception as e:
+                            logging.error("Failed to pin background thread %s to CPU %d: %s", tid, cpu, e)
+                    else:
+                        logging.warning("No CPU available for background thread %s (%s)", tid, comm)
+                
+                # Check for unexpected threads
+                elif comm not in expected_threads and not comm.startswith('io_thd_'):
+                    unexpected_threads.append((tid, comm))
+        
+        # Handle unexpected threads
+        if unexpected_threads:
+            thread_list = ', '.join([f"{tid}({comm})" for tid, comm in unexpected_threads])
+            logging.error("Unexpected Valkey threads found: %s", thread_list)
+            assert False, f"Unexpected Valkey threads detected: {thread_list}. Update thread pinning logic to handle these threads."
 
     def _release_server_cpus(self):
         """Release CPUs allocated to this server"""

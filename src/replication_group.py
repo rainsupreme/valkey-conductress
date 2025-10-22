@@ -111,3 +111,4 @@ class ReplicationGroup:
     async def kill_all_valkey_instances(self) -> None:
         """Kill server processes on all servers in group."""
         await asyncio.gather(*[server.kill_all_valkey_instances_on_host() for server in self.servers])
+        await asyncio.sleep(1)
