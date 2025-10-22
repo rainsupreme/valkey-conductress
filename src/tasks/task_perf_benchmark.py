@@ -286,6 +286,8 @@ class PerfTaskRunner(BaseTaskRunner):
         replication_group = ReplicationGroup(
             self.server_infos, self.binary_source, self.specifier, self.io_threads
         )
+        await replication_group.kill_all_valkey_instances()
+
         await replication_group.start()
         assert replication_group.primary
         await replication_group.begin_replication()
@@ -368,6 +370,6 @@ class PerfTaskRunner(BaseTaskRunner):
 
         if self.profiling:
             await server.profiling_report(self.task_name, "primary")
-        
+
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
