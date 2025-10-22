@@ -207,7 +207,7 @@ class Server:
                 len(self._numa_cpus[self.ip]),
             )
 
-    async def _allocate_server_cpus(self) -> list[int]:
+    async def _allocate_server_cpus(self, cpu_count: int) -> list[int]:
         """Allocate CPUs for this server, avoiding IRQ CPUs and other servers"""
         # Get all CPUs from all NUMA nodes for fallback
         stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
@@ -219,28 +219,25 @@ class Server:
 
         # Prefer CPUs from the same NUMA node first
         preferred = set(self._numa_cpus[self.ip]) & available
-        
-        # Allocate CPUs: 1 main + I/O threads + background threads
-        needed_cpus = 1 + self.threads + len(self.EXPECTED_BACKGROUND_THREADS)
 
-        if len(preferred) >= needed_cpus:
+        if len(preferred) >= cpu_count:
             # Use preferred CPUs from same NUMA node
-            allocated = sorted(preferred)[:needed_cpus]
-        elif len(available) >= needed_cpus:
+            allocated = sorted(preferred)[:cpu_count]
+        elif len(available) >= cpu_count:
             # Fallback to any available CPUs from other NUMA nodes
             logging.warning(
                 "Not enough CPUs in NUMA node %d, using CPUs from other nodes",
                 self._numa_nodes[self.ip],
             )
-            allocated = sorted(available)[:needed_cpus]
+            allocated = sorted(available)[:cpu_count]
         else:
             # Not enough CPUs available
             logging.error(
                 "Only %d CPUs available, need %d for server threads",
                 len(available),
-                needed_cpus,
+                cpu_count,
             )
-            assert False, f"Insufficient CPUs: need {needed_cpus}, available {len(available)}"
+            assert False, f"Insufficient CPUs: need {cpu_count}, available {len(available)}"
 
         # Mark CPUs as allocated
         self._allocated_cpus[self.ip].update(allocated)
@@ -488,17 +485,18 @@ class Server:
         self.threads = io_threads
         await self.__pre_start()
 
-        # Allocate CPUs for this server
-        self.server_cpus = await self._allocate_server_cpus()
+        # Allocate CPUs for this server (io-threads + 5 extra)
+        needed_cpus = self.threads + 5
+        self.server_cpus = await self._allocate_server_cpus(needed_cpus)
 
         self.args = []
         if self.threads > 1:
             self.args += ["--io-threads", str(self.threads)]
 
-        # Pin main process to first CPU in range
-        main_cpu = self.server_cpus[0]
+        # Use taskset with allocated CPU range (io-threads + 5 extra)
+        cpu_list = ",".join(map(str, self.server_cpus))
         command = (
-            f"taskset -c {main_cpu} {cached_binary_path} --port {self.port} "
+            f"taskset -c {cpu_list} {cached_binary_path} --port {self.port} "
             f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
         out, err = await self.run_host_command(command)
@@ -506,9 +504,9 @@ class Server:
 
         await self.wait_until_ready()
         
-        # Pin individual threads to specific CPUs after server starts
-        if self.threads > 1:
-            await self._pin_valkey_threads()
+        # Temporarily disabled: Pin individual threads to specific CPUs after server starts
+        # if self.threads > 1:
+        #     await self._pin_valkey_threads()
 
     async def wait_until_ready(self) -> None:
         """Wait until the server is ready to accept commands."""
