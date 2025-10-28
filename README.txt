@@ -13,7 +13,7 @@ This is unsanctioned work. The intention is to migrate my effort to the Valkey p
 3. Take a look at src/config.py and edit as desired. This may invalidate the specifics of some steps below.
 4. List your server machines in servers.json, following the example of servers.json.example
 5. Copy a ssh keyfile to access the servers to ~/conductress/server-keyfile.pem
-6. run `python -m src.setup_and_update`. It may prompt you to make manual fixes, and you may need to run it more than once if it installs its own dependencies.
+6. run `python -m src.setup`. It may prompt you to make manual fixes, and you may need to run it more than once if it installs its own dependencies.
 7. There is a TUI for monitoring status and queuing benchmark tasks: `python -m src.tui`. There is a worker that actually executes the tasks: `python -m src.task_runner`
 8. ???
 9. Profit
