@@ -43,7 +43,7 @@ SSH_KEYFILE = PROJECT_ROOT / "server-keyfile.pem"
 # The directory name is used to refer to the repo in the task queue and in results
 REPOSITORIES = [
     ("https://github.com/valkey-io/valkey.git", "valkey"),
-    ("https://github.com/SoftlyRaining/valkey.git", "SoftlyRaining"),
+    ("https://github.com/rainsupreme/valkey.git", "rainsupreme"),
     ("https://github.com/valkey-io/valkey.git", "zuiderkwast"),
     ("https://github.com/JimB123/valkey.git", "JimB123"),
 ]

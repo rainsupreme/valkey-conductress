@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-from asyncssh import SSHClientConnection
-
 from . import config
 
 ROOT = config.PROJECT_ROOT
@@ -110,19 +108,19 @@ class Host:
     async def from_server_info(cls, info: config.ServerInfo) -> "Host":
         """Create a Host instance from a host name."""
         if info.ip == "localhost":
-            conn: SSHClientConnection = await asyncssh.connect(
+            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
                 info.ip,
                 client_keys=[str(SSH_KEYFILE)],
                 known_hosts=None,  # Disable known hosts check for localhost
             )
         elif info.username:
-            conn: SSHClientConnection = await asyncssh.connect(
+            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
                 info.ip,
                 username=info.username,
                 client_keys=[str(SSH_KEYFILE)],
             )
         else:
-            conn: SSHClientConnection = await asyncssh.connect(
+            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
                 info.ip,
                 client_keys=[str(SSH_KEYFILE)],
             )
@@ -231,7 +229,7 @@ async def update_amazon_packages(host: Host) -> None:
     packages = load_requirements("amz_requirements")
     host.log_info_msg("Updating Amazon Linux packages")
     await host.run("sudo dnf update -y")
-    devtools = host.run('sudo dnf groupinstall -y "Development Tools"')
+    devtools = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
     packages = host.run(f"sudo dnf install -y {' '.join(packages)}")
     await asyncio.gather(devtools, packages)
 
