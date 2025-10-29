@@ -33,7 +33,7 @@ from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
 
 from . import config
 from .task_queue import BaseTaskData, TaskQueue
-from .utility import HumanByte, HumanNumber
+from .utility import HumanByte, HumanNumber, HumanTime
 
 logger = logging.getLogger(__name__)
 
@@ -160,13 +160,8 @@ class BenchmarkApp(App):
                 if task_status:
                     # Calculate progress
                     progress = "N/A"
-                    if (
-                        task_status.steps_total
-                        and task_status.steps_completed is not None
-                    ):
-                        pct = (
-                            task_status.steps_completed / task_status.steps_total
-                        ) * 100
+                    if task_status.steps_total and task_status.steps_completed is not None:
+                        pct = (task_status.steps_completed / task_status.steps_total) * 100
                         progress = f"{pct:.0f}% ({task_status.steps_completed}/{task_status.steps_total})"
 
                     running_tasks.append(
@@ -275,12 +270,35 @@ class RangeListValidator(Validator):
             elif len(rangespec) == 3:
                 if rangespec[2] == 0:
                     return [], "range step (start:end:step) value must not be zero"
-                result.extend(
-                    range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2])
-                )
+                result.extend(range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2]))
             else:
                 return [], "ranges are of the format value, or start:end:step"
         return result, None
+
+
+class SingleNumberValidator(Validator):
+    """Validator for a single positive integer. Suffixes (K, M, etc) accepted."""
+
+    def __init__(self, number_type: type[HumanNumberType]):
+        super().__init__()
+        self.number_type = number_type
+
+    def parse_int(self, value: str) -> int:
+        if not value:
+            raise ValueError("Input cannot be empty")
+        number = self.number_type.from_human(value)
+        if number < 0:
+            raise ValueError("Number must be positive")
+        if not number.is_integer():
+            raise ValueError("Number must be an integer")
+        return int(number)
+
+    def validate(self, value: str) -> ValidationResult:
+        try:
+            self.parse_int(value)
+        except ValueError:
+            return self.failure()
+        return self.success()
 
 
 class CommaSeparatedIntsValidator(Validator):
@@ -307,6 +325,37 @@ class CommaSeparatedIntsValidator(Validator):
         except ValueError:
             return self.failure()
         return self.success()
+
+
+class NumberField:
+    def __init__(
+        self,
+        label,
+        input_id,
+        default,
+        placeholder,
+        number_type: type[HumanNumberType],
+    ):
+        self.label = label
+        self.id = input_id
+        self.default = default
+        self.placeholder = placeholder
+        self.number_type = number_type
+
+        self.input = Input(
+            value=self.default,
+            placeholder=self.placeholder,
+            id=self.id,
+            classes="form-input",
+            validators=[SingleNumberValidator(self.number_type)],
+        )
+
+    def widgets(self) -> Iterator[Union[Input, Label]]:
+        yield Label(self.label, classes="form-label")
+        yield self.input
+
+    def value(self) -> int:
+        return SingleNumberValidator(self.number_type).parse_int(self.input.value)
 
 
 class NumberListField:
@@ -340,28 +389,20 @@ class NumberListField:
 
     def values(self) -> list[int]:
         if self.allow_ranges:
-            value_list, _ = RangeListValidator(self.number_type).parse_range_list(
-                self.input.value
-            )
+            value_list, _ = RangeListValidator(self.number_type).parse_range_list(self.input.value)
             return value_list
         else:
-            return CommaSeparatedIntsValidator(self.number_type).parse_ints(
-                self.input.value
-            )
+            return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
 
 
 class PipeliningField(NumberListField):
     def __init__(self):
-        super().__init__(
-            "Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber
-        )
+        super().__init__("Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber)
 
 
 class IOThreadsField(NumberListField):
     def __init__(self):
-        super().__init__(
-            "IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber
-        )
+        super().__init__("IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber)
 
 
 class SizesField(NumberListField):
@@ -378,9 +419,7 @@ class SizesField(NumberListField):
 
 class CountsField(NumberListField):
     def __init__(self):
-        super().__init__(
-            "Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber
-        )
+        super().__init__("Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber)
 
 
 class BaseTaskForm(ScrollableContainer):
@@ -407,6 +446,8 @@ class PerfTaskForm(BaseTaskForm):
         self.pipelining = PipeliningField()
         self.io_threads = IOThreadsField()
         self.sizes = SizesField()
+        self.warmup = NumberField("Warmup (seconds)", "warmup", "5m", "5m", HumanTime)
+        self.duration = NumberField("Duration (seconds)", "duration", "1h", "1h", HumanTime)
 
     def compose(self) -> ComposeResult:
         yield Label(
@@ -424,7 +465,7 @@ class PerfTaskForm(BaseTaskForm):
             validators=[SourceSpeciferValidator()],
         )
 
-        for field in (self.pipelining, self.io_threads, self.sizes):
+        for field in (self.pipelining, self.io_threads, self.sizes, self.warmup, self.duration):
             for widget in field.widgets():
                 yield widget
 
@@ -461,6 +502,8 @@ class PerfTaskForm(BaseTaskForm):
             pipelining: list[int] = self.pipelining.values()
             io_threads: list[int] = self.io_threads.values()
             sizes: list[int] = self.sizes.values()
+            warmup: int = self.warmup.value()
+            duration: int = self.duration.value()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
@@ -474,9 +517,7 @@ class PerfTaskForm(BaseTaskForm):
             self.notify("No tests selected", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
-            source_specifier_list
-        )
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -504,8 +545,8 @@ class PerfTaskForm(BaseTaskForm):
                 io_threads=thread,
                 pipelining=pipe,
                 test=test,
-                warmup=5,
-                duration=60,
+                warmup=warmup / 60,
+                duration=duration / 60,
                 profiling_sample_rate=profiling_sample_rate,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
@@ -579,9 +620,7 @@ class MemTaskForm(BaseTaskForm):
             self.notify("No tests selected", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
-            source_specifier_list
-        )
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -671,9 +710,7 @@ class SyncTaskForm(BaseTaskForm):
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
-            source_specifier_list
-        )
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
             self.notify(f"source:specifier list: {error}", severity="error")
             return
@@ -707,8 +744,6 @@ class SyncTaskForm(BaseTaskForm):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        filename=config.CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG
-    )
+    logging.basicConfig(filename=config.CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
     app = BenchmarkApp()
     app.run()

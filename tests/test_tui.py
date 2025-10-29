@@ -3,9 +3,63 @@ import pytest
 from src.tui import (
     CommaSeparatedIntsValidator,
     RangeListValidator,
+    SingleNumberValidator,
     SourceSpeciferValidator,
 )
-from src.utility import HumanByte, HumanNumber
+from src.utility import HumanByte, HumanNumber, HumanTime
+
+
+class TestSingleNumberValidator:
+    @pytest.mark.parametrize(
+        "number_type,input_str,expected_result,expected_error",
+        [
+            (HumanNumber, "1", 1, None),
+            (HumanNumber, "10K", 10_000, None),
+            (HumanNumber, "1M", 1_000_000, None),
+            (HumanNumber, "0", 0, None),
+            (HumanNumber, "-1", None, "Number must be positive"),
+            (HumanNumber, "", None, "Input cannot be empty"),
+            (HumanNumber, "1.5", None, "Number must be an integer"),
+            (HumanNumber, "abc", None, "could not convert string to float"),
+            (HumanNumber, "12badunit", None, "Invalid unit"),
+            (HumanByte, "1KB", 1024, None),
+            (HumanByte, "2MB", 2 * 1024 * 1024, None),
+            (HumanByte, "1.5KB", 1536, None),
+            (HumanByte, "-1KB", None, "Number must be positive"),
+            (HumanTime, "5m", 300, None),
+            (HumanTime, "1h", 3600, None),
+            (HumanTime, "30s", 30, None),
+        ],
+    )
+    def test_parse_int(self, number_type, input_str, expected_result, expected_error):
+        validator = SingleNumberValidator(number_type)
+        if expected_error is None:
+            assert validator.parse_int(input_str) == expected_result
+        else:
+            with pytest.raises(ValueError) as excinfo:
+                validator.parse_int(input_str)
+            assert expected_error in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "number_type,input_str,expected_valid",
+        [
+            (HumanNumber, "1", True),
+            (HumanNumber, "10K", True),
+            (HumanNumber, "1.5", False),
+            (HumanNumber, "-1", False),
+            (HumanNumber, "", False),
+            (HumanNumber, "abc", False),
+            (HumanByte, "1KB", True),
+            (HumanByte, "1.5KB", True),
+            (HumanByte, "-1KB", False),
+            (HumanTime, "5m", True),
+            (HumanTime, "1h", True),
+        ],
+    )
+    def test_validate(self, number_type, input_str, expected_valid):
+        validator = SingleNumberValidator(number_type)
+        result = validator.validate(input_str)
+        assert result.is_valid == expected_valid
 
 
 class TestCommaSeparatedIntsValidator:
