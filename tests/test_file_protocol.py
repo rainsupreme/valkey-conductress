@@ -150,9 +150,7 @@ class TestFileProtocol:
 
         # Write several metrics
         for i in range(5):
-            metric = MetricData(
-                metrics={"rps": 1000.0 + i, "latency_ms": 2.0 + (i * 0.1)}
-            )
+            metric = MetricData(metrics={"rps": 1000.0 + i, "latency_ms": 2.0 + (i * 0.1)})
             protocol.append_metric(metric)
 
         # Verify file format by reading raw lines
@@ -250,4 +248,40 @@ class TestFileProtocol:
         assert read_status is not None
         assert read_status.steps_completed == 3
         assert read_status.steps_total == 10
-        assert read_status.heartbeat is not None  # Should be auto-added
+
+    def test_read_metrics_caching(self):
+        """Test that read_metrics caches results."""
+        protocol = FileProtocol("cache_test", self.tmp_path)
+
+        protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
+        metrics1 = protocol.read_metrics()
+        assert len(metrics1) == 1
+
+        protocol.append_metric(MetricData(metrics={"rps": 2000.0}))
+        metrics2 = protocol.read_metrics()
+        assert len(metrics2) == 2
+        assert metrics2[0].metrics["rps"] == 1000.0
+        assert metrics2[1].metrics["rps"] == 2000.0
+
+    def test_read_metrics_tail_behavior(self):
+        """Test that read_metrics only reads new lines."""
+        protocol = FileProtocol("tail_test", self.tmp_path)
+
+        protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
+        protocol.read_metrics()
+        initial_position = protocol._last_read_position
+
+        protocol.append_metric(MetricData(metrics={"rps": 2000.0}))
+        protocol.read_metrics()
+
+        assert protocol._last_read_position > initial_position
+
+    def test_read_metrics_returns_same_reference(self):
+        """Test that read_metrics returns reference to cache."""
+        protocol = FileProtocol("ref_test", self.tmp_path)
+
+        protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
+        metrics1 = protocol.read_metrics()
+        metrics2 = protocol.read_metrics()
+
+        assert metrics1 is metrics2

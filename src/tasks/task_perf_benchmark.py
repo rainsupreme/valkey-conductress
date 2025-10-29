@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import plotext as plt
 
+from src.base_task_visualizer import PlotTaskVisualizer
 from src.config import (
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
@@ -169,8 +169,6 @@ class PerfTaskRunner(BaseTaskRunner):
             self.title += f", profiling={self.sample_rate}Hz"
 
         # statistics
-        self.next_metric_update = time.monotonic()  # now
-        self.avg_rps = -1.0
         self.rps_data: list[float] = []
 
         self.commit_hash = ""
@@ -178,7 +176,7 @@ class PerfTaskRunner(BaseTaskRunner):
         # Initialize status
         self.status = BenchmarkStatus(steps_total=self.warmup + self.duration)
 
-    async def __read_updates(self, command: RealtimeCommand):
+    async def __collect_metrics(self, command: RealtimeCommand):
         line, _ = command.poll_output()
         while line is not None and line != "" and not line.isspace():
             if "overall" not in line:
@@ -196,46 +194,6 @@ class PerfTaskRunner(BaseTaskRunner):
             self.file_protocol.append_metric(metric)
 
             line, _ = command.poll_output()
-
-    def __update_graph(self, command: RealtimeCommand):
-        graph_update_interval = 10.0
-        now = time.monotonic()
-        if now > self.next_metric_update or not command.is_running():
-            self.next_metric_update = now + graph_update_interval
-            if len(self.rps_data) == 0:
-                return
-
-            # update metrics
-            self.avg_rps = sum(self.rps_data) / len(self.rps_data)
-
-            # update graph
-            plt.clear_terminal()
-            plt.clear_figure()
-            plt.canvas_color("black")
-            plt.axes_color("black")
-            plt.ticks_color("orange")
-
-            plt.scatter(self.rps_data, marker="braille", color="orange+")
-            plt.horizontal_line(self.avg_rps, color="white")
-            plt.title(self.title)
-            plt.frame(False)
-
-            xlabel_intervals = 4
-            point_count = self.duration * 4
-            xticks = range(0, point_count + 1, point_count // xlabel_intervals)
-            xticks_labels = [f"{HumanTime.to_human(i//4)}" for i in xticks]
-            plt.xticks(xticks, xticks_labels)
-            plt.xlim(left=0, right=point_count)
-
-            ylabel_intervals = 8
-            rps_min = min(self.rps_data)
-            rps_max = max(self.rps_data) + 999
-            inverval = int(rps_max - rps_min) // ylabel_intervals
-            yticks = range(int(rps_min), int(rps_max) + inverval, inverval)
-            ytick_labels = [f"{HumanNumber.to_human(tick, 3)}" for tick in yticks]
-            plt.yticks(yticks, ytick_labels)
-
-            plt.show()
 
     def __record_result(self):
         completion_time = datetime.datetime.now()
@@ -334,8 +292,7 @@ class PerfTaskRunner(BaseTaskRunner):
         print("started rt cmd")
         last_heartbeat = time.time()
         while command.is_running():
-            await self.__read_updates(command)
-            self.__update_graph(command)
+            await self.__collect_metrics(command)
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
 
@@ -358,7 +315,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 if self.profiling:
                     server.profiling_start(self.sample_rate)  # TODO port thread to async
 
-        await self.__read_updates(command)
+        await self.__collect_metrics(command)
         self.__record_result()
 
         # Write final status
@@ -372,3 +329,21 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
+
+
+class PerfTaskVisualizer(PlotTaskVisualizer):
+    """Visualizer for performance benchmark tasks."""
+
+    def __init__(self, task_id: str, file_protocol: FileProtocol, *args, **kwargs):
+        super().__init__(task_id, *args, **kwargs)
+        self.file_protocol = file_protocol
+
+    def format_x_tick(self, value: float) -> str:
+        return HumanTime.to_human(value / 4)
+
+    def format_y_tick(self, value: float) -> str:
+        return HumanNumber.to_human(value, 3)
+
+    def get_plot_data(self) -> list[float]:
+        datapoints = self.file_protocol.read_metrics()
+        return [dp.metrics.get("rps", 0.0) for dp in datapoints]

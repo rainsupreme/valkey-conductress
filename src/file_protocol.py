@@ -65,6 +65,9 @@ class FileProtocol:
         self.status_file = self.work_dir / "status.json"
         self.metrics_file = self.work_dir / "metrics.jsonl"
         self.results_file = self.work_dir / "results.json"
+        
+        self._metrics_cache: list[MetricData] = []
+        self._last_read_position = 0
 
     def write_status(self, status: BenchmarkStatus) -> None:
         """Atomically write status to file."""
@@ -83,19 +86,27 @@ class FileProtocol:
             f.write(json.dumps(asdict(metric)) + "\n")
             f.flush()
 
-    def read_metrics(self, from_line: int = 0) -> Generator[MetricData, None, None]:
-        """Read metrics from file, starting from specified line."""
-        if not self.metrics_file.exists():
-            return
-
-        with open(self.metrics_file, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i >= from_line:
-                    try:
-                        data = json.loads(line.strip())
-                        yield MetricData(**data)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
+    def read_metrics(self) -> list[MetricData]:
+        """Monitor metrics file and return cached metrics.
+        
+        Uses tail approach to efficiently read only new lines. Results are cached.
+        """
+        if self.metrics_file.exists():
+            try:
+                with open(self.metrics_file, "r", encoding="utf-8") as f:
+                    f.seek(self._last_read_position)
+                    for line in f:
+                        if line.strip():
+                            try:
+                                data = json.loads(line.strip())
+                                self._metrics_cache.append(MetricData(**data))
+                            except (json.JSONDecodeError, TypeError):
+                                continue
+                    self._last_read_position = f.tell()
+            except FileNotFoundError:
+                pass
+        
+        return self._metrics_cache
 
     def write_results(self, results: BenchmarkResults) -> None:
         """Write final results to file."""

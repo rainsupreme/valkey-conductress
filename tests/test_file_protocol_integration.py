@@ -76,7 +76,7 @@ class TestPerfTaskRunnerIntegration:
         metric = MetricData(metrics={"rps": 1000.0, "latency_ms": 2.5})
         task_runner.file_protocol.append_metric(metric)
 
-        metrics = list(task_runner.file_protocol.read_metrics())
+        metrics = task_runner.file_protocol.read_metrics()
         assert len(metrics) == 1
         assert metrics[0].metrics["rps"] == 1000.0
 
@@ -122,9 +122,7 @@ class TestTaskRunnerCleanup:
         status.state = "running"
         status.pid = 12345
         mock_task_runner.file_protocol.write_status(status)
-        mock_task_runner.file_protocol.append_metric(
-            MetricData(metrics={"rps": 1000.0, "latency_ms": 2.0})
-        )
+        mock_task_runner.file_protocol.append_metric(MetricData(metrics={"rps": 1000.0, "latency_ms": 2.0}))
 
         # Verify files exist
         assert mock_task_runner.file_protocol.status_file.exists()
@@ -193,9 +191,7 @@ class TestTUIStatusIntegration:
         protocol.write_status(status)
 
         for i in range(3):
-            metric = MetricData(
-                metrics={"rps": 1000.0 + i * 10, "latency_ms": 2.0 + i * 0.1}
-            )
+            metric = MetricData(metrics={"rps": 1000.0 + i * 10, "latency_ms": 2.0 + i * 0.1})
             protocol.append_metric(metric)
 
         # Test that we can read the data back
@@ -206,17 +202,13 @@ class TestTUIStatusIntegration:
 
         metrics = list(protocol.read_metrics())
         assert len(metrics) == 3
-        assert (
-            metrics[-1].metrics["rps"] == 1020.0
-        )  # Last metric should have highest RPS
+        assert metrics[-1].metrics["rps"] == 1020.0  # Last metric should have highest RPS
 
         # Verify the data format matches what TUI expects
         progress = "N/A"
         if read_status.steps_total and read_status.steps_completed is not None:
             pct = (read_status.steps_completed / read_status.steps_total) * 100
-            progress = (
-                f"{pct:.0f}% ({read_status.steps_completed}/{read_status.steps_total})"
-            )
+            progress = f"{pct:.0f}% ({read_status.steps_completed}/{read_status.steps_total})"
 
         task_data = {
             "task_id": task_id,

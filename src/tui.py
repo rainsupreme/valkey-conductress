@@ -10,6 +10,7 @@ from typing import Callable, Iterator, Optional, TypeVar, Union
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, ScrollableContainer
+from textual.theme import Theme
 from textual.validation import ValidationResult, Validator
 from textual.widgets import (
     Button,
@@ -29,9 +30,10 @@ from textual.widgets.selection_list import Selection
 from src.file_protocol import FileProtocol
 from src.tasks.task_full_sync import SyncTaskData
 from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
-from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
+from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
 
 from . import config
+from .base_task_visualizer import BaseTaskVisualizer, PlaceholderTaskVisualizer
 from .task_queue import BaseTaskData, TaskQueue
 from .utility import HumanByte, HumanNumber, HumanTime
 
@@ -41,6 +43,7 @@ logger = logging.getLogger(__name__)
 class BenchmarkApp(App):
     """Main application class for the benchmark app."""
 
+    TITLE = "Valkey Conductress"
     DARK = True
 
     CSS = """
@@ -68,14 +71,22 @@ class BenchmarkApp(App):
         height: auto;
         width: auto;
     }
+    #status-table {
+        height: auto;
+        max-height: 7;
+    }
+    #task-visualizer-container {
+        height: 1fr;
+    }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        with TabbedContent(initial="tab-create-task", id="root-tabs"):
+        yield Header(name="Valkey Conductress")
+        with TabbedContent(initial="tab-status", id="root-tabs"):
             with TabPane("Status", id="tab-status"):
                 yield Static("Last update: Never", id="status-table-status")
                 yield DataTable(id="status-table", cursor_type="row")
+                yield ScrollableContainer(id="task-visualizer-container")
             with TabPane("Queue", id="tab-queue"):
                 yield Static("Last update: Never", id="queue-table-status")
                 yield DataTable(id="queue-table", cursor_type="row")
@@ -91,14 +102,54 @@ class BenchmarkApp(App):
 
     def on_mount(self) -> None:
         """Called when the app is mounted."""
-        self.theme = "catppuccin-mocha"
-        self.set_interval(10, self.refresh_data)
+        custom_theme = Theme(
+            name="Conductress",
+            primary="#ccccff",
+            secondary="#ffcc99",
+            accent="#ff6b9d",
+            warning="#ffaa00",
+            error="#ff4444",
+            success="#44ff88",
+            background="#111111",
+            surface="#000000",
+            panel="#1a1a1a",
+            foreground="#ccccff",
+        )
+        self.register_theme(custom_theme)
+        self.theme = "Conductress"
+        self.current_visualizer: Optional[BaseTaskVisualizer] = None
+        self.previous_status_count = 0
+        self.set_interval(5, self.refresh_data)
         self.refresh_data()
+
+    @on(DataTable.RowSelected, "#status-table")
+    def on_status_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle status table row selection."""
+        table = event.data_table
+        row_key = event.row_key
+        task_id = str(table.get_row(row_key)[0])
+        self._swap_visualizer(task_id)
+
+    def _swap_visualizer(self, task_id: str) -> None:
+        """Swap the task visualizer for the selected task."""
+        container = self.query_one("#task-visualizer-container", ScrollableContainer)
+        container.remove_children()
+
+        # Determine task type from task_id
+        protocol = FileProtocol(task_id, Path("/tmp"))
+        if "_perf" in task_id:
+            self.current_visualizer = PerfTaskVisualizer(task_id, protocol)
+        else:
+            self.current_visualizer = PlaceholderTaskVisualizer(task_id)
+
+        container.mount(self.current_visualizer)
 
     def refresh_data(self) -> None:
         """Refresh the table data."""
         self._refresh_queue_data()
         self._refresh_status_data()
+        if self.current_visualizer:
+            self.current_visualizer.refresh_data()
 
     def _refresh_queue_data(self) -> None:
         """Refresh the queue table data."""
@@ -195,6 +246,10 @@ class BenchmarkApp(App):
                 str(task["pid"]),
                 task["progress"],
             )
+
+        if running_tasks and self.previous_status_count == 0:
+            self.call_after_refresh(self._swap_visualizer, running_tasks[0]["task_id"])
+        self.previous_status_count = len(running_tasks)
 
         status_label.update(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -465,11 +520,11 @@ class BaseTaskForm(ScrollableContainer):
         """Validate and return (specifiers, note, error_message)"""
         source_specifier_list = self.query_one("#specifiers", Input).value
         note = self.query_one("#note", Input).value.strip()
-        
+
         specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
             return [], "", f"source:specifier list: {error}"
-        
+
         return specifiers, note, None
 
     def _validate_tests_selected(self, tests: list[str]) -> Optional[str]:
