@@ -68,6 +68,7 @@ class TaskRunner:
 
 if __name__ == "__main__":
     logging.basicConfig(filename=CONDUCTRESS_LOG, encoding="utf-8", level=logging.DEBUG)
+    logging.getLogger("asyncssh").setLevel(logging.WARNING)
     runner = TaskRunner()
     asyncio.run(runner.run())
 
