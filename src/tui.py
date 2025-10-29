@@ -261,12 +261,9 @@ class RangeListValidator(Validator):
             return [], str(e)
 
         result = []
-        print(repr(ranges))
         for rangespec in ranges:
-            print(len(rangespec), rangespec)
             if len(rangespec) == 1:
                 result += rangespec
-                print("appending", result)
             elif len(rangespec) == 3:
                 if rangespec[2] == 0:
                     return [], "range step (start:end:step) value must not be zero"
@@ -429,6 +426,58 @@ class BaseTaskForm(ScrollableContainer):
         self.update_queue_view = update_queue_fn
         self.queue = TaskQueue()
 
+    def _compose_source_specifier_input(self) -> Iterator[Union[Label, Input]]:
+        """Yield source:specifier input widgets"""
+        yield Label(
+            f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
+            classes="form-label",
+        )
+        yield Input(
+            placeholder=(
+                f"{config.REPO_NAMES[0]}:unstable, "
+                f"{config.REPO_NAMES[-1]}:sha1-hash, "
+                f"{config.MANUALLY_UPLOADED}:local-path"
+            ),
+            id="specifiers",
+            classes="form-input",
+            validators=[SourceSpeciferValidator()],
+        )
+
+    def _compose_note_input(self) -> Iterator[Union[Label, Input]]:
+        """Yield note input widgets"""
+        yield Label("Note (optional)", classes="form-label")
+        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
+
+    def _compose_test_selection(self, tests: tuple[str, ...]) -> SelectionList:
+        """Create test selection list widget"""
+        selections = tuple(Selection[str](name, name) for name in tests)
+        return SelectionList[str](*selections, id="test-list")
+
+    def _compose_switch_row(self, *switches: tuple[str, str, bool]) -> Horizontal:
+        """Create a horizontal row of switches. Each switch is (id, label, default)"""
+        widgets = []
+        for switch_id, label, default in switches:
+            widgets.append(Switch(animate=False, value=default, id=switch_id))
+            widgets.append(Static(label, classes="switch-label"))
+        return Horizontal(*widgets, classes="switch-container")
+
+    def _validate_and_get_common_inputs(self) -> tuple[list[tuple[str, str]], str, Optional[str]]:
+        """Validate and return (specifiers, note, error_message)"""
+        source_specifier_list = self.query_one("#specifiers", Input).value
+        note = self.query_one("#note", Input).value.strip()
+        
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        if error:
+            return [], "", f"source:specifier list: {error}"
+        
+        return specifiers, note, None
+
+    def _validate_tests_selected(self, tests: list[str]) -> Optional[str]:
+        """Return error message if no tests selected, None otherwise"""
+        if not tests:
+            return "No tests selected"
+        return None
+
     def queue_tasks(self, tasks: list[BaseTaskData]) -> None:
         """Queue the tasks and update the view"""
         for task in tasks:
@@ -450,43 +499,23 @@ class PerfTaskForm(BaseTaskForm):
         self.duration = NumberField("Duration (seconds)", "duration", "1h", "1h", HumanTime)
 
     def compose(self) -> ComposeResult:
-        yield Label(
-            f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
-            classes="form-label",
-        )
-        yield Input(
-            placeholder=(
-                f"{config.REPO_NAMES[0]}:unstable, "
-                f"{config.REPO_NAMES[-1]}:sha1-hash, "
-                f"{config.MANUALLY_UPLOADED}:local-path"
-            ),
-            id="specifiers",
-            classes="form-input",
-            validators=[SourceSpeciferValidator()],
-        )
+        for widget in self._compose_source_specifier_input():
+            yield widget
 
         for field in (self.pipelining, self.io_threads, self.sizes, self.warmup, self.duration):
             for widget in field.widgets():
                 yield widget
 
-        yield Horizontal(
-            Switch(animate=False, value=True, id="preload-keys"),
-            Static("Preload Keys", classes="switch-label"),
-            Switch(animate=False, value=False, id="expire-keys"),
-            Static("Expire Keys", classes="switch-label"),
-            Switch(animate=False, value=False, id="profiling"),
-            Static("Profiling", classes="switch-label"),
-            classes="switch-container",
+        yield self._compose_switch_row(
+            ("preload-keys", "Preload Keys", True),
+            ("expire-keys", "Expire Keys", False),
+            ("profiling", "Profiling", False),
         )
 
-        tests = tuple(Selection[str](name, name) for name in PerfTaskRunner.tests)
-        yield SelectionList[str](
-            *tests,
-            id="test-list",
-        )
+        yield self._compose_test_selection(PerfTaskRunner.tests)
 
-        yield Label("Note (optional)", classes="form-label")
-        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
+        for widget in self._compose_note_input():
+            yield widget
 
         yield Button("Submit", variant="primary", id="submit-perf-task")
 
@@ -498,7 +527,6 @@ class PerfTaskForm(BaseTaskForm):
     def submit_task(self) -> None:
         """Submit the task to the queue"""
         try:
-            source_specifier_list = self.query_one("#specifiers", Input).value
             pipelining: list[int] = self.pipelining.values()
             io_threads: list[int] = self.io_threads.values()
             sizes: list[int] = self.sizes.values()
@@ -508,18 +536,17 @@ class PerfTaskForm(BaseTaskForm):
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
             profiling: bool = self.query_one("#profiling", Switch).value
-            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        if not tests:
-            self.notify("No tests selected", severity="error")
+        if error := self._validate_tests_selected(tests):
+            self.notify(error, severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, note, error = self._validate_and_get_common_inputs()
         if error:
-            self.notify(f"source:specifier list: {error}", severity="error")
+            self.notify(error, severity="error")
             return
 
         all_tests = list(
@@ -564,38 +591,20 @@ class MemTaskForm(BaseTaskForm):
         self.sizes = SizesField()
 
     def compose(self) -> ComposeResult:
-        yield Label(
-            f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
-            classes="form-label",
-        )
-        yield Input(
-            placeholder=(
-                f"{config.REPO_NAMES[0]}:unstable, "
-                f"{config.REPO_NAMES[-1]}:sha1-hash, "
-                f"{config.MANUALLY_UPLOADED}:local-path"
-            ),
-            id="specifiers",
-            classes="form-input",
-            validators=[SourceSpeciferValidator()],
-        )
+        for widget in self._compose_source_specifier_input():
+            yield widget
 
         for widget in self.sizes.widgets():
             yield widget
 
-        yield Horizontal(
-            Switch(animate=False, value=False, id="expire-keys"),
-            Static("Expire Keys", classes="switch-label"),
-            classes="switch-container",
+        yield self._compose_switch_row(
+            ("expire-keys", "Expire Keys", False),
         )
 
-        tests = tuple(Selection[str](name, name) for name in MemTaskRunner.tests)
-        yield SelectionList[str](
-            *tests,
-            id="test-list",
-        )
+        yield self._compose_test_selection(MemTaskRunner.tests)
 
-        yield Label("Note (optional)", classes="form-label")
-        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
+        for widget in self._compose_note_input():
+            yield widget
 
         yield Button("Submit", variant="primary", id="submit-mem-task")
 
@@ -607,22 +616,20 @@ class MemTaskForm(BaseTaskForm):
     def submit_task(self) -> None:
         """Submit the task to the queue"""
         try:
-            source_specifier_list = self.query_one("#specifiers", Input).value
             sizes: list[int] = self.sizes.values()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
-            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        if not tests:
-            self.notify("No tests selected", severity="error")
+        if error := self._validate_tests_selected(tests):
+            self.notify(error, severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, note, error = self._validate_and_get_common_inputs()
         if error:
-            self.notify(f"source:specifier list: {error}", severity="error")
+            self.notify(error, severity="error")
             return
 
         all_tests = list(
@@ -659,20 +666,8 @@ class SyncTaskForm(BaseTaskForm):
         self.counts = CountsField()
 
     def compose(self) -> ComposeResult:
-        yield Label(
-            f"Source:Specifier list (comma-separated)\nAvailable sources: {', '.join(config.REPO_NAMES)}",
-            classes="form-label",
-        )
-        yield Input(
-            placeholder=(
-                f"{config.REPO_NAMES[0]}:unstable, "
-                f"{config.REPO_NAMES[-1]}:sha1-hash, "
-                f"{config.MANUALLY_UPLOADED}:local-path"
-            ),
-            id="specifiers",
-            classes="form-input",
-            validators=[SourceSpeciferValidator()],
-        )
+        for widget in self._compose_source_specifier_input():
+            yield widget
 
         yield Label("Replicas: 1")  # TODO allow configurable replica count
         yield Label("Test: set")  # TODO allow configurable data type
@@ -681,14 +676,12 @@ class SyncTaskForm(BaseTaskForm):
             for widget in field.widgets():
                 yield widget
 
-        yield Horizontal(
-            Switch(animate=False, value=False, id="profiling"),
-            Static("Profiling", classes="switch-label"),
-            classes="switch-container",
+        yield self._compose_switch_row(
+            ("profiling", "Profiling", False),
         )
 
-        yield Label("Note (optional)", classes="form-label")
-        yield Input(placeholder="Add a short note...", id="note", classes="form-input")
+        for widget in self._compose_note_input():
+            yield widget
 
         yield Button("Submit", variant="primary", id="submit-sync-task")
 
@@ -700,19 +693,17 @@ class SyncTaskForm(BaseTaskForm):
         test = "set"
 
         try:
-            source_specifier_list = self.query_one("#specifiers", Input).value
             io_threads: list[int] = self.io_threads.values()
             sizes: list[int] = self.sizes.values()
             counts: list[int] = self.counts.values()
             profiling: bool = self.query_one("#profiling", Switch).value
-            note: str = self.query_one("#note", Input).value.strip()
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
+        specifiers, note, error = self._validate_and_get_common_inputs()
         if error:
-            self.notify(f"source:specifier list: {error}", severity="error")
+            self.notify(error, severity="error")
             return
 
         all_tests = list(
