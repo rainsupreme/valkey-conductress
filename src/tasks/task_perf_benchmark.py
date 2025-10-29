@@ -48,11 +48,16 @@ class PerfTaskData(BaseTaskData):
     has_expire: bool
     preload_keys: bool
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.warmup = int(self.warmup)
+        self.duration = int(self.duration)
+
     def short_description(self) -> str:
         profiling = self.profiling_sample_rate > 0
         return (
             f"{HumanByte.to_human(self.val_size)} {self.test} items for "
-            f"{HumanTime.to_human(self.duration * MINUTE)}, {self.io_threads} threads"
+            f"{HumanTime.to_human(self.duration)}, {self.io_threads} threads"
             f", {self.pipelining} pipelined"
             f"{', profiling' if profiling else ''}"
         )
@@ -69,8 +74,8 @@ class PerfTaskData(BaseTaskData):
             valsize=self.val_size,
             pipelining=self.pipelining,
             test=self.test,
-            warmup=self.warmup * MINUTE,
-            duration=self.duration * MINUTE,
+            warmup=self.warmup,
+            duration=self.duration,
             preload_keys=self.preload_keys,
             has_expire=self.has_expire,
             sample_rate=self.profiling_sample_rate,
@@ -301,9 +306,7 @@ class PerfTaskRunner(BaseTaskRunner):
             )
             if self.has_expire:
                 if not self.test.expire_command:
-                    self.logger.warning(
-                        "Expire command not available, skipping expiration"
-                    )
+                    self.logger.warning("Expire command not available, skipping expiration")
                 else:
                     await server.run_valkey_command_over_keyspace(
                         PERF_BENCH_KEYSPACE, self.test.expire_command
@@ -340,9 +343,7 @@ class PerfTaskRunner(BaseTaskRunner):
             if time.time() - last_heartbeat > 5.0:
                 # Update progress based on total elapsed time (warmup + test)
                 elapsed_total_time = now - start_time
-                self.status.steps_completed = min(
-                    int(elapsed_total_time), self.warmup + self.duration
-                )
+                self.status.steps_completed = min(int(elapsed_total_time), self.warmup + self.duration)
 
                 self.file_protocol.write_status(self.status)
                 last_heartbeat = time.time()
@@ -355,9 +356,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 self.rps_data = []
                 warming_up = False
                 if self.profiling:
-                    server.profiling_start(
-                        self.sample_rate
-                    )  # TODO port thread to async
+                    server.profiling_start(self.sample_rate)  # TODO port thread to async
 
         await self.__read_updates(command)
         self.__record_result()
