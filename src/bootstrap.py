@@ -242,6 +242,30 @@ async def update_ubuntu_packages(host: Host) -> None:
     await host.run(f"sudo apt install -y {' '.join(packages)}")
 
 
+async def ensure_file_descriptor_limits(host: Host) -> None:
+    """Ensure file descriptor limit is sufficient for benchmarking"""
+    desired_limit = 65536
+    
+    current_limit = await host.run("ulimit -n")
+    if int(current_limit.strip()) >= desired_limit:
+        return
+    
+    limits_conf = await host.run("cat /etc/security/limits.conf")
+    lines = [line.split() for line in limits_conf.split("\n") if "nofile" in line and not line.strip().startswith("#")]
+    lines = [line for line in lines if len(line) >= 4 and line[0] == "*"]
+    
+    if lines:
+        configured_limit = min([int(line[3]) for line in lines])
+        if configured_limit >= desired_limit:
+            host.log_info_msg(f"File descriptor limit already configured to {configured_limit}")
+            return
+        raise RuntimeError(f"Insufficient file limit in limits.conf: {configured_limit} < {desired_limit}")
+    
+    host.log_info_msg(f"Configuring file descriptor limit to {desired_limit}")
+    await host.run(f"sudo sh -c \"echo '* soft nofile {desired_limit}' >> /etc/security/limits.conf\"")
+    await host.run(f"sudo sh -c \"echo '* hard nofile {desired_limit}' >> /etc/security/limits.conf\"")
+
+
 async def ensure_git_repo_cloned(host: Host, repo_url, target_dir):
     host.log_info_msg(f"Ensuring repo {target_dir}...")
     if not await path_exists(host, target_dir, expected_type="directory"):
@@ -296,6 +320,7 @@ async def update_host(server_info: config.ServerInfo):
         await update_amazon_packages(host)
 
     await update_pip_packages(host)
+    await ensure_file_descriptor_limits(host)
     await ensure_conductress(host, pull=(server_info != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 

@@ -429,48 +429,9 @@ class Server:
     # SERVER LIFECYCLE METHODS
     # =============================================================================
 
-    async def __ensure_socket_limit_sufficient(self) -> None:
-        """Ensure the file descriptor limit (also used for sockets) is not too low"""
-        # Increase max open files to allow more benchmark connections
-        desired_fileno_limit = 65536
-
-        fileno_limit, _ = await async_run("ulimit -n")
-        if int(fileno_limit) >= desired_fileno_limit:
-            return  # already good
-
-        stdout, _ = await async_run("cat /etc/security/limits.conf")
-        lines = [line.split() for line in stdout.split("\n") if "nofile" in line]
-        lines = [line for line in lines if line[0] == "*"]
-        if lines:
-            configured_limit = min([int(line[3]) for line in lines])
-            if configured_limit < desired_fileno_limit:
-                self.logger.error(
-                    "Insufficient socket number limit already configured (need %d, limit is %d)",
-                    desired_fileno_limit,
-                    configured_limit,
-                )
-                assert configured_limit >= desired_fileno_limit, "Insufficient socket number limit configured"
-            else:
-                print("Max open files already increased (try new session - log out and log in?)")
-                assert not lines, "Max open files already increased (try new session - log out and log in?)"
-
-        await async_run(
-            f"sudo sh -c \"echo '* soft nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
-        )
-        await async_run(
-            f"sudo sh -c \"echo '* hard nofile {desired_fileno_limit}' >> /etc/security/limits.conf\""
-        )
-
-        fileno_limit, _ = await async_run("ulimit -n")
-        assert (
-            int(fileno_limit) == desired_fileno_limit
-        ), "Increased files/sockets not available. (try new session - log out and log in?)"
-        logging.info("Increased max open files/sockets to %s", fileno_limit)
-
     async def __pre_start(self) -> None:
         """Configuration and preparation before starting Valkey server"""
         await self._setup_cpu_pinning()
-        await self.__ensure_socket_limit_sufficient()
 
         # Enable memory overcommit
         await self.run_host_command("sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'")
