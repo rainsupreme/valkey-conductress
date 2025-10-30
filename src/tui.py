@@ -31,6 +31,7 @@ from src.file_protocol import FileProtocol
 from src.tasks.task_full_sync import SyncTaskData
 from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
+from src.tui_data_service import TUIDataService
 
 from . import config
 from .base_task_visualizer import BaseTaskVisualizer, PlaceholderTaskVisualizer
@@ -164,11 +165,17 @@ class BenchmarkApp(App):
         )
         self.register_theme(custom_theme)
         self.theme = "Conductress"
+        self.data_service = TUIDataService()
         self.current_visualizer: Optional[BaseTaskVisualizer] = None
         self.previous_status_count = 0
         self.current_task_id: Optional[str] = None
         self.queue_tasks: list[BaseTaskData] = []
-        self.set_interval(15, self.refresh_data)
+        self.set_interval(config.TUI_REFRESH_INTERVAL, self.refresh_data)
+        self.refresh_data()
+
+    @on(TabbedContent.TabActivated, "#root-tabs")
+    def on_tab_changed(self, event: TabbedContent.TabActivated) -> None:
+        """Handle tab change to update content."""
         self.refresh_data()
 
     @on(DataTable.RowSelected, "#status-table")
@@ -193,25 +200,29 @@ class BenchmarkApp(App):
         confirmed, task_id = result
         if not confirmed:
             return
-        queue = TaskQueue()
-        if queue.remove_task(task_id):
-            logger.info(f"Removed queued task {task_id}")
-            self.refresh_data()
-        else:
-            logger.warning(f"Failed to remove queued task {task_id}")
+        self.run_worker(lambda: self._remove_task_worker(task_id), name="_remove_task_worker", thread=True)
+
+    def _remove_task_worker(self, task_id: str) -> bool:
+        """Worker to remove task from queue."""
+        return self.data_service.remove_task(task_id)
 
     def _swap_visualizer(self, task_id: str) -> None:
         """Swap the task visualizer for the selected task."""
+        self.run_worker(lambda: self._swap_visualizer_worker(task_id), name="_swap_visualizer_worker", exclusive=True, thread=True)
+
+    def _swap_visualizer_worker(self, task_id: str):
+        """Worker to fetch task status for visualizer."""
+        return self.data_service.get_task_status(task_id), task_id
+
+    def _mount_visualizer(self, task_id: str, status) -> None:
+        """Mount the appropriate visualizer based on task status."""
         container = self.query_one("#task-visualizer-container", ScrollableContainer)
         container.remove_children()
 
-        protocol = FileProtocol(task_id, Path("/tmp"))
-        status = protocol.read_status()
-
-        # Determine visualizer type from task_type field
         if status and status.task_type:
             task_category = status.task_type.split("-")[0]
             if task_category == "perf":
+                protocol = FileProtocol(task_id)
                 self.current_visualizer = PerfTaskVisualizer(task_id, protocol)
             else:
                 self.current_visualizer = PlaceholderTaskVisualizer(task_id)
@@ -222,112 +233,116 @@ class BenchmarkApp(App):
 
     def refresh_data(self) -> None:
         """Refresh the table data."""
-        self._refresh_queue_data()
-        self._refresh_status_data()
-        if self.current_visualizer:
-            self.current_visualizer.refresh_data()
+        self.run_worker(self._refresh_worker, exclusive=True, thread=True)
 
-    def _refresh_queue_data(self) -> None:
-        """Refresh the queue table data."""
-        queue = TaskQueue()
-        tasks = queue.get_all_tasks()
+    def _refresh_worker(self) -> tuple:
+        """Worker to fetch all data in background."""
+        tasks, active_tasks = self.data_service.refresh_all()
+        return tasks, active_tasks
 
+    def on_worker_state_changed(self, event) -> None:
+        """Handle worker completion."""
+        if not event.worker.is_finished or event.worker.result is None:
+            return
+            
+        if event.worker.name == "_refresh_worker":
+            tasks, active_tasks = event.worker.result
+            self._update_ui(tasks, active_tasks)
+        elif event.worker.name == "_remove_task_worker":
+            if event.worker.result:
+                logger.info("Task removed successfully")
+                self.refresh_data()
+            else:
+                logger.warning("Failed to remove task")
+        elif event.worker.name == "_swap_visualizer_worker":
+            status, task_id = event.worker.result
+            self._mount_visualizer(task_id, status)
+
+    def _update_ui(self, tasks: list[BaseTaskData], active_tasks: dict) -> None:
+        """Update all UI elements with refreshed data."""
+        timestamp = datetime.now().strftime('%H:%M:%S')
         tabs = self.query_one("#root-tabs", TabbedContent)
-        table = self.query_one("#queue-table", DataTable)
-        status_label = self.query_one("#queue-table-status", Static)
-
+        active_tab = tabs.active
+        
         tabs.get_tab("tab-queue").label = f"Queue ({len(tasks)})"
-
-        # Only update table if data changed
-        if tasks != self.queue_tasks:
-            cursor_row = table.cursor_row
-            table.clear()
-
-            if not table.columns:
-                table.add_columns(
-                    "Task ID",
-                    "Status",
-                    "Type",
-                    "Source:Specifier",
-                    "Description",
-                    "Note",
-                )
-
-            running_tasks = FileProtocol.get_active_task_ids()
-
-            for task in tasks:
-                task_type = task.task_type
-                if task_type.endswith("TaskData"):
-                    task_type = task_type[:-8]
-                task_status = ""
-                if task.task_id in running_tasks:
-                    status = running_tasks[task.task_id]
-                    progress = status.steps_completed / status.steps_total if status.steps_total else 0
-                    task_status = f"{status.state} {progress*100:.0f}%"
-                table.add_row(
-                    task.task_id,
-                    task_status,
-                    task_type,
-                    f"{task.source}:{task.specifier}",
-                    task.short_description(),
-                    task.note,
-                )
-
-            # Restore cursor position if valid
-            if cursor_row is not None and cursor_row < len(tasks):
-                table.move_cursor(row=cursor_row)
-
-            self.queue_tasks = tasks
-
-        # Update the status message
-        status_label.update(f"Last polled: {datetime.now().strftime('%H:%M:%S')}")
-
-    def _refresh_status_data(self) -> None:
-        """Refresh the status table data."""
-        tabs = self.query_one("#root-tabs", TabbedContent)
-        table = self.query_one("#status-table", DataTable)
-        status_label = self.query_one("#status-table-status", Static)
-
-        active_tasks = FileProtocol.get_active_task_ids()
-
         tabs.get_tab("tab-status").label = f"Status ({len(active_tasks)})"
-
-        table.clear()
-
-        if not table.columns:
-            table.add_columns(
-                "Task ID",
-                "State",
-                "PID",
-                "Progress",
+        self.queue_tasks = tasks
+        
+        if active_tab == "tab-queue":
+            self._populate_table(
+                "#queue-table",
+                ["Task ID", "Status", "Type", "Source:Specifier", "Description", "Note"],
+                self._queue_rows(tasks, active_tasks)
             )
-
+            self.query_one("#queue-table-status", Static).update(f"Last polled: {timestamp}")
+        elif active_tab == "tab-status":
+            self._populate_table(
+                "#status-table",
+                ["Task ID", "State", "PID", "Progress"],
+                self._status_rows(active_tasks)
+            )
+            self.query_one("#status-table-status", Static).update(f"Last update: {timestamp}")
+            self._update_visualizer(active_tasks)
+            if self.current_visualizer:
+                self.current_visualizer.refresh_data()
+    
+    def _populate_table(self, table_id: str, columns: list[str], rows: list[tuple]) -> None:
+        """Populate a table with data, preserving cursor position."""
+        table = self.query_one(table_id, DataTable)
+        cursor_row = table.cursor_row
+        table.clear()
+        
+        if not table.columns:
+            table.add_columns(*columns)
+        
+        for row in rows:
+            table.add_row(*row)
+        
+        if cursor_row is not None and cursor_row < len(rows):
+            table.move_cursor(row=cursor_row)
+    
+    def _queue_rows(self, tasks: list[BaseTaskData], active_tasks: dict) -> list[tuple]:
+        """Generate queue table rows."""
+        rows = []
+        for task in tasks:
+            task_type = task.task_type.removesuffix("TaskData")
+            task_status = ""
+            if task.task_id in active_tasks:
+                status = active_tasks[task.task_id]
+                progress = status.steps_completed / status.steps_total if status.steps_total else 0
+                task_status = f"{status.state} {progress*100:.0f}%"
+            rows.append((
+                task.task_id,
+                task_status,
+                task_type,
+                f"{task.source}:{task.specifier}",
+                task.short_description(),
+                task.note,
+            ))
+        return rows
+    
+    def _status_rows(self, active_tasks: dict) -> list[tuple]:
+        """Generate status table rows."""
+        rows = []
         for task_id, status in active_tasks.items():
             progress = "N/A"
             if status.steps_total and status.steps_completed is not None:
                 pct = (status.steps_completed / status.steps_total) * 100
                 progress = f"{pct:.0f}% ({status.steps_completed}/{status.steps_total})"
-
-            table.add_row(
-                task_id,
-                status.state,
-                str(status.pid or "N/A"),
-                progress,
-            )
-
+            rows.append((task_id, status.state, str(status.pid or "N/A"), progress))
+        return rows
+    
+    def _update_visualizer(self, active_tasks: dict) -> None:
+        """Update visualizer based on active tasks."""
         running_task_ids = list(active_tasks.keys())
         if self.current_task_id and self.current_task_id not in running_task_ids:
-            if running_task_ids:
-                self.current_task_id = running_task_ids[0]
+            self.current_task_id = running_task_ids[0] if running_task_ids else None
+            if self.current_task_id:
                 self.call_after_refresh(self._swap_visualizer, self.current_task_id)
-            else:
-                self.current_task_id = None
         elif not self.current_task_id and running_task_ids:
             self.current_task_id = running_task_ids[0]
             self.call_after_refresh(self._swap_visualizer, self.current_task_id)
         self.previous_status_count = len(active_tasks)
-
-        status_label.update(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
 
 
 class SourceSpeciferValidator(Validator):
@@ -613,7 +628,7 @@ class BaseTaskForm(ScrollableContainer):
         """Queue the tasks and update the view"""
         for task in tasks:
             self.queue.submit_task(task)
-        self.update_queue_view()
+        self.app.call_later(self.update_queue_view)
         self.notify(f"{len(tasks)} tasks queued 🌧 ♥")
 
 

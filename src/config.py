@@ -17,6 +17,9 @@ MEM_TEST_MAX_CONCURRENT = (
 )
 MEM_TEST_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days expiration
 
+# TUI refresh interval in seconds
+TUI_REFRESH_INTERVAL = 15
+
 # when multiple valkey instances run on one host, they will start at this port number and count up
 # (e.g. 9000, 9001, 9002, etc)
 SERVER_PORT_RANGE_START = 9000
