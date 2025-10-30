@@ -350,4 +350,16 @@ class PerfTaskVisualizer(PlotTaskVisualizer):
 
     def get_plot_data(self) -> list[float]:
         datapoints = self.file_protocol.read_metrics()
-        return [dp.metrics.get("rps", 0.0) for dp in datapoints]
+        data = [dp.metrics.get("rps", 0.0) for dp in datapoints]
+
+        if len(data) < 4:
+            return data
+
+        sorted_data = sorted(data)
+        q1_idx = len(sorted_data) // 4
+        q3_idx = 3 * len(sorted_data) // 4
+        q1, q3 = sorted_data[q1_idx], sorted_data[q3_idx]
+        iqr = q3 - q1
+        lower, upper = q1 - 3 * iqr, q3 + 3 * iqr
+
+        return [x if lower <= x <= upper else None for x in data]

@@ -91,9 +91,11 @@ class PlotTaskVisualizer(BaseTaskVisualizer):
         xticks = self._calculate_ticks(0, len(data), plot.size.width, 10)
         if xticks:
             plt.xticks(xticks, [self.format_x_tick(x) for x in xticks])
-        yticks = self._calculate_ticks(min(data), max(data), plot.size.height, 4)
-        if yticks:
-            plt.yticks(yticks, [self.format_y_tick(y) for y in yticks])
+        valid_data = [d for d in data if d is not None]
+        if valid_data:
+            yticks = self._calculate_ticks(min(valid_data), max(valid_data), plot.size.height, 4)
+            if yticks:
+                plt.yticks(yticks, [self.format_y_tick(y) for y in yticks])
 
     def refresh_data(self) -> None:
         plot = self.query_one(PlotextPlot)
