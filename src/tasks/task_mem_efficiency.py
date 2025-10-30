@@ -55,6 +55,7 @@ class MemTaskData(BaseTaskData):
             self.type,
             self.val_sizes,
             self.has_expire,
+            note=self.note,
         )
 
 
@@ -72,6 +73,7 @@ class MemTaskRunner(BaseTaskRunner):
         test: str,
         val_sizes: list[int],
         has_expire: bool,
+        note: str,
     ):
         super().__init__(task_name)
 
@@ -88,6 +90,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.test = test
         self.val_sizes = val_sizes
         self.has_expire = has_expire
+        self.note = note
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -164,6 +167,7 @@ class MemTaskRunner(BaseTaskRunner):
             score=score,
             end_time=str(completion_time),
             data=results,
+            note=self.note,
         )
         self.file_protocol.write_results(results_data)
 

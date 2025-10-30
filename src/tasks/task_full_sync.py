@@ -41,6 +41,7 @@ class SyncTaskData(BaseTaskData):
             valsize=self.val_size,
             valcount=self.val_count,
             profiling_sample_rate=self.profiling_sample_rate,
+            note=self.note,
         )
 
 
@@ -57,6 +58,7 @@ class SyncTaskRunner(BaseTaskRunner):
         valsize: int,
         valcount: int,
         profiling_sample_rate: int,
+        note: str,
     ):
         """Initialize the test with a replication group."""
         super().__init__(task_name)
@@ -70,6 +72,7 @@ class SyncTaskRunner(BaseTaskRunner):
         self.valsize = valsize
         self.valcount = valcount
         self.profiling_sample_rate = profiling_sample_rate
+        self.note = note
 
         assert len(self.server_ips) >= 2, "At least two server IPs are required"
 
@@ -154,6 +157,7 @@ class SyncTaskRunner(BaseTaskRunner):
             score=throughput,
             end_time=str(completion_time),
             data=result,
+            note=self.note,
         )
         self.file_protocol.write_results(results_data)
 

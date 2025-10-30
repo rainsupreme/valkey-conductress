@@ -52,6 +52,7 @@ class BenchmarkResults:
     score: float  # primary result metric
     end_time: str  # completion timestamp
     data: dict[str, Any]  # detailed result info
+    note: Optional[str] = None  # optional note from task
 
 
 class FileProtocol:
@@ -64,8 +65,7 @@ class FileProtocol:
 
         self.status_file = self.work_dir / "status.json"
         self.metrics_file = self.work_dir / "metrics.jsonl"
-        self.results_file = self.work_dir / "results.json"
-        
+
         self._metrics_cache: list[MetricData] = []
         self._last_read_position = 0
 
@@ -88,7 +88,7 @@ class FileProtocol:
 
     def read_metrics(self) -> list[MetricData]:
         """Monitor metrics file and return cached metrics.
-        
+
         Uses tail approach to efficiently read only new lines. Results are cached.
         """
         if self.metrics_file.exists():
@@ -105,36 +105,19 @@ class FileProtocol:
                     self._last_read_position = f.tell()
             except FileNotFoundError:
                 pass
-        
+
         return self._metrics_cache
 
     def write_results(self, results: BenchmarkResults) -> None:
         """Write final results to file."""
-        self._write_json_atomic(self.results_file, asdict(results))
-
-        # Also write to legacy output format
-        self._write_legacy_output(results)
+        # Write to output file
+        os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
+        with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(results)))
+            f.write("\n")
 
         # Copy metrics file to results folder
         self._copy_metrics_to_results(results)
-
-    def _write_legacy_output(self, results: BenchmarkResults) -> None:
-        """Write results to legacy output.txt format."""
-
-        legacy_result = {
-            "method": results.method,
-            "source": results.source,
-            "specifier": results.specifier,
-            "commit_hash": results.commit_hash,
-            "score": results.score,
-            "end_time": results.end_time,
-            "data": results.data,
-        }
-
-        os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
-        with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
-            f.write(json.dumps(legacy_result))
-            f.write("\n")
 
     def _copy_metrics_to_results(self, results: BenchmarkResults) -> None:
         """Copy metrics file to results folder with useful filename."""
@@ -149,14 +132,9 @@ class FileProtocol:
         os.makedirs(CONDUCTRESS_RESULTS, exist_ok=True)
         shutil.copy2(self.metrics_file, dest_path)
 
-    def read_results(self) -> Optional[BenchmarkResults]:
-        """Read final results from file."""
-        data = self._read_json_safe(self.results_file)
-        return BenchmarkResults(**data) if data else None
-
     def cleanup(self) -> None:
         """Remove all files for this task."""
-        for file_path in [self.status_file, self.metrics_file, self.results_file]:
+        for file_path in [self.status_file, self.metrics_file]:
             file_path.unlink(missing_ok=True)
         try:
             self.work_dir.rmdir()
@@ -166,7 +144,7 @@ class FileProtocol:
 
     def mark_completed_and_cleanup(self) -> None:
         """Mark task as completed and immediately clean up files.
-        
+
         This should be called when a task completes successfully.
         """
         # Update status to completed before cleanup
@@ -176,7 +154,7 @@ class FileProtocol:
                 status.state = "completed"
                 status.end_time = time.time()
                 self.write_status(status)
-        
+
         # Clean up immediately since task is done
         self.cleanup()
 

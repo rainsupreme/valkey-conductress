@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,7 @@ DEFAULT_PORT = 6379
 TEST_PORTS = 9000
 
 
+@patch('src.config.REPO_NAMES', REPO_NAMES)
 class TestServerIntegration:
 
     @classmethod

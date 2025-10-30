@@ -79,6 +79,7 @@ class PerfTaskData(BaseTaskData):
             preload_keys=self.preload_keys,
             has_expire=self.has_expire,
             sample_rate=self.profiling_sample_rate,
+            note=self.note,
         )
 
 
@@ -137,6 +138,7 @@ class PerfTaskRunner(BaseTaskRunner):
         preload_keys: bool,
         has_expire: bool,
         sample_rate: int = -1,
+        note: str = "",
     ):
         super().__init__(task_name)
 
@@ -162,6 +164,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.preload_keys = preload_keys
         self.has_expire = has_expire
         self.sample_rate = sample_rate
+        self.note = note
 
         self.profiling_thread = None
         self.profiling = self.sample_rate > 0
@@ -233,6 +236,7 @@ class PerfTaskRunner(BaseTaskRunner):
             score=avg_rps,
             end_time=str(completion_time),
             data=detailed_data,
+            note=self.note,
         )
         self.file_protocol.write_results(results)
 

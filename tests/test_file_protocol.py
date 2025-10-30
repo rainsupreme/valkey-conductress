@@ -75,7 +75,7 @@ class TestFileProtocol:
         assert read_metrics[0].metrics["rps"] == 1000.0
         assert read_metrics[1].metrics["rps"] == 1100.0
 
-    def test_results_write_read(self):
+    def test_results_write(self):
         """Test results file operations."""
         protocol = FileProtocol("test_task", self.tmp_path)
 
@@ -87,14 +87,20 @@ class TestFileProtocol:
             score=1000.0,
             end_time="2024-01-01T12:00:00",
             data={"rps": [1000.0, 950.0, 900.0], "latency": [2.5, 2.3, 2.1]},
+            note="test note",
         )
 
         protocol.write_results(results)
-        read_results = protocol.read_results()
 
-        assert read_results is not None
-        assert read_results.method == "perf-set"
-        assert read_results.score == 1000.0
+        # Verify legacy output was written
+        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        assert output_file.exists()
+        with open(output_file, encoding="utf-8") as f:
+            line = f.readline()
+            data = json.loads(line)
+            assert data["method"] == "perf-set"
+            assert data["score"] == 1000.0
+            assert data["note"] == "test note"
 
     def test_multiple_readers(self):
         """Test multiple readers can access metrics simultaneously."""

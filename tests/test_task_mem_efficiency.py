@@ -16,6 +16,7 @@ from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 class TestMemTaskData:
     """Test MemTaskData class."""
 
+    @patch('src.config.REPO_NAMES', ["valkey", "test_repo"])
     @patch('src.task_queue.config.REPO_NAMES', ["valkey", "test_repo"])
     def test_init_valid_data(self):
         """Test initialization with valid data."""
@@ -33,6 +34,7 @@ class TestMemTaskData:
         assert task.val_sizes == [64, 128, 256]
         assert task.has_expire is False
 
+    @patch('src.config.REPO_NAMES', ["valkey", "test_repo"])
     @patch('src.task_queue.config.REPO_NAMES', ["valkey", "test_repo"])
     def test_short_description_single_size(self):
         """Test short description with single value size."""
@@ -51,6 +53,7 @@ class TestMemTaskData:
         assert "1KB" in desc
         assert "expiration" not in desc
 
+    @patch('src.config.REPO_NAMES', ["valkey", "test_repo"])
     @patch('src.task_queue.config.REPO_NAMES', ["valkey", "test_repo"])
     def test_short_description_multiple_sizes(self):
         """Test short description with multiple value sizes."""
@@ -69,6 +72,7 @@ class TestMemTaskData:
         assert "3 sizes" in desc
         assert "with expiration" in desc
 
+    @patch('src.config.REPO_NAMES', ["valkey", "test_repo"])
     @patch('src.task_queue.config.REPO_NAMES', ["valkey", "test_repo"])
     def test_prepare_task_runner(self):
         """Test task runner preparation."""
@@ -116,6 +120,7 @@ class TestMemTaskRunner:
             test="set",
             val_sizes=[64, 128],
             has_expire=False,
+            note="test note",
         )
 
     def test_init_valid_test(self, runner):
@@ -135,6 +140,7 @@ class TestMemTaskRunner:
                 test="invalid",
                 val_sizes=[64],
                 has_expire=False,
+                note="test note",
             )
 
     @patch("src.tasks.task_mem_efficiency.Server")

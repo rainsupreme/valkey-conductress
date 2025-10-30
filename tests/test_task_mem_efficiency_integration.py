@@ -1,4 +1,3 @@
-import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -7,7 +6,7 @@ import pytest
 
 from src.config import ServerInfo
 from src.file_protocol import FileProtocol
-from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
+from src.tasks.task_mem_efficiency import MemTaskData
 
 
 class TestMemTaskIntegration:
@@ -19,6 +18,7 @@ class TestMemTaskIntegration:
         with tempfile.TemporaryDirectory() as tmp_dir:
             yield Path(tmp_dir)
 
+    @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
     @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
@@ -43,14 +43,15 @@ class TestMemTaskIntegration:
         with patch("src.tasks.task_mem_efficiency.plt"):
             await runner.run()
 
-        # Verify results file contains expected data structure
-        results_file = runner.file_protocol.results_file
-        assert results_file.exists()
-
+        # Verify results were written to legacy output
         import json
+        import src.file_protocol
 
-        with open(results_file) as f:
-            results = json.load(f)
+        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
 
         # Verify results structure
         assert "data" in results
@@ -70,6 +71,7 @@ class TestMemTaskIntegration:
             status = json.load(f)
         assert status["state"] == "completed"
 
+    @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
     @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
@@ -95,17 +97,19 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify results include expiration data
-        results_file = runner.file_protocol.results_file
-        assert results_file.exists()
-
         import json
+        import src.file_protocol
 
-        with open(results_file) as f:
-            results = json.load(f)
+        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
 
         result = results["data"][0]
         assert result["has_expire"] is True
 
+    @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
     @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
@@ -131,13 +135,14 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify all sizes were tested
-        results_file = runner.file_protocol.results_file
-        assert results_file.exists()
-
         import json
+        import src.file_protocol
 
-        with open(results_file) as f:
-            results = json.load(f)
+        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
 
         assert len(results["data"]) == 4
         tested_sizes = {r["val_size"] for r in results["data"]}
@@ -146,7 +151,7 @@ class TestMemTaskIntegration:
     @pytest.mark.asyncio
     async def test_error_handling_integration(self, temp_dir):
         """Test MemTaskRunner error handling with invalid configuration."""
-        with patch("src.task_queue.config.REPO_NAMES", ["valkey"]):
+        with patch("src.config.REPO_NAMES", ["valkey"]), patch("src.task_queue.config.REPO_NAMES", ["valkey"]):
             task_data = MemTaskData(
                 source="valkey",
                 specifier="8.0",
@@ -181,6 +186,8 @@ class TestMemTaskIntegration:
         assert "state" in status
         assert "start_time" in status
 
+    @patch("src.config.REPO_NAMES", ["valkey"])
+    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
     def test_task_data_serialization_integration(self, temp_dir):
         """Test MemTaskData serialization/deserialization."""
         original_task = MemTaskData(
@@ -216,6 +223,7 @@ class TestMemTaskIntegration:
         assert runner.test == "zadd"
         assert runner.val_sizes == [64, 128, 256]
 
+    @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
     @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
@@ -241,15 +249,18 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify expected files were created
-        assert runner.file_protocol.results_file.exists(), "Results file was not created"
+        import src.file_protocol
+
+        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        assert output_file.exists(), "Output file was not created"
         assert runner.file_protocol.status_file.exists(), "Status file was not created"
 
         # Verify file contents are valid
         import json
 
-        # Results file
-        with open(runner.file_protocol.results_file) as f:
-            results = json.load(f)
+        # Output file
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
         assert "data" in results
         assert "method" in results
 
