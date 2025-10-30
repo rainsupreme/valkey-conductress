@@ -31,9 +31,8 @@ class SyncTaskData(BaseTaskData):
 
     def prepare_task_runner(self, server_infos: list) -> "SyncTaskRunner":
         """Return the task runner for this task."""
-        task_id = f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_sync"
         return SyncTaskRunner(
-            task_id,
+            self.task_id,
             [info.ip for info in server_infos],
             self.source,
             self.specifier,
@@ -84,7 +83,7 @@ class SyncTaskRunner(BaseTaskRunner):
         print_pretty_header(self.title)
 
         # Initialize status
-        self.status = BenchmarkStatus(steps_total=4)  # setup, load data, sync, results
+        self.status = BenchmarkStatus(steps_total=4, task_type="sync")  # setup, load data, sync, results
         self.file_protocol.write_status(self.status)
 
         self.replication_group = None
@@ -155,7 +154,7 @@ class SyncTaskRunner(BaseTaskRunner):
             specifier=self.specifier,
             commit_hash=self.replication_group.primary.get_build_hash() or "",
             score=throughput,
-            end_time=str(completion_time),
+            end_time=completion_time,
             data=result,
             note=self.note,
         )

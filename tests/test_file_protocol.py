@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime
 from threading import Thread
 
 import pytest
@@ -45,7 +46,7 @@ class TestFileProtocol:
         """Test status file operations."""
         protocol = FileProtocol("test_task", self.tmp_path)
 
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
 
@@ -56,6 +57,7 @@ class TestFileProtocol:
         assert read_status.state == "running"
         assert read_status.pid == 12345
         assert read_status.steps_total == 100
+        assert read_status.task_type == "test"
 
     def test_metrics_append_read(self):
         """Test metrics file operations."""
@@ -85,7 +87,7 @@ class TestFileProtocol:
             specifier="unstable",
             commit_hash="abc123",
             score=1000.0,
-            end_time="2024-01-01T12:00:00",
+            end_time=datetime(2024, 1, 1, 12, 0, 0),
             data={"rps": [1000.0, 950.0, 900.0], "latency": [2.5, 2.3, 2.1]},
             note="test note",
         )
@@ -138,7 +140,7 @@ class TestFileProtocol:
         protocol = FileProtocol("test_task", self.tmp_path)
 
         # Create some files
-        protocol.write_status(BenchmarkStatus(steps_total=100))
+        protocol.write_status(BenchmarkStatus(steps_total=100, task_type="test"))
         protocol.append_metric(MetricData(metrics={"rps": 1000.0, "latency_ms": 2.0}))
 
         assert protocol.status_file.exists()
@@ -177,7 +179,7 @@ class TestFileProtocol:
         """Test frequent status updates don't corrupt file."""
         protocol = FileProtocol("heartbeat_test", self.tmp_path)
 
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
 
@@ -196,7 +198,7 @@ class TestFileProtocol:
         """Test that heartbeat is automatically updated on write_status."""
         protocol = FileProtocol("auto_heartbeat_test", self.tmp_path)
 
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
 
@@ -222,7 +224,7 @@ class TestFileProtocol:
             specifier="unstable",
             commit_hash="abc123",
             score=1000.0,
-            end_time="2024-01-01T12:00:00",
+            end_time=datetime(2024, 1, 1, 12, 0, 0),
             data={"test": "data"},
         )
 
@@ -243,7 +245,7 @@ class TestFileProtocol:
         """Test progress tracking in status."""
         protocol = FileProtocol("progress_test", self.tmp_path)
 
-        status = BenchmarkStatus(steps_total=10)
+        status = BenchmarkStatus(steps_total=10, task_type="test")
         status.state = "running"
         status.pid = 12345
         status.steps_completed = 3
@@ -291,3 +293,60 @@ class TestFileProtocol:
         metrics2 = protocol.read_metrics()
 
         assert metrics1 is metrics2
+
+    def test_get_active_task_ids_empty(self):
+        """Test get_active_task_ids with no active tasks."""
+        active_tasks = FileProtocol.get_active_task_ids(self.tmp_path)
+        assert active_tasks == {}
+
+    def test_get_active_task_ids_single_task(self):
+        """Test get_active_task_ids with one active task."""
+        protocol = FileProtocol("task1", self.tmp_path)
+        status = BenchmarkStatus(steps_total=100, task_type="perf-get", state="running", pid=12345)
+        status.steps_completed = 50
+        protocol.write_status(status)
+
+        active_tasks = FileProtocol.get_active_task_ids(self.tmp_path)
+        assert len(active_tasks) == 1
+        assert "task1" in active_tasks
+        assert active_tasks["task1"].state == "running"
+        assert active_tasks["task1"].pid == 12345
+        assert active_tasks["task1"].steps_completed == 50
+        assert active_tasks["task1"].steps_total == 100
+        assert active_tasks["task1"].task_type == "perf-get"
+
+    def test_get_active_task_ids_multiple_tasks(self):
+        """Test get_active_task_ids with multiple active tasks."""
+        protocol1 = FileProtocol("task1", self.tmp_path)
+        status1 = BenchmarkStatus(steps_total=100, task_type="perf-get", state="running", pid=12345)
+        status1.steps_completed = 50
+        protocol1.write_status(status1)
+
+        protocol2 = FileProtocol("task2", self.tmp_path)
+        status2 = BenchmarkStatus(steps_total=200, task_type="mem-set", state="starting", pid=67890)
+        status2.steps_completed = 10
+        protocol2.write_status(status2)
+
+        active_tasks = FileProtocol.get_active_task_ids(self.tmp_path)
+        assert len(active_tasks) == 2
+        assert "task1" in active_tasks
+        assert "task2" in active_tasks
+        assert active_tasks["task1"].state == "running"
+        assert active_tasks["task1"].task_type == "perf-get"
+        assert active_tasks["task2"].state == "starting"
+        assert active_tasks["task2"].task_type == "mem-set"
+
+    def test_get_active_task_ids_ignores_no_status(self):
+        """Test get_active_task_ids ignores directories without status files."""
+        # Create directory without status file
+        empty_dir = self.tmp_path / "benchmark_empty"
+        empty_dir.mkdir()
+
+        protocol = FileProtocol("task1", self.tmp_path)
+        status = BenchmarkStatus(steps_total=100, task_type="test", state="running", pid=12345)
+        protocol.write_status(status)
+
+        active_tasks = FileProtocol.get_active_task_ids(self.tmp_path)
+        assert len(active_tasks) == 1
+        assert "task1" in active_tasks
+        assert "empty" not in active_tasks

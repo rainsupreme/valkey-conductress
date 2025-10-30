@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar, Dict, Optional, Type
 
 from . import config
+from .utility import datetime_to_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,16 @@ class BaseTaskData(ABC):
         assert (
             self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
         )
+
+    def __eq__(self, other):
+        if not isinstance(other, BaseTaskData):
+            return False
+        return self.timestamp == other.timestamp
+
+    @property
+    def task_id(self) -> str:
+        """Return the canonical task_id (timestamp in standard format)."""
+        return datetime_to_task_id(self.timestamp)
 
     @abstractmethod
     def short_description(self) -> str:
@@ -117,7 +128,7 @@ class TaskQueue:
 
     def submit_task(self, task: BaseTaskData) -> None:
         """Add a new task to the queue"""
-        task_file = self.queue_dir / f"task_{task.timestamp}.json"
+        task_file = self.queue_dir / f"task_{task.task_id}.json"
         task.save_to_file(task_file)
 
     def get_next_task(self) -> Optional[BaseTaskData]:
@@ -139,7 +150,7 @@ class TaskQueue:
 
     def finish_task(self, task: BaseTaskData) -> None:
         """Delete a task from the queue, indicating it has been completed"""
-        task_file = self.queue_dir / f"task_{task.timestamp}.json"
+        task_file = self.queue_dir / f"task_{task.task_id}.json"
         if task_file.exists():
             task_file.unlink()
         else:
@@ -162,6 +173,17 @@ class TaskQueue:
     def get_queue_length(self) -> int:
         """Get the number of tasks in the queue"""
         return len(list(self.queue_dir.glob("task_*.json")))
+
+    def remove_task(self, task_id: str) -> bool:
+        """Remove a task from the queue by task_id.
+        
+        Returns True if the task was removed, False otherwise.
+        """
+        task_file = self.queue_dir / f"task_{task_id}.json"
+        if task_file.exists():
+            task_file.unlink()
+            return True
+        return False
 
 
 BaseTaskData.register_tasks()

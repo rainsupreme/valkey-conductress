@@ -7,10 +7,12 @@ import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any, Optional
 
 from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS
+from .utility import datetime_to_task_id
 
 
 @dataclass
@@ -18,6 +20,7 @@ class BenchmarkStatus:
     """Status information for a running benchmark."""
 
     steps_total: int
+    task_type: str
     state: str = "starting"
     pid: Optional[int] = None
     start_time: Optional[float] = None
@@ -50,7 +53,7 @@ class BenchmarkResults:
     specifier: str  # branch name, tag, or hash
     commit_hash: str  # actual commit used
     score: float  # primary result metric
-    end_time: str  # completion timestamp
+    end_time: datetime  # completion timestamp
     data: dict[str, Any]  # detailed result info
     note: Optional[str] = None  # optional note from task
 
@@ -113,7 +116,9 @@ class FileProtocol:
         # Write to output file
         os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
         with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(results)))
+            data = asdict(results)
+            data["end_time"] = datetime_to_task_id(results.end_time)
+            f.write(json.dumps(data))
             f.write("\n")
 
         # Copy metrics file to results folder
@@ -125,7 +130,7 @@ class FileProtocol:
             return
 
         # Create filename: method_source_specifier_timestamp.jsonl
-        timestamp = results.end_time.replace(":", "-").replace(" ", "_")
+        timestamp = datetime_to_task_id(results.end_time)
         filename = f"{results.method}_{results.source}_{results.specifier}_{timestamp}.jsonl"
 
         dest_path = CONDUCTRESS_RESULTS / filename
@@ -177,6 +182,21 @@ class FileProtocol:
                 return json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             return None
+
+    @staticmethod
+    def get_active_task_ids(base_dir: Path = Path("/tmp")) -> dict[str, BenchmarkStatus]:
+        """Get dict of active task IDs mapped to their BenchmarkStatus."""
+        active_tasks = {}
+        for dir_path in glob.glob(str(base_dir / "benchmark_*")):
+            try:
+                task_id = Path(dir_path).name.replace("benchmark_", "")
+                protocol = FileProtocol(task_id, base_dir)
+                status = protocol.read_status()
+                if status:
+                    active_tasks[task_id] = status
+            except Exception:
+                continue
+        return active_tasks
 
     @staticmethod
     def _is_process_running(pid: int) -> bool:

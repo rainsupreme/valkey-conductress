@@ -46,9 +46,8 @@ class MemTaskData(BaseTaskData):
 
     def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "MemTaskRunner":
         """Return the task runner for this task."""
-        task_id = f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.type}_mem"
         return MemTaskRunner(
-            task_id,
+            self.task_id,
             server_infos[0].ip,
             self.source,
             self.specifier,
@@ -97,7 +96,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.cached_binary_path: Optional[Path] = None
 
         # Initialize status
-        self.status = BenchmarkStatus(steps_total=len(self.val_sizes) + 2)  # setup + sizes + results
+        self.status = BenchmarkStatus(steps_total=len(self.val_sizes) + 2, task_type=f"mem-{test}")  # setup + sizes + results
 
     async def run(self) -> None:
         """Run the memory efficiency test for each value size."""
@@ -165,7 +164,7 @@ class MemTaskRunner(BaseTaskRunner):
             specifier=self.specifier,
             commit_hash=self.commit_hash or "",
             score=score,
-            end_time=str(completion_time),
+            end_time=completion_time,
             data=results,
             note=self.note,
         )

@@ -1,13 +1,16 @@
 import pytest
+from datetime import datetime
 
 from src.utility import (
     HumanByte,
     HumanNumber,
     HumanTime,
     calc_percentile_averages,
+    datetime_to_task_id,
     print_centered_text,
     print_inline_header,
     print_pretty_divider,
+    task_id_to_datetime,
 )
 
 TEST_CONSOLE_WIDTH = 50
@@ -212,3 +215,21 @@ class TestPercentileAverages:
         data = [-4, -3, -2, -1]
         result = calc_percentile_averages(data, [50])
         assert result == [-1.5]
+
+
+class TestTaskIdConversion:
+    def test_datetime_to_task_id(self):
+        dt = datetime(2025, 10, 30, 15, 10, 16, 24030)
+        result = datetime_to_task_id(dt)
+        assert result == "2025.10.30_15.10.16.024030"
+
+    def test_task_id_to_datetime(self):
+        task_id = "2025.10.30_15.10.16.024030"
+        result = task_id_to_datetime(task_id)
+        assert result == datetime(2025, 10, 30, 15, 10, 16, 24030)
+
+    def test_roundtrip_conversion(self):
+        original_dt = datetime(2024, 12, 25, 10, 30, 45, 123456)
+        task_id = datetime_to_task_id(original_dt)
+        recovered_dt = task_id_to_datetime(task_id)
+        assert recovered_dt == original_dt

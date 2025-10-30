@@ -62,7 +62,7 @@ class TestPerfTaskRunnerIntegration:
         task_runner.file_protocol = FileProtocol("method_test", tmp_dir)
 
         # Test status writing
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
         task_runner.file_protocol.write_status(status)
@@ -118,7 +118,7 @@ class TestTaskRunnerCleanup:
         mock_task_runner.file_protocol = FileProtocol("cleanup_test", tmp_dir)
 
         # Write some test files
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
         mock_task_runner.file_protocol.write_status(status)
@@ -151,7 +151,7 @@ class TestTaskRunnerCleanup:
         mock_task_runner.file_protocol = FileProtocol("exception_test", tmp_dir)
 
         # Write test files
-        status = BenchmarkStatus(steps_total=100)
+        status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
         status.pid = 12345
         mock_task_runner.file_protocol.write_status(status)
@@ -184,7 +184,7 @@ class TestTUIStatusIntegration:
         protocol = FileProtocol(task_id, tmp_dir)
 
         # Write status and metrics
-        status = BenchmarkStatus(steps_total=10)
+        status = BenchmarkStatus(steps_total=10, task_type="test")
         status.state = "running"
         status.pid = 12345
         status.steps_completed = 3

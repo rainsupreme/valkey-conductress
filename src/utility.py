@@ -301,3 +301,14 @@ def port_generator():
     while True:
         yield next_port
         next_port += 1
+
+
+def datetime_to_task_id(dt) -> str:
+    """Convert datetime to task_id format (timestamp only, no suffix)."""
+    return dt.strftime('%Y.%m.%d_%H.%M.%S.%f')
+
+
+def task_id_to_datetime(task_id: str):
+    """Convert task_id string to datetime (timestamp only, no suffix)."""
+    from datetime import datetime
+    return datetime.strptime(task_id, '%Y.%m.%d_%H.%M.%S.%f')

@@ -401,7 +401,7 @@ class TestMemTaskRunner:
             specifier=runner.specifier,
             commit_hash=runner.commit_hash,
             score=results[0]["per_item_overhead"],  # Single result score
-            end_time=str(completion_time),
+            end_time=completion_time,
             data=results,
         )
 

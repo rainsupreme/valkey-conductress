@@ -64,9 +64,8 @@ class PerfTaskData(BaseTaskData):
 
     def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "PerfTaskRunner":
         """Return the task runner for this task."""
-        task_id = f"{self.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{self.test}_perf"
         return PerfTaskRunner(
-            task_id,
+            self.task_id,
             server_infos,
             self.source,
             self.specifier,
@@ -177,7 +176,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.commit_hash = ""
 
         # Initialize status
-        self.status = BenchmarkStatus(steps_total=self.warmup + self.duration)
+        self.status = BenchmarkStatus(steps_total=self.warmup + self.duration, task_type=f"perf-{test}")
 
     async def __collect_metrics(self, command: RealtimeCommand):
         line, _ = command.poll_output()
@@ -234,7 +233,7 @@ class PerfTaskRunner(BaseTaskRunner):
             specifier=self.specifier,
             commit_hash=self.commit_hash,
             score=avg_rps,
-            end_time=str(completion_time),
+            end_time=completion_time,
             data=detailed_data,
             note=self.note,
         )

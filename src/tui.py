@@ -1,6 +1,5 @@
 """Conductress TUI application for Valkey benchmarking tasks."""
 
-import glob
 import logging
 from datetime import datetime
 from itertools import product
@@ -9,7 +8,8 @@ from typing import Callable, Iterator, Optional, TypeVar, Union
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, ScrollableContainer
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.validation import ValidationResult, Validator
 from textual.widgets import (
@@ -38,6 +38,29 @@ from .task_queue import BaseTaskData, TaskQueue
 from .utility import HumanByte, HumanNumber, HumanTime
 
 logger = logging.getLogger(__name__)
+
+
+class ConfirmCancelScreen(ModalScreen[tuple[bool, str]]):
+    """Screen with a dialog to confirm task cancellation."""
+
+    def __init__(self, task_id: str):
+        super().__init__()
+        self.task_id = task_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"Cancel task {self.task_id}?", id="question")
+            with Horizontal():
+                yield Button("Yes", variant="warning", id="yes")
+                yield Button("No", variant="primary", id="no")
+
+    @on(Button.Pressed, "#yes")
+    def confirm(self) -> None:
+        self.dismiss((True, self.task_id))
+
+    @on(Button.Pressed, "#no")
+    def cancel(self) -> None:
+        self.dismiss((False, self.task_id))
 
 
 class BenchmarkApp(App):
@@ -78,6 +101,29 @@ class BenchmarkApp(App):
     #task-visualizer-container {
         height: 1fr;
     }
+    ConfirmCancelScreen {
+        align: center middle;
+    }
+    ConfirmCancelScreen > Vertical {
+        width: 50;
+        height: auto;
+        background: $panel;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    ConfirmCancelScreen #question {
+        width: 100%;
+        content-align: center middle;
+        padding: 1;
+    }
+    ConfirmCancelScreen Horizontal {
+        width: 100%;
+        height: auto;
+        align: center middle;
+    }
+    ConfirmCancelScreen Button {
+        margin: 0 1;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -90,6 +136,7 @@ class BenchmarkApp(App):
             with TabPane("Queue", id="tab-queue"):
                 yield Static("Last update: Never", id="queue-table-status")
                 yield DataTable(id="queue-table", cursor_type="row")
+                yield Button("Remove Selected Task", variant="warning", id="remove-queue-task")
             with TabPane("Create Task", id="tab-create-task"):
                 with TabbedContent():
                     with TabPane("Perf"):
@@ -120,7 +167,8 @@ class BenchmarkApp(App):
         self.current_visualizer: Optional[BaseTaskVisualizer] = None
         self.previous_status_count = 0
         self.current_task_id: Optional[str] = None
-        self.set_interval(5, self.refresh_data)
+        self.queue_tasks: list[BaseTaskData] = []
+        self.set_interval(15, self.refresh_data)
         self.refresh_data()
 
     @on(DataTable.RowSelected, "#status-table")
@@ -131,15 +179,42 @@ class BenchmarkApp(App):
         task_id = str(table.get_row(row_key)[0])
         self._swap_visualizer(task_id)
 
+    @on(Button.Pressed, "#remove-queue-task")
+    def on_remove_queue_task(self) -> None:
+        """Handle remove queue task button press."""
+        table = self.query_one("#queue-table", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            task_id = str(row[0])
+            self.push_screen(ConfirmCancelScreen(task_id), self._remove_queue_task)
+
+    def _remove_queue_task(self, result: tuple[bool, str]) -> None:
+        """Remove a task from the queue."""
+        confirmed, task_id = result
+        if not confirmed:
+            return
+        queue = TaskQueue()
+        if queue.remove_task(task_id):
+            logger.info(f"Removed queued task {task_id}")
+            self.refresh_data()
+        else:
+            logger.warning(f"Failed to remove queued task {task_id}")
+
     def _swap_visualizer(self, task_id: str) -> None:
         """Swap the task visualizer for the selected task."""
         container = self.query_one("#task-visualizer-container", ScrollableContainer)
         container.remove_children()
 
-        # Determine task type from task_id
         protocol = FileProtocol(task_id, Path("/tmp"))
-        if "_perf" in task_id:
-            self.current_visualizer = PerfTaskVisualizer(task_id, protocol)
+        status = protocol.read_status()
+
+        # Determine visualizer type from task_type field
+        if status and status.task_type:
+            task_category = status.task_type.split("-")[0]
+            if task_category == "perf":
+                self.current_visualizer = PerfTaskVisualizer(task_id, protocol)
+            else:
+                self.current_visualizer = PlaceholderTaskVisualizer(task_id)
         else:
             self.current_visualizer = PlaceholderTaskVisualizer(task_id)
 
@@ -159,76 +234,63 @@ class BenchmarkApp(App):
 
         tabs = self.query_one("#root-tabs", TabbedContent)
         table = self.query_one("#queue-table", DataTable)
-        status = self.query_one("#queue-table-status", Static)
+        status_label = self.query_one("#queue-table-status", Static)
 
         tabs.get_tab("tab-queue").label = f"Queue ({len(tasks)})"
 
-        table.clear()
+        # Only update table if data changed
+        if tasks != self.queue_tasks:
+            cursor_row = table.cursor_row
+            table.clear()
 
-        if not table.columns:
-            table.add_columns(
-                "Timestamp",
-                "Type",
-                "Source:Specifier",
-                "Description",
-                "Note",
-            )
+            if not table.columns:
+                table.add_columns(
+                    "Task ID",
+                    "Status",
+                    "Type",
+                    "Source:Specifier",
+                    "Description",
+                    "Note",
+                )
 
-        for task in tasks:
-            task_type = task.task_type
-            if task_type.endswith("TaskData"):
-                task_type = task_type[:-8]
-            table.add_row(
-                task.timestamp,
-                task_type,
-                f"{task.source}:{task.specifier}",
-                task.short_description(),
-                task.note,
-            )
+            running_tasks = FileProtocol.get_active_task_ids()
+
+            for task in tasks:
+                task_type = task.task_type
+                if task_type.endswith("TaskData"):
+                    task_type = task_type[:-8]
+                task_status = ""
+                if task.task_id in running_tasks:
+                    status = running_tasks[task.task_id]
+                    progress = status.steps_completed / status.steps_total if status.steps_total else 0
+                    task_status = f"{status.state} {progress*100:.0f}%"
+                table.add_row(
+                    task.task_id,
+                    task_status,
+                    task_type,
+                    f"{task.source}:{task.specifier}",
+                    task.short_description(),
+                    task.note,
+                )
+
+            # Restore cursor position if valid
+            if cursor_row is not None and cursor_row < len(tasks):
+                table.move_cursor(row=cursor_row)
+
+            self.queue_tasks = tasks
 
         # Update the status message
-        status.update(f"Last update: {datetime.now().strftime('%H:%M')}")
+        status_label.update(f"Last polled: {datetime.now().strftime('%H:%M:%S')}")
 
     def _refresh_status_data(self) -> None:
         """Refresh the status table data."""
-
-        # Find all active benchmark directories
-        benchmark_dirs = glob.glob("/tmp/benchmark_*")
-
         tabs = self.query_one("#root-tabs", TabbedContent)
         table = self.query_one("#status-table", DataTable)
         status_label = self.query_one("#status-table-status", Static)
 
-        running_tasks = []
+        active_tasks = FileProtocol.get_active_task_ids()
 
-        for dir_path in benchmark_dirs:
-            try:
-                # Extract task ID from directory name
-                task_id = Path(dir_path).name.replace("benchmark_", "")
-                protocol = FileProtocol(task_id, Path("/tmp"))
-
-                # Read status if available
-                task_status = protocol.read_status()
-                if task_status:
-                    # Calculate progress
-                    progress = "N/A"
-                    if task_status.steps_total and task_status.steps_completed is not None:
-                        pct = (task_status.steps_completed / task_status.steps_total) * 100
-                        progress = f"{pct:.0f}% ({task_status.steps_completed}/{task_status.steps_total})"
-
-                    running_tasks.append(
-                        {
-                            "task_id": task_id,
-                            "state": task_status.state,
-                            "pid": task_status.pid or "N/A",
-                            "progress": progress,
-                        }
-                    )
-            except Exception:
-                # Skip directories that don't have valid protocol files
-                continue
-
-        tabs.get_tab("tab-status").label = f"Status ({len(running_tasks)})"
+        tabs.get_tab("tab-status").label = f"Status ({len(active_tasks)})"
 
         table.clear()
 
@@ -240,25 +302,30 @@ class BenchmarkApp(App):
                 "Progress",
             )
 
-        for task in running_tasks:
+        for task_id, status in active_tasks.items():
+            progress = "N/A"
+            if status.steps_total and status.steps_completed is not None:
+                pct = (status.steps_completed / status.steps_total) * 100
+                progress = f"{pct:.0f}% ({status.steps_completed}/{status.steps_total})"
+
             table.add_row(
-                task["task_id"],
-                task["state"],
-                str(task["pid"]),
-                task["progress"],
+                task_id,
+                status.state,
+                str(status.pid or "N/A"),
+                progress,
             )
 
-        running_task_ids = [task["task_id"] for task in running_tasks]
+        running_task_ids = list(active_tasks.keys())
         if self.current_task_id and self.current_task_id not in running_task_ids:
-            if running_tasks:
-                self.current_task_id = running_tasks[0]["task_id"]
+            if running_task_ids:
+                self.current_task_id = running_task_ids[0]
                 self.call_after_refresh(self._swap_visualizer, self.current_task_id)
             else:
                 self.current_task_id = None
-        elif not self.current_task_id and running_tasks:
-            self.current_task_id = running_tasks[0]["task_id"]
+        elif not self.current_task_id and running_task_ids:
+            self.current_task_id = running_task_ids[0]
             self.call_after_refresh(self._swap_visualizer, self.current_task_id)
-        self.previous_status_count = len(running_tasks)
+        self.previous_status_count = len(active_tasks)
 
         status_label.update(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -559,8 +626,8 @@ class PerfTaskForm(BaseTaskForm):
         self.pipelining = PipeliningField()
         self.io_threads = IOThreadsField()
         self.sizes = SizesField()
-        self.warmup = NumberField("Warmup (seconds)", "warmup", "5m", "5m", HumanTime)
-        self.duration = NumberField("Duration (seconds)", "duration", "1h", "1h", HumanTime)
+        self.warmup = NumberField("Warmup (seconds)", "warmup", "1m", "1m", HumanTime)
+        self.duration = NumberField("Duration (seconds)", "duration", "15m", "15m", HumanTime)
 
     def compose(self) -> ComposeResult:
         for widget in self._compose_source_specifier_input():
