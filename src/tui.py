@@ -119,6 +119,7 @@ class BenchmarkApp(App):
         self.theme = "Conductress"
         self.current_visualizer: Optional[BaseTaskVisualizer] = None
         self.previous_status_count = 0
+        self.current_task_id: Optional[str] = None
         self.set_interval(5, self.refresh_data)
         self.refresh_data()
 
@@ -247,8 +248,16 @@ class BenchmarkApp(App):
                 task["progress"],
             )
 
-        if running_tasks and self.previous_status_count == 0:
-            self.call_after_refresh(self._swap_visualizer, running_tasks[0]["task_id"])
+        running_task_ids = [task["task_id"] for task in running_tasks]
+        if self.current_task_id and self.current_task_id not in running_task_ids:
+            if running_tasks:
+                self.current_task_id = running_tasks[0]["task_id"]
+                self.call_after_refresh(self._swap_visualizer, self.current_task_id)
+            else:
+                self.current_task_id = None
+        elif not self.current_task_id and running_tasks:
+            self.current_task_id = running_tasks[0]["task_id"]
+            self.call_after_refresh(self._swap_visualizer, self.current_task_id)
         self.previous_status_count = len(running_tasks)
 
         status_label.update(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
