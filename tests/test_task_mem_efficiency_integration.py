@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -16,7 +17,10 @@ class TestMemTaskIntegration:
     def temp_dir(self):
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            yield Path(tmp_dir)
+            tmp_path = Path(tmp_dir)
+            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), \
+                 patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
+                yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
@@ -44,10 +48,7 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify results were written to legacy output
-        import json
-        import src.file_protocol
-
-        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        output_file = temp_dir / "output.jsonl"
         assert output_file.exists()
 
         with open(output_file) as f:
@@ -97,10 +98,7 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify results include expiration data
-        import json
-        import src.file_protocol
-
-        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        output_file = temp_dir / "output.jsonl"
         assert output_file.exists()
 
         with open(output_file) as f:
@@ -135,10 +133,7 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify all sizes were tested
-        import json
-        import src.file_protocol
-
-        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        output_file = temp_dir / "output.jsonl"
         assert output_file.exists()
 
         with open(output_file) as f:
@@ -176,8 +171,6 @@ class TestMemTaskIntegration:
         # Verify status file was created (even if error occurred early)
         status_file = runner.file_protocol.status_file
         assert status_file.exists(), "Status file should exist even after error"
-
-        import json
 
         with open(status_file) as f:
             status = json.load(f)
@@ -249,9 +242,7 @@ class TestMemTaskIntegration:
             await runner.run()
 
         # Verify expected files were created
-        import src.file_protocol
-
-        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        output_file = temp_dir / "output.jsonl"
         assert output_file.exists(), "Output file was not created"
         assert runner.file_protocol.status_file.exists(), "Status file was not created"
 
