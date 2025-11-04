@@ -9,6 +9,12 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 64
 
+# Pin individual Valkey threads to specific CPUs (vs range pinning)
+PIN_VALKEY_THREADS = False
+
+# Enable CPU consistency mode (lock frequency, disable boost/idle states)
+ENABLE_CPU_CONSISTENCY_MODE = True
+
 # Memory efficiency test configuration
 MEM_TEST_ITEM_COUNT = 5_000_000  # 5 million items for memory tests
 MEM_TEST_KEY_SIZE = 16  # Size of "key:__rand_int__" pattern

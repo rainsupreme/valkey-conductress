@@ -40,8 +40,9 @@ class BenchmarkStatus:
 class MetricData:
     """Single metric data point."""
 
-    metrics: dict[str, float]  # name-value pairs for flexible metrics
+    metrics: dict[str, Any]  # name-value pairs for flexible metrics
     timestamp: float = field(default_factory=time.time)
+    source: str = "client"  # role identifier: "client", "server", "primary", "replica", etc.
 
 
 @dataclass
@@ -61,13 +62,14 @@ class BenchmarkResults:
 class FileProtocol:
     """Handles file-based communication for benchmark processes."""
 
-    def __init__(self, task_id: str, base_dir: Path = Path("/tmp")):
+    def __init__(self, task_id: str, role_id: str, base_dir: Path = Path("/tmp")):
         self.task_id = task_id
+        self.role_id = role_id  # Role identifier (e.g., "client", "server", "primary", "replica")
         self.work_dir = base_dir / f"benchmark_{task_id}"
         self.work_dir.mkdir(exist_ok=True)
 
         self.status_file = self.work_dir / "status.json"
-        self.metrics_file = self.work_dir / "metrics.jsonl"
+        self.metrics_file = self.work_dir / f"metrics_{role_id}.jsonl"
 
         self._metrics_cache: list[MetricData] = []
         self._last_read_position = 0
@@ -129,10 +131,8 @@ class FileProtocol:
         if not self.metrics_file.exists():
             return
 
-        # Create filename: method_source_specifier_timestamp.jsonl
         timestamp = datetime_to_task_id(results.end_time)
-        filename = f"{results.method}_{results.source}_{results.specifier}_{timestamp}.jsonl"
-
+        filename = f"{results.method}_{results.source}_{results.specifier}_{timestamp}_{self.role_id}.jsonl"
         dest_path = CONDUCTRESS_RESULTS / filename
         os.makedirs(CONDUCTRESS_RESULTS, exist_ok=True)
         shutil.copy2(self.metrics_file, dest_path)
@@ -190,13 +190,25 @@ class FileProtocol:
         for dir_path in glob.glob(str(base_dir / "benchmark_*")):
             try:
                 task_id = Path(dir_path).name.replace("benchmark_", "")
-                protocol = FileProtocol(task_id, base_dir)
-                status = protocol.read_status()
+                status_file = Path(dir_path) / "status.json"
+                status = FileProtocol._read_status_from_file(status_file)
                 if status:
                     active_tasks[task_id] = status
             except Exception:
                 continue
         return active_tasks
+    
+    @staticmethod
+    def _read_status_from_file(status_file: Path) -> Optional[BenchmarkStatus]:
+        """Read status from a status file without requiring a FileProtocol instance."""
+        if not status_file.exists():
+            return None
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return BenchmarkStatus(**data)
+        except (json.JSONDecodeError, FileNotFoundError, TypeError):
+            return None
 
     @staticmethod
     def _is_process_running(pid: int) -> bool:

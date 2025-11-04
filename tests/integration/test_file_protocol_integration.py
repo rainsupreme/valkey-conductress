@@ -59,7 +59,7 @@ class TestPerfTaskRunnerIntegration:
         )
 
         # Override to use temp directory
-        task_runner.file_protocol = FileProtocol("method_test", tmp_dir)
+        task_runner.file_protocol = FileProtocol("method_test", role_id="client", base_dir=tmp_dir)
 
         # Test status writing
         status = BenchmarkStatus(steps_total=100, task_type="test")
@@ -82,7 +82,7 @@ class TestPerfTaskRunnerIntegration:
 
     def test_metric_data_format(self, tmp_dir):
         """Test that metric data is written in correct format."""
-        protocol = FileProtocol("format_test", tmp_dir)
+        protocol = FileProtocol("format_test", role_id="client", base_dir=tmp_dir)
 
         # Simulate what PerfTaskRunner writes
         metric = MetricData(metrics={"rps": 1500.75, "latency_ms": 2.345})
@@ -115,7 +115,7 @@ class TestTaskRunnerCleanup:
         # Create a mock task runner with file protocol
         mock_task_runner = MagicMock()
         mock_task_runner.run = AsyncMock()
-        mock_task_runner.file_protocol = FileProtocol("cleanup_test", tmp_dir)
+        mock_task_runner.file_protocol = FileProtocol("cleanup_test", role_id="client", base_dir=tmp_dir)
 
         # Write some test files
         status = BenchmarkStatus(steps_total=100, task_type="test")
@@ -148,7 +148,7 @@ class TestTaskRunnerCleanup:
 
         mock_task_runner = MagicMock()
         mock_task_runner.run = AsyncMock(side_effect=RuntimeError("Test error"))
-        mock_task_runner.file_protocol = FileProtocol("exception_test", tmp_dir)
+        mock_task_runner.file_protocol = FileProtocol("exception_test", role_id="client", base_dir=tmp_dir)
 
         # Write test files
         status = BenchmarkStatus(steps_total=100, task_type="test")
@@ -181,7 +181,7 @@ class TestTUIStatusIntegration:
         """Test that TUI can process status data from file protocol."""
         # Create test data
         task_id = "2024.01.01_12.00.00.000000_set_perf"
-        protocol = FileProtocol(task_id, tmp_dir)
+        protocol = FileProtocol(task_id, role_id="client", base_dir=tmp_dir)
 
         # Write status and metrics
         status = BenchmarkStatus(steps_total=10, task_type="test")

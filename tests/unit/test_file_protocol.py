@@ -44,7 +44,7 @@ class TestFileProtocol:
 
     def test_status_write_read(self):
         """Test status file operations."""
-        protocol = FileProtocol("test_task", self.tmp_path)
+        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
@@ -61,7 +61,7 @@ class TestFileProtocol:
 
     def test_metrics_append_read(self):
         """Test metrics file operations."""
-        protocol = FileProtocol("test_task", self.tmp_path)
+        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         metrics = [
             MetricData(metrics={"rps": 1000.0, "latency_ms": 2.5}),
@@ -79,7 +79,7 @@ class TestFileProtocol:
 
     def test_results_write(self):
         """Test results file operations."""
-        protocol = FileProtocol("test_task", self.tmp_path)
+        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         results = BenchmarkResults(
             method="perf-set",
@@ -106,7 +106,7 @@ class TestFileProtocol:
 
     def test_multiple_readers(self):
         """Test multiple readers can access metrics simultaneously."""
-        protocol = FileProtocol("test_task", self.tmp_path)
+        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         # Write some metrics first
         for i in range(10):
@@ -137,7 +137,7 @@ class TestFileProtocol:
 
     def test_cleanup(self):
         """Test file cleanup."""
-        protocol = FileProtocol("test_task", self.tmp_path)
+        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         # Create some files
         protocol.write_status(BenchmarkStatus(steps_total=100, task_type="test"))
@@ -154,7 +154,7 @@ class TestFileProtocol:
 
     def test_metrics_file_format(self):
         """Test that metrics file format is valid JSONL."""
-        protocol = FileProtocol("format_test", self.tmp_path)
+        protocol = FileProtocol("format_test", role_id="client", base_dir=self.tmp_path)
 
         # Write several metrics
         for i in range(5):
@@ -177,7 +177,7 @@ class TestFileProtocol:
 
     def test_status_heartbeat_updates(self):
         """Test frequent status updates don't corrupt file."""
-        protocol = FileProtocol("heartbeat_test", self.tmp_path)
+        protocol = FileProtocol("heartbeat_test", role_id="client", base_dir=self.tmp_path)
 
         status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
@@ -196,7 +196,7 @@ class TestFileProtocol:
 
     def test_automatic_heartbeat(self):
         """Test that heartbeat is automatically updated on write_status."""
-        protocol = FileProtocol("auto_heartbeat_test", self.tmp_path)
+        protocol = FileProtocol("auto_heartbeat_test", role_id="client", base_dir=self.tmp_path)
 
         status = BenchmarkStatus(steps_total=100, task_type="test")
         status.state = "running"
@@ -211,7 +211,7 @@ class TestFileProtocol:
 
     def test_metrics_copy_to_results(self):
         """Test that metrics file is copied to results folder."""
-        protocol = FileProtocol("copy_test", self.tmp_path)
+        protocol = FileProtocol("copy_test", role_id="client", base_dir=self.tmp_path)
 
         # Write some metrics
         for i in range(3):
@@ -243,7 +243,7 @@ class TestFileProtocol:
 
     def test_progress_tracking(self):
         """Test progress tracking in status."""
-        protocol = FileProtocol("progress_test", self.tmp_path)
+        protocol = FileProtocol("progress_test", role_id="client", base_dir=self.tmp_path)
 
         status = BenchmarkStatus(steps_total=10, task_type="test")
         status.state = "running"
@@ -259,7 +259,7 @@ class TestFileProtocol:
 
     def test_read_metrics_caching(self):
         """Test that read_metrics caches results."""
-        protocol = FileProtocol("cache_test", self.tmp_path)
+        protocol = FileProtocol("cache_test", role_id="client", base_dir=self.tmp_path)
 
         protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
         metrics1 = protocol.read_metrics()
@@ -273,7 +273,7 @@ class TestFileProtocol:
 
     def test_read_metrics_tail_behavior(self):
         """Test that read_metrics only reads new lines."""
-        protocol = FileProtocol("tail_test", self.tmp_path)
+        protocol = FileProtocol("tail_test", role_id="client", base_dir=self.tmp_path)
 
         protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
         protocol.read_metrics()
@@ -286,7 +286,7 @@ class TestFileProtocol:
 
     def test_read_metrics_returns_same_reference(self):
         """Test that read_metrics returns reference to cache."""
-        protocol = FileProtocol("ref_test", self.tmp_path)
+        protocol = FileProtocol("ref_test", role_id="client", base_dir=self.tmp_path)
 
         protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
         metrics1 = protocol.read_metrics()
@@ -301,7 +301,7 @@ class TestFileProtocol:
 
     def test_get_active_task_ids_single_task(self):
         """Test get_active_task_ids with one active task."""
-        protocol = FileProtocol("task1", self.tmp_path)
+        protocol = FileProtocol("task1", role_id="client", base_dir=self.tmp_path)
         status = BenchmarkStatus(steps_total=100, task_type="perf-get", state="running", pid=12345)
         status.steps_completed = 50
         protocol.write_status(status)
@@ -317,12 +317,12 @@ class TestFileProtocol:
 
     def test_get_active_task_ids_multiple_tasks(self):
         """Test get_active_task_ids with multiple active tasks."""
-        protocol1 = FileProtocol("task1", self.tmp_path)
+        protocol1 = FileProtocol("task1", role_id="client", base_dir=self.tmp_path)
         status1 = BenchmarkStatus(steps_total=100, task_type="perf-get", state="running", pid=12345)
         status1.steps_completed = 50
         protocol1.write_status(status1)
 
-        protocol2 = FileProtocol("task2", self.tmp_path)
+        protocol2 = FileProtocol("task2", role_id="server", base_dir=self.tmp_path)
         status2 = BenchmarkStatus(steps_total=200, task_type="mem-set", state="starting", pid=67890)
         status2.steps_completed = 10
         protocol2.write_status(status2)
@@ -342,7 +342,7 @@ class TestFileProtocol:
         empty_dir = self.tmp_path / "benchmark_empty"
         empty_dir.mkdir()
 
-        protocol = FileProtocol("task1", self.tmp_path)
+        protocol = FileProtocol("task1", role_id="client", base_dir=self.tmp_path)
         status = BenchmarkStatus(steps_total=100, task_type="test", state="running", pid=12345)
         protocol.write_status(status)
 
@@ -350,3 +350,65 @@ class TestFileProtocol:
         assert len(active_tasks) == 1
         assert "task1" in active_tasks
         assert "empty" not in active_tasks
+
+    def test_role_id_in_filename(self):
+        """Test that role_id is included in metrics filename."""
+        protocol = FileProtocol("test_task", role_id="server_10_0_1_5_p9000", base_dir=self.tmp_path)
+        
+        protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
+        
+        assert protocol.metrics_file.name == "metrics_server_10_0_1_5_p9000.jsonl"
+        assert protocol.metrics_file.exists()
+
+    def test_multiple_roles_same_task(self):
+        """Test multiple roles can write to same task directory."""
+        client_protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
+        server_protocol = FileProtocol("test_task", role_id="server", base_dir=self.tmp_path)
+        
+        client_protocol.append_metric(MetricData(metrics={"client_rps": 1000.0}, source="client"))
+        server_protocol.append_metric(MetricData(metrics={"server_cpu": 85.0}, source="server"))
+        
+        # Both files should exist in same work directory
+        assert client_protocol.work_dir == server_protocol.work_dir
+        assert client_protocol.metrics_file.exists()
+        assert server_protocol.metrics_file.exists()
+        assert client_protocol.metrics_file != server_protocol.metrics_file
+
+    def test_role_specific_results_copy(self):
+        """Test that role_id is included in copied results filename."""
+        protocol = FileProtocol("copy_test", role_id="primary_10_0_1_5_p9000", base_dir=self.tmp_path)
+        
+        protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
+        
+        results = BenchmarkResults(
+            method="perf-set",
+            source="valkey",
+            specifier="unstable",
+            commit_hash="abc123",
+            score=1000.0,
+            end_time=datetime(2024, 1, 1, 12, 0, 0),
+            data={"test": "data"},
+        )
+        
+        protocol.write_results(results)
+        
+        results_dir = src.file_protocol.CONDUCTRESS_RESULTS
+        copied_files = list(results_dir.glob("*.jsonl"))
+        assert len(copied_files) == 1
+        assert "primary_10_0_1_5_p9000" in copied_files[0].name
+
+    def test_different_roles_independent_caches(self):
+        """Test that different role protocols have independent caches."""
+        client_protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
+        server_protocol = FileProtocol("test_task", role_id="server", base_dir=self.tmp_path)
+        
+        client_protocol.append_metric(MetricData(metrics={"client_rps": 1000.0}))
+        server_protocol.append_metric(MetricData(metrics={"server_cpu": 85.0}))
+        
+        client_metrics = client_protocol.read_metrics()
+        server_metrics = server_protocol.read_metrics()
+        
+        assert len(client_metrics) == 1
+        assert len(server_metrics) == 1
+        assert client_metrics[0].metrics["client_rps"] == 1000.0
+        assert server_metrics[0].metrics["server_cpu"] == 85.0

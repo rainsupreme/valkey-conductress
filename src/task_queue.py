@@ -111,7 +111,7 @@ class BaseTaskRunner(ABC):
     def __init__(self, task_name: str):
         from .file_protocol import FileProtocol
 
-        self.file_protocol = FileProtocol(task_name)
+        self.file_protocol = FileProtocol(task_name, role_id="client")
 
     @abstractmethod
     async def run(self) -> None:

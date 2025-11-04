@@ -21,9 +21,6 @@ PERF_STATUS_FILE = "/tmp/perf_running"
 class Server:
     """Represents a server running a Valkey instance."""
 
-    # Expected Valkey background threads (excluding main thread and io_thd_* threads)
-    EXPECTED_BACKGROUND_THREADS = {'bio_close_file', 'bio_aof', 'bio_lazy_free', 'bio_rdb_save', 'jemalloc_bg_thd'}
-
     # Class-level CPU allocation tracking per host
     # key is server ip
     _allocated_cpus: dict[str, set[int]] = defaultdict(set)
@@ -151,7 +148,7 @@ class Server:
         # Skip for loopback interface - no IRQs to pin
         if net_interface == "lo":
             return
-            
+
         # Skip if IRQs already configured on this host
         if self.ip in self._irq_cpus and self._irq_cpus[self.ip]:
             logging.info(
@@ -253,72 +250,35 @@ class Server:
         return allocated
 
     async def _pin_valkey_threads(self):
-        """Pin individual Valkey I/O threads to specific CPUs after server starts"""
-        # Get the main process PID
+        """Pin main thread and I/O threads to individual CPUs after server starts"""
         pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
         main_pid = pid_out.strip()
-        
-        # Get thread details including names
+
         threads_out, _ = await self.run_host_command(f"ps -T -p {main_pid} -o tid,comm --no-headers")
-        
+
         # Pin main thread to first CPU
         main_cpu = self.server_cpus[0]
-        try:
-            await self.run_host_command(f"taskset -cp {main_cpu} {main_pid}")
-            logging.info("Pinned main thread %s to CPU %d", main_pid, main_cpu)
-        except Exception as e:
-            logging.error("Failed to pin main thread %s to CPU %d: %s", main_pid, main_cpu, e)
-        
-        # Pin I/O threads and background threads to specific CPUs
-        io_thread_cpu_index = 1  # Start from second CPU (first is for main thread)
-        bg_thread_cpu_index = self.threads + 1  # Background threads after I/O threads
-        expected_threads = {'valkey-server'} | self.EXPECTED_BACKGROUND_THREADS
-        unexpected_threads = []
-        
-        for line in threads_out.strip().split('\n'):
+        await self.run_host_command(f"taskset -cp {main_cpu} {main_pid}")
+        logging.info("Pinned main thread %s to CPU %d", main_pid, main_cpu)
+
+        # Pin I/O threads to individual CPUs
+        io_thread_cpu_index = 1
+        for line in threads_out.strip().split("\n"):
             parts = line.strip().split()
             if len(parts) >= 2:
                 tid, comm = parts[0], parts[1]
-                
-                # Skip main thread (already pinned)
+
                 if tid == main_pid:
                     continue
-                
-                # Pin I/O threads (io_thd_*)
-                if comm.startswith('io_thd_'):
-                    if io_thread_cpu_index < len(self.server_cpus):
-                        cpu = self.server_cpus[io_thread_cpu_index]
-                        try:
-                            await self.run_host_command(f"taskset -cp {cpu} {tid}")
-                            logging.info("Pinned I/O thread %s (%s) to CPU %d", tid, comm, cpu)
-                            io_thread_cpu_index += 1
-                        except Exception as e:
-                            logging.error("Failed to pin I/O thread %s to CPU %d: %s", tid, cpu, e)
-                    else:
-                        logging.warning("No CPU available for I/O thread %s (%s)", tid, comm)
-                
-                # Pin background threads (bio_*, jemalloc_bg_thd) to separate CPUs
-                elif comm.startswith('bio_') or comm == 'jemalloc_bg_thd':
-                    if bg_thread_cpu_index < len(self.server_cpus):
-                        cpu = self.server_cpus[bg_thread_cpu_index]
-                        try:
-                            await self.run_host_command(f"taskset -cp {cpu} {tid}")
-                            logging.info("Pinned background thread %s (%s) to CPU %d", tid, comm, cpu)
-                            bg_thread_cpu_index += 1
-                        except Exception as e:
-                            logging.error("Failed to pin background thread %s to CPU %d: %s", tid, cpu, e)
-                    else:
-                        logging.warning("No CPU available for background thread %s (%s)", tid, comm)
-                
-                # Check for unexpected threads
-                elif comm not in expected_threads and not comm.startswith('io_thd_'):
-                    unexpected_threads.append((tid, comm))
-        
-        # Handle unexpected threads
-        if unexpected_threads:
-            thread_list = ', '.join([f"{tid}({comm})" for tid, comm in unexpected_threads])
-            logging.error("Unexpected Valkey threads found: %s", thread_list)
-            assert False, f"Unexpected Valkey threads detected: {thread_list}. Update thread pinning logic to handle these threads."
+
+                if comm.startswith("io_thd_"):
+                    cpu = self.server_cpus[io_thread_cpu_index]
+                    await self.run_host_command(f"taskset -cp {cpu} {tid}")
+                    logging.info("Pinned I/O thread %s (%s) to CPU %d", tid, comm, cpu)
+                    io_thread_cpu_index += 1
+
+        # Brief delay to ensure scheduler applies affinity changes
+        await asyncio.sleep(0.1)
 
     def _release_server_cpus(self):
         """Release CPUs allocated to this server"""
@@ -426,12 +386,51 @@ class Server:
         await self.run_host_command(command)
 
     # =============================================================================
+    # CPU CONSISTENCY TUNING METHODS
+    # =============================================================================
+
+    async def enable_cpu_consistency_mode(self) -> None:
+        """Lock CPU frequency and disable idle states for consistent benchmarks."""
+        # Lock CPU frequency to max non-turbo frequency
+        await self.run_host_command("sudo cpupower frequency-set -g performance")
+        # Disable turbo boost to prevent frequency variation
+        await self.run_host_command("echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost", check=False)
+        # Disable C1 and C2 idle states to prevent latency spikes
+        await self.run_host_command("sudo cpupower idle-set -d 1", check=False)
+        await self.run_host_command("sudo cpupower idle-set -d 2", check=False)
+        # Verify idle states are disabled
+        stdout, _ = await self.run_host_command("cpupower idle-info | grep -E 'C1|C2'")
+        assert (
+            "C1 (DISABLED)" in stdout and "C2 (DISABLED)" in stdout
+        ), f"Failed to disable C1/C2 idle states. Output: {stdout.strip()}"
+
+    async def disable_cpu_consistency_mode(self) -> None:
+        """Restore default CPU frequency scaling and idle states."""
+        # Restore default schedutil governor for dynamic frequency scaling
+        await self.run_host_command("sudo cpupower frequency-set -g schedutil")
+        # Re-enable turbo boost
+        await self.run_host_command("echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost", check=False)
+        # Re-enable C1 and C2 idle states for power savings
+        await self.run_host_command("sudo cpupower idle-set -e 1", check=False)
+        await self.run_host_command("sudo cpupower idle-set -e 2", check=False)
+        # Verify idle states are enabled
+        stdout, _ = await self.run_host_command("cpupower idle-info | grep -E 'C1|C2'")
+        assert (
+            "C1 (DISABLED)" not in stdout and "C2 (DISABLED)" not in stdout
+        ), f"Failed to enable C1/C2 idle states. Output: {stdout.strip()}"
+
+    # =============================================================================
     # SERVER LIFECYCLE METHODS
     # =============================================================================
 
     async def __pre_start(self) -> None:
         """Configuration and preparation before starting Valkey server"""
         await self._setup_cpu_pinning()
+
+        if config.ENABLE_CPU_CONSISTENCY_MODE:
+            await self.enable_cpu_consistency_mode()
+        else:
+            await self.disable_cpu_consistency_mode()
 
         # Enable memory overcommit
         await self.run_host_command("sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'")
@@ -454,20 +453,31 @@ class Server:
         if self.threads > 1:
             self.args += ["--io-threads", str(self.threads)]
 
-        # Use taskset with allocated CPU range (io-threads + 5 extra)
-        cpu_list = ",".join(map(str, self.server_cpus))
+        # Configure CPU pinning using Valkey's built-in options
+        # Main thread + I/O threads: CPUs 0 through N
+        main_io_cpu_list = ",".join(map(str, self.server_cpus[: self.threads + 1]))
+        self.args += ["--server-cpulist", main_io_cpu_list]
+
+        # Background threads: remaining CPUs (bio, AOF rewrite, bgsave)
+        bg_thread_start_cpu = self.threads + 1
+        if bg_thread_start_cpu < len(self.server_cpus):
+            bg_cpu_list = ",".join(map(str, self.server_cpus[bg_thread_start_cpu:]))
+            self.args += ["--bio-cpulist", bg_cpu_list]
+            self.args += ["--aof-rewrite-cpulist", bg_cpu_list]
+            self.args += ["--bgsave-cpulist", bg_cpu_list]
+
         command = (
-            f"taskset -c {cpu_list} {cached_binary_path} --port {self.port} "
+            f"{cached_binary_path} --port {self.port} "
             f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
         out, err = await self.run_host_command(command)
         self.server_started = True
 
         await self.wait_until_ready()
-        
-        # Temporarily disabled: Pin individual threads to specific CPUs after server starts
-        # if self.threads > 1:
-        #     await self._pin_valkey_threads()
+
+        # Optionally pin individual threads to specific CPUs for precise control
+        if config.PIN_VALKEY_THREADS:
+            await self._pin_valkey_threads()
 
     async def wait_until_ready(self) -> None:
         """Wait until the server is ready to accept commands."""
