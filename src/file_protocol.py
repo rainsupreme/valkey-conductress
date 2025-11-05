@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS
+from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP
 from .utility import datetime_to_task_id
 
 
@@ -62,11 +62,11 @@ class BenchmarkResults:
 class FileProtocol:
     """Handles file-based communication for benchmark processes."""
 
-    def __init__(self, task_id: str, role_id: str, base_dir: Path = Path("/tmp")):
+    def __init__(self, task_id: str, role_id: str, base_dir: Path = CONDUCTRESS_TMP):
         self.task_id = task_id
         self.role_id = role_id  # Role identifier (e.g., "client", "server", "primary", "replica")
         self.work_dir = base_dir / f"benchmark_{task_id}"
-        self.work_dir.mkdir(exist_ok=True)
+        self.work_dir.mkdir(parents=True, exist_ok=True)
 
         self.status_file = self.work_dir / "status.json"
         self.metrics_file = self.work_dir / f"metrics_{role_id}.jsonl"
@@ -184,7 +184,7 @@ class FileProtocol:
             return None
 
     @staticmethod
-    def get_active_task_ids(base_dir: Path = Path("/tmp")) -> dict[str, BenchmarkStatus]:
+    def get_active_task_ids(base_dir: Path = CONDUCTRESS_TMP) -> dict[str, BenchmarkStatus]:
         """Get dict of active task IDs mapped to their BenchmarkStatus."""
         active_tasks = {}
         for dir_path in glob.glob(str(base_dir / "benchmark_*")):
@@ -249,7 +249,7 @@ class FileProtocol:
             return True
 
     @staticmethod
-    def cleanup_orphaned_tasks(base_dir: Path = Path("/tmp")) -> int:
+    def cleanup_orphaned_tasks(base_dir: Path = CONDUCTRESS_TMP) -> int:
         """Clean up orphaned benchmark directories.
 
         Returns the number of directories cleaned up.

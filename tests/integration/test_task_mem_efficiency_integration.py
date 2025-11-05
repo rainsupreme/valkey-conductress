@@ -42,7 +42,7 @@ class TestMemTaskIntegration:
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
         runner = task_data.prepare_task_runner([server_info])
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
-        runner.file_protocol = FileProtocol(task_name, temp_dir)
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         with patch("src.tasks.task_mem_efficiency.plt"):
             await runner.run()
@@ -92,7 +92,7 @@ class TestMemTaskIntegration:
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
         runner = task_data.prepare_task_runner([server_info])
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
-        runner.file_protocol = FileProtocol(task_name, temp_dir)
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         with patch("src.tasks.task_mem_efficiency.plt"):
             await runner.run()
@@ -127,7 +127,7 @@ class TestMemTaskIntegration:
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
         runner = task_data.prepare_task_runner([server_info])
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
-        runner.file_protocol = FileProtocol(task_name, temp_dir)
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         with patch("src.tasks.task_mem_efficiency.plt"):
             await runner.run()
@@ -161,7 +161,7 @@ class TestMemTaskIntegration:
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
         runner = task_data.prepare_task_runner([server_info])
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
-        runner.file_protocol = FileProtocol(task_name, temp_dir)
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         # Mock server to raise exception during binary caching
         with patch("src.server.Server.ensure_binary_cached", side_effect=Exception("Binary not found")):
@@ -236,7 +236,7 @@ class TestMemTaskIntegration:
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
         runner = task_data.prepare_task_runner([server_info])
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
-        runner.file_protocol = FileProtocol(task_name, temp_dir)
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         with patch("src.tasks.task_mem_efficiency.plt"):
             await runner.run()
