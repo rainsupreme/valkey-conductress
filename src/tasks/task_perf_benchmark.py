@@ -26,7 +26,6 @@ from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
 from src.utility import (
     BILLION,
-    MINUTE,
     HumanByte,
     HumanNumber,
     HumanTime,
@@ -199,21 +198,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
     def __record_result(self):
         completion_time = datetime.datetime.now()
-        name = f"perf-{self.test.name}"
 
         assert len(self.rps_data) > 0, "No results recorded"
         avg_rps = sum(self.rps_data) / len(self.rps_data)
-
-        result = {
-            "warmup": self.warmup,
-            "duration": self.duration,
-            "io-threads": self.io_threads,
-            "pipeline": self.pipelining,
-            "has_expire": self.has_expire,
-            "size": self.valsize,
-            "preload_keys": self.preload_keys,
-            "rps": avg_rps,
-        }
 
         # Write results to file protocol
         detailed_data = {

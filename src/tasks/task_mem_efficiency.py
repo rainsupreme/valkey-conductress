@@ -96,7 +96,9 @@ class MemTaskRunner(BaseTaskRunner):
         self.cached_binary_path: Optional[Path] = None
 
         # Initialize status
-        self.status = BenchmarkStatus(steps_total=len(self.val_sizes) + 2, task_type=f"mem-{test}")  # setup + sizes + results
+        self.status = BenchmarkStatus(
+            steps_total=len(self.val_sizes) + 2, task_type=f"mem-{test}"
+        )  # setup + sizes + results
 
     async def run(self) -> None:
         """Run the memory efficiency test for each value size."""
@@ -157,6 +159,9 @@ class MemTaskRunner(BaseTaskRunner):
         if len(results) == 1:
             score = results[0]["per_item_overhead"]
         # Write results to file protocol (replaces record_task_result)
+        detailed_results = {
+            "results": results,
+        }
         completion_time = datetime.datetime.now()
         results_data = BenchmarkResults(
             method=f"mem-{self.test}",
@@ -165,7 +170,7 @@ class MemTaskRunner(BaseTaskRunner):
             commit_hash=self.commit_hash or "",
             score=score,
             end_time=completion_time,
-            data=results,
+            data=detailed_results,
             note=self.note,
         )
         self.file_protocol.write_results(results_data)

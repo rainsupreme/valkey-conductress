@@ -86,7 +86,6 @@ class ReplicationGroup:
         """Wait for all replicas to be in sync with the primary."""
         assert self.primary
         if not self.replicas:
-            print("waiting for replication sync, but there are no replicas")
             return
 
         for replica in self.replicas:

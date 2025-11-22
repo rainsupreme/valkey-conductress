@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP
+from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP, get_all_features
 from .utility import datetime_to_task_id
 
 
@@ -56,6 +56,9 @@ class BenchmarkResults:
     score: float  # primary result metric
     end_time: datetime  # completion timestamp
     data: dict[str, Any]  # detailed result info
+    features: dict[str, bool] = field(
+        default_factory=lambda: {f.name: v for f, v in get_all_features().items()}
+    )  # feature states
     note: Optional[str] = None  # optional note from task
 
 
@@ -197,7 +200,7 @@ class FileProtocol:
             except Exception:
                 continue
         return active_tasks
-    
+
     @staticmethod
     def _read_status_from_file(status_file: Path) -> Optional[BenchmarkStatus]:
         """Read status from a status file without requiring a FileProtocol instance."""

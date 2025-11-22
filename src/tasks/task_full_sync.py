@@ -6,7 +6,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from src.config import ServerInfo
 from src.file_protocol import BenchmarkResults, BenchmarkStatus
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
@@ -140,7 +139,6 @@ class SyncTaskRunner(BaseTaskRunner):
         user_data_size = self.valsize * self.valcount
         throughput = user_data_size / duration
 
-        # record result
         result = {
             "sync_duration": end - start,
             "user_data_size": self.valsize * self.valcount,
@@ -168,7 +166,7 @@ class SyncTaskRunner(BaseTaskRunner):
 
         if profiling:
             self.__profiling_reports()
-        
+
         # Clean up all servers and release CPUs
         await self.replication_group.stop_all_servers()
 

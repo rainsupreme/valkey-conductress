@@ -427,7 +427,7 @@ class Server:
         """Configuration and preparation before starting Valkey server"""
         await self._setup_cpu_pinning()
 
-        if config.ENABLE_CPU_CONSISTENCY_MODE:
+        if config.check_feature(config.Features.ENABLE_CPU_CONSISTENCY_MODE):
             await self.enable_cpu_consistency_mode()
         else:
             await self.disable_cpu_consistency_mode()
@@ -476,7 +476,7 @@ class Server:
         await self.wait_until_ready()
 
         # Optionally pin individual threads to specific CPUs for precise control
-        if config.PIN_VALKEY_THREADS:
+        if config.check_feature(config.Features.PIN_VALKEY_THREADS):
             await self._pin_valkey_threads()
 
     async def wait_until_ready(self) -> None:

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from enum import Enum
 
 from attr import dataclass
 
@@ -9,11 +10,27 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 64
 
-# Pin individual Valkey threads to specific CPUs (vs range pinning)
-PIN_VALKEY_THREADS = False
 
-# Enable CPU consistency mode (lock frequency, disable boost/idle states)
-ENABLE_CPU_CONSISTENCY_MODE = True
+class Features(Enum):
+    PIN_VALKEY_THREADS = "pin_valkey_threads"
+    ENABLE_CPU_CONSISTENCY_MODE = "cpu_consistency_mode"
+
+
+FEATURE_STATES = {
+    Features.PIN_VALKEY_THREADS: False,
+    Features.ENABLE_CPU_CONSISTENCY_MODE: True,
+}
+
+
+def check_feature(feature: Features) -> bool:
+    """Get the state of a specific feature flag."""
+    return FEATURE_STATES.get(feature, False)
+
+
+def get_all_features() -> dict[Features, bool]:
+    """Get all feature flags and their current values."""
+    return FEATURE_STATES.copy()
+
 
 # Memory efficiency test configuration
 MEM_TEST_ITEM_COUNT = 5_000_000  # 5 million items for memory tests

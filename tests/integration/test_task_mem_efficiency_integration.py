@@ -56,9 +56,10 @@ class TestMemTaskIntegration:
 
         # Verify results structure
         assert "data" in results
-        assert len(results["data"]) == 2  # Two value sizes
+        assert "results" in results["data"]
+        assert len(results["data"]["results"]) == 2  # Two value sizes
 
-        for result in results["data"]:
+        for result in results["data"]["results"]:
             assert "val_size" in result
             assert "per_item_overhead" in result
             assert result["val_size"] in [32, 64]
@@ -104,7 +105,9 @@ class TestMemTaskIntegration:
         with open(output_file) as f:
             results = json.loads(f.readlines()[-1])
 
-        result = results["data"][0]
+        assert "data" in results
+        assert "results" in results["data"]
+        result = results["data"]["results"][0]
         assert result["has_expire"] is True
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -139,8 +142,10 @@ class TestMemTaskIntegration:
         with open(output_file) as f:
             results = json.loads(f.readlines()[-1])
 
-        assert len(results["data"]) == 4
-        tested_sizes = {r["val_size"] for r in results["data"]}
+        assert "data" in results
+        assert "results" in results["data"]
+        assert len(results["data"]["results"]) == 4
+        tested_sizes = {r["val_size"] for r in results["data"]["results"]}
         assert tested_sizes == {16, 32, 64, 128}
 
     @pytest.mark.asyncio

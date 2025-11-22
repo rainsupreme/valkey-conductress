@@ -222,7 +222,7 @@ class BenchmarkApp(App):
         if status and status.task_type:
             task_category = status.task_type.split("-")[0]
             if task_category == "perf":
-                protocol = FileProtocol(task_id)
+                protocol = FileProtocol(task_id, "client")
                 self.current_visualizer = PerfTaskVisualizer(task_id, protocol)
             else:
                 self.current_visualizer = PlaceholderTaskVisualizer(task_id)
