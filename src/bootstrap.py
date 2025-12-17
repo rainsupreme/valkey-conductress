@@ -245,22 +245,26 @@ async def update_ubuntu_packages(host: Host) -> None:
 async def ensure_file_descriptor_limits(host: Host) -> None:
     """Ensure file descriptor limit is sufficient for benchmarking"""
     desired_limit = 65536
-    
+
     current_limit = await host.run("ulimit -n")
     if int(current_limit.strip()) >= desired_limit:
         return
-    
+
     limits_conf = await host.run("cat /etc/security/limits.conf")
-    lines = [line.split() for line in limits_conf.split("\n") if "nofile" in line and not line.strip().startswith("#")]
+    lines = [
+        line.split()
+        for line in limits_conf.split("\n")
+        if "nofile" in line and not line.strip().startswith("#")
+    ]
     lines = [line for line in lines if len(line) >= 4 and line[0] == "*"]
-    
+
     if lines:
         configured_limit = min([int(line[3]) for line in lines])
         if configured_limit >= desired_limit:
             host.log_info_msg(f"File descriptor limit already configured to {configured_limit}")
             return
         raise RuntimeError(f"Insufficient file limit in limits.conf: {configured_limit} < {desired_limit}")
-    
+
     host.log_info_msg(f"Configuring file descriptor limit to {desired_limit}")
     await host.run(f"sudo sh -c \"echo '* soft nofile {desired_limit}' >> /etc/security/limits.conf\"")
     await host.run(f"sudo sh -c \"echo '* hard nofile {desired_limit}' >> /etc/security/limits.conf\"")
@@ -344,6 +348,11 @@ if __name__ == "__main__":
     ensure_ssh_key()
     asyncio.run(ensure_server_ssh_fingerprints())
 
-    asyncio.run(update_host_list([config.ServerInfo("localhost", "", "localhost")] + SERVERS))
+    update_servers = SERVERS.copy()
+    # add localhost if not already present
+    if config.ServerInfo("localhost", "", "localhost") not in update_servers:
+        update_servers.append(config.ServerInfo("localhost", "", "localhost"))
+
+    asyncio.run(update_host_list(update_servers))
 
     logger.info("Update/setup complete!")

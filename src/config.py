@@ -1,8 +1,8 @@
 """Configuration for the Conductress benchmark framework"""
 
 import json
-from pathlib import Path
 from enum import Enum
+from pathlib import Path
 
 from attr import dataclass
 
@@ -91,6 +91,15 @@ class ServerInfo:
     """username to connect with"""
     name: str = ""
     """A unique descriptive name"""
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, ServerInfo):
+            return False
+
+        def normalize_localhost(ip):
+            return "127.0.0.1" if ip in ("localhost", "127.0.0.1", "::1") else ip
+
+        return normalize_localhost(self.ip) == normalize_localhost(other.ip)
 
 
 def load_server_ips() -> list[ServerInfo]:
