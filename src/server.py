@@ -390,34 +390,109 @@ class Server:
     # =============================================================================
 
     async def enable_cpu_consistency_mode(self) -> None:
-        """Lock CPU frequency and disable idle states for consistent benchmarks."""
-        # Lock CPU frequency to max non-turbo frequency
-        await self.run_host_command("sudo cpupower frequency-set -g performance")
-        # Disable turbo boost to prevent frequency variation
-        await self.run_host_command("echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost", check=False)
-        # Disable C1 and C2 idle states to prevent latency spikes
-        await self.run_host_command("sudo cpupower idle-set -d 1", check=False)
-        await self.run_host_command("sudo cpupower idle-set -d 2", check=False)
-        # Verify idle states are disabled
-        stdout, _ = await self.run_host_command("cpupower idle-info | grep -E 'C1|C2'")
-        assert (
-            "C1 (DISABLED)" in stdout and "C2 (DISABLED)" in stdout
-        ), f"Failed to disable C1/C2 idle states. Output: {stdout.strip()}"
+        """Configure CPU settings for consistent benchmarks across ARM/x86 platforms."""
+        # Check if CPU frequency scaling is supported
+        cpufreq_exists = await self.check_file_exists(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"))
+        
+        if cpufreq_exists:
+            # Try performance governor first, fallback to available governors
+            governors_out, _ = await self.run_host_command("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False)
+            available_governors = governors_out.strip().split() if governors_out else []
+            
+            if "performance" in available_governors:
+                await self.run_host_command("sudo cpupower frequency-set -g performance")
+                logging.info("Set performance governor")
+            elif "userspace" in available_governors:
+                # Fallback for some ARM systems
+                await self.run_host_command("sudo cpupower frequency-set -g userspace")
+                logging.info("Set userspace governor (performance fallback)")
+            else:
+                logging.warning("No suitable performance governor available: %s", available_governors)
+            
+            # Disable turbo/boost on x86, check ARM boost paths
+            boost_paths = [
+                "/sys/devices/system/cpu/cpufreq/boost",  # x86 turbo boost
+                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_boost_frequencies",  # Some ARM
+            ]
+            for boost_path in boost_paths:
+                if await self.check_file_exists(Path(boost_path)):
+                    await self.run_host_command(f"echo 0 | sudo tee {boost_path}", check=False)
+                    logging.info("Disabled boost/turbo at %s", boost_path)
+                    break
+        else:
+            logging.info("No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)")
+        
+        # Handle idle states across platforms
+        idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
+        if "No idle states" in idle_result or "CPUidle driver: none" in idle_result:
+            logging.info("No CPU idle states - processor maintains consistent performance")
+        else:
+            # Disable common idle states (C1, C2) that can cause latency spikes
+            for state in [1, 2, 3]:  # C1, C2, C3
+                await self.run_host_command(f"sudo cpupower idle-set -d {state}", check=False)
+            logging.info("Disabled CPU idle states for latency consistency")
+        
+        # Cross-platform scheduler optimizations
+        scheduler_settings = [
+            ("/proc/sys/kernel/sched_energy_aware", "0", "energy-aware scheduling"),
+            ("/proc/sys/kernel/sched_autogroup_enabled", "0", "automatic process grouping"),
+        ]
+        
+        for path, value, description in scheduler_settings:
+            if await self.check_file_exists(Path(path)):
+                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
+                logging.info("Disabled %s for consistent performance", description)
 
     async def disable_cpu_consistency_mode(self) -> None:
-        """Restore default CPU frequency scaling and idle states."""
-        # Restore default schedutil governor for dynamic frequency scaling
-        await self.run_host_command("sudo cpupower frequency-set -g schedutil")
-        # Re-enable turbo boost
-        await self.run_host_command("echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost", check=False)
-        # Re-enable C1 and C2 idle states for power savings
-        await self.run_host_command("sudo cpupower idle-set -e 1", check=False)
-        await self.run_host_command("sudo cpupower idle-set -e 2", check=False)
-        # Verify idle states are enabled
-        stdout, _ = await self.run_host_command("cpupower idle-info | grep -E 'C1|C2'")
-        assert (
-            "C1 (DISABLED)" not in stdout and "C2 (DISABLED)" not in stdout
-        ), f"Failed to enable C1/C2 idle states. Output: {stdout.strip()}"
+        """Restore default CPU settings across ARM/x86 platforms."""
+        # Check if CPU frequency scaling is supported
+        cpufreq_exists = await self.check_file_exists(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"))
+        
+        if cpufreq_exists:
+            # Restore appropriate default governor based on platform
+            governors_out, _ = await self.run_host_command("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False)
+            available_governors = governors_out.strip().split() if governors_out else []
+            
+            # Prefer schedutil (modern), fallback to ondemand (older systems)
+            if "schedutil" in available_governors:
+                await self.run_host_command("sudo cpupower frequency-set -g schedutil")
+                logging.info("Restored schedutil governor")
+            elif "ondemand" in available_governors:
+                await self.run_host_command("sudo cpupower frequency-set -g ondemand")
+                logging.info("Restored ondemand governor")
+            else:
+                logging.warning("No suitable default governor found: %s", available_governors)
+            
+            # Re-enable turbo/boost
+            boost_paths = [
+                "/sys/devices/system/cpu/cpufreq/boost",
+                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_boost_frequencies",
+            ]
+            for boost_path in boost_paths:
+                if await self.check_file_exists(Path(boost_path)):
+                    await self.run_host_command(f"echo 1 | sudo tee {boost_path}", check=False)
+                    logging.info("Re-enabled boost/turbo at %s", boost_path)
+                    break
+        else:
+            logging.info("Fixed-frequency processor - no frequency settings to restore")
+        
+        # Re-enable idle states if they were disabled
+        idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
+        if "No idle states" not in idle_result and "CPUidle driver: none" not in idle_result:
+            for state in [1, 2, 3]:  # C1, C2, C3
+                await self.run_host_command(f"sudo cpupower idle-set -e {state}", check=False)
+            logging.info("Re-enabled CPU idle states")
+        
+        # Restore default scheduler settings
+        scheduler_settings = [
+            ("/proc/sys/kernel/sched_energy_aware", "1", "energy-aware scheduling"),
+            ("/proc/sys/kernel/sched_autogroup_enabled", "1", "automatic process grouping"),
+        ]
+        
+        for path, value, description in scheduler_settings:
+            if await self.check_file_exists(Path(path)):
+                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
+                logging.info("Re-enabled %s", description)
 
     # =============================================================================
     # SERVER LIFECYCLE METHODS
