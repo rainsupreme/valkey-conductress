@@ -18,8 +18,9 @@ class TestMemTaskIntegration:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), \
-                 patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
+            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), patch(
+                "src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"
+            ):
                 yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -34,6 +35,7 @@ class TestMemTaskIntegration:
             replicas=0,
             note="integration test",
             requirements={},
+            make_args="",
             type="set",
             val_sizes=[32, 64],
             has_expire=False,
@@ -85,6 +87,7 @@ class TestMemTaskIntegration:
             replicas=0,
             note="expiration test",
             requirements={},
+            make_args="",
             type="set",
             val_sizes=[32],
             has_expire=True,
@@ -122,6 +125,7 @@ class TestMemTaskIntegration:
             replicas=0,
             note="concurrent test",
             requirements={},
+            make_args="",
             type="set",
             val_sizes=[16, 32, 64, 128],
             has_expire=False,
@@ -151,13 +155,16 @@ class TestMemTaskIntegration:
     @pytest.mark.asyncio
     async def test_error_handling_integration(self, temp_dir):
         """Test MemTaskRunner error handling with invalid configuration."""
-        with patch("src.config.REPO_NAMES", ["valkey"]), patch("src.task_queue.config.REPO_NAMES", ["valkey"]):
+        with patch("src.config.REPO_NAMES", ["valkey"]), patch(
+            "src.task_queue.config.REPO_NAMES", ["valkey"]
+        ):
             task_data = MemTaskData(
                 source="valkey",
                 specifier="8.0",
                 replicas=0,
                 note="error test",
                 requirements={},
+                make_args="",
                 type="set",
                 val_sizes=[32],
                 has_expire=False,
@@ -194,6 +201,7 @@ class TestMemTaskIntegration:
             replicas=1,
             note="serialization test",
             requirements={"memory": "4GB"},
+            make_args="-O3 -DNDEBUG",
             type="zadd",
             val_sizes=[64, 128, 256],
             has_expire=True,
@@ -233,6 +241,7 @@ class TestMemTaskIntegration:
             replicas=0,
             note="file protocol test",
             requirements={},
+            make_args="",
             type="set",
             val_sizes=[32],
             has_expire=False,

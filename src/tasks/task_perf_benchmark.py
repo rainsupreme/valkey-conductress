@@ -4,8 +4,7 @@ import datetime
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
-
+from typing import Optional, Sequence, Union
 
 from src.base_task_visualizer import PlotTaskVisualizer
 from src.config import (
@@ -24,13 +23,7 @@ from src.file_protocol import (
 )
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.utility import (
-    BILLION,
-    HumanByte,
-    HumanNumber,
-    HumanTime,
-    RealtimeCommand,
-)
+from src.utility import BILLION, HumanByte, HumanNumber, HumanTime, RealtimeCommand
 
 
 @dataclass
@@ -76,6 +69,7 @@ class PerfTaskData(BaseTaskData):
             duration=self.duration,
             preload_keys=self.preload_keys,
             has_expire=self.has_expire,
+            make_args=self.make_args,
             sample_rate=self.profiling_sample_rate,
             note=self.note,
         )
@@ -135,6 +129,7 @@ class PerfTaskRunner(BaseTaskRunner):
         duration: int,
         preload_keys: bool,
         has_expire: bool,
+        make_args: str,
         sample_rate: int = -1,
         note: str = "",
     ):
@@ -163,6 +158,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.has_expire = has_expire
         self.sample_rate = sample_rate
         self.note = note
+        self.make_args = make_args
 
         self.profiling_thread = None
         self.profiling = self.sample_rate > 0
@@ -222,6 +218,7 @@ class PerfTaskRunner(BaseTaskRunner):
             score=avg_rps,
             end_time=completion_time,
             data=detailed_data,
+            make_args=self.make_args,
             note=self.note,
         )
         self.file_protocol.write_results(results)
@@ -237,7 +234,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.file_protocol.write_status(self.status)
 
         replication_group = ReplicationGroup(
-            self.server_infos, self.binary_source, self.specifier, self.io_threads
+            self.server_infos, self.binary_source, self.specifier, self.io_threads, self.make_args
         )
         await replication_group.kill_all_valkey_instances()
 
@@ -303,7 +300,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 self.rps_data = []
                 warming_up = False
                 if self.profiling:
-                    server.profiling_start(self.sample_rate)  # TODO port thread to async
+                    server.profiling_start(self.sample_rate)
 
         await self.__collect_metrics(command)
         self.__record_result()
@@ -314,8 +311,10 @@ class PerfTaskRunner(BaseTaskRunner):
         self.status.steps_completed = self.warmup + self.duration  # 100% complete
         self.file_protocol.write_status(self.status)
 
-        if self.profiling:
-            await server.profiling_report(self.task_name, "primary")
+        if self.profiling:  # TODO: fix up profiling
+            await server.profiling_report(
+                self.task_name, "primary"
+            )  # TODO: fix up profiling - don't have task name any more
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
@@ -334,16 +333,16 @@ class PerfTaskVisualizer(PlotTaskVisualizer):
     def format_y_tick(self, value: float) -> str:
         return HumanNumber.to_human(value, 3)
 
-    def get_plot_data(self) -> list[float]:
+    def get_plot_data(self) -> Sequence[Union[float, None]]:
         datapoints = self.file_protocol.read_metrics()
-        data = [dp.metrics.get("rps", 0.0) for dp in datapoints]
+        data: list[float] = [dp.metrics.get("rps", 0.0) for dp in datapoints]
 
         if len(data) < 4:
             return data
 
         sorted_data = sorted(data)
-        q1_idx = len(sorted_data) // 4
-        q3_idx = 3 * len(sorted_data) // 4
+        q1_idx: int = len(sorted_data) // 4
+        q3_idx: int = 3 * len(sorted_data) // 4
         q1, q3 = sorted_data[q1_idx], sorted_data[q3_idx]
         iqr = q3 - q1
         lower, upper = q1 - 3 * iqr, q3 + 3 * iqr

@@ -21,6 +21,7 @@ class ReplicationGroup:
         binary_source: str,
         specifier: str,
         threads: int,
+        make_args: str = "",
     ) -> None:
         """Initialize a replication group with server configuration."""
         assert len(server_infos) >= 1, "At least one server IP is required"
@@ -29,6 +30,7 @@ class ReplicationGroup:
         self.binary_source = binary_source
         self.specifier = specifier
         self.threads = threads
+        self.make_args = make_args
 
         self.servers: list[Server] = []
         self.primary: Optional[Server] = None
@@ -48,7 +50,7 @@ class ReplicationGroup:
         """Start a single server instance."""
         port = 6379
         server: Server = await Server.with_build(
-            server_ip, port, username, self.binary_source, self.specifier, self.threads
+            server_ip, port, username, self.binary_source, self.specifier, self.threads, self.make_args
         )
         await server.replicate(None)
         await server.wait_until_ready()

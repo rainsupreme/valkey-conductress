@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from src.config import ServerInfo
 from src.file_protocol import BenchmarkResults, BenchmarkStatus
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
@@ -39,6 +40,7 @@ class SyncTaskData(BaseTaskData):
             valsize=self.val_size,
             valcount=self.val_count,
             profiling_sample_rate=self.profiling_sample_rate,
+            make_args=self.make_args,
             note=self.note,
         )
 
@@ -56,6 +58,7 @@ class SyncTaskRunner(BaseTaskRunner):
         valsize: int,
         valcount: int,
         profiling_sample_rate: int,
+        make_args: str,
         note: str,
     ):
         """Initialize the test with a replication group."""
@@ -71,6 +74,7 @@ class SyncTaskRunner(BaseTaskRunner):
         self.valcount = valcount
         self.profiling_sample_rate = profiling_sample_rate
         self.note = note
+        self.make_args = make_args
 
         assert len(self.server_ips) >= 2, "At least two server IPs are required"
 
@@ -93,9 +97,9 @@ class SyncTaskRunner(BaseTaskRunner):
 
         # Setup replication group
         self.logger.info("setting up replication group with %d servers", len(self.server_ips))
-        server_infos = [ServerInfo(ip=ip) for ip in self.server_ips]
+        server_infos = [ServerInfo(ip=ip) for ip in self.server_ips]  # TODO: clean up this AI mess
         self.replication_group = ReplicationGroup(
-            server_infos, self.binary_source, self.specifier, self.io_threads
+            server_infos, self.binary_source, self.specifier, self.io_threads, self.make_args
         )
 
         # Update progress: setup complete
@@ -104,6 +108,7 @@ class SyncTaskRunner(BaseTaskRunner):
         self.file_protocol.write_status(self.status)
 
         self.logger.info("loading data onto primary")
+        assert self.replication_group.primary is not None
         await self.replication_group.primary.run_valkey_command_over_keyspace(
             self.valcount, f"-d {self.valsize} -t set"
         )
@@ -154,6 +159,7 @@ class SyncTaskRunner(BaseTaskRunner):
             score=throughput,
             end_time=completion_time,
             data=result,
+            make_args=self.make_args,
             note=self.note,
         )
         self.file_protocol.write_results(results_data)
@@ -173,10 +179,13 @@ class SyncTaskRunner(BaseTaskRunner):
     def __profiling_reports(self):
         """This takes some time, so we have all hosts perform the task in parallel."""
         self.logger.info("generating flamegraphs")
+        assert self.replication_group is not None
         tasks = [
             (self.replication_group.primary, "primary"),
             *[(replica, f"replica{i}") for i, replica in enumerate(self.replication_group.replicas)],
         ]
         with ThreadPoolExecutor() as executor:
-            executor.map(lambda t: t[0].profiling_report(self.task_name, t[1]), tasks)
+            executor.map(
+                lambda t: t[0].profiling_report(self.task_name, t[1]), tasks
+            )  # TODO: fix up profiling
         self.logger.info("flamegraphs done")

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar, Dict, Optional, Type
 
 from . import config
+from .file_protocol import FileProtocol
 from .utility import datetime_to_task_id
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class BaseTaskData(ABC):
     replicas: int
     note: str
     requirements: dict
+    make_args: str
     task_type: str = field(init=False)
     timestamp: datetime = field(
         default_factory=datetime.now,
@@ -49,9 +51,7 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
-        assert (
-            self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
-        )
+        assert self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
 
     def __eq__(self, other):
         if not isinstance(other, BaseTaskData):
@@ -69,9 +69,7 @@ class BaseTaskData(ABC):
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
-    def prepare_task_runner(
-        self, server_infos: list[config.ServerInfo]
-    ) -> "BaseTaskRunner":
+    def prepare_task_runner(self, server_infos: list[config.ServerInfo]) -> "BaseTaskRunner":
         """Return the task runner for this task."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -109,8 +107,6 @@ class BaseTaskRunner(ABC):
     """Base class for task runners"""
 
     def __init__(self, task_name: str):
-        from .file_protocol import FileProtocol
-
         self.file_protocol = FileProtocol(task_name, role_id="client")
 
     @abstractmethod
@@ -176,7 +172,7 @@ class TaskQueue:
 
     def remove_task(self, task_id: str) -> bool:
         """Remove a task from the queue by task_id.
-        
+
         Returns True if the task was removed, False otherwise.
         """
         task_file = self.queue_dir / f"task_{task_id}.json"

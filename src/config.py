@@ -10,6 +10,9 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 64
 
+# Default compiler arguments for Valkey builds
+DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
+
 
 class Features(Enum):
     PIN_VALKEY_THREADS = "pin_valkey_threads"

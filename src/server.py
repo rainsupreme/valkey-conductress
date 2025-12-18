@@ -1,6 +1,7 @@
 """Represents a server running a Valkey instance."""
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections import defaultdict
@@ -54,6 +55,7 @@ class Server:
         self.specifier: Optional[str] = None
         self.args: Optional[list[str]] = None
         self.hash: Optional[str] = None
+        self.make_args: str = config.DEFAULT_MAKE_ARGS
         self.threads: int = 1
 
         self.server_started: bool = False
@@ -71,11 +73,12 @@ class Server:
         binary_source: str,
         specifier: str,
         io_threads: int,
+        make_args: str,
     ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
         server = cls(ip, port, username)
 
-        cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier)
+        cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier, make_args)
         await server.start(cached_binary_path, io_threads)
         return server
 
@@ -392,13 +395,17 @@ class Server:
     async def enable_cpu_consistency_mode(self) -> None:
         """Configure CPU settings for consistent benchmarks across ARM/x86 platforms."""
         # Check if CPU frequency scaling is supported
-        cpufreq_exists = await self.check_file_exists(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"))
-        
+        cpufreq_exists = await self.check_file_exists(
+            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+        )
+
         if cpufreq_exists:
             # Try performance governor first, fallback to available governors
-            governors_out, _ = await self.run_host_command("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False)
+            governors_out, _ = await self.run_host_command(
+                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False
+            )
             available_governors = governors_out.strip().split() if governors_out else []
-            
+
             if "performance" in available_governors:
                 await self.run_host_command("sudo cpupower frequency-set -g performance")
                 logging.info("Set performance governor")
@@ -408,7 +415,7 @@ class Server:
                 logging.info("Set userspace governor (performance fallback)")
             else:
                 logging.warning("No suitable performance governor available: %s", available_governors)
-            
+
             # Disable turbo/boost on x86, check ARM boost paths
             boost_paths = [
                 "/sys/devices/system/cpu/cpufreq/boost",  # x86 turbo boost
@@ -420,8 +427,10 @@ class Server:
                     logging.info("Disabled boost/turbo at %s", boost_path)
                     break
         else:
-            logging.info("No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)")
-        
+            logging.info(
+                "No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)"
+            )
+
         # Handle idle states across platforms
         idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
         if "No idle states" in idle_result or "CPUidle driver: none" in idle_result:
@@ -431,13 +440,13 @@ class Server:
             for state in [1, 2, 3]:  # C1, C2, C3
                 await self.run_host_command(f"sudo cpupower idle-set -d {state}", check=False)
             logging.info("Disabled CPU idle states for latency consistency")
-        
+
         # Cross-platform scheduler optimizations
         scheduler_settings = [
             ("/proc/sys/kernel/sched_energy_aware", "0", "energy-aware scheduling"),
             ("/proc/sys/kernel/sched_autogroup_enabled", "0", "automatic process grouping"),
         ]
-        
+
         for path, value, description in scheduler_settings:
             if await self.check_file_exists(Path(path)):
                 await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
@@ -446,13 +455,17 @@ class Server:
     async def disable_cpu_consistency_mode(self) -> None:
         """Restore default CPU settings across ARM/x86 platforms."""
         # Check if CPU frequency scaling is supported
-        cpufreq_exists = await self.check_file_exists(Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"))
-        
+        cpufreq_exists = await self.check_file_exists(
+            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+        )
+
         if cpufreq_exists:
             # Restore appropriate default governor based on platform
-            governors_out, _ = await self.run_host_command("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False)
+            governors_out, _ = await self.run_host_command(
+                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors", check=False
+            )
             available_governors = governors_out.strip().split() if governors_out else []
-            
+
             # Prefer schedutil (modern), fallback to ondemand (older systems)
             if "schedutil" in available_governors:
                 await self.run_host_command("sudo cpupower frequency-set -g schedutil")
@@ -462,7 +475,7 @@ class Server:
                 logging.info("Restored ondemand governor")
             else:
                 logging.warning("No suitable default governor found: %s", available_governors)
-            
+
             # Re-enable turbo/boost
             boost_paths = [
                 "/sys/devices/system/cpu/cpufreq/boost",
@@ -475,20 +488,20 @@ class Server:
                     break
         else:
             logging.info("Fixed-frequency processor - no frequency settings to restore")
-        
+
         # Re-enable idle states if they were disabled
         idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
         if "No idle states" not in idle_result and "CPUidle driver: none" not in idle_result:
             for state in [1, 2, 3]:  # C1, C2, C3
                 await self.run_host_command(f"sudo cpupower idle-set -e {state}", check=False)
             logging.info("Re-enabled CPU idle states")
-        
+
         # Restore default scheduler settings
         scheduler_settings = [
             ("/proc/sys/kernel/sched_energy_aware", "1", "energy-aware scheduling"),
             ("/proc/sys/kernel/sched_autogroup_enabled", "1", "automatic process grouping"),
         ]
-        
+
         for path, value, description in scheduler_settings:
             if await self.check_file_exists(Path(path)):
                 await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
@@ -687,7 +700,7 @@ class Server:
     # =============================================================================
 
     async def ensure_binary_cached(
-        self, source: Optional[str] = None, specifier: Optional[str] = None
+        self, source: Optional[str] = None, specifier: Optional[str] = None, make_args: Optional[str] = None
     ) -> Path:
         """Ensure that an arbitrary binary has been cached. This needs to be done before running multiple
         instances on a single host."""
@@ -699,6 +712,8 @@ class Server:
             self.source = source
         if specifier:
             self.specifier = specifier
+        if make_args is not None:
+            self.make_args = make_args
 
         if self.source == config.MANUALLY_UPLOADED:
             return await self.__ensure_binary_uploaded(self.specifier)
@@ -715,7 +730,9 @@ class Server:
 
     def __get_cached_build_path(self) -> Path:
         assert self.source is not None and self.hash is not None
-        return Server.remote_build_cache / self.source / self.hash
+        # Use actual make_args value - empty string is a valid override
+        make_args_hash = hashlib.md5(self.make_args.encode()).hexdigest()[:16]
+        return Server.remote_build_cache / self.source / self.hash / make_args_hash
 
     def __get_source_binary_path(self) -> Path:
         assert self.source is not None
@@ -759,11 +776,12 @@ class Server:
             self.logger.info("building %s:%s...", self.source, self.specifier)
 
             try:
-                await self.run_host_command(
-                    f"cd {source_path}; "
-                    "make distclean && "
-                    'make -j USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
-                )
+                # Use actual make_args value - empty string is a valid override
+                make_command = f"cd {source_path}; make distclean && make -j"
+                if self.make_args:
+                    make_command += f" {self.make_args}"
+                # Note: empty make_args means no additional flags (bare make -j)
+                await self.run_host_command(make_command)
             except asyncssh.ProcessError as e:
                 self.logger.error("Build failed %d:\n%s", e.returncode, e.stderr)
                 raise e

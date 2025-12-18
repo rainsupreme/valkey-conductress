@@ -56,6 +56,7 @@ class BenchmarkResults:
     score: float  # primary result metric
     end_time: datetime  # completion timestamp
     data: dict[str, Any]  # detailed result info
+    make_args: str  # compiler arguments used for build
     features: dict[str, bool] = field(
         default_factory=lambda: {f.name: v for f, v in get_all_features().items()}
     )  # feature states

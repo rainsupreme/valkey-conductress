@@ -26,6 +26,7 @@ class TestMemTaskData:
             replicas=0,
             note="test",
             requirements={},
+            make_args="-O2 -g",
             type="set",
             val_sizes=[64, 128, 256],
             has_expire=False,
@@ -44,6 +45,7 @@ class TestMemTaskData:
             replicas=0,
             note="test",
             requirements={},
+            make_args="-O2 -g",
             type="set",
             val_sizes=[1024],
             has_expire=False,
@@ -63,6 +65,7 @@ class TestMemTaskData:
             replicas=0,
             note="test",
             requirements={},
+            make_args="-O2 -g",
             type="zadd",
             val_sizes=[64, 128, 256],
             has_expire=True,
@@ -82,6 +85,7 @@ class TestMemTaskData:
             replicas=0,
             note="test",
             requirements={},
+            make_args="-O2 -g",
             type="set",
             val_sizes=[64],
             has_expire=False,
@@ -120,6 +124,7 @@ class TestMemTaskRunner:
             test="set",
             val_sizes=[64, 128],
             has_expire=False,
+            make_args="-O2 -g",
             note="test note",
         )
 
@@ -140,6 +145,7 @@ class TestMemTaskRunner:
                 test="invalid",
                 val_sizes=[64],
                 has_expire=False,
+                make_args="-O2 -g",
                 note="test note",
             )
 
@@ -403,6 +409,7 @@ class TestMemTaskRunner:
             score=results[0]["per_item_overhead"],  # Single result score
             end_time=completion_time,
             data=results,
+            make_args="-O2 -g",
         )
 
         assert results_data.method == "mem-set"

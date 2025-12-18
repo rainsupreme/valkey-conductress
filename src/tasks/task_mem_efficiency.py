@@ -54,7 +54,8 @@ class MemTaskData(BaseTaskData):
             self.type,
             self.val_sizes,
             self.has_expire,
-            note=self.note,
+            self.make_args,
+            self.note,
         )
 
 
@@ -72,6 +73,7 @@ class MemTaskRunner(BaseTaskRunner):
         test: str,
         val_sizes: list[int],
         has_expire: bool,
+        make_args: str,
         note: str,
     ):
         super().__init__(task_name)
@@ -90,6 +92,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.val_sizes = val_sizes
         self.has_expire = has_expire
         self.note = note
+        self.make_args = make_args
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -114,7 +117,7 @@ class MemTaskRunner(BaseTaskRunner):
         print("Ensuring binary is ready")
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
         self.cached_binary_path = await Server(self.server_ip).ensure_binary_cached(
-            source=self.source, specifier=self.specifier
+            source=self.source, specifier=self.specifier, make_args=self.make_args
         )
         print(f"Binary ready! Testing with up to {avail_cpus} instances on server")
 
@@ -171,6 +174,7 @@ class MemTaskRunner(BaseTaskRunner):
             score=score,
             end_time=completion_time,
             data=detailed_results,
+            make_args=self.make_args,
             note=self.note,
         )
         self.file_protocol.write_results(results_data)

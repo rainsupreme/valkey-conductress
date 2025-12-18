@@ -89,6 +89,7 @@ class TestFileProtocol:
             score=1000.0,
             end_time=datetime(2024, 1, 1, 12, 0, 0),
             data={"rps": [1000.0, 950.0, 900.0], "latency": [2.5, 2.3, 2.1]},
+            make_args="-O2 -g",
             note="test note",
         )
 
@@ -103,6 +104,7 @@ class TestFileProtocol:
             assert data["method"] == "perf-set"
             assert data["score"] == 1000.0
             assert data["note"] == "test note"
+            assert data["make_args"] == "-O2 -g"
 
     def test_multiple_readers(self):
         """Test multiple readers can access metrics simultaneously."""
@@ -226,6 +228,7 @@ class TestFileProtocol:
             score=1000.0,
             end_time=datetime(2024, 1, 1, 12, 0, 0),
             data={"test": "data"},
+            make_args="-O2 -g",
         )
 
         protocol.write_results(results)
@@ -388,6 +391,7 @@ class TestFileProtocol:
             score=1000.0,
             end_time=datetime(2024, 1, 1, 12, 0, 0),
             data={"test": "data"},
+            make_args="-O2 -g",
         )
         
         protocol.write_results(results)

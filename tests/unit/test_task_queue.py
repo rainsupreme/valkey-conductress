@@ -57,6 +57,7 @@ def make_task():
     return MockTaskData(
         source="manual",
         specifier="spec",
+        make_args="",
         replicas=1,
         note="test",
         requirements={},
@@ -85,6 +86,7 @@ def test_invalid_repo_fails():
         MockTaskData(
             source="invalid_repo",
             specifier="spec",
+            make_args="",
             replicas=1,
             note="test",
             requirements={},

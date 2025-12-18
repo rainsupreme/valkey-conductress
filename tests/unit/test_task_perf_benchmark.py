@@ -35,6 +35,7 @@ class TestPerfTaskData:
         task = PerfTaskData(
             source="manual",
             specifier="test",
+            make_args="",
             replicas=1,
             note="test",
             requirements={},
@@ -61,6 +62,7 @@ class TestPerfTaskData:
         task_data = {
             "source": "manual",
             "specifier": "test",
+            "make_args": "",
             "replicas": 1,
             "note": "test",
             "requirements": {},

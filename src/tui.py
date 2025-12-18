@@ -30,7 +30,11 @@ from textual.widgets.selection_list import Selection
 from src.file_protocol import FileProtocol
 from src.tasks.task_full_sync import SyncTaskData
 from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
-from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
+from src.tasks.task_perf_benchmark import (
+    PerfTaskData,
+    PerfTaskRunner,
+    PerfTaskVisualizer,
+)
 from src.tui_data_service import TUIDataService
 
 from . import config
@@ -208,7 +212,12 @@ class BenchmarkApp(App):
 
     def _swap_visualizer(self, task_id: str) -> None:
         """Swap the task visualizer for the selected task."""
-        self.run_worker(lambda: self._swap_visualizer_worker(task_id), name="_swap_visualizer_worker", exclusive=True, thread=True)
+        self.run_worker(
+            lambda: self._swap_visualizer_worker(task_id),
+            name="_swap_visualizer_worker",
+            exclusive=True,
+            thread=True,
+        )
 
     def _swap_visualizer_worker(self, task_id: str):
         """Worker to fetch task status for visualizer."""
@@ -244,7 +253,7 @@ class BenchmarkApp(App):
         """Handle worker completion."""
         if not event.worker.is_finished or event.worker.result is None:
             return
-            
+
         if event.worker.name == "_refresh_worker":
             tasks, active_tasks = event.worker.result
             self._update_ui(tasks, active_tasks)
@@ -260,47 +269,45 @@ class BenchmarkApp(App):
 
     def _update_ui(self, tasks: list[BaseTaskData], active_tasks: dict) -> None:
         """Update all UI elements with refreshed data."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
         tabs = self.query_one("#root-tabs", TabbedContent)
         active_tab = tabs.active
-        
+
         tabs.get_tab("tab-queue").label = f"Queue ({len(tasks)})"
         tabs.get_tab("tab-status").label = f"Status ({len(active_tasks)})"
         self.queue_tasks = tasks
-        
+
         if active_tab == "tab-queue":
             self._populate_table(
                 "#queue-table",
                 ["Task ID", "Status", "Type", "Source:Specifier", "Description", "Note"],
-                self._queue_rows(tasks, active_tasks)
+                self._queue_rows(tasks, active_tasks),
             )
             self.query_one("#queue-table-status", Static).update(f"Last polled: {timestamp}")
         elif active_tab == "tab-status":
             self._populate_table(
-                "#status-table",
-                ["Task ID", "State", "PID", "Progress"],
-                self._status_rows(active_tasks)
+                "#status-table", ["Task ID", "State", "PID", "Progress"], self._status_rows(active_tasks)
             )
             self.query_one("#status-table-status", Static).update(f"Last update: {timestamp}")
             self._update_visualizer(active_tasks)
             if self.current_visualizer:
                 self.current_visualizer.refresh_data()
-    
+
     def _populate_table(self, table_id: str, columns: list[str], rows: list[tuple]) -> None:
         """Populate a table with data, preserving cursor position."""
         table = self.query_one(table_id, DataTable)
         cursor_row = table.cursor_row
         table.clear()
-        
+
         if not table.columns:
             table.add_columns(*columns)
-        
+
         for row in rows:
             table.add_row(*row)
-        
+
         if cursor_row is not None and cursor_row < len(rows):
             table.move_cursor(row=cursor_row)
-    
+
     def _queue_rows(self, tasks: list[BaseTaskData], active_tasks: dict) -> list[tuple]:
         """Generate queue table rows."""
         rows = []
@@ -311,16 +318,18 @@ class BenchmarkApp(App):
                 status = active_tasks[task.task_id]
                 progress = status.steps_completed / status.steps_total if status.steps_total else 0
                 task_status = f"{status.state} {progress*100:.0f}%"
-            rows.append((
-                task.task_id,
-                task_status,
-                task_type,
-                f"{task.source}:{task.specifier}",
-                task.short_description(),
-                task.note,
-            ))
+            rows.append(
+                (
+                    task.task_id,
+                    task_status,
+                    task_type,
+                    f"{task.source}:{task.specifier}",
+                    task.short_description(),
+                    task.note,
+                )
+            )
         return rows
-    
+
     def _status_rows(self, active_tasks: dict) -> list[tuple]:
         """Generate status table rows."""
         rows = []
@@ -331,7 +340,7 @@ class BenchmarkApp(App):
                 progress = f"{pct:.0f}% ({status.steps_completed}/{status.steps_total})"
             rows.append((task_id, status.state, str(status.pid or "N/A"), progress))
         return rows
-    
+
     def _update_visualizer(self, active_tasks: dict) -> None:
         """Update visualizer based on active tasks."""
         running_task_ids = list(active_tasks.keys())
@@ -594,6 +603,16 @@ class BaseTaskForm(ScrollableContainer):
         yield Label("Note (optional)", classes="form-label")
         yield Input(placeholder="Add a short note...", id="note", classes="form-input")
 
+    def _compose_make_args_input(self) -> Iterator[Union[Label, Input]]:
+        """Yield make args input widgets"""
+        yield Label("Make Args (optional)", classes="form-label")
+        yield Input(
+            value=config.DEFAULT_MAKE_ARGS,
+            placeholder="OPTIMIZATION=-O2",
+            id="make-args",
+            classes="form-input",
+        )
+
     def _compose_test_selection(self, tests: tuple[str, ...]) -> SelectionList:
         """Create test selection list widget"""
         selections = tuple(Selection[str](name, name) for name in tests)
@@ -607,16 +626,17 @@ class BaseTaskForm(ScrollableContainer):
             widgets.append(Static(label, classes="switch-label"))
         return Horizontal(*widgets, classes="switch-container")
 
-    def _validate_and_get_common_inputs(self) -> tuple[list[tuple[str, str]], str, Optional[str]]:
-        """Validate and return (specifiers, note, error_message)"""
+    def _validate_and_get_common_inputs(self) -> tuple[list[tuple[str, str]], str, str, Optional[str]]:
+        """Validate and return (specifiers, note, make_args, error_message)"""
         source_specifier_list = self.query_one("#specifiers", Input).value
         note = self.query_one("#note", Input).value.strip()
+        make_args = self.query_one("#make-args", Input).value.strip()
 
         specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
-            return [], "", f"source:specifier list: {error}"
+            return [], "", "", f"source:specifier list: {error}"
 
-        return specifiers, note, None
+        return specifiers, note, make_args, None
 
     def _validate_tests_selected(self, tests: list[str]) -> Optional[str]:
         """Return error message if no tests selected, None otherwise"""
@@ -663,6 +683,9 @@ class PerfTaskForm(BaseTaskForm):
         for widget in self._compose_note_input():
             yield widget
 
+        for widget in self._compose_make_args_input():
+            yield widget
+
         yield Button("Submit", variant="primary", id="submit-perf-task")
 
     def on_mount(self) -> None:
@@ -690,7 +713,7 @@ class PerfTaskForm(BaseTaskForm):
             self.notify(error, severity="error")
             return
 
-        specifiers, note, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -714,6 +737,7 @@ class PerfTaskForm(BaseTaskForm):
                 replicas=-1,  # TODO configurable replicas
                 note=note,
                 requirements={},
+                make_args=make_args,
                 val_size=size,
                 io_threads=thread,
                 pipelining=pipe,
@@ -752,6 +776,9 @@ class MemTaskForm(BaseTaskForm):
         for widget in self._compose_note_input():
             yield widget
 
+        for widget in self._compose_make_args_input():
+            yield widget
+
         yield Button("Submit", variant="primary", id="submit-mem-task")
 
     def on_mount(self) -> None:
@@ -773,7 +800,7 @@ class MemTaskForm(BaseTaskForm):
             self.notify(error, severity="error")
             return
 
-        specifiers, note, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -796,6 +823,7 @@ class MemTaskForm(BaseTaskForm):
                 replicas=-1,
                 note=note,
                 requirements={},
+                make_args=make_args,
             )
             tasks.append(task)
         self.queue_tasks(tasks)
@@ -829,6 +857,9 @@ class SyncTaskForm(BaseTaskForm):
         for widget in self._compose_note_input():
             yield widget
 
+        for widget in self._compose_make_args_input():
+            yield widget
+
         yield Button("Submit", variant="primary", id="submit-sync-task")
 
     @on(Button.Pressed, "#submit-sync-task")
@@ -847,7 +878,7 @@ class SyncTaskForm(BaseTaskForm):
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        specifiers, note, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -875,6 +906,7 @@ class SyncTaskForm(BaseTaskForm):
                 profiling_sample_rate=profiling_sample_rate,
                 note=note,
                 requirements={},
+                make_args=make_args,
             )
             tasks.append(task)
         self.queue_tasks(tasks)

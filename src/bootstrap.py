@@ -150,7 +150,7 @@ def ensure_ssh_key() -> None:
 
 
 async def ensure_server_known(server: config.ServerInfo):
-    logger.info("%s: ensuring known", server.name)
+    logger.info("%16s: ensuring known", server.name)
     stdout, _ = await async_run(f"ssh-keygen -F {server.ip}", check=False)
     if not stdout:
         logger.warning("%s: Adding new fingerprint to known_hosts...", server.name)
@@ -312,6 +312,21 @@ async def ensure_conductress(host: Host, pull=False):
         )
 
 
+async def cleanup_legacy_build_cache(host: Host) -> None:
+    """Remove old cache files from deprecated caching strategy.
+
+    Old: build_cache/{source}/{commit_hash}/
+    New: build_cache/{source}/{commit_hash}/{make_args_hash}/
+    """
+    old_cache_path = host.get_home_path() / "build_cache"
+
+    if await path_exists(host, old_cache_path, expected_type="directory"):
+        host.log_info_msg("Cleaning up old build cache files")
+        # Remove old cache structure that didn't include make_args in path
+        await host.run(f"find {old_cache_path} -name 'valkey-server' -delete", check=False)
+        await host.run(f"find {old_cache_path} -type d -empty -delete", check=False)
+
+
 async def update_host(server_info: config.ServerInfo):
     """Perform all updates on host at specified connection"""
     host = await Host.from_server_info(server_info)
@@ -328,10 +343,14 @@ async def update_host(server_info: config.ServerInfo):
     await ensure_conductress(host, pull=(server_info != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
+    # Clean up deprecated/legacy files from older versions
+    await cleanup_legacy_build_cache(host)
+
     host.log_info_msg("Ensuring config repos cloned...")
     await asyncio.gather(
         *(ensure_git_repo_cloned(host, repo_url, target_dir) for repo_url, target_dir in REPOSITORIES)
     )
+    host.log_info_msg("Done.")
 
 
 async def update_host_list(servers: list[config.ServerInfo]) -> None:
