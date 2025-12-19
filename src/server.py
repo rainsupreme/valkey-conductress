@@ -526,6 +526,11 @@ class Server:
         await self.stop()
         await asyncio.sleep(1)  # short delay to it doesn't get our new server (TODO verify this)
 
+    @staticmethod
+    def getNumCPUs(io_threads: int) -> int:
+        """Get number of CPUs allocated for server with specified io-threads parameter"""
+        return io_threads + 1  # (io-threads + 1 extra)
+
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
         """Ensure specified build is running on the server."""
         if io_threads < 1:
@@ -533,8 +538,8 @@ class Server:
         self.threads = io_threads
         await self.__pre_start()
 
-        # Allocate CPUs for this server (io-threads + 5 extra)
-        needed_cpus = self.threads + 5
+        # Allocate CPUs for this server
+        needed_cpus = Server.getNumCPUs(self.threads)
         self.server_cpus = await self._allocate_server_cpus(needed_cpus)
 
         self.args = []
@@ -572,9 +577,9 @@ class Server:
         for _ in range(10):
             try:
                 out = await self.run_valkey_command("PING")
-                print(out)
                 if out == "PONG":
                     return
+                print(out)
             except asyncssh.ProcessError:
                 print("cli error")
             time.sleep(1)

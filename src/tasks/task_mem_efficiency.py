@@ -111,15 +111,15 @@ class MemTaskRunner(BaseTaskRunner):
         # Write initial status
         self.file_protocol.write_status(self.status)
 
-        avail_cpus: int = await Server(self.server_ip).get_available_cpu_count()
-        avail_cpus = MEM_TEST_MAX_CONCURRENT if avail_cpus > MEM_TEST_MAX_CONCURRENT else avail_cpus
+        num_servers: int = await Server(self.server_ip).get_available_cpu_count() // Server.getNumCPUs(1)
+        num_servers = MEM_TEST_MAX_CONCURRENT if num_servers > MEM_TEST_MAX_CONCURRENT else num_servers
 
         print("Ensuring binary is ready")
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
         self.cached_binary_path = await Server(self.server_ip).ensure_binary_cached(
             source=self.source, specifier=self.specifier, make_args=self.make_args
         )
-        print(f"Binary ready! Testing with up to {avail_cpus} instances on server")
+        print(f"Binary ready! Testing with up to {num_servers} instances on server")
 
         # Update progress: setup complete
         self.status.state = "running"
@@ -127,7 +127,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.file_protocol.write_status(self.status)
 
         port_gen = port_generator()
-        semaphore = asyncio.Semaphore(avail_cpus)
+        semaphore = asyncio.Semaphore(num_servers)
         result_futures: list[CoroutineType] = []
         for size in self.val_sizes:
             port = next(port_gen)
@@ -190,18 +190,15 @@ class MemTaskRunner(BaseTaskRunner):
     async def test_single_size_overhead(self, val_size: int, port: int, semaphore) -> dict[str, float]:
         """Test memory efficiency for a single item size."""
         async with semaphore:
-            # print(f"{port} starting server")
             assert (
                 self.cached_binary_path is not None
             ), "cached_binary_path must be set before calling test_single_size_overhead"
             valkey = await Server.with_path(self.server_ip, port, self.cached_binary_path, io_threads=1)
             self.commit_hash = valkey.get_build_hash()
 
-            # print(f"{port} get memory usage before")
             before_memory: dict[str, str] = await valkey.info("memory")
 
             count = MEM_TEST_ITEM_COUNT
-            # print(f"{port} loading {HumanByte.to_human(count * (16 + val_size))} dataset")
             await valkey.run_valkey_command_over_keyspace(count, f"-d {val_size} -t {self.test}")
             if self.has_expire:
                 if self.test != "set":
@@ -211,7 +208,6 @@ class MemTaskRunner(BaseTaskRunner):
                         count, f"EXPIRE key:__rand_int__ {MEM_TEST_EXPIRE_SECONDS}"
                     )
 
-            # print(f"{port} get memory usage after")
             after_memory: dict[str, str] = await valkey.info("memory")
 
             (item_count, expire_count) = await valkey.count_items_expires()
@@ -220,6 +216,8 @@ class MemTaskRunner(BaseTaskRunner):
                 assert expire_count == count
             else:
                 assert expire_count == 0
+
+            await valkey.stop()  # required cleanup, release CPU allocations, etc
 
             keysize = MEM_TEST_KEY_SIZE
             before_usage = int(before_memory["used_memory"])
