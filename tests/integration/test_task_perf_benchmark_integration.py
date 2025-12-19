@@ -67,6 +67,11 @@ class TestPerfTaskIntegration:
         assert results["data"]["size"] == 64
         assert isinstance(results["data"]["avg_rps"], (int, float))
         assert results["data"]["avg_rps"] > 0
+        
+        # Verify lscpu data is collected
+        assert "lscpu" in results["data"]
+        assert isinstance(results["data"]["lscpu"], str)
+        assert len(results["data"]["lscpu"]) > 0
 
         # Verify feature toggles are present
         assert "features" in results

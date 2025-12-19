@@ -192,11 +192,14 @@ class PerfTaskRunner(BaseTaskRunner):
 
             line, _ = command.poll_output()
 
-    def __record_result(self):
+    async def __record_result(self, server):
         completion_time = datetime.datetime.now()
 
         assert len(self.rps_data) > 0, "No results recorded"
         avg_rps = sum(self.rps_data) / len(self.rps_data)
+
+        # Get system information
+        lscpu_output, _ = await server.run_host_command("lscpu")
 
         # Write results to file protocol
         detailed_data = {
@@ -208,6 +211,7 @@ class PerfTaskRunner(BaseTaskRunner):
             "size": self.valsize,
             "preload_keys": self.preload_keys,
             "avg_rps": avg_rps,
+            "lscpu": lscpu_output,
         }
 
         results = BenchmarkResults(
@@ -303,7 +307,7 @@ class PerfTaskRunner(BaseTaskRunner):
                     server.profiling_start(self.sample_rate)
 
         await self.__collect_metrics(command)
-        self.__record_result()
+        await self.__record_result(server)
 
         # Write final status
         self.status.state = "completed"
