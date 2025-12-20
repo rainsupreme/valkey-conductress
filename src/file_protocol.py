@@ -117,29 +117,29 @@ class FileProtocol:
 
         return self._metrics_cache
 
+    def get_result_dir(self) -> Path:
+        """Get the result directory path for this task."""
+        result_dir = CONDUCTRESS_RESULTS / self.task_id
+        result_dir.mkdir(parents=True, exist_ok=True)
+        return CONDUCTRESS_RESULTS / self.task_id
+
     def write_results(self, results: BenchmarkResults) -> None:
         """Write final results to file."""
+        # Create result directory
+        result_dir = self.get_result_dir()
+
+        # Copy metrics file to result directory
+        if self.metrics_file.exists():
+            shutil.copy2(self.metrics_file, result_dir / f"metrics_{self.role_id}.jsonl")
+
         # Write to output file
         os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
         with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
             data = asdict(results)
+            data["task_id"] = self.task_id
             data["end_time"] = datetime_to_task_id(results.end_time)
             f.write(json.dumps(data))
             f.write("\n")
-
-        # Copy metrics file to results folder
-        self._copy_metrics_to_results(results)
-
-    def _copy_metrics_to_results(self, results: BenchmarkResults) -> None:
-        """Copy metrics file to results folder with useful filename."""
-        if not self.metrics_file.exists():
-            return
-
-        timestamp = datetime_to_task_id(results.end_time)
-        filename = f"{results.method}_{results.source}_{results.specifier}_{timestamp}_{self.role_id}.jsonl"
-        dest_path = CONDUCTRESS_RESULTS / filename
-        os.makedirs(CONDUCTRESS_RESULTS, exist_ok=True)
-        shutil.copy2(self.metrics_file, dest_path)
 
     def cleanup(self) -> None:
         """Remove all files for this task."""

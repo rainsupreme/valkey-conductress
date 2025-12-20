@@ -46,6 +46,7 @@ class TestPerfTaskData:
             warmup=5.5,
             duration=10.7,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=False,
             preload_keys=True,
         )
@@ -73,6 +74,7 @@ class TestPerfTaskData:
             "warmup": 5.5,
             "duration": 10.7,
             "profiling_sample_rate": 0,
+            "perf_stat_enabled": False,
             "has_expire": False,
             "preload_keys": True,
             "task_type": "PerfTaskData",

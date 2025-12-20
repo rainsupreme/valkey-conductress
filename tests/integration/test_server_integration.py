@@ -1,7 +1,8 @@
 import asyncio
+import time
+import pytest
 from unittest.mock import patch
 
-import pytest
 
 from src.config import REPO_NAMES
 from src.server import Server
@@ -93,8 +94,11 @@ class TestServerIntegration:
             info = await valkey_server.info("keyspace")
             assert "db0" in info and info["db0"] == "keys=1,expires=0,avg_ttl=0"
 
-            # start a new server - should replace previous server
+            # terminate old server
+            await valkey_server.stop()
             del valkey_server
+
+            # start a new server - should replace previous server
             valkey_server = await Server.with_build(
                 "127.0.0.1",
                 DEFAULT_PORT,
@@ -166,3 +170,48 @@ class TestServerIntegration:
         assert path1 == path3
         mtime3 = await server.run_host_command(f"stat -c %Y {path3}")
         assert int(mtime3[0]) > int(mtime1[0])  # Newer modification time = rebuilt
+
+    @pytest.mark.asyncio
+    async def test_perf_stat_collection(self, tmp_path) -> None:
+        """Test that perf stat collection works correctly."""
+        valkey_server = await Server.with_build(
+            "127.0.0.1",
+            DEFAULT_PORT,
+            "ec2-user",
+            TEST_REPO,
+            TEST_SPECIFIER,
+            io_threads=1,
+            make_args="",
+        )
+
+        try:
+            # Start perf stat
+            await valkey_server.perf_stat_start()
+
+            # Do some work to generate stats for 2 seconds
+            end_time = time.time() + 2
+            i = 0
+            while time.time() < end_time:
+                await valkey_server.run_valkey_command(f"SET key{i} value{i}")
+                i += 1
+
+            # Wait for perf stat to complete
+            await valkey_server.perf_stat_stop()
+            valkey_server.perf_stat_wait()
+
+            # Copy results to local directory
+            await valkey_server.perf_stat_report(tmp_path)
+
+            await valkey_server.stop()
+
+            # Check that result file exists locally
+            result_file = tmp_path / "perf_stat.txt"
+            assert result_file.exists(), "Perf stat result file should exist"
+            
+            # Check that file has some content with stats
+            content = result_file.read_text()
+            assert len(content) > 0, "Perf stat file should not be empty"
+            assert "Performance counter stats" in content or "seconds" in content, "File should contain perf stat output"
+
+        finally:
+            await valkey_server.kill_all_valkey_instances_on_host()

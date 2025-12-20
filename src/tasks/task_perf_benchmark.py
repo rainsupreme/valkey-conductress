@@ -37,6 +37,7 @@ class PerfTaskData(BaseTaskData):
     warmup: int
     duration: int
     profiling_sample_rate: int
+    perf_stat_enabled: bool
     has_expire: bool
     preload_keys: bool
 
@@ -52,6 +53,7 @@ class PerfTaskData(BaseTaskData):
             f"{HumanTime.to_human(self.duration)}, {self.io_threads} threads"
             f", {self.pipelining} pipelined"
             f"{', profiling' if profiling else ''}"
+            f"{', perf-stat' if self.perf_stat_enabled else ''}"
         )
 
     def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "PerfTaskRunner":
@@ -71,6 +73,7 @@ class PerfTaskData(BaseTaskData):
             has_expire=self.has_expire,
             make_args=self.make_args,
             sample_rate=self.profiling_sample_rate,
+            perf_stat_enabled=self.perf_stat_enabled,
             note=self.note,
         )
 
@@ -131,6 +134,7 @@ class PerfTaskRunner(BaseTaskRunner):
         has_expire: bool,
         make_args: str,
         sample_rate: int = -1,
+        perf_stat_enabled: bool = False,
         note: str = "",
     ):
         super().__init__(task_name)
@@ -162,8 +166,11 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.profiling_thread = None
         self.profiling = self.sample_rate > 0
+        self.perf_stat_enabled = perf_stat_enabled
         if self.profiling:
             self.title += f", profiling={self.sample_rate}Hz"
+        if self.perf_stat_enabled:
+            self.title += ", perf-stat"
 
         # statistics
         self.rps_data: list[float] = []
@@ -210,6 +217,8 @@ class PerfTaskRunner(BaseTaskRunner):
             "has_expire": self.has_expire,
             "size": self.valsize,
             "preload_keys": self.preload_keys,
+            "profiling_enabled": self.profiling,
+            "perf_stat_enabled": self.perf_stat_enabled,
             "avg_rps": avg_rps,
             "lscpu": lscpu_output,
         }
@@ -299,12 +308,16 @@ class PerfTaskRunner(BaseTaskRunner):
             if now > end_time:
                 if self.profiling:
                     await server.profiling_stop()
+                if self.perf_stat_enabled:
+                    await server.perf_stat_stop()
                 command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 warming_up = False
                 if self.profiling:
                     server.profiling_start(self.sample_rate)
+                if self.perf_stat_enabled:
+                    await server.perf_stat_start()
 
         await self.__collect_metrics(command)
         await self.__record_result(server)
@@ -315,10 +328,15 @@ class PerfTaskRunner(BaseTaskRunner):
         self.status.steps_completed = self.warmup + self.duration  # 100% complete
         self.file_protocol.write_status(self.status)
 
-        if self.profiling:  # TODO: fix up profiling
-            await server.profiling_report(
-                self.task_name, "primary"
-            )  # TODO: fix up profiling - don't have task name any more
+        if self.profiling:
+            server.profiling_wait()
+            result_dir = self.file_protocol.get_result_dir()
+            await server.profiling_report(result_dir)
+
+        if self.perf_stat_enabled:
+            server.perf_stat_wait()
+            result_dir = self.file_protocol.get_result_dir()
+            await server.perf_stat_report(result_dir)
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()

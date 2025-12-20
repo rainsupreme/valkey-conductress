@@ -676,6 +676,7 @@ class PerfTaskForm(BaseTaskForm):
             ("preload-keys", "Preload Keys", True),
             ("expire-keys", "Expire Keys", False),
             ("profiling", "Profiling", False),
+            ("perf-stat", "Perf Stat", False),
         )
 
         yield self._compose_test_selection(PerfTaskRunner.tests)
@@ -705,6 +706,7 @@ class PerfTaskForm(BaseTaskForm):
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
             profiling: bool = self.query_one("#profiling", Switch).value
+            perf_stat: bool = self.query_one("#perf-stat", Switch).value
         except ValueError as e:
             self.notify(f"Invalid input: {e}", severity="error")
             return
@@ -745,6 +747,7 @@ class PerfTaskForm(BaseTaskForm):
                 warmup=warmup,
                 duration=duration,
                 profiling_sample_rate=profiling_sample_rate,
+                perf_stat_enabled=perf_stat,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
             )

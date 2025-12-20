@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from threading import Thread
 from typing import Optional, Union
+import subprocess
 
 import asyncssh
 
@@ -16,7 +17,8 @@ from src.utility import async_run
 from . import config
 
 VALKEY_BINARY = "valkey-server"
-PERF_STATUS_FILE = "/tmp/perf_running"
+PERF_STATUS_FILE = "/tmp/profiling_running"
+PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 
 
 class Server:
@@ -37,6 +39,7 @@ class Server:
     flamegraph = path_root / "FlameGraph"
     perf_data_path = path_root / "perf.data"
     flamegraph_path = path_root / "flamegraph.svg"
+    perf_stats_path = path_root / "perf_stat_output"
 
     # =============================================================================
     # INITIALIZATION AND FACTORY METHODS
@@ -58,11 +61,11 @@ class Server:
         self.make_args: str = config.DEFAULT_MAKE_ARGS
         self.threads: int = 1
 
-        self.server_started: bool = False
+        self.valkey_pid: int = -1  # -1 indicates server is not running
         self.server_cpus: list[int] = []  # CPUs allocated to this server
 
         self.profiling_thread: Optional[Thread] = None
-        self.profiling_abort = False
+        self.perf_stat_thread: Optional[Thread] = None
 
     @classmethod
     async def with_build(
@@ -314,9 +317,7 @@ class Server:
         if self.is_profiling():
             raise RuntimeError("Profiling already started")
 
-        self.profiling_thread = Thread(
-            target=self.__profiling_run, args=(sample_rate,)
-        )  # TODO make this async instead
+        self.profiling_thread = Thread(target=self.__profiling_run, args=(sample_rate,))
         self.profiling_thread.start()
 
     async def __profiling_run(self, sample_rate: int) -> None:
@@ -347,9 +348,11 @@ class Server:
         self.profiling_thread.join()
         self.profiling_thread = None
 
-    async def profiling_report(self, task_name: str, server_name: str) -> None:
+    async def profiling_report(self, result_dir: Path) -> None:
         """Retrieve profile data from server and generate flamegraph report.
         Stops profiling first if needed"""
+
+        assert result_dir.exists(), f"Result directory {result_dir} must exist"
 
         out_perf_path = Server.path_root / "out.perf"
         out_folded_path = Server.path_root / "out.folded"
@@ -372,21 +375,55 @@ class Server:
         await self.run_host_command(f"rm -f {out_perf_path} {out_folded_path}")
 
         print("copying perf data from server")
-        test_results = config.CONDUCTRESS_RESULTS / task_name
-        test_results.mkdir(parents=True, exist_ok=True)
+        await self.get_remote_file(Server.perf_data_path, result_dir / "perf.data")
+        await self.get_remote_file(Server.flamegraph_path, result_dir / "flamegraph.svg")
 
-        async def copy_remote_file(remote_file: Path):
-            filename = f"{server_name}-{remote_file.name}"
-            local_file = test_results / filename
-            await self.get_remote_file(remote_file, local_file)
-
-        await asyncio.gather(
-            *(copy_remote_file(file) for file in [Server.perf_data_path, Server.flamegraph_path])
-        )
-
-    async def __profiling_cleanup(self):
-        command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path}"
+    async def __data_collection_cleanup(self):
+        command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path} {Server.perf_stats_path}"
         await self.run_host_command(command)
+
+    # =============================================================================
+    # PERF STAT METHODS
+    # =============================================================================
+
+    async def perf_stat_start(self) -> None:
+        """Start perf stat collection for specified duration."""
+        if self.perf_stat_thread and self.perf_stat_thread.is_alive():
+            raise RuntimeError("Perf stat already running")
+
+        await self.run_host_command(f"touch {PERF_STAT_STATUS_FILE}")
+        self.perf_stat_thread = Thread(target=self.__perf_stat_run_sync)
+        self.perf_stat_thread.start()
+
+    def __perf_stat_run_sync(self) -> None:
+        """Run perf stat synchronously in thread."""
+        command = (
+            f"sudo perf stat -d -p {self.valkey_pid} -o {Server.perf_stats_path} "
+            f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
+        )
+        if self.ip in ["127.0.0.1", "localhost"]:
+            subprocess.run(command, shell=True, check=True)
+        else:
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
+
+    async def perf_stat_stop(self) -> None:
+        """Signals perf stat to stop. Use perf_stat_wait() to ensure that it actually finishes."""
+        if self.perf_stat_thread is None:
+            return
+        await self.run_host_command(f"rm -f {PERF_STAT_STATUS_FILE}")
+
+    def perf_stat_wait(self) -> None:
+        """Wait for perf stat to complete."""
+        if self.perf_stat_thread:
+            self.perf_stat_thread.join()
+            self.perf_stat_thread = None
+
+    async def perf_stat_report(self, result_dir: Path) -> None:
+        """Copy perf stat results to result directory."""
+        assert result_dir.exists(), f"Result directory {result_dir} must exist"
+        perf_stat_path = Path(Server.perf_stats_path)
+        local_path = result_dir / "perf_stat.txt"
+        await self.get_remote_file(perf_stat_path, local_path)
 
     # =============================================================================
     # CPU CONSISTENCY TUNING METHODS
@@ -564,7 +601,9 @@ class Server:
             f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
         out, err = await self.run_host_command(command)
-        self.server_started = True
+
+        pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
+        self.valkey_pid = int(pid_out.strip())
 
         await self.wait_until_ready()
 
@@ -593,30 +632,27 @@ class Server:
         self._allocated_cpus[self.ip].clear()
 
     async def stop(self):
-        self.server_started = False
-
         # Release allocated CPUs
         if self.server_cpus:
             self._release_server_cpus()
 
-        process_id, _ = await self.run_host_command(f"lsof -ti :{self.port}", check=False)
-        process_id = process_id.strip()
-        if not process_id:
+        if self.valkey_pid == -1:
             return
 
         # ensure process using the port is one of our expected valkey processes
         # (in case an unexpected process is already using the port for some reason)
-        name, _ = await self.run_host_command(f"ps -p {process_id}")
+        name, _ = await self.run_host_command(f"ps -p {self.valkey_pid}")
         name = name.strip().split()[-1]
         assert name == VALKEY_BINARY
 
-        await self.run_host_command(f"kill -9 {process_id}")
+        await self.run_host_command(f"kill -9 {self.valkey_pid}")
+        self.valkey_pid = -1
 
         # clean up any rdb files from replication or snapshotting
         # valkey will automatically load "dump.rdb" if it is present
-        await self.run_host_command("rm -f *.rdb", check=False)
-        # clean up any profiling files
-        await self.__profiling_cleanup()
+        await self.run_host_command(f"cd {Server.path_root} && rm -f *.rdb", check=False)
+        # clean up any files created by profiling or other metric collection
+        await self.__data_collection_cleanup()
 
     # =============================================================================
     # VALKEY COMMAND EXECUTION METHODS
@@ -711,7 +747,7 @@ class Server:
         instances on a single host."""
         # don't break assumption that version running matches state
         # also don't want to be running builds while benchmarks are running
-        assert not self.server_started
+        assert self.valkey_pid == -1, "Cannot change binary while server is running"
 
         if source:
             self.source = source

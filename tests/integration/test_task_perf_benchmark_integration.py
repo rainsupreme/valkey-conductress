@@ -18,8 +18,9 @@ class TestPerfTaskIntegration:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), \
-                 patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
+            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), patch(
+                "src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"
+            ):
                 yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -41,6 +42,7 @@ class TestPerfTaskIntegration:
             warmup=1,
             duration=2,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
         )
@@ -67,7 +69,7 @@ class TestPerfTaskIntegration:
         assert results["data"]["size"] == 64
         assert isinstance(results["data"]["avg_rps"], (int, float))
         assert results["data"]["avg_rps"] > 0
-        
+
         # Verify lscpu data is collected
         assert "lscpu" in results["data"]
         assert isinstance(results["data"]["lscpu"], str)
@@ -107,6 +109,7 @@ class TestPerfTaskIntegration:
             warmup=1,
             duration=2,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=False,
             preload_keys=True,
         )
@@ -146,6 +149,7 @@ class TestPerfTaskIntegration:
             warmup=1,
             duration=2,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
         )
@@ -186,6 +190,7 @@ class TestPerfTaskIntegration:
             warmup=1,
             duration=2,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=True,
             preload_keys=True,
         )
@@ -225,6 +230,7 @@ class TestPerfTaskIntegration:
             warmup=1,
             duration=2,
             profiling_sample_rate=0,
+            perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
         )
@@ -238,7 +244,7 @@ class TestPerfTaskIntegration:
 
         with open(runner.file_protocol.status_file) as f:
             final_status = json.load(f)
-        
+
         assert final_status["state"] == "completed"
         assert final_status["heartbeat"] is not None
         assert final_status["start_time"] is not None
@@ -250,7 +256,9 @@ class TestPerfTaskIntegration:
     @pytest.mark.asyncio
     async def test_error_handling_integration(self, temp_dir):
         """Test PerfTaskRunner error handling with invalid configuration."""
-        with patch("src.config.REPO_NAMES", ["valkey"]), patch("src.task_queue.config.REPO_NAMES", ["valkey"]):
+        with patch("src.config.REPO_NAMES", ["valkey"]), patch(
+            "src.task_queue.config.REPO_NAMES", ["valkey"]
+        ):
             task_data = PerfTaskData(
                 source="valkey",
                 specifier="8.0",
@@ -265,6 +273,7 @@ class TestPerfTaskIntegration:
                 warmup=1,
                 duration=1,
                 profiling_sample_rate=0,
+                perf_stat_enabled=False,
                 has_expire=False,
                 preload_keys=False,
             )
@@ -304,6 +313,7 @@ class TestPerfTaskIntegration:
             warmup=10,
             duration=60,
             profiling_sample_rate=99,
+            perf_stat_enabled=False,
             has_expire=True,
             preload_keys=True,
         )
@@ -311,6 +321,7 @@ class TestPerfTaskIntegration:
         task_file = temp_dir / "test_task.json"
         original_task.save_to_file(task_file)
         loaded_task = PerfTaskData.from_file(task_file)
+        assert isinstance(loaded_task, PerfTaskData)
 
         assert loaded_task.source == original_task.source
         assert loaded_task.specifier == original_task.specifier

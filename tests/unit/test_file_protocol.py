@@ -233,11 +233,12 @@ class TestFileProtocol:
 
         protocol.write_results(results)
 
-        # Check if metrics file was copied (using mocked results dir)
-        results_dir = src.file_protocol.CONDUCTRESS_RESULTS
-        copied_files = list(results_dir.glob("*.jsonl"))
+        # Check if metrics file was copied to task subdirectory
+        task_results_dir = src.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
+        assert task_results_dir.exists()
+        copied_files = list(task_results_dir.glob("*.jsonl"))
         assert len(copied_files) == 1
-        assert "perf-set_valkey_unstable" in copied_files[0].name
+        assert copied_files[0].name == "metrics_client.jsonl"
 
         # Verify content
         with open(copied_files[0], encoding="utf-8") as f:
@@ -396,8 +397,9 @@ class TestFileProtocol:
         
         protocol.write_results(results)
         
-        results_dir = src.file_protocol.CONDUCTRESS_RESULTS
-        copied_files = list(results_dir.glob("*.jsonl"))
+        task_results_dir = src.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
+        assert task_results_dir.exists()
+        copied_files = list(task_results_dir.glob("*.jsonl"))
         assert len(copied_files) == 1
         assert "primary_10_0_1_5_p9000" in copied_files[0].name
 
