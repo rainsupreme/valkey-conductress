@@ -13,6 +13,7 @@ import subprocess
 import asyncssh
 
 from src.utility import async_run
+from src.cpu_allocator import CpuAllocator, AllocationTag
 
 from . import config
 
@@ -24,13 +25,8 @@ PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 class Server:
     """Represents a server running a Valkey instance."""
 
-    # Class-level CPU allocation tracking per host
-    # key is server ip
-    _allocated_cpus: dict[str, set[int]] = defaultdict(set)
-    _irq_cpus: dict[str, set[int]] = defaultdict(set)
-    _numa_nodes: dict[str, int] = {}
-    _numa_cpus: dict[str, list[int]] = {}
-    _cpu_counts: dict[str, int] = {}
+    # Class-level CPU allocator shared across all Server instances
+    _cpu_allocator = CpuAllocator()
 
     # These are remote paths - they exist on the valkey server
     path_root = Path("~")
@@ -63,6 +59,7 @@ class Server:
 
         self.valkey_pid: int = -1  # -1 indicates server is not running
         self.server_cpus: list[int] = []  # CPUs allocated to this server
+        self._allocation_tag: Optional[AllocationTag] = None  # Tag for CPU allocation
 
         self.profiling_thread: Optional[Thread] = None
         self.perf_stat_thread: Optional[Thread] = None
@@ -96,54 +93,61 @@ class Server:
     # CPU AND IRQ PINNING METHODS
     # =============================================================================
 
-    async def _setup_cpu_pinning(self):
+    async def ensure_host_cpu_allocation(self):
         """Main orchestrator method for network IRQ pinning"""
         net_interface = await self._detect_interface_for_ip()
 
-        await self._determine_numa_node_and_cpus(net_interface)
+        await self._register_host_cpus(net_interface)
 
         # Skip IRQ pinning for loopback, but do everything else
         if net_interface != "lo":
-            await self._setup_irq_management()
+            await self._disable_irqbalance()
             await self._pin_network_irqs(net_interface)
         else:
             logging.info("Connected via loopback - no network IRQs to pin")
-
-        self._validate_cpu_allocation()
 
     async def _detect_interface_for_ip(self) -> str:
         """Find network interface for the server IP"""
         stdout, _ = await self.run_host_command(f"ip -4 -o addr show | grep {self.ip}")
         return stdout.strip().split()[1]
 
-    async def _determine_numa_node_and_cpus(self, net_interface: str):
-        """Get NUMA node for the interface and CPU list"""
-        # Skip if already determined for this host
-        if self.ip in self._numa_nodes:
+    async def _register_host_cpus(self, net_interface: str):
+        """Get NUMA node for the interface and register host with allocator"""
+        # Skip if already registered
+        if self._cpu_allocator.is_host_registered(self.ip):
             return
 
         stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
-        self._cpu_counts[self.ip] = len(stdout.strip().split("\n"))
+        lines = stdout.strip().split("\n")
+
+        # Parse all CPUs and build NUMA topology
+        all_cpus = []
+        numa_topology = defaultdict(list)
+        for line in lines:
+            node, cpu = line.split(",")
+            cpu_id = int(cpu)
+            numa_node = int(node)
+            all_cpus.append(cpu_id)
+            numa_topology[numa_node].append(cpu_id)
 
         if net_interface == "lo":
-            self._numa_nodes[self.ip] = 0  # use NUMA node 0 for cache locality
+            net_interface_numa = 0  # use NUMA node 0 for cache locality
         else:
             # Get the numa node matching interface
             numa_stdout, _ = await self.run_host_command(
                 f'cat "/sys/class/net/{net_interface}/device/numa_node"'
             )
-            self._numa_nodes[self.ip] = int(numa_stdout.strip())
+            net_interface_numa = int(numa_stdout.strip())
 
-        # Get the cores for that numa node
-        numa_cpus = [
-            int(x.split(",")[1])
-            for x in stdout.strip().split("\n")
-            if x.startswith(f"{self._numa_nodes[self.ip]},")
-        ]
-        numa_cpus.sort()
-        self._numa_cpus[self.ip] = numa_cpus
+        # Register host with allocator
+        self._cpu_allocator.register_host(
+            self.ip,
+            all_cpus=all_cpus,
+            numa_topology=dict(numa_topology),
+            net_interface_numa=net_interface_numa,
+        )
 
-    async def _setup_irq_management(self):
+    async def _disable_irqbalance(self):
         """Disable irqbalance to allow manual IRQ pinning"""
         await self.run_host_command("sudo systemctl stop irqbalance")
         await self.run_host_command("sudo systemctl disable irqbalance")
@@ -156,11 +160,12 @@ class Server:
             return
 
         # Skip if IRQs already configured on this host
-        if self.ip in self._irq_cpus and self._irq_cpus[self.ip]:
+        irq_tag = AllocationTag(task_id="system", purpose="irq")
+        if self._cpu_allocator.get_allocation(self.ip, irq_tag) is not None:
             logging.info(
                 "Network IRQs already configured on %s, using existing CPUs %s",
                 self.ip,
-                list(self._irq_cpus[self.ip]),
+                self._cpu_allocator.get_allocation(self.ip, irq_tag),
             )
             return
 
@@ -168,15 +173,20 @@ class Server:
         stdout, _ = await self.run_host_command(f"grep -i {net_interface} /proc/interrupts")
         net_irqs = [int(irq.split(":")[0].strip()) for irq in stdout.strip().split("\n")]
 
-        # Pin IRQs to cores
-        irq_cpus = []
+        # Allocate CPUs for IRQs on the network interface NUMA node
+        net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
+        irq_cpus = self._cpu_allocator.allocate(self.ip, irq_tag, count=len(net_irqs), require_numa=net_numa)
+
+        # Get total CPU count for mask calculation
+        stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
+        total_cpus = len(stdout.strip().split("\n"))
+
+        # Pin IRQs to allocated CPUs
         for i, irq in enumerate(net_irqs):
-            # Use the last CPUs in the NUMA node for network IRQs
-            irq_cpu = self._numa_cpus[self.ip][-(i + 1)]
-            irq_cpus.append(irq_cpu)
+            irq_cpu = irq_cpus[-(i + 1)]  # Use last CPUs from allocation
 
             # Create affinity mask with just this CPU enabled
-            digits = (self._cpu_counts[self.ip] + 3) // 4
+            digits = (total_cpus + 3) // 4
             mask = 1 << irq_cpu
             mask = f"{mask:X}".zfill(digits)
             if digits > 8:
@@ -188,72 +198,37 @@ class Server:
             # Set the IRQ affinity using the mask
             await self.run_host_command(f"sudo sh -c 'echo {mask} > /proc/irq/{irq}/smp_affinity'")
 
-        # Replace all IRQ CPUs at class level (invalidates previous associations)
-        self._irq_cpus[self.ip] = set(irq_cpus)
-
         logging.info(
-            "Pinned net IRQs %s for %s to CPUs %s (Numa node %d)",
+            "Pinned net IRQs %s for %s to CPUs %s (NUMA node %d)",
             net_irqs,
             net_interface,
-            self._numa_cpus[self.ip][-len(net_irqs) :],
-            self._numa_nodes[self.ip],
+            irq_cpus,
+            net_numa,
         )
 
-    def _validate_cpu_allocation(self):
-        """Check for potential CPU conflicts and log warnings"""
-        assert self.threads >= 1
-        if len(self._irq_cpus[self.ip]) + self.threads > len(self._numa_cpus[self.ip]):
-            logging.warning(
-                "%d network IRQs and %d Valkey threads but only %d cores available.",
-                len(self._irq_cpus[self.ip]),
-                self.threads,
-                len(self._numa_cpus[self.ip]),
-            )
-
     async def _allocate_server_cpus(self, cpu_count: int) -> list[int]:
-        """Allocate CPUs for this server, avoiding IRQ CPUs and other servers"""
-        # Get all CPUs from all NUMA nodes for fallback
-        stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
-        all_cpus = [int(x.split(",")[1]) for x in stdout.strip().split("\n")]
-        all_cpus.sort()
+        """Allocate CPUs for this server on the network interface NUMA node"""
+        # Create allocation tag for this server
+        self._allocation_tag = AllocationTag(task_id=f"server_{self.ip}_{self.port}", purpose="server")
 
-        # Available CPUs = All CPUs - IRQ CPUs - Already allocated CPUs
-        available = set(all_cpus) - self._irq_cpus[self.ip] - self._allocated_cpus[self.ip]
-
-        # Prefer CPUs from the same NUMA node first
-        preferred = set(self._numa_cpus[self.ip]) & available
-
-        if len(preferred) >= cpu_count:
-            # Use preferred CPUs from same NUMA node
-            allocated = sorted(preferred)[:cpu_count]
-        elif len(available) >= cpu_count:
-            # Fallback to any available CPUs from other NUMA nodes
-            logging.warning(
-                "Not enough CPUs in NUMA node %d, using CPUs from other nodes",
-                self._numa_nodes[self.ip],
-            )
-            allocated = sorted(available)[:cpu_count]
-        else:
-            # Not enough CPUs available
-            logging.error(
-                "Only %d CPUs available, need %d for server threads",
-                len(available),
-                cpu_count,
-            )
-            assert False, f"Insufficient CPUs: need {cpu_count}, available {len(available)}"
-
-        # Mark CPUs as allocated
-        self._allocated_cpus[self.ip].update(allocated)
+        # Allocate on network interface NUMA node
+        net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
+        cpus = self._cpu_allocator.allocate(
+            self.ip,
+            self._allocation_tag,
+            count=cpu_count,
+            require_numa=net_numa,
+        )
 
         logging.info(
             "Allocated CPUs %s for server on %s:%d (NUMA node %d)",
-            allocated,
+            cpus,
             self.ip,
             self.port,
-            self._numa_nodes[self.ip],
+            net_numa,
         )
 
-        return allocated
+        return cpus
 
     async def _pin_valkey_threads(self):
         """Pin main thread and I/O threads to individual CPUs after server starts"""
@@ -288,8 +263,8 @@ class Server:
 
     def _release_server_cpus(self):
         """Release CPUs allocated to this server"""
-        if self.server_cpus:
-            self._allocated_cpus[self.ip].difference_update(self.server_cpus)
+        if self._allocation_tag and self.server_cpus:
+            self._cpu_allocator.release(self.ip, self._allocation_tag)
             logging.info(
                 "Released CPUs %s for server on %s:%d",
                 self.server_cpus,
@@ -297,16 +272,15 @@ class Server:
                 self.port,
             )
             self.server_cpus = []
+            self._allocation_tag = None
 
     async def get_available_cpu_count(self) -> int:
-        """Get the number of CPUs available on this host (total - allocated - irq)."""
-        # Ensure IRQ pinning setup is done to populate class variables
-        await self._setup_cpu_pinning()
+        """Get the number of CPUs available on this host."""
+        # Ensure host is registered with allocator
+        await self.ensure_host_cpu_allocation()
 
-        total_cpus = self._cpu_counts[self.ip]
-        allocated_cpus = len(self._allocated_cpus[self.ip])
-        irq_cpus = len(self._irq_cpus[self.ip])
-        return total_cpus - allocated_cpus - irq_cpus
+        net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
+        return self._cpu_allocator.get_available_count(self.ip, prefer_numa=net_numa)
 
     # =============================================================================
     # PROFILING METHODS
@@ -550,7 +524,7 @@ class Server:
 
     async def __pre_start(self) -> None:
         """Configuration and preparation before starting Valkey server"""
-        await self._setup_cpu_pinning()
+        await self.ensure_host_cpu_allocation()
 
         if config.check_feature(config.Features.ENABLE_CPU_CONSISTENCY_MODE):
             await self.enable_cpu_consistency_mode()
@@ -603,7 +577,7 @@ class Server:
 
         # Optionally bind memory to NUMA node for consistent performance
         if config.check_feature(config.Features.BIND_NUMA_MEMORY):
-            numa_node = self._numa_nodes[self.ip]
+            numa_node = self._cpu_allocator.get_net_interface_numa(self.ip)
             command = f"numactl --membind={numa_node} {command}"
             logging.info("Binding memory to NUMA node %d", numa_node)
 
@@ -635,8 +609,12 @@ class Server:
     async def kill_all_valkey_instances_on_host(self):
         """Stop all instances of valkey server, regardless of which port they're running on"""
         await self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
-        # Clear all CPU allocations for this host
-        self._allocated_cpus[self.ip].clear()
+
+        # Clear all non-IRQ allocations for this host
+        all_allocations = self._cpu_allocator.get_all_allocations(self.ip)
+        for tag in list(all_allocations.keys()):
+            if tag.purpose != "irq":  # Keep IRQ allocations
+                self._cpu_allocator.release(self.ip, tag)
 
     async def stop(self):
         # Release allocated CPUs

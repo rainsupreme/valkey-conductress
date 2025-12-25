@@ -21,9 +21,11 @@ from src.file_protocol import (
     FileProtocol,
     MetricData,
 )
+from src.server import Server
 from src.replication_group import ReplicationGroup
 from src.task_queue import BaseTaskData, BaseTaskRunner
 from src.utility import BILLION, HumanByte, HumanNumber, HumanTime, RealtimeCommand
+from src.cpu_allocator import AllocationTag
 
 
 @dataclass
@@ -141,14 +143,8 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + test)
 
-        self.title = (
-            f"{test} throughput, {binary_source}:{specifier}, io-threads={io_threads}, "
-            f"pipelining={pipelining}, size={HumanByte.to_human(valsize)}, "
-            f"warmup={HumanTime.to_human(warmup)}, "
-            f"duration={HumanTime.to_human(duration)}"
-        )
-
         # settings
+        self.task_name = task_name
         self.server_infos = server_infos
         self.binary_source = binary_source
         self.specifier = specifier
@@ -167,6 +163,13 @@ class PerfTaskRunner(BaseTaskRunner):
         self.profiling_thread = None
         self.profiling = self.sample_rate > 0
         self.perf_stat_enabled = perf_stat_enabled
+
+        self.title = (
+            f"{test} throughput, {binary_source}:{specifier}, io-threads={io_threads}, "
+            f"pipelining={pipelining}, size={HumanByte.to_human(valsize)}, "
+            f"warmup={HumanTime.to_human(warmup)}, "
+            f"duration={HumanTime.to_human(duration)}"
+        )
         if self.profiling:
             self.title += f", profiling={self.sample_rate}Hz"
         if self.perf_stat_enabled:
@@ -254,6 +257,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
         await replication_group.start()
         assert replication_group.primary
+
         await replication_group.begin_replication()
         await replication_group.wait_for_repl_sync()
         server = replication_group.primary
@@ -271,8 +275,18 @@ class PerfTaskRunner(BaseTaskRunner):
                         PERF_BENCH_KEYSPACE, self.test.expire_command
                     )
 
+        # Setup client IRQ pinning and allocate CPUs for benchmark
+        client = Server("127.0.0.1")
+        await client.ensure_host_cpu_allocation()
+
+        benchmark_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
+        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+        benchmark_cpus = client._cpu_allocator.allocate(
+            client.ip, benchmark_tag, count=PERF_BENCH_THREADS, require_numa=net_numa
+        )
+        cpu_list = ",".join(map(str, benchmark_cpus))
         command_string = (
-            f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+            f"taskset -c {cpu_list} {PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
             f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
         )
@@ -341,6 +355,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
+
+        # Release benchmark CPUs
+        client._cpu_allocator.release(client.ip, benchmark_tag)
 
 
 class PerfTaskVisualizer(PlotTaskVisualizer):
