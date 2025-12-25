@@ -3,6 +3,7 @@ cmake3
 git
 js-d3-flame-graph
 lsof
+numactl
 perf
 perl-open.noarch # needed for brendangregg/FlameGraph in rhel
 python3-pip

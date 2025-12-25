@@ -221,6 +221,7 @@ class PerfTaskRunner(BaseTaskRunner):
             "perf_stat_enabled": self.perf_stat_enabled,
             "avg_rps": avg_rps,
             "lscpu": lscpu_output,
+            "server_cpus": server.server_cpus,
         }
 
         results = BenchmarkResults(

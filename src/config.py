@@ -8,7 +8,7 @@ from attr import dataclass
 
 PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
-PERF_BENCH_THREADS = 64
+PERF_BENCH_THREADS = 16  # 75 connections per thread
 
 # Default compiler arguments for Valkey builds
 DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
@@ -17,11 +17,13 @@ DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
 class Features(Enum):
     PIN_VALKEY_THREADS = "pin_valkey_threads"
     ENABLE_CPU_CONSISTENCY_MODE = "cpu_consistency_mode"
+    BIND_NUMA_MEMORY = "bind_numa_memory"
 
 
 FEATURE_STATES = {
-    Features.PIN_VALKEY_THREADS: False,
+    Features.PIN_VALKEY_THREADS: True,
     Features.ENABLE_CPU_CONSISTENCY_MODE: True,
+    Features.BIND_NUMA_MEMORY: False,
 }
 
 

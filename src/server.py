@@ -566,7 +566,7 @@ class Server:
     @staticmethod
     def getNumCPUs(io_threads: int) -> int:
         """Get number of CPUs allocated for server with specified io-threads parameter"""
-        return io_threads + 1  # (io-threads + 1 extra)
+        return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
         """Ensure specified build is running on the server."""
@@ -589,17 +589,24 @@ class Server:
         self.args += ["--server-cpulist", main_io_cpu_list]
 
         # Background threads: remaining CPUs (bio, AOF rewrite, bgsave)
-        bg_thread_start_cpu = self.threads + 1
-        if bg_thread_start_cpu < len(self.server_cpus):
-            bg_cpu_list = ",".join(map(str, self.server_cpus[bg_thread_start_cpu:]))
-            self.args += ["--bio-cpulist", bg_cpu_list]
-            self.args += ["--aof-rewrite-cpulist", bg_cpu_list]
-            self.args += ["--bgsave-cpulist", bg_cpu_list]
+        bg_thread_start_cpu = self.threads
+        assert bg_thread_start_cpu < len(self.server_cpus), "Not enough CPUs allocated for background threads"
+        bg_cpu_list = ",".join(map(str, self.server_cpus[bg_thread_start_cpu:]))
+        self.args += ["--bio-cpulist", bg_cpu_list]
+        self.args += ["--aof-rewrite-cpulist", bg_cpu_list]
+        self.args += ["--bgsave-cpulist", bg_cpu_list]
 
         command = (
             f"{cached_binary_path} --port {self.port} "
             f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
         )
+
+        # Optionally bind memory to NUMA node for consistent performance
+        if config.check_feature(config.Features.BIND_NUMA_MEMORY):
+            numa_node = self._numa_nodes[self.ip]
+            command = f"numactl --membind={numa_node} {command}"
+            logging.info("Binding memory to NUMA node %d", numa_node)
+
         out, err = await self.run_host_command(command)
 
         pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
@@ -671,7 +678,7 @@ class Server:
         """Run valkey-benchmark, sequentially covering the entire keyspace."""
         sequential_command: str = (
             f"{str(config.PROJECT_ROOT / config.VALKEY_BENCHMARK)} -h {self.ip} -p {self.port} -c 32 -P 20 "
-            f"--threads 8 -q --sequential -r {keyspace_size} -n {keyspace_size} "
+            f"--threads 16 -q --sequential -r {keyspace_size} -n {keyspace_size} "
         )
         sequential_command += command
         self.logger.info("Benchmark Command: %s", sequential_command)

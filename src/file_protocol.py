@@ -103,6 +103,11 @@ class FileProtocol:
         if self.metrics_file.exists():
             try:
                 with open(self.metrics_file, "r", encoding="utf-8") as f:
+                    file_size = f.seek(0, 2)  # Seek to end to get size
+                    # If file is smaller than last position, it was truncated/replaced
+                    if file_size < self._last_read_position:
+                        self._metrics_cache.clear()
+                        self._last_read_position = 0
                     f.seek(self._last_read_position)
                     for line in f:
                         if line.strip():
