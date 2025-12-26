@@ -275,18 +275,14 @@ class PerfTaskRunner(BaseTaskRunner):
                         PERF_BENCH_KEYSPACE, self.test.expire_command
                     )
 
-        # Setup client IRQ pinning and allocate CPUs for benchmark
+        # Setup client IRQ pinning and bind benchmark to NUMA node
         client = Server("127.0.0.1")
         await client.ensure_host_cpu_allocation()
 
-        benchmark_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-        benchmark_cpus = client._cpu_allocator.allocate(
-            client.ip, benchmark_tag, count=PERF_BENCH_THREADS, require_numa=net_numa
-        )
-        cpu_list = ",".join(map(str, benchmark_cpus))
         command_string = (
-            f"taskset -c {cpu_list} {PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+            f"numactl --cpunodebind={net_numa} --membind={net_numa} "
+            f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
             f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
             f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
         )
@@ -355,9 +351,6 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
-
-        # Release benchmark CPUs
-        client._cpu_allocator.release(client.ip, benchmark_tag)
 
 
 class PerfTaskVisualizer(PlotTaskVisualizer):
