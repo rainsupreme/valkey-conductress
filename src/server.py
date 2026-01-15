@@ -291,17 +291,25 @@ class Server:
         if self.is_profiling():
             raise RuntimeError("Profiling already started")
 
-        self.profiling_thread = Thread(target=self.__profiling_run, args=(sample_rate,))
+        self.profiling_thread = Thread(target=self.__profiling_run_sync, args=(sample_rate,))
         self.profiling_thread.start()
 
-    async def __profiling_run(self, sample_rate: int) -> None:
+    def __profiling_run_sync(self, sample_rate: int) -> None:
         """Profile performance using perf for specified duration. Leaves data file on server."""
-        await self.run_host_command(f"touch {PERF_STATUS_FILE}")
-        command = (
+        command = f"touch {PERF_STATUS_FILE}"
+        if self.ip in ["127.0.0.1", "localhost"]:
+            subprocess.run(command, shell=True, check=True)
+        else:
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
+        
+        perf_command = (
             f"sudo perf record -F {sample_rate} -a -g -o {Server.perf_data_path} "
             f"-- sh -c 'while [ -f {PERF_STATUS_FILE} ]; do sleep 1; done'"
         )
-        await self.run_host_command(command)
+        if self.ip in ["127.0.0.1", "localhost"]:
+            subprocess.run(perf_command, shell=True, check=True)
+        else:
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, perf_command], check=True)
 
     def is_profiling(self) -> bool:
         """Check if profiling is currently running."""

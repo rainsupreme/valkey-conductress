@@ -340,3 +340,58 @@ class TestPerfTaskIntegration:
         assert runner.binary_source == "valkey"
         assert runner.test.name == "get"
         assert runner.valsize == 256
+
+    @patch("src.config.REPO_NAMES", ["valkey"])
+    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @pytest.mark.asyncio
+    async def test_profiling_flamegraph_integration(self, temp_dir):
+        """Test PerfTaskRunner with profiling enabled generates flamegraph."""
+        task_data = PerfTaskData(
+            source="valkey",
+            specifier="8.0",
+            replicas=0,
+            note="profiling test",
+            requirements={},
+            make_args="",
+            test="set",
+            val_size=64,
+            io_threads=2,
+            pipelining=16,
+            warmup=1,
+            duration=3,
+            profiling_sample_rate=99,
+            perf_stat_enabled=False,
+            has_expire=False,
+            preload_keys=False,
+        )
+
+        server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
+        runner = task_data.prepare_task_runner([server_info])
+        task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.test}_perf"
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
+
+        await runner.run()
+
+        # Verify results were written
+        output_file = temp_dir / "output.jsonl"
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
+
+        # Verify profiling was enabled
+        assert results["data"]["profiling_enabled"] is True
+
+        # Verify flamegraph files were generated
+        result_dir = runner.file_protocol.get_result_dir()
+        flamegraph_svg = result_dir / "flamegraph.svg"
+        perf_data = result_dir / "perf.data"
+
+        assert flamegraph_svg.exists(), "flamegraph.svg should be generated"
+        assert perf_data.exists(), "perf.data should be copied to results"
+
+        # Verify flamegraph is valid SVG
+        with open(flamegraph_svg) as f:
+            svg_content = f.read()
+        assert "<svg" in svg_content, "flamegraph.svg should contain SVG content"
+        assert len(svg_content) > 1000, "flamegraph.svg should have substantial content"
