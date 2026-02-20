@@ -130,6 +130,9 @@ class Server:
             all_cpus.append(cpu_id)
             numa_topology[numa_node].append(cpu_id)
 
+        # Detect L3 cache topology
+        l3_cache_topology = await self._detect_l3_cache_topology(all_cpus)
+
         if net_interface == "lo":
             net_interface_numa = 0  # use NUMA node 0 for cache locality
         else:
@@ -144,8 +147,31 @@ class Server:
             self.ip,
             all_cpus=all_cpus,
             numa_topology=dict(numa_topology),
+            l3_cache_topology=l3_cache_topology,
             net_interface_numa=net_interface_numa,
         )
+
+    async def _detect_l3_cache_topology(self, all_cpus: list[int]) -> dict[int, list[int]]:
+        """Detect L3 cache topology by parsing sysfs.
+        
+        Returns mapping of L3 cache ID -> list of CPUs sharing that cache.
+        """
+        l3_topology = defaultdict(list)
+        
+        for cpu in all_cpus:
+            # Read L3 cache ID for this CPU
+            cache_path = f"/sys/devices/system/cpu/cpu{cpu}/cache/index3/id"
+            result, _ = await self.run_host_command(f"cat {cache_path} 2>/dev/null || echo -1", check=False)
+            
+            try:
+                l3_id = int(result.strip())
+                if l3_id >= 0:
+                    l3_topology[l3_id].append(cpu)
+            except ValueError:
+                # L3 cache info not available, skip
+                pass
+        
+        return dict(l3_topology) if l3_topology else {}
 
     async def _disable_irqbalance(self):
         """Disable irqbalance to allow manual IRQ pinning"""
@@ -174,8 +200,19 @@ class Server:
         net_irqs = [int(irq.split(":")[0].strip()) for irq in stdout.strip().split("\n")]
 
         # Allocate CPUs for IRQs on the network interface NUMA node
+        # Try to avoid server cache if server already allocated
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
-        irq_cpus = self._cpu_allocator.allocate(self.ip, irq_tag, count=len(net_irqs), require_numa=net_numa)
+        server_tags = [tag for tag in self._cpu_allocator.get_all_allocations(self.ip).keys() 
+                       if tag.purpose == "server"]
+        
+        irq_cpus = self._cpu_allocator.allocate(
+            self.ip, 
+            irq_tag, 
+            count=len(net_irqs), 
+            require_numa=net_numa,
+            avoid_tags=server_tags,
+            prefer_different_cache=True,
+        )
 
         # Get total CPU count for mask calculation
         stdout, _ = await self.run_host_command("lscpu -p=node,cpu | grep -v '^#'")
@@ -208,6 +245,9 @@ class Server:
 
     async def _allocate_server_cpus(self, cpu_count: int) -> list[int]:
         """Allocate CPUs for this server on the network interface NUMA node"""
+        # Validate before attempting allocation
+        self._validate_sufficient_cpus()
+        
         # Create allocation tag for this server
         self._allocation_tag = AllocationTag(task_id=f"server_{self.ip}_{self.port}", purpose="server")
 
@@ -281,6 +321,22 @@ class Server:
 
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
         return self._cpu_allocator.get_available_count(self.ip, prefer_numa=net_numa)
+
+    def _validate_sufficient_cpus(self) -> None:
+        """Validate sufficient CPUs available on network interface NUMA node.
+        
+        Raises:
+            RuntimeError: If insufficient CPUs available for server needs
+        """
+        net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
+        available = self._cpu_allocator.get_available_count(self.ip, prefer_numa=net_numa)
+        needed = Server.getNumCPUs(self.threads)
+        
+        if available < needed:
+            raise RuntimeError(
+                f"Insufficient CPUs on {self.ip} NUMA node {net_numa}: "
+                f"need {needed}, available {available}"
+            )
 
     # =============================================================================
     # PROFILING METHODS

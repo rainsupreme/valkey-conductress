@@ -275,17 +275,55 @@ class PerfTaskRunner(BaseTaskRunner):
                         PERF_BENCH_KEYSPACE, self.test.expire_command
                     )
 
-        # Setup client IRQ pinning and bind benchmark to NUMA node
+        # Setup client CPU allocation and pinning
         client = Server("127.0.0.1")
         await client.ensure_host_cpu_allocation()
 
-        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-        command_string = (
-            f"numactl --cpunodebind={net_numa} --membind={net_numa} "
-            f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-            f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-            f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
-        )
+        # Detect if this is a local benchmark (server and client on same host)
+        is_local_benchmark = self._is_local_benchmark(target_ip)
+
+        if is_local_benchmark:
+            self.logger.info("Local benchmark detected - optimizing CPU allocation")
+
+            # Get server allocation tag to avoid its cache
+            server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
+
+            # Allocate CPUs for benchmark client, avoiding server cache
+            benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
+            net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+            benchmark_cpus = client._cpu_allocator.allocate(
+                client.ip,
+                benchmark_alloc_tag,
+                count=PERF_BENCH_THREADS,
+                require_numa=net_numa,
+                avoid_tags=[server_tag],
+                prefer_different_cache=True,  # Separate caches when possible for consistency
+            )
+            benchmark_cpu_list = ",".join(map(str, benchmark_cpus))
+
+            self.logger.info(
+                "Allocated CPUs %s for benchmark client (NUMA node %d)",
+                benchmark_cpus,
+                net_numa,
+            )
+
+            # Pin benchmark to allocated CPUs and bind memory to NUMA node
+            command_string = (
+                f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
+            )
+        else:
+            # Remote benchmark - use NUMA node binding only
+            net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+            command_string = (
+                f"numactl --cpunodebind={net_numa} --membind={net_numa} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
+            )
+            benchmark_alloc_tag = None
         command = RealtimeCommand(command_string)
 
         # run benchmark
@@ -351,6 +389,16 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # Clean up all servers and release CPUs
         await replication_group.stop_all_servers()
+
+        # Release benchmark client CPUs if allocated
+        if benchmark_alloc_tag:
+            client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
+
+    def _is_local_benchmark(self, target_ip: str) -> bool:
+        """Check if benchmark is running locally (server and client on same host)."""
+        # Normalize localhost variations
+        local_ips = {"127.0.0.1", "localhost", "::1"}
+        return target_ip in local_ips
 
 
 class PerfTaskVisualizer(PlotTaskVisualizer):

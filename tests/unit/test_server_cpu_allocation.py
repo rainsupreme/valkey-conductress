@@ -144,7 +144,7 @@ class TestServerCpuAllocation:
 
     @pytest.mark.asyncio
     async def test_validate_cpu_allocation_checks_network_numa(self):
-        """Test that validation checks CPUs in the network interface NUMA node."""
+        """Test that validation fails when insufficient CPUs on network interface NUMA node."""
         server = Server("192.168.1.1", 9000)
         server.threads = 3
 
@@ -159,10 +159,9 @@ class TestServerCpuAllocation:
         irq_tag = AllocationTag("system", "irq")
         Server._cpu_allocator.allocate("192.168.1.1", irq_tag, count=2, require_numa=1)
 
-        # 2 IRQ + 3 threads = 5, but only 4 CPUs in NUMA 1
-        with patch("logging.warning") as mock_warning:
-            server._warn_if_insufficient_cpus()
-            mock_warning.assert_called_once()
+        # threads=3 needs 5 CPUs, but only 2 available on NUMA 1
+        with pytest.raises(RuntimeError, match="Insufficient CPUs.*NUMA node 1"):
+            server._validate_sufficient_cpus()
 
     def test_get_num_cpus_calculation(self):
         """Test CPU count calculation for io-threads."""
@@ -212,3 +211,64 @@ class TestServerCpuAllocation:
         # Only 0 CPUs left in NUMA 0, requesting 2 should fail
         with pytest.raises(RuntimeError, match="Insufficient CPUs"):
             await server._allocate_server_cpus(2)
+
+    @pytest.mark.asyncio
+    async def test_validate_sufficient_cpus_passes_when_enough_available(self):
+        """Test validation passes when sufficient CPUs are available."""
+        server = Server("192.168.1.1", 9000)
+        server.threads = 2  # Needs 4 CPUs (2 + 2)
+
+        Server._cpu_allocator.register_host(
+            "192.168.1.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: list(range(8))},
+            net_interface_numa=0,
+        )
+
+        # Should not raise
+        server._validate_sufficient_cpus()
+
+    @pytest.mark.asyncio
+    async def test_detect_l3_cache_topology_parses_sysfs(self):
+        """Test L3 cache detection with mocked sysfs responses."""
+        server = Server("192.168.1.1", 9000)
+
+        # Mock responses: CPUs 0-3 share L3 cache 0, CPUs 4-7 share L3 cache 1
+        async def mock_run_host_command(cmd, check=True):
+            if "cpu0/cache/index3/id" in cmd:
+                return ("0", "")
+            elif "cpu1/cache/index3/id" in cmd:
+                return ("0", "")
+            elif "cpu2/cache/index3/id" in cmd:
+                return ("0", "")
+            elif "cpu3/cache/index3/id" in cmd:
+                return ("0", "")
+            elif "cpu4/cache/index3/id" in cmd:
+                return ("1", "")
+            elif "cpu5/cache/index3/id" in cmd:
+                return ("1", "")
+            elif "cpu6/cache/index3/id" in cmd:
+                return ("1", "")
+            elif "cpu7/cache/index3/id" in cmd:
+                return ("1", "")
+            return ("-1", "")
+
+        server.run_host_command = mock_run_host_command
+
+        result = await server._detect_l3_cache_topology(list(range(8)))
+
+        assert result == {0: [0, 1, 2, 3], 1: [4, 5, 6, 7]}
+
+    @pytest.mark.asyncio
+    async def test_detect_l3_cache_topology_handles_missing_sysfs(self):
+        """Test graceful fallback when L3 cache sysfs doesn't exist."""
+        server = Server("192.168.1.1", 9000)
+
+        async def mock_run_host_command(cmd, check=True):
+            return ("-1", "")  # Simulates missing sysfs
+
+        server.run_host_command = mock_run_host_command
+
+        result = await server._detect_l3_cache_topology(list(range(4)))
+
+        assert result == {}
