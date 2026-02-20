@@ -110,10 +110,13 @@ class ServerInfo:
 def load_server_ips() -> list[ServerInfo]:
     """Load server IPs from a JSON configuration file."""
     config_path = PROJECT_ROOT / "servers.json"
-    try:
+    default_path = PROJECT_ROOT / "servers.default.json"
+    if config_path.exists():
         data = json.loads(config_path.read_text())["valkey_servers"]
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"Configuration file {config_path} not found.") from exc
+    elif default_path.exists():
+        data = json.loads(default_path.read_text())["valkey_servers"]
+    else:
+        raise FileNotFoundError(f"No server config found at {config_path} or {default_path}")
     return [ServerInfo(**entry) for entry in data]
 
 

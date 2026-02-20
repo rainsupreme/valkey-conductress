@@ -1,0 +1,21 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: pip install -r requirements/pip-requirements.txt -r requirements/pip-requirements-dev.txt
+      - name: Run tests
+        run: pytest tests/unit
+        env:
+          PYTHONPATH: ${{ github.workspace }}

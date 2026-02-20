@@ -49,7 +49,7 @@ Embedded Valkey repository for building needed binaries: valkey-cli and valkey-b
 - Task types: perf-{command}, mem-{command}, sync-{mode}
 
 ### Remote Server Management
-- Server definitions in `servers.json`
+- Server definitions in `servers.json` (falls back to `servers.default.json`)
 - SSH access via `server-keyfile.pem`
 - Automated Valkey compilation and deployment
 - Multi-instance support on single host (ports 9000+)

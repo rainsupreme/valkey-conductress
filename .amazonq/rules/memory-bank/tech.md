@@ -5,10 +5,7 @@
 - **C** - Valkey server source code (embedded in `/valkey/`)
 
 ## Core Dependencies
-- **Textual** - Terminal UI framework for TUI interface
-- **attrs** - Class definition with `@dataclass` decorator
-- **paramiko** - SSH client for remote server operations
-- **pytest** - Testing framework
+See `requirements/pip-requirements.txt` for runtime dependencies and `requirements/pip-requirements-dev.txt` for development dependencies.
 
 ## Build Systems
 - **Make** - Valkey compilation
@@ -41,7 +38,7 @@ pytest tests/
 ```
 
 ## Configuration Files
-- `servers.json` - Remote server definitions (IP, username, name)
+- `servers.json` - Remote server definitions (optional, falls back to `servers.default.json`)
 - `server-keyfile.pem` - SSH private key for server access
 - `src/config.py` - Application configuration constants
 
