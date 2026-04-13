@@ -108,18 +108,19 @@ class TestFileProtocol:
 
     def test_multiple_readers(self):
         """Test multiple readers can access metrics simultaneously."""
-        protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
+        writer = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
 
         # Write some metrics first
         for i in range(10):
             metric = MetricData(metrics={"rps": 1000.0 + i, "latency_ms": 2.0})
-            protocol.append_metric(metric)
+            writer.append_metric(metric)
 
-        # Multiple readers should all get the same data
+        # Each reader gets its own FileProtocol instance (read_metrics is not thread-safe
+        # on a single instance due to shared _last_read_position and _metrics_cache)
         def read_metrics():
-            return list(protocol.read_metrics())
+            reader = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
+            return list(reader.read_metrics())
 
-        threads = [Thread(target=read_metrics) for _ in range(3)]
         results = []
 
         def store_result(func):
@@ -358,9 +359,9 @@ class TestFileProtocol:
     def test_role_id_in_filename(self):
         """Test that role_id is included in metrics filename."""
         protocol = FileProtocol("test_task", role_id="server_10_0_1_5_p9000", base_dir=self.tmp_path)
-        
+
         protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
-        
+
         assert protocol.metrics_file.name == "metrics_server_10_0_1_5_p9000.jsonl"
         assert protocol.metrics_file.exists()
 
@@ -368,10 +369,10 @@ class TestFileProtocol:
         """Test multiple roles can write to same task directory."""
         client_protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
         server_protocol = FileProtocol("test_task", role_id="server", base_dir=self.tmp_path)
-        
+
         client_protocol.append_metric(MetricData(metrics={"client_rps": 1000.0}, source="client"))
         server_protocol.append_metric(MetricData(metrics={"server_cpu": 85.0}, source="server"))
-        
+
         # Both files should exist in same work directory
         assert client_protocol.work_dir == server_protocol.work_dir
         assert client_protocol.metrics_file.exists()
@@ -381,9 +382,9 @@ class TestFileProtocol:
     def test_role_specific_results_copy(self):
         """Test that role_id is included in copied results filename."""
         protocol = FileProtocol("copy_test", role_id="primary_10_0_1_5_p9000", base_dir=self.tmp_path)
-        
+
         protocol.append_metric(MetricData(metrics={"rps": 1000.0}))
-        
+
         results = BenchmarkResults(
             method="perf-set",
             source="valkey",
@@ -394,9 +395,9 @@ class TestFileProtocol:
             data={"test": "data"},
             make_args="-O2 -g",
         )
-        
+
         protocol.write_results(results)
-        
+
         task_results_dir = src.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
         assert task_results_dir.exists()
         copied_files = list(task_results_dir.glob("*.jsonl"))
@@ -407,13 +408,13 @@ class TestFileProtocol:
         """Test that different role protocols have independent caches."""
         client_protocol = FileProtocol("test_task", role_id="client", base_dir=self.tmp_path)
         server_protocol = FileProtocol("test_task", role_id="server", base_dir=self.tmp_path)
-        
+
         client_protocol.append_metric(MetricData(metrics={"client_rps": 1000.0}))
         server_protocol.append_metric(MetricData(metrics={"server_cpu": 85.0}))
-        
+
         client_metrics = client_protocol.read_metrics()
         server_metrics = server_protocol.read_metrics()
-        
+
         assert len(client_metrics) == 1
         assert len(server_metrics) == 1
         assert client_metrics[0].metrics["client_rps"] == 1000.0
