@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 from src.tui import (
     CommaSeparatedIntsValidator,
+    MakeArgsValidator,
     NumberListField,
     RangeListValidator,
     SingleNumberValidator,
@@ -252,3 +253,43 @@ class TestNumberListField:
         field.number_type = HumanNumber
         field.input = Mock(value="1:5:2")
         assert NumberListField.values(field) == [1, 3, 5]
+
+
+class TestMakeArgsValidator:
+    @pytest.mark.parametrize(
+        "input_str,expected_result,expected_error",
+        [
+            ("", [""], None),
+            ("OPTIMIZATION=-O2", ["OPTIMIZATION=-O2"], None),
+            ("OPTIMIZATION=-O2;; MALLOC=libc", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
+            ("OPTIMIZATION=-O2;;MALLOC=libc", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
+            (" OPTIMIZATION=-O2 ;; MALLOC=libc ", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
+            ("OPTIMIZATION=-O2;; MALLOC=libc;; OPTIMIZATION=-O3", ["OPTIMIZATION=-O2", "MALLOC=libc", "OPTIMIZATION=-O3"], None),
+            (";;", [""], None),
+            ("OPTIMIZATION=-O2;;", ["OPTIMIZATION=-O2"], None),
+            (";;OPTIMIZATION=-O2", ["OPTIMIZATION=-O2"], None),
+            ("MALLOC=jemalloc OPTIMIZATION=-O3", ["MALLOC=jemalloc OPTIMIZATION=-O3"], None),
+        ],
+    )
+    def test_parse_make_args_list(self, input_str, expected_result, expected_error):
+        result, error = MakeArgsValidator.parse_make_args_list(input_str)
+        if expected_error is None:
+            assert error is None
+            assert result == expected_result
+        else:
+            assert error is not None
+            assert expected_error in error
+
+    @pytest.mark.parametrize(
+        "input_str,expected_valid",
+        [
+            ("", True),
+            ("OPTIMIZATION=-O2", True),
+            ("OPTIMIZATION=-O2;; MALLOC=libc", True),
+            ("OPTIMIZATION=-O2;;MALLOC=libc;;", True),
+        ],
+    )
+    def test_validate(self, input_str, expected_valid):
+        validator = MakeArgsValidator()
+        result = validator.validate(input_str)
+        assert result.is_valid == expected_valid

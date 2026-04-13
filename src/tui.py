@@ -479,6 +479,31 @@ class CommaSeparatedIntsValidator(Validator):
         return self.success()
 
 
+class MakeArgsValidator(Validator):
+    """Validator for make args input with ;; separator"""
+
+    @staticmethod
+    def parse_make_args_list(input_str: str) -> tuple[list[str], Optional[str]]:
+        """Parse make args separated by ;;"""
+        if not input_str:
+            return [""], None
+
+        make_args_sets = [args.strip() for args in input_str.split(";;")]
+        make_args_sets = [args for args in make_args_sets if args]
+
+        if not make_args_sets:
+            return [""], None
+
+        return make_args_sets, None
+
+    def validate(self, value: str) -> ValidationResult:
+        """Validate the make args input"""
+        _, error = self.parse_make_args_list(value)
+        if error:
+            return self.failure(error)
+        return self.success()
+
+
 class NumberField:
     def __init__(
         self,
@@ -605,12 +630,13 @@ class BaseTaskForm(ScrollableContainer):
 
     def _compose_make_args_input(self) -> Iterator[Union[Label, Input]]:
         """Yield make args input widgets"""
-        yield Label("Make Args (optional)", classes="form-label")
+        yield Label("Make Args (separate sets with ;;)", classes="form-label")
         yield Input(
             value=config.DEFAULT_MAKE_ARGS,
-            placeholder="OPTIMIZATION=-O2",
+            placeholder="OPTIMIZATION=-O2;; OPTIMIZATION=-O3 -march=native;; MALLOC=jemalloc",
             id="make-args",
             classes="form-input",
+            validators=[MakeArgsValidator()],
         )
 
     def _compose_test_selection(self, tests: tuple[str, ...]) -> SelectionList:
@@ -626,17 +652,21 @@ class BaseTaskForm(ScrollableContainer):
             widgets.append(Static(label, classes="switch-label"))
         return Horizontal(*widgets, classes="switch-container")
 
-    def _validate_and_get_common_inputs(self) -> tuple[list[tuple[str, str]], str, str, Optional[str]]:
-        """Validate and return (specifiers, note, make_args, error_message)"""
+    def _validate_and_get_common_inputs(self) -> tuple[list[tuple[str, str]], str, list[str], Optional[str]]:
+        """Validate and return (specifiers, note, make_args_list, error_message)"""
         source_specifier_list = self.query_one("#specifiers", Input).value
         note = self.query_one("#note", Input).value.strip()
-        make_args = self.query_one("#make-args", Input).value.strip()
+        make_args_input = self.query_one("#make-args", Input).value.strip()
 
         specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
-            return [], "", "", f"source:specifier list: {error}"
+            return [], "", [], f"source:specifier list: {error}"
 
-        return specifiers, note, make_args, None
+        make_args_list, error = MakeArgsValidator.parse_make_args_list(make_args_input)
+        if error:
+            return [], "", [], f"make args: {error}"
+
+        return specifiers, note, make_args_list, None
 
     def _validate_tests_selected(self, tests: list[str]) -> Optional[str]:
         """Return error message if no tests selected, None otherwise"""
@@ -715,7 +745,7 @@ class PerfTaskForm(BaseTaskForm):
             self.notify(error, severity="error")
             return
 
-        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args_list, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -727,12 +757,13 @@ class PerfTaskForm(BaseTaskForm):
                 io_threads,
                 tests,
                 specifiers,
+                make_args_list,
             )
         )
         profiling_sample_rate = 399 if profiling else -1
 
         tasks: list[BaseTaskData] = []
-        for size, pipe, thread, test, specifier in all_tests:
+        for size, pipe, thread, test, specifier, make_args in all_tests:
             task = PerfTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
@@ -803,7 +834,7 @@ class MemTaskForm(BaseTaskForm):
             self.notify(error, severity="error")
             return
 
-        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args_list, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -812,11 +843,12 @@ class MemTaskForm(BaseTaskForm):
             product(
                 tests,
                 specifiers,
+                make_args_list,
             )
         )
 
         tasks: list[BaseTaskData] = []
-        for test, specifier in all_tests:
+        for test, specifier, make_args in all_tests:
             task = MemTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
@@ -881,7 +913,7 @@ class SyncTaskForm(BaseTaskForm):
             self.notify(f"Invalid input: {e}", severity="error")
             return
 
-        specifiers, note, make_args, error = self._validate_and_get_common_inputs()
+        specifiers, note, make_args_list, error = self._validate_and_get_common_inputs()
         if error:
             self.notify(error, severity="error")
             return
@@ -892,12 +924,13 @@ class SyncTaskForm(BaseTaskForm):
                 counts,
                 io_threads,
                 specifiers,
+                make_args_list,
             )
         )
         profiling_sample_rate = 3999 if profiling else -1
 
         tasks: list[BaseTaskData] = []
-        for size, count, thread, specifier in all_tests:
+        for size, count, thread, specifier, make_args in all_tests:
             task = SyncTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
