@@ -96,6 +96,8 @@ class ServerInfo:
     """username to connect with"""
     name: str = ""
     """A unique descriptive name"""
+    disabled: bool = False
+    """Whether this server is disabled and should be skipped"""
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, ServerInfo):
@@ -117,7 +119,8 @@ def load_server_ips() -> list[ServerInfo]:
         data = json.loads(default_path.read_text())["valkey_servers"]
     else:
         raise FileNotFoundError(f"No server config found at {config_path} or {default_path}")
-    return [ServerInfo(**entry) for entry in data]
+    all_servers = [ServerInfo(**entry) for entry in data]
+    return [s for s in all_servers if not s.disabled]
 
 
 SERVERS = load_server_ips()

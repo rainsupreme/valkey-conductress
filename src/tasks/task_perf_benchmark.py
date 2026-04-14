@@ -258,141 +258,143 @@ class PerfTaskRunner(BaseTaskRunner):
         await replication_group.start()
         assert replication_group.primary
 
-        await replication_group.begin_replication()
-        await replication_group.wait_for_repl_sync()
-        server = replication_group.primary
-        target_ip = server.ip
-        self.commit_hash = server.get_build_hash() or ""
-        if self.preload_keys:
-            await server.run_valkey_command_over_keyspace(
-                PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
-            )
-            if self.has_expire:
-                if not self.test.expire_command:
-                    self.logger.warning("Expire command not available, skipping expiration")
-                else:
-                    await server.run_valkey_command_over_keyspace(
-                        PERF_BENCH_KEYSPACE, self.test.expire_command
-                    )
+        benchmark_alloc_tag = None
+        client = None
+        try:
+            await replication_group.begin_replication()
+            await replication_group.wait_for_repl_sync()
+            server = replication_group.primary
+            target_ip = server.ip
+            self.commit_hash = server.get_build_hash() or ""
+            if self.preload_keys:
+                await server.run_valkey_command_over_keyspace(
+                    PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.test.preload_command}"
+                )
+                if self.has_expire:
+                    if not self.test.expire_command:
+                        self.logger.warning("Expire command not available, skipping expiration")
+                    else:
+                        await server.run_valkey_command_over_keyspace(
+                            PERF_BENCH_KEYSPACE, self.test.expire_command
+                        )
 
-        # Setup client CPU allocation and pinning
-        client = Server("127.0.0.1")
-        await client.ensure_host_cpu_allocation()
+            # Setup client CPU allocation and pinning
+            client = Server("127.0.0.1")
+            await client.ensure_host_cpu_allocation()
 
-        # Detect if this is a local benchmark (server and client on same host)
-        is_local_benchmark = self._is_local_benchmark(target_ip)
+            # Detect if this is a local benchmark (server and client on same host)
+            is_local_benchmark = self._is_local_benchmark(target_ip)
 
-        if is_local_benchmark:
-            self.logger.info("Local benchmark detected - optimizing CPU allocation")
+            if is_local_benchmark:
+                self.logger.info("Local benchmark detected - optimizing CPU allocation")
 
-            # Get server allocation tag to avoid its cache
-            server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
+                # Get server allocation tag to avoid its cache
+                server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
 
-            # Allocate CPUs for benchmark client, avoiding server cache
-            benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
-            net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-            benchmark_cpus = client._cpu_allocator.allocate(
-                client.ip,
-                benchmark_alloc_tag,
-                count=PERF_BENCH_THREADS,
-                require_numa=net_numa,
-                avoid_tags=[server_tag],
-                prefer_different_cache=True,  # Separate caches when possible for consistency
-            )
-            benchmark_cpu_list = ",".join(map(str, benchmark_cpus))
+                # Allocate CPUs for benchmark client, avoiding server cache
+                benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
+                net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+                benchmark_cpus = client._cpu_allocator.allocate(
+                    client.ip,
+                    benchmark_alloc_tag,
+                    count=PERF_BENCH_THREADS,
+                    require_numa=net_numa,
+                    avoid_tags=[server_tag],
+                    prefer_different_cache=True,  # Separate caches when possible for consistency
+                )
+                benchmark_cpu_list = ",".join(map(str, benchmark_cpus))
 
-            self.logger.info(
-                "Allocated CPUs %s for benchmark client (NUMA node %d)",
-                benchmark_cpus,
-                net_numa,
-            )
+                self.logger.info(
+                    "Allocated CPUs %s for benchmark client (NUMA node %d)",
+                    benchmark_cpus,
+                    net_numa,
+                )
 
-            # Pin benchmark to allocated CPUs and bind memory to NUMA node
-            command_string = (
-                f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
-                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
-            )
-        else:
-            # Remote benchmark - use NUMA node binding only
-            net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-            command_string = (
-                f"numactl --cpunodebind={net_numa} --membind={net_numa} "
-                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
-            )
-            benchmark_alloc_tag = None
-        command = RealtimeCommand(command_string)
+                # Pin benchmark to allocated CPUs and bind memory to NUMA node
+                command_string = (
+                    f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
+                    f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                    f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                    f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
+                )
+            else:
+                # Remote benchmark - use NUMA node binding only
+                net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+                command_string = (
+                    f"numactl --cpunodebind={net_numa} --membind={net_numa} "
+                    f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                    f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                    f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test.test_command}"
+                )
+            command = RealtimeCommand(command_string)
 
-        # run benchmark
-        self.logger.info("Starting realtime command: %s", command_string)
-        command.start()
-        start_time = time.monotonic()
-        test_start_time = start_time + self.warmup
-        end_time = test_start_time + self.duration
-        warming_up = True
+            # run benchmark
+            self.logger.info("Starting realtime command: %s", command_string)
+            command.start()
+            start_time = time.monotonic()
+            test_start_time = start_time + self.warmup
+            end_time = test_start_time + self.duration
+            warming_up = True
 
-        # Update status to running
-        self.status.state = "running"
-        self.file_protocol.write_status(self.status)
+            # Update status to running
+            self.status.state = "running"
+            self.file_protocol.write_status(self.status)
 
-        print("started rt cmd")
-        last_heartbeat = time.time()
-        while command.is_running():
+            print("started rt cmd")
+            last_heartbeat = time.time()
+            while command.is_running():
+                await self.__collect_metrics(command)
+                time.sleep(benchmark_update_interval)
+                now = time.monotonic()
+
+                # Update heartbeat and progress every 5 seconds
+                if time.time() - last_heartbeat > 5.0:
+                    # Update progress based on total elapsed time (warmup + test)
+                    elapsed_total_time = now - start_time
+                    self.status.steps_completed = min(int(elapsed_total_time), self.warmup + self.duration)
+
+                    self.file_protocol.write_status(self.status)
+                    last_heartbeat = time.time()
+
+                if now > end_time:
+                    if self.profiling:
+                        await server.profiling_stop()
+                    if self.perf_stat_enabled:
+                        await server.perf_stat_stop()
+                    command.kill()
+                elif warming_up and now >= test_start_time:
+                    self.rps_data = []
+                    warming_up = False
+                    if self.profiling:
+                        server.profiling_start(self.sample_rate)
+                    if self.perf_stat_enabled:
+                        await server.perf_stat_start()
+
             await self.__collect_metrics(command)
-            time.sleep(benchmark_update_interval)
-            now = time.monotonic()
+            await self.__record_result(server)
 
-            # Update heartbeat and progress every 5 seconds
-            if time.time() - last_heartbeat > 5.0:
-                # Update progress based on total elapsed time (warmup + test)
-                elapsed_total_time = now - start_time
-                self.status.steps_completed = min(int(elapsed_total_time), self.warmup + self.duration)
+            # Write final status
+            self.status.state = "completed"
+            self.status.end_time = time.time()
+            self.status.steps_completed = self.warmup + self.duration  # 100% complete
+            self.file_protocol.write_status(self.status)
 
-                self.file_protocol.write_status(self.status)
-                last_heartbeat = time.time()
+            if self.profiling:
+                server.profiling_wait()
+                result_dir = self.file_protocol.get_result_dir()
+                await server.profiling_report(result_dir)
 
-            if now > end_time:
-                if self.profiling:
-                    await server.profiling_stop()
-                if self.perf_stat_enabled:
-                    await server.perf_stat_stop()
-                command.kill()
-            elif warming_up and now >= test_start_time:
-                self.rps_data = []
-                warming_up = False
-                if self.profiling:
-                    server.profiling_start(self.sample_rate)
-                if self.perf_stat_enabled:
-                    await server.perf_stat_start()
+            if self.perf_stat_enabled:
+                server.perf_stat_wait()
+                result_dir = self.file_protocol.get_result_dir()
+                await server.perf_stat_report(result_dir)
+        finally:
+            # Clean up all servers and release CPUs
+            await replication_group.stop_all_servers()
 
-        await self.__collect_metrics(command)
-        await self.__record_result(server)
-
-        # Write final status
-        self.status.state = "completed"
-        self.status.end_time = time.time()
-        self.status.steps_completed = self.warmup + self.duration  # 100% complete
-        self.file_protocol.write_status(self.status)
-
-        if self.profiling:
-            server.profiling_wait()
-            result_dir = self.file_protocol.get_result_dir()
-            await server.profiling_report(result_dir)
-
-        if self.perf_stat_enabled:
-            server.perf_stat_wait()
-            result_dir = self.file_protocol.get_result_dir()
-            await server.perf_stat_report(result_dir)
-
-        # Clean up all servers and release CPUs
-        await replication_group.stop_all_servers()
-
-        # Release benchmark client CPUs if allocated
-        if benchmark_alloc_tag:
-            client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
+            # Release benchmark client CPUs if allocated
+            if benchmark_alloc_tag and client:
+                client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
 
     def _is_local_benchmark(self, target_ip: str) -> bool:
         """Check if benchmark is running locally (server and client on same host)."""

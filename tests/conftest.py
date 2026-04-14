@@ -5,6 +5,7 @@ import sys
 import pytest
 
 from src.file_protocol import FileProtocol
+from src.server import Server
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -33,6 +34,14 @@ def pytest_sessionstart(session):
                 print(f"Memory: {lines[1].split()[1]} total")
     except Exception:
         pass  # Silently ignore platform detection failures
+
+
+@pytest.fixture(autouse=True)
+def reset_cpu_allocator():
+    """Reset the class-level CPU allocator between tests to prevent state leaks."""
+    yield
+    from src.cpu_allocator import CpuAllocator
+    Server._cpu_allocator = CpuAllocator()
 
 
 @pytest.fixture(autouse=True, scope="session")
