@@ -11,3 +11,15 @@ valkey
 FlameGraph
 results
 tmp
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.kiro/specs/
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.png

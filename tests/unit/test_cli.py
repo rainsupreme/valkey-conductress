@@ -1,0 +1,282 @@
+"""Property-based and unit tests for the CLI module.
+
+Tests cover:
+- Property 4: Cartesian product task count (Requirement 3.3)
+- Property 5: Source validation (Requirements 3.4, 3.5)
+- Unit tests for argument parsing, validation, and task submission (Requirement 9.3)
+"""
+
+from unittest.mock import MagicMock, patch
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from src import config
+from src.cli import generate_task_combinations, main, validate_source
+
+
+# Patch config for tests (consistent with other test modules)
+config.MANUALLY_UPLOADED = "manual"
+config.REPO_NAMES = ["repo1", "repo2"]
+
+
+class TestCartesianProductProperties:
+    """Property-based tests for Cartesian product task count."""
+
+    @settings(max_examples=100)
+    @given(
+        tests=st.lists(
+            st.text(
+                alphabet=st.characters(whitelist_categories=("L", "N")),
+                min_size=1,
+                max_size=10,
+            ),
+            min_size=1,
+            max_size=5,
+            unique=True,
+        ),
+        sizes=st.lists(
+            st.integers(min_value=1, max_value=1_000_000),
+            min_size=1,
+            max_size=5,
+            unique=True,
+        ),
+        io_threads=st.lists(
+            st.integers(min_value=1, max_value=32),
+            min_size=1,
+            max_size=5,
+            unique=True,
+        ),
+        pipelining=st.lists(
+            st.integers(min_value=1, max_value=64),
+            min_size=1,
+            max_size=5,
+            unique=True,
+        ),
+        key_sizes=st.lists(
+            st.integers(min_value=0, max_value=10_000),
+            min_size=1,
+            max_size=5,
+            unique=True,
+        ),
+    )
+    def test_cartesian_product_task_count(
+        self, tests, sizes, io_threads, pipelining, key_sizes
+    ):
+        """**Validates: Requirements 3.3**
+
+        Feature: benchmark-tooling-enhancements, Property 4: Cartesian product task count
+
+        For any non-empty lists of tests, sizes, io_threads, pipelining, and key_sizes,
+        the number of generated task combinations must equal the product of all list lengths,
+        and every unique combination of (test, size, io_thread, pipeline, key_size) must
+        appear exactly once.
+        """
+        result = generate_task_combinations(
+            tests, sizes, io_threads, pipelining, key_sizes
+        )
+
+        # Verify count equals product of lengths
+        expected_count = (
+            len(tests)
+            * len(sizes)
+            * len(io_threads)
+            * len(pipelining)
+            * len(key_sizes)
+        )
+        assert len(result) == expected_count, (
+            f"Expected {expected_count} combinations, got {len(result)}"
+        )
+
+        # Verify every unique combination appears exactly once (no duplicates)
+        assert len(result) == len(set(result)), (
+            f"Found duplicate combinations: {len(result)} total vs {len(set(result))} unique"
+        )
+
+        # Verify every combination is a valid tuple from the input lists
+        for combo in result:
+            test, size, io_thread, pipeline, key_size = combo
+            assert test in tests, f"Test '{test}' not in input tests"
+            assert size in sizes, f"Size {size} not in input sizes"
+            assert io_thread in io_threads, f"IO thread {io_thread} not in input io_threads"
+            assert pipeline in pipelining, f"Pipeline {pipeline} not in input pipelining"
+            assert key_size in key_sizes, f"Key size {key_size} not in input key_sizes"
+
+
+class TestSourceValidationProperties:
+    """Property-based tests for source validation."""
+
+    @settings(max_examples=100)
+    @given(s=st.text(min_size=0, max_size=50))
+    def test_source_validation(self, s):
+        """**Validates: Requirements 3.4, 3.5**
+
+        Feature: benchmark-tooling-enhancements, Property 5: Source validation
+
+        For any string s, validate_source(s) must return True if and only if
+        s is in config.REPO_NAMES or s equals config.MANUALLY_UPLOADED.
+        All other strings must be rejected.
+        """
+        valid_set = set(config.REPO_NAMES) | {config.MANUALLY_UPLOADED}
+        expected = s in valid_set
+        result = validate_source(s)
+        assert result == expected, (
+            f"validate_source({s!r}) returned {result}, expected {expected}. "
+            f"Valid sources: {valid_set}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for CLI (Requirement 9.3)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateTaskCombinations:
+    """Unit tests for generate_task_combinations()."""
+
+    def test_single_combination(self):
+        """A single value per parameter produces exactly 1 combination."""
+        result = generate_task_combinations(["get"], [512], [1], [1], [0])
+        assert len(result) == 1
+        assert result[0] == ("get", 512, 1, 1, 0)
+
+    def test_full_cartesian_product(self):
+        """Multiple values per parameter produce the full Cartesian product."""
+        result = generate_task_combinations(
+            ["get", "set"], [512, 1024], [1, 9], [1, 4], [0, 64]
+        )
+        assert len(result) == 2 * 2 * 2 * 2 * 2  # 32 combinations
+
+
+class TestValidateSource:
+    """Unit tests for validate_source()."""
+
+    def test_valid_repo_name(self):
+        assert validate_source("repo1") is True
+
+    def test_valid_manually_uploaded(self):
+        assert validate_source("manual") is True
+
+    def test_invalid_source(self):
+        assert validate_source("nonexistent") is False
+
+    def test_empty_string(self):
+        assert validate_source("") is False
+
+
+class TestMainPerfSubcommand:
+    """Unit tests for the perf subcommand via main()."""
+
+    @patch("src.cli.TaskQueue")
+    def test_perf_queues_correct_number_of_tasks(self, mock_queue_cls):
+        """main(["perf", ...]) with 2 tests, 2 sizes, 2 io-threads, 2 pipelining, 1 key-size
+        should queue 2*2*2*2*1 = 16 tasks."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main([
+            "perf",
+            "--source", "repo1",
+            "--specifier", "unstable",
+            "--tests", "get,set",
+            "--sizes", "512,1KB",
+            "--io-threads", "1,9",
+            "--pipelining", "1,4",
+        ])
+
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 16
+
+    @patch("src.cli.TaskQueue")
+    def test_perf_invalid_source_returns_exit_code_1(self, mock_queue_cls):
+        """main() with an invalid source should return exit code 1."""
+        exit_code = main([
+            "perf",
+            "--source", "invalid_source",
+            "--specifier", "unstable",
+            "--tests", "get",
+            "--sizes", "512",
+            "--io-threads", "1",
+            "--pipelining", "1",
+        ])
+
+        assert exit_code == 1
+        mock_queue_cls.return_value.submit_task.assert_not_called()
+
+    @patch("src.cli.TaskQueue")
+    def test_perf_empty_tests_returns_exit_code_1(self, mock_queue_cls):
+        """main() with empty --tests should return exit code 1."""
+        exit_code = main([
+            "perf",
+            "--source", "repo1",
+            "--specifier", "unstable",
+            "--tests", "",
+            "--sizes", "512",
+            "--io-threads", "1",
+            "--pipelining", "1",
+        ])
+
+        assert exit_code == 1
+        mock_queue_cls.return_value.submit_task.assert_not_called()
+
+    @patch("src.cli.TaskQueue")
+    def test_perf_repetitions_zero_returns_exit_code_1(self, mock_queue_cls):
+        """main() with --repetitions 0 should return exit code 1."""
+        exit_code = main([
+            "perf",
+            "--source", "repo1",
+            "--specifier", "unstable",
+            "--tests", "get",
+            "--sizes", "512",
+            "--io-threads", "1",
+            "--pipelining", "1",
+            "--repetitions", "0",
+        ])
+
+        assert exit_code == 1
+        mock_queue_cls.return_value.submit_task.assert_not_called()
+
+    @patch("src.cli.TaskQueue")
+    def test_perf_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
+        """main() with --key-sizes "0,64" should produce tasks with key_size 0 and 64."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main([
+            "perf",
+            "--source", "repo1",
+            "--specifier", "unstable",
+            "--tests", "get",
+            "--sizes", "512",
+            "--io-threads", "1",
+            "--pipelining", "1",
+            "--key-sizes", "0,64",
+        ])
+
+        assert exit_code == 0
+        # 1 test * 1 size * 1 io-thread * 1 pipelining * 2 key-sizes = 2 tasks
+        assert mock_queue.submit_task.call_count == 2
+
+        submitted_key_sizes = sorted(
+            call.args[0].key_size for call in mock_queue.submit_task.call_args_list
+        )
+        assert submitted_key_sizes == [0, 64]
+
+
+class TestMainQueueSubcommand:
+    """Unit tests for the queue subcommand via main()."""
+
+    @patch("src.cli.TaskQueue")
+    def test_queue_returns_exit_code_0(self, mock_queue_cls):
+        """main(["queue"]) should return exit code 0."""
+        mock_queue = MagicMock()
+        mock_queue.get_all_tasks.return_value = []
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue"])
+        assert exit_code == 0
+
+    def test_no_subcommand_returns_exit_code_1(self):
+        """main([]) with no subcommand should return exit code 1."""
+        exit_code = main([])
+        assert exit_code == 1

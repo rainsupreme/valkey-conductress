@@ -1,6 +1,6 @@
-asyncio
-asyncssh
-attrs
-plotext
-textual
-textual-plotext
+asyncssh>=2.14.0,<3.0
+attrs>=23.0,<25.0
+plotext>=5.2,<6.0
+scipy>=1.11,<2.0
+textual>=0.40,<1.0
+textual-plotext>=0.2,<1.0

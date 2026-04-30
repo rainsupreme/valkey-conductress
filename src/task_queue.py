@@ -51,7 +51,10 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
-        assert self.source == config.MANUALLY_UPLOADED or self.source in config.REPO_NAMES
+        if self.source != config.MANUALLY_UPLOADED and self.source not in config.REPO_NAMES:
+            raise ValueError(
+                f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}"
+            )
 
     def __eq__(self, other):
         if not isinstance(other, BaseTaskData):
@@ -150,9 +153,8 @@ class TaskQueue:
         if task_file.exists():
             task_file.unlink()
         else:
-            print(f"Unable to delete task {task_file}")
             logger.error("Task file not found: %s", task_file)
-            exit()  # we would loop indefinitely on the task if we can't clear it
+            raise RuntimeError(f"Task file not found and cannot be cleared: {task_file}")
 
     def get_all_tasks(self) -> list[BaseTaskData]:
         """Returns list of (timestamp, task) tuples, sorted by timestamp"""

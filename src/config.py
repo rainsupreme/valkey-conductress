@@ -3,6 +3,7 @@
 import json
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 from attr import dataclass
 
@@ -11,7 +12,7 @@ PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 16  # 75 connections per thread
 
 # Default compiler arguments for Valkey builds
-DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes CFLAGS="-fno-omit-frame-pointer"'
+DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes OPTIMIZATION=-O3 CFLAGS="-flto -fno-omit-frame-pointer"'
 
 
 class Features(Enum):
@@ -40,6 +41,8 @@ def get_all_features() -> dict[Features, bool]:
 # Memory efficiency test configuration
 MEM_TEST_ITEM_COUNT = 5_000_000  # 5 million items for memory tests
 MEM_TEST_KEY_SIZE = 16  # Size of "key:__rand_int__" pattern
+MEM_TEST_MEMBER_SIZE = 20  # Size of "element:__rand_int__" pattern (used by sadd/zadd)
+MEM_TEST_SCORE_SIZE = 8  # Size of a double score (used by zadd)
 MEM_TEST_MAX_CONCURRENT = (
     9  # Max concurrent server instances # TODO max session limit typically 10 by default
 )
@@ -123,4 +126,12 @@ def load_server_ips() -> list[ServerInfo]:
     return [s for s in all_servers if not s.disabled]
 
 
-SERVERS = load_server_ips()
+_SERVERS: Optional[list[ServerInfo]] = None
+
+
+def get_servers() -> list[ServerInfo]:
+    """Lazy accessor for server list. Loads from servers.json on first call."""
+    global _SERVERS
+    if _SERVERS is None:
+        _SERVERS = load_server_ips()
+    return _SERVERS

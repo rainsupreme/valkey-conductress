@@ -16,6 +16,8 @@ from src.config import (
     MEM_TEST_ITEM_COUNT,
     MEM_TEST_KEY_SIZE,
     MEM_TEST_MAX_CONCURRENT,
+    MEM_TEST_MEMBER_SIZE,
+    MEM_TEST_SCORE_SIZE,
     ServerInfo,
 )
 from src.file_protocol import BenchmarkResults, BenchmarkStatus
@@ -210,8 +212,21 @@ class MemTaskRunner(BaseTaskRunner):
 
             after_memory: dict[str, str] = await valkey.info("memory")
 
-            (item_count, expire_count) = await valkey.count_items_expires()
-            assert item_count == count
+            (key_count, expire_count) = await valkey.count_items_expires()
+            if self.test == "set":
+                # SET creates one key per item
+                item_count = key_count
+            else:
+                # SADD/ZADD create a single collection with N members
+                assert key_count == 1, f"Expected 1 collection key but found {key_count} on port {port}"
+                if self.test == "zadd":
+                    cardinality_cmd, key_name = "ZCARD", "myzset"
+                else:
+                    cardinality_cmd, key_name = "SCARD", "myset"
+                result_str = await valkey.run_valkey_command(f"{cardinality_cmd} {key_name}")
+                assert result_str is not None, f"{cardinality_cmd} returned None on port {port}"
+                item_count = int(result_str)
+            assert item_count == count, f"Expected {count} items but found {item_count} on port {port}"
             if self.has_expire:
                 assert expire_count == count
             else:
@@ -219,18 +234,28 @@ class MemTaskRunner(BaseTaskRunner):
 
             await valkey.stop()  # required cleanup, release CPU allocations, etc
 
-            keysize = MEM_TEST_KEY_SIZE
+            # Calculate per-item user data size based on test type
+            if self.test == "set":
+                # SET: each key is "key:__rand_int__" (16B) with a value of val_size
+                user_data_per_item = MEM_TEST_KEY_SIZE + val_size
+            elif self.test == "zadd":
+                # ZADD: member is "element:__rand_int__" (20B) + 8B score
+                user_data_per_item = MEM_TEST_MEMBER_SIZE + MEM_TEST_SCORE_SIZE
+            else:
+                # SADD: member is "element:__rand_int__" (20B)
+                user_data_per_item = MEM_TEST_MEMBER_SIZE
+
             before_usage = int(before_memory["used_memory"])
             after_usage = int(after_memory["used_memory"])
             total_usage = after_usage - before_usage
             per_key = float(total_usage) / count
-            per_item_overhead = per_key - val_size - keysize
+            per_item_overhead = per_key - user_data_per_item
 
             result = {
                 "before_memory": before_memory,
                 "after_memory": after_memory,
                 "has_expire": self.has_expire,
-                "key_size": keysize,
+                "user_data_per_item": user_data_per_item,
                 "val_size": val_size,
                 "per_key_size": per_key,
                 "per_item_overhead": per_item_overhead,

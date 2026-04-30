@@ -106,8 +106,8 @@ class TestTaskRunnerCleanup:
         return tmp_path
 
     @pytest.mark.asyncio
-    @patch("src.task_runner.SERVERS", [ServerInfo(ip="127.0.0.1")])
-    async def test_task_runner_cleans_up_files(self, tmp_dir):
+    @patch("src.task_runner.get_servers", return_value=[ServerInfo(ip="127.0.0.1")])
+    async def test_task_runner_cleans_up_files(self, mock_get_servers, tmp_dir):
         """Test that TaskRunner cleans up file protocol files after task completion."""
 
         # Create a mock task that uses file protocol

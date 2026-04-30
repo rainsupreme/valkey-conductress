@@ -16,7 +16,7 @@ DEV = True
 logger = logging.getLogger(__name__)
 
 # Get config values
-SERVERS = config.SERVERS
+SERVERS = config.get_servers()
 SSH_KEYFILE = config.SSH_KEYFILE
 REPOSITORIES = config.REPOSITORIES
 

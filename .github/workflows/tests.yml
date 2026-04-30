@@ -15,7 +15,13 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: pip install -r requirements/pip-requirements.txt -r requirements/pip-requirements-dev.txt
-      - name: Run tests
+      - name: Run unit tests
         run: pytest tests/unit
         env:
           PYTHONPATH: ${{ github.workspace }}
+      - name: Run integration tests
+        run: pytest tests/integration -m "not requires_server"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+      - name: Type checking
+        run: mypy src/ --ignore-missing-imports

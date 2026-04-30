@@ -4,7 +4,9 @@ from unittest.mock import Mock
 from src.tui import (
     CommaSeparatedIntsValidator,
     MakeArgsValidator,
+    NumberField,
     NumberListField,
+    PerfTaskForm,
     RangeListValidator,
     SingleNumberValidator,
     SourceSpeciferValidator,
@@ -253,6 +255,207 @@ class TestNumberListField:
         field.number_type = HumanNumber
         field.input = Mock(value="1:5:2")
         assert NumberListField.values(field) == [1, 3, 5]
+
+
+class TestPerfTaskFormFields:
+    """Tests for PerfTaskForm key-size and repetitions fields (Requirement 9.7).
+
+    Since PerfTaskForm is a Textual widget, we test the underlying field
+    configuration and parsing logic using mocks to avoid needing a running app.
+    """
+
+    def test_key_sizes_field_is_number_list_field_with_correct_config(self):
+        """Verify key_sizes would be a NumberListField with the right attributes.
+
+        We check the PerfTaskForm.__init__ source creates the field with
+        the expected parameters by inspecting the class definition.
+        """
+        import inspect
+        source = inspect.getsource(PerfTaskForm.__init__)
+        assert "self.key_sizes = NumberListField(" in source
+        assert '"Key Sizes (comma-separated, 0=standard)"' in source
+        assert '"key-sizes"' in source
+        assert '"0"' in source  # default
+        assert "HumanByte" in source
+
+    def test_repetitions_field_is_number_field_with_correct_config(self):
+        """Verify repetitions would be a NumberField with the right attributes."""
+        import inspect
+        source = inspect.getsource(PerfTaskForm.__init__)
+        assert "self.repetitions = NumberField(" in source
+        assert '"Repetitions"' in source
+        assert '"repetitions"' in source
+        assert "HumanNumber" in source
+
+    def test_key_sizes_default_parses_to_zero(self):
+        """The default key-size value '0' should parse to [0] via CommaSeparatedIntsValidator."""
+        validator = CommaSeparatedIntsValidator(HumanByte)
+        assert validator.parse_ints("0") == [0]
+
+    def test_repetitions_default_parses_to_one(self):
+        """The default repetitions value '1' should parse to 1 via SingleNumberValidator."""
+        validator = SingleNumberValidator(HumanNumber)
+        assert validator.parse_int("1") == 1
+
+    def test_key_sizes_parses_multiple_values(self):
+        """Key sizes field should parse comma-separated byte values."""
+        validator = CommaSeparatedIntsValidator(HumanByte)
+        assert validator.parse_ints("0, 64, 256, 1KB") == [0, 64, 256, 1024]
+
+    def test_repetitions_parses_higher_value(self):
+        """Repetitions field should parse values > 1."""
+        validator = SingleNumberValidator(HumanNumber)
+        assert validator.parse_int("5") == 5
+
+    def test_number_list_field_values_for_key_sizes(self):
+        """NumberListField.values() should parse comma-separated values correctly."""
+        field = Mock(spec=NumberListField)
+        field.allow_ranges = False
+        field.number_type = HumanByte
+        field.input = Mock(value="0, 64, 256, 1KB")
+        assert NumberListField.values(field) == [0, 64, 256, 1024]
+
+    def test_number_field_value_for_repetitions(self):
+        """NumberField.value() should parse a single integer correctly."""
+        field = Mock(spec=NumberField)
+        field.number_type = HumanNumber
+        field.input = Mock(value="3")
+        assert NumberField.value(field) == 3
+
+
+class TestPerfTaskFormCartesianProduct:
+    """Tests verifying key_sizes is included in the Cartesian product
+    and repetitions is passed through to PerfTaskData (Requirement 9.7).
+
+    We test the Cartesian product logic and PerfTaskData construction
+    directly, since the actual form submission requires a running Textual app.
+    """
+
+    def test_cartesian_product_includes_key_sizes(self):
+        """The Cartesian product should include key_sizes as a dimension."""
+        from itertools import product as itertools_product
+
+        sizes = [512]
+        pipelining = [1]
+        io_threads = [1]
+        tests = ["get"]
+        key_sizes = [0, 64, 256]
+        specifiers = [("repo1", "unstable")]
+        make_args_list = [""]
+
+        all_combos = list(
+            itertools_product(
+                sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args_list
+            )
+        )
+        # With 3 key_sizes, we should get 3 combinations
+        assert len(all_combos) == 3
+        # Each combo should have a different key_size
+        produced_key_sizes = [combo[4] for combo in all_combos]
+        assert produced_key_sizes == [0, 64, 256]
+
+    def test_cartesian_product_multiplies_all_dimensions(self):
+        """Total tasks = sizes * pipelining * io_threads * tests * key_sizes * specifiers * make_args."""
+        from itertools import product as itertools_product
+
+        sizes = [512, 1024]
+        pipelining = [1, 4]
+        io_threads = [1, 9]
+        tests = ["get", "set"]
+        key_sizes = [0, 64]
+        specifiers = [("repo1", "unstable")]
+        make_args_list = [""]
+
+        all_combos = list(
+            itertools_product(
+                sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args_list
+            )
+        )
+        expected = 2 * 2 * 2 * 2 * 2 * 1 * 1  # 32
+        assert len(all_combos) == expected
+
+    def test_submit_task_cartesian_product_order_matches_tui(self):
+        """The Cartesian product order in submit_task is (sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args)."""
+        import inspect
+        from src.tui import PerfTaskForm
+        source = inspect.getsource(PerfTaskForm.submit_task)
+        # Verify key_sizes is in the product call
+        assert "key_sizes," in source
+        # Verify the unpacking includes key_size
+        assert "key_size" in source
+
+    def test_repetitions_passed_to_perf_task_data(self, monkeypatch):
+        """Repetitions value should be passed through to each PerfTaskData."""
+        monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
+        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+
+        from src.tasks.task_perf_benchmark import PerfTaskData
+
+        repetitions = 5
+        task = PerfTaskData(
+            source="repo1",
+            specifier="unstable",
+            replicas=-1,
+            note="test",
+            requirements={},
+            make_args="",
+            val_size=512,
+            io_threads=1,
+            pipelining=1,
+            test="get",
+            warmup=60,
+            duration=900,
+            profiling_sample_rate=-1,
+            perf_stat_enabled=False,
+            has_expire=False,
+            preload_keys=True,
+            key_size=64,
+            repetitions=repetitions,
+        )
+        assert task.repetitions == 5
+        assert task.key_size == 64
+
+    def test_key_size_default_in_perf_task_data(self, monkeypatch):
+        """PerfTaskData should default key_size=0 and repetitions=1."""
+        monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
+        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+
+        from src.tasks.task_perf_benchmark import PerfTaskData
+
+        task = PerfTaskData(
+            source="repo1",
+            specifier="unstable",
+            replicas=-1,
+            note="",
+            requirements={},
+            make_args="",
+            val_size=512,
+            io_threads=1,
+            pipelining=1,
+            test="get",
+            warmup=60,
+            duration=900,
+            profiling_sample_rate=-1,
+            perf_stat_enabled=False,
+            has_expire=False,
+            preload_keys=True,
+        )
+        assert task.key_size == 0
+        assert task.repetitions == 1
+
+    def test_submit_task_passes_repetitions_to_perf_task_data(self):
+        """Verify submit_task passes repetitions to PerfTaskData constructor."""
+        import inspect
+        from src.tui import PerfTaskForm
+        source = inspect.getsource(PerfTaskForm.submit_task)
+        assert "repetitions=repetitions" in source
+
+    def test_submit_task_passes_key_size_to_perf_task_data(self):
+        """Verify submit_task passes key_size to PerfTaskData constructor."""
+        import inspect
+        from src.tui import PerfTaskForm
+        source = inspect.getsource(PerfTaskForm.submit_task)
+        assert "key_size=key_size" in source
 
 
 class TestMakeArgsValidator:

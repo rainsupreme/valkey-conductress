@@ -107,7 +107,6 @@ class HumanNumber:
         else:
             assert len(cls.base) == len(cls.units)
             for base, unit_suffix in zip(cls.base, lower_units):
-                print(number, base, unit_suffix)
                 number *= base
                 if unit == unit_suffix:
                     return number

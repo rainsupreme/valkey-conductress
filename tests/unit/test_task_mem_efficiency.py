@@ -170,7 +170,7 @@ class TestMemTaskRunner:
                 "before_memory": {"used_memory": "1000000"},
                 "after_memory": {"used_memory": "2000000"},
                 "has_expire": False,
-                "key_size": 16,
+                "user_data_per_item": 80,
                 "per_key_size": 20.0,
             }
 
@@ -207,7 +207,7 @@ class TestMemTaskRunner:
         result = await runner.test_single_size_overhead(64, 6379, semaphore)
 
         assert result["val_size"] == 64
-        assert result["key_size"] == 16
+        assert result["user_data_per_item"] == 16 + 64  # key_size + val_size for "set"
         assert "per_item_overhead" in result
         assert "per_key_size" in result
 
@@ -318,10 +318,11 @@ class TestMemTaskRunner:
         result = await runner.test_single_size_overhead(val_size, 6379, semaphore)
 
         expected_per_key = (after_mem - before_mem) / count  # 1.0 bytes per key
-        expected_overhead = expected_per_key - val_size - key_size  # Should be negative
+        expected_overhead = expected_per_key - val_size - key_size  # user_data = key_size + val_size for "set"
 
         assert result["per_key_size"] == expected_per_key
         assert result["per_item_overhead"] == expected_overhead
+        assert result["user_data_per_item"] == key_size + val_size
 
     @patch("src.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
@@ -425,7 +426,7 @@ class TestMemTaskRunner:
     async def test_concurrent_execution(self, mock_server_class, runner, mock_server):
         """Test concurrent execution of multiple size tests."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
-        
+
         # Mock Server constructor to return mock_server
         mock_server_instance = MagicMock()
         mock_server_instance.get_available_cpu_count = AsyncMock(return_value=2)

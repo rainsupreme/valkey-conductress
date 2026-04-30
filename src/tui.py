@@ -691,14 +691,22 @@ class PerfTaskForm(BaseTaskForm):
         self.pipelining = PipeliningField()
         self.io_threads = IOThreadsField()
         self.sizes = SizesField()
+        self.key_sizes = NumberListField(
+            "Key Sizes (comma-separated, 0=standard)",
+            "key-sizes",
+            "0",
+            "0, 64, 256, 1KB",
+            HumanByte,
+        )
         self.warmup = NumberField("Warmup (seconds)", "warmup", "1m", "1m", HumanTime)
         self.duration = NumberField("Duration (seconds)", "duration", "15m", "15m", HumanTime)
+        self.repetitions = NumberField("Repetitions", "repetitions", "1", "1", HumanNumber)
 
     def compose(self) -> ComposeResult:
         for widget in self._compose_source_specifier_input():
             yield widget
 
-        for field in (self.pipelining, self.io_threads, self.sizes, self.warmup, self.duration):
+        for field in (self.pipelining, self.io_threads, self.sizes, self.key_sizes, self.warmup, self.duration, self.repetitions):
             for widget in field.widgets():
                 yield widget
 
@@ -730,8 +738,10 @@ class PerfTaskForm(BaseTaskForm):
             pipelining: list[int] = self.pipelining.values()
             io_threads: list[int] = self.io_threads.values()
             sizes: list[int] = self.sizes.values()
+            key_sizes: list[int] = self.key_sizes.values()
             warmup: int = self.warmup.value()
             duration: int = self.duration.value()
+            repetitions: int = self.repetitions.value()
             tests: list[str] = self.query_one("#test-list", SelectionList).selected
             preload_keys: bool = self.query_one("#preload-keys", Switch).value
             expire_keys: bool = self.query_one("#expire-keys", Switch).value
@@ -756,6 +766,7 @@ class PerfTaskForm(BaseTaskForm):
                 pipelining,
                 io_threads,
                 tests,
+                key_sizes,
                 specifiers,
                 make_args_list,
             )
@@ -763,7 +774,7 @@ class PerfTaskForm(BaseTaskForm):
         profiling_sample_rate = 399 if profiling else -1
 
         tasks: list[BaseTaskData] = []
-        for size, pipe, thread, test, specifier, make_args in all_tests:
+        for size, pipe, thread, test, key_size, specifier, make_args in all_tests:
             task = PerfTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
@@ -781,6 +792,8 @@ class PerfTaskForm(BaseTaskForm):
                 perf_stat_enabled=perf_stat,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
+                key_size=key_size,
+                repetitions=repetitions,
             )
             tasks.append(task)
         self.queue_tasks(tasks)

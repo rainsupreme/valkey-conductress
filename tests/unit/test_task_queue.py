@@ -82,7 +82,7 @@ def test_task_save_and_load(temp_dir):
 
 
 def test_invalid_repo_fails():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         MockTaskData(
             source="invalid_repo",
             specifier="spec",
@@ -148,3 +148,63 @@ def test_invalid_json_file_skipped(temp_dir):
     with pytest.raises(ValueError) as excinfo:
         queue.get_next_task()
     assert "Invalid JSON in file" in str(excinfo.value)
+
+
+def test_finish_task_raises_runtime_error_when_file_missing(temp_dir):
+    """finish_task() should raise RuntimeError when the task file doesn't exist."""
+    queue = task_queue.TaskQueue(queue_dir=temp_dir)
+    task = make_task()
+    # Don't submit the task — the file won't exist on disk
+    with pytest.raises(RuntimeError, match="Task file not found and cannot be cleared"):
+        queue.finish_task(task)
+
+
+def test_finish_task_does_not_call_exit(temp_dir):
+    """finish_task() should raise RuntimeError, not call exit(), when file is missing."""
+    queue = task_queue.TaskQueue(queue_dir=temp_dir)
+    task = make_task()
+    # Verify it raises RuntimeError (not SystemExit from exit())
+    with pytest.raises(RuntimeError):
+        queue.finish_task(task)
+
+
+def test_invalid_source_raises_value_error_with_message():
+    """BaseTaskData.__post_init__ should raise ValueError with a descriptive message for invalid sources."""
+    with pytest.raises(ValueError, match="Unknown source: bad_source"):
+        MockTaskData(
+            source="bad_source",
+            specifier="spec",
+            make_args="",
+            replicas=1,
+            note="test",
+            requirements={},
+            extra_data="mock_info",
+        )
+
+
+def test_valid_source_from_repo_names():
+    """BaseTaskData.__post_init__ should accept sources from REPO_NAMES."""
+    task = MockTaskData(
+        source="repo1",
+        specifier="spec",
+        make_args="",
+        replicas=1,
+        note="test",
+        requirements={},
+        extra_data="mock_info",
+    )
+    assert task.source == "repo1"
+
+
+def test_valid_source_manually_uploaded():
+    """BaseTaskData.__post_init__ should accept MANUALLY_UPLOADED as a valid source."""
+    task = MockTaskData(
+        source="manual",
+        specifier="spec",
+        make_args="",
+        replicas=1,
+        note="test",
+        requirements={},
+        extra_data="mock_info",
+    )
+    assert task.source == "manual"

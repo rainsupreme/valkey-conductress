@@ -8,7 +8,7 @@ from typing import Optional
 
 from src.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_LOG, SERVERS
+from .config import CONDUCTRESS_LOG, get_servers
 from .file_protocol import FileProtocol
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
@@ -24,12 +24,14 @@ class TaskRunner:
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task"""
+        servers = get_servers()
         server_count = task_data.replicas + 1 if task_data.replicas > 0 else 1
-        assert (
-            len(SERVERS) >= server_count
-        ), f"Not enough servers for {task_data.replicas} replicas. Found {len(SERVERS)} servers."
+        if len(servers) < server_count:
+            raise RuntimeError(
+                f"Not enough servers for {task_data.replicas} replicas. Found {len(servers)} servers."
+            )
 
-        task_runner: BaseTaskRunner = task_data.prepare_task_runner(SERVERS[:server_count])
+        task_runner: BaseTaskRunner = task_data.prepare_task_runner(servers[:server_count])
         try:
             await task_runner.run()
             # Task completed successfully, mark as completed and clean up immediately
@@ -48,7 +50,7 @@ class TaskRunner:
             print(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
 
         # Kill all valkey instances on all servers
-        await asyncio.gather(*[Server(server.ip).kill_all_valkey_instances_on_host() for server in SERVERS])
+        await asyncio.gather(*[Server(server.ip).kill_all_valkey_instances_on_host() for server in get_servers()])
 
         queue = TaskQueue()
         self.task = queue.get_next_task()

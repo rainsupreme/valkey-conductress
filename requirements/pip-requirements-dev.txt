@@ -1,8 +1,9 @@
-black
-flake8
-isort
-mypy
-pylint
-pytest
-pytest-cov
-pytest-asyncio
+black>=23.0,<25.0
+flake8>=6.0,<8.0
+hypothesis>=6.80,<7.0
+isort>=5.12,<6.0
+mypy>=1.5,<2.0
+pylint>=3.0,<4.0
+pytest>=7.4,<9.0
+pytest-asyncio>=0.21,<1.0
+pytest-cov>=4.1,<6.0
