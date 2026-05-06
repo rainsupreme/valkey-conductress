@@ -5,9 +5,12 @@ import json
 import logging
 import sys
 from dataclasses import dataclass
+from math import sqrt
 from pathlib import Path
+from statistics import stdev
 from typing import Optional
 
+from scipy.stats import t as t_dist
 from scipy.stats import ttest_ind
 
 from .config import CONDUCTRESS_OUTPUT
@@ -34,6 +37,8 @@ class ComparisonRow:
     p_value: Optional[float]  # None if insufficient data
     n_a: int  # sample count for specifier A
     n_b: int  # sample count for specifier B
+    ci_a_pct: Optional[float] = None  # 95% CI as % of mean for A
+    ci_b_pct: Optional[float] = None  # 95% CI as % of mean for B
 
 
 class AnalysisModule:
@@ -195,6 +200,16 @@ class AnalysisModule:
             if n_a >= 2 and n_b >= 2:
                 _, p_value = ttest_ind(samples_a, samples_b, equal_var=False)
 
+            # Compute 95% CI as percentage of mean for each side
+            ci_a_pct: Optional[float] = None
+            ci_b_pct: Optional[float] = None
+            if n_a >= 2 and mean_a > 0:
+                ci_a = t_dist.ppf(0.975, n_a - 1) * (stdev(samples_a) / sqrt(n_a))
+                ci_a_pct = (ci_a / mean_a) * 100.0
+            if n_b >= 2 and mean_b > 0:
+                ci_b = t_dist.ppf(0.975, n_b - 1) * (stdev(samples_b) / sqrt(n_b))
+                ci_b_pct = (ci_b / mean_b) * 100.0
+
             method, val_size, key_size, io_threads, pipelining, make_args = group_key
 
             rows.append(
@@ -211,6 +226,8 @@ class AnalysisModule:
                     p_value=p_value,
                     n_a=n_a,
                     n_b=n_b,
+                    ci_a_pct=ci_a_pct,
+                    ci_b_pct=ci_b_pct,
                 )
             )
 
@@ -223,7 +240,7 @@ class AnalysisModule:
             rows: List of ComparisonRow from compare().
 
         Returns:
-            Formatted table string.
+            Formatted table string with CI columns and a measurement quality summary.
         """
         if not rows:
             return "No comparison data available."
@@ -231,33 +248,71 @@ class AnalysisModule:
         # Header
         header = (
             f"{'Test':<12}| {'Size':>6} | {'Key':>5} | {'IO':>3} | {'Pipe':>4} "
-            f"| {'Mean A':>14} | {'Mean B':>14} | {'Delta':>7} | {'p-value':>10}"
+            f"| {'Mean A':>14} | {'±CI%':>5} | {'Mean B':>14} | {'±CI%':>5} "
+            f"| {'Delta':>7} | {'p-value':>8} | {'n':>3}"
         )
         separator = (
             f"{'-' * 12}+{'-' * 8}+{'-' * 7}+{'-' * 5}+{'-' * 6}"
-            f"+{'-' * 16}+{'-' * 16}+{'-' * 9}+{'-' * 12}"
+            f"+{'-' * 16}+{'-' * 7}+{'-' * 16}+{'-' * 7}"
+            f"+{'-' * 9}+{'-' * 10}+{'-' * 5}"
         )
 
         lines = [header, separator]
+
+        ci_pcts = []
+        significant_count = 0
 
         for row in rows:
             mean_a_str = f"{row.mean_a:,.0f} rps"
             mean_b_str = f"{row.mean_b:,.0f} rps"
             delta_str = f"{row.delta_pct:+.2f}%"
 
+            ci_a_str = f"{row.ci_a_pct:.1f}%" if row.ci_a_pct is not None else "N/A"
+            ci_b_str = f"{row.ci_b_pct:.1f}%" if row.ci_b_pct is not None else "N/A"
+
+            if row.ci_a_pct is not None:
+                ci_pcts.append(row.ci_a_pct)
+            if row.ci_b_pct is not None:
+                ci_pcts.append(row.ci_b_pct)
+
             if row.p_value is not None:
                 p_str = f"{row.p_value:.4f}"
+                if row.p_value < 0.05:
+                    significant_count += 1
             else:
                 p_str = "N/A"
 
+            n_str = f"{row.n_a}/{row.n_b}"
             size_str = _format_size(row.val_size)
 
             line = (
                 f"{row.method:<12}| {size_str:>6} | {row.key_size:>5} | {row.io_threads:>3} "
-                f"| {row.pipelining:>4} | {mean_a_str:>14} | {mean_b_str:>14} "
-                f"| {delta_str:>7} | {p_str:>10}"
+                f"| {row.pipelining:>4} | {mean_a_str:>14} | {ci_a_str:>5} "
+                f"| {mean_b_str:>14} | {ci_b_str:>5} "
+                f"| {delta_str:>7} | {p_str:>8} | {n_str:>3}"
             )
             lines.append(line)
+
+        # Summary
+        lines.append("")
+        lines.append(f"Comparisons: {len(rows)}")
+        lines.append(f"Significant (p < 0.05): {significant_count}/{len(rows)}")
+
+        if ci_pcts:
+            avg_ci = sum(ci_pcts) / len(ci_pcts)
+            max_ci = max(ci_pcts)
+            lines.append(f"Measurement precision: avg ±{avg_ci:.2f}%, max ±{max_ci:.2f}% (95% CI as % of mean)")
+
+            # Guidance on whether more testing would help
+            if avg_ci > 2.0:
+                lines.append("⚠ High variance — consider more repetitions to improve precision.")
+            elif avg_ci > 1.0:
+                lines.append("Moderate precision — more repetitions would help detect sub-1% effects.")
+            else:
+                lines.append("Good precision — sufficient to detect effects ≥1%.")
+
+            # Detectable effect size estimate (rough: need delta > 2x pooled CI to be significant)
+            lines.append(f"Minimum detectable effect: ~±{avg_ci * 2:.1f}% (approximate)")
 
         return "\n".join(lines)
 

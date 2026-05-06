@@ -619,7 +619,7 @@ class TestFormatTable:
         assert result == "No comparison data available."
 
     def test_format_table_single_row(self):
-        """Single row produces a header, separator, and one data line."""
+        """Single row produces a header, separator, one data line, and a summary footer."""
         row = ComparisonRow(
             method="perf-get",
             val_size=512,
@@ -638,7 +638,8 @@ class TestFormatTable:
         table = module.format_table([row])
 
         lines = table.split("\n")
-        assert len(lines) == 3  # header, separator, data row
+        # Table has: header, separator, data row, blank, summary lines
+        assert len(lines) >= 3  # at minimum header, separator, data row
 
         # Verify header contains expected column names
         assert "Test" in lines[0]
@@ -654,6 +655,10 @@ class TestFormatTable:
         assert "110,000 rps" in data_line
         assert "+10.00%" in data_line
         assert "0.0234" in data_line
+
+        # Verify summary footer
+        assert "Comparisons: 1" in table
+        assert "Significant (p < 0.05): 1/1" in table
 
     def test_format_table_na_p_value(self):
         """Row with p_value=None shows 'N/A'."""
@@ -712,7 +717,12 @@ class TestFormatTable:
         table = module.format_table(rows)
 
         lines = table.split("\n")
-        assert len(lines) == 4  # header + separator + 2 data rows
+        # header + separator + 2 data rows + blank + summary lines
+        assert len(lines) >= 4  # at minimum header, separator, 2 data rows
+        # Verify both data rows are present
+        assert "perf-get" in lines[2]
+        assert "perf-set" in lines[3]
+        assert "Comparisons: 2" in table
 
     def test_format_table_negative_delta(self):
         """Negative delta percentage is formatted with minus sign."""

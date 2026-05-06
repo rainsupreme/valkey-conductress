@@ -148,14 +148,26 @@ python -m src compare unstable vstr-zerocopy --method perf-get
 
 ### Output
 
-The module prints a formatted table showing:
+The module prints a formatted comparison table with confidence intervals and a measurement quality summary:
 
 ```
-Test       | Size  | Key  | IO | Pipe | Mean A      | Mean B      | Delta  | p-value
------------+-------+------+----+------+-------------+-------------+--------+--------
-perf-get   | 512B  | 0    | 1  | 1    | 141,367 rps | 143,200 rps | +1.30% | 0.0234
-perf-set   | 512B  | 0    | 1  | 1    | 138,500 rps | 139,100 rps | +0.43% | 0.5120
+Test       | Size  | Key  | IO | Pipe |     Mean A     | ±CI% |     Mean B     | ±CI% |  Delta | p-value |   n
+-----------+-------+------+----+------+----------------+------+----------------+------+--------+---------+-----
+perf-get   | 512B  |    0 |  1 |    1 |   131,122 rps  | 1.1% |   132,209 rps  | 0.7% | +0.83% |  0.1173 | 5/5
+perf-set   | 512B  |    0 |  1 |    1 |   117,502 rps  | 0.5% |   116,884 rps  | 0.8% | -0.53% |  0.1602 | 5/5
+
+Comparisons: 24
+Significant (p < 0.05): 3/24
+Measurement precision: avg ±0.58%, max ±1.10% (95% CI as % of mean)
+Good precision — sufficient to detect effects ≥1%.
+Minimum detectable effect: ~±1.2% (approximate)
 ```
+
+The **±CI%** columns show the 95% confidence interval as a percentage of the mean for each specifier — smaller values mean tighter measurements. The summary at the bottom tells you:
+- How many comparisons reached statistical significance
+- The overall measurement precision (average and worst-case CI)
+- Whether more repetitions would help detect smaller effects
+- The approximate minimum effect size detectable with the current data
 
 Results are grouped by matching parameters (test type, value size, key size, IO threads, pipelining). A [Welch's t-test](https://en.wikipedia.org/wiki/Welch%27s_t-test) is performed for each group when both specifiers have at least 2 samples. Groups with insufficient data show `N/A` for the p-value.
 

@@ -81,6 +81,7 @@ REPOSITORIES = [
     ("https://github.com/rainsupreme/valkey.git", "rainsupreme"),
     ("https://github.com/valkey-io/valkey.git", "zuiderkwast"),
     ("https://github.com/JimB123/valkey.git", "JimB123"),
+    ("https://github.com/valkey-rainfall/valkey.git", "valkey-rainfall"),
 ]
 REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 

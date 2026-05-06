@@ -201,6 +201,8 @@ async def update_pip_packages(host: Host):
     packages = load_requirements("pip-requirements")
     if DEV:
         packages += load_requirements("pip-requirements-dev")
+    # Quote each package spec to prevent shell interpretation of < and > in version ranges
+    quoted_packages = " ".join(f"'{p}'" for p in packages)
     distro = await host.get_linux_distro()
     if distro == "Ubuntu":
         # ensure virtual environment
@@ -209,10 +211,10 @@ async def update_pip_packages(host: Host):
             await host.run(f"python3 -m venv {venv_path}")
         pip = venv_path / "bin/pip"
         await host.run(f"{pip} install --upgrade pip")
-        await host.run(f"{pip} install {' '.join(packages)}")
+        await host.run(f"{pip} install {quoted_packages}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install {' '.join(packages)}")
+        await host.run(f"pip install {quoted_packages}")
 
 
 async def update_rhel_packages(host: Host):

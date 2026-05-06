@@ -187,14 +187,18 @@ class TestAnalysisFormatTable:
     """Test AnalysisModule.format_table() produces correctly formatted output."""
 
     def test_format_table_contains_all_rows(self, fixture_file):
-        """Formatted table contains header, separator, and one line per comparison row."""
+        """Formatted table contains header, separator, data rows, and summary."""
         module = AnalysisModule(results_path=fixture_file)
         rows = module.compare("branch-a", "branch-b")
         table = module.format_table(rows)
 
         lines = table.split("\n")
-        # header + separator + 2 data rows
-        assert len(lines) == 4
+        # header + separator + 2 data rows + blank + summary lines
+        assert len(lines) >= 4  # at minimum header, separator, 2 data rows
+        # Verify both comparison rows are present
+        assert "perf-get" in table
+        assert "perf-set" in table
+        assert "Comparisons: 2" in table
 
     def test_format_table_contains_expected_values(self, fixture_file):
         """Formatted table contains the method names and rps values."""
