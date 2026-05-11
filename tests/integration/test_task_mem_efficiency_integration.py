@@ -13,6 +13,8 @@ from src.tasks.task_mem_efficiency import MemTaskData
 class TestMemTaskIntegration:
     """Integration tests for MemTaskRunner with real server instances."""
 
+    pytestmark = pytest.mark.requires_server
+
     @pytest.fixture
     def temp_dir(self):
         """Create temporary directory for test files."""

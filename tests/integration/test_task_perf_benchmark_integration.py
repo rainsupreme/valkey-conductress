@@ -13,6 +13,8 @@ from src.tasks.task_perf_benchmark import PerfTaskData
 class TestPerfTaskIntegration:
     """Integration tests for PerfTaskRunner with real server instances."""
 
+    pytestmark = pytest.mark.requires_server
+
     @pytest.fixture
     def temp_dir(self):
         """Create temporary directory for test files."""

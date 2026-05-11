@@ -16,6 +16,8 @@ TEST_PORTS = 9000
 @patch("src.config.REPO_NAMES", REPO_NAMES)
 class TestServerIntegration:
 
+    pytestmark = pytest.mark.requires_server
+
     @classmethod
     def teardown_class(cls):
         asyncio.run(Server("127.0.0.1").kill_all_valkey_instances_on_host())
@@ -207,7 +209,7 @@ class TestServerIntegration:
             # Check that result file exists locally
             result_file = tmp_path / "perf_stat.txt"
             assert result_file.exists(), "Perf stat result file should exist"
-            
+
             # Check that file has some content with stats
             content = result_file.read_text()
             assert len(content) > 0, "Perf stat file should not be empty"
