@@ -9,7 +9,6 @@ Requirements: 9.8
 """
 
 import json
-from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
@@ -224,12 +223,12 @@ class TestCliPerfQueuing:
         with open(task_files[0]) as f:
             data = json.load(f)
 
-        # Default warmup is "1m" = 60s
-        assert data["warmup"] == 60
-        # Default duration is "15m" = 900s
-        assert data["duration"] == 900
-        # Default repetitions is 1
-        assert data["repetitions"] == 1
+        # Default warmup is "30s" = 30s
+        assert data["warmup"] == 30
+        # Default duration is "5m" = 300s
+        assert data["duration"] == 300
+        # Default repetitions is 5
+        assert data["repetitions"] == 5
         # Default key-sizes is "0"
         assert data["key_size"] == 0
 
@@ -239,7 +238,6 @@ class TestCliQueueListing:
 
     def test_queue_lists_queued_tasks(self, queue_dir, capsys):
         """After queuing tasks via perf, the queue subcommand should list them."""
-        # First, queue some tasks
         exit_code = main([
             "perf",
             "--source", "valkey",
@@ -257,11 +255,7 @@ class TestCliQueueListing:
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        # Should contain the source and specifier
-        assert "valkey" in captured.out
-        assert "unstable" in captured.out
-        # Should list both tasks (get and set)
-        assert "Perf" in captured.out
+        assert "Total: 2 task(s)" in captured.out
 
     def test_queue_empty_shows_no_pending(self, queue_dir, capsys):
         """When no tasks are queued, the queue subcommand shows a no-pending message."""
@@ -284,19 +278,16 @@ class TestCliQueueListing:
             "--pipelining", "1",
         ])
         assert exit_code == 0
-        capsys.readouterr()  # clear the perf output
+        capsys.readouterr()
 
         exit_code = main(["queue"])
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        # Count non-header, non-separator lines that contain "valkey"
-        lines = [line for line in captured.out.strip().split("\n")
-                 if "valkey" in line]
-        assert len(lines) == 4
+        assert "Total: 4 task(s)" in captured.out
 
     def test_queue_shows_task_details(self, queue_dir, capsys):
-        """The queue listing should show task type, source, specifier, and description."""
+        """The queue listing should show task ID, description, and note."""
         exit_code = main([
             "perf",
             "--source", "testrepo",
@@ -308,15 +299,11 @@ class TestCliQueueListing:
             "--note", "detail check",
         ])
         assert exit_code == 0
-        capsys.readouterr()  # clear perf output
+        capsys.readouterr()
 
         exit_code = main(["queue"])
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        assert "testrepo" in captured.out
-        assert "feature-branch" in captured.out
-        # The header should contain column names
+        assert "detail check" in captured.out
         assert "Task ID" in captured.out
-        assert "Source" in captured.out
-        assert "Specifier" in captured.out

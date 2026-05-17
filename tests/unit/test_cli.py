@@ -164,18 +164,18 @@ class TestValidateSource:
         assert validate_source("") is False
 
 
-class TestMainPerfSubcommand:
-    """Unit tests for the perf subcommand via main()."""
+class TestQueueAddSubcommand:
+    """Unit tests for the 'queue add' subcommand via main()."""
 
     @patch("src.cli.TaskQueue")
-    def test_perf_queues_correct_number_of_tasks(self, mock_queue_cls):
-        """main(["perf", ...]) with 2 tests, 2 sizes, 2 io-threads, 2 pipelining, 1 key-size
+    def test_queue_add_correct_number_of_tasks(self, mock_queue_cls):
+        """main(["queue", "add", ...]) with 2 tests, 2 sizes, 2 io-threads, 2 pipelining, 1 key-size
         should queue 2*2*2*2*1 = 16 tasks."""
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "repo1",
             "--specifier", "unstable",
             "--tests", "get,set",
@@ -188,48 +188,36 @@ class TestMainPerfSubcommand:
         assert mock_queue.submit_task.call_count == 16
 
     @patch("src.cli.TaskQueue")
-    def test_perf_invalid_source_returns_exit_code_1(self, mock_queue_cls):
+    def test_queue_add_invalid_source_returns_exit_code_1(self, mock_queue_cls):
         """main() with an invalid source should return exit code 1."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "invalid_source",
-            "--specifier", "unstable",
             "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
         ])
 
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
     @patch("src.cli.TaskQueue")
-    def test_perf_empty_tests_returns_exit_code_1(self, mock_queue_cls):
+    def test_queue_add_empty_tests_returns_exit_code_1(self, mock_queue_cls):
         """main() with empty --tests should return exit code 1."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "repo1",
-            "--specifier", "unstable",
             "--tests", "",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
         ])
 
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
     @patch("src.cli.TaskQueue")
-    def test_perf_repetitions_zero_returns_exit_code_1(self, mock_queue_cls):
+    def test_queue_add_repetitions_zero_returns_exit_code_1(self, mock_queue_cls):
         """main() with --repetitions 0 should return exit code 1."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "repo1",
-            "--specifier", "unstable",
             "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
             "--repetitions", "0",
         ])
 
@@ -237,24 +225,19 @@ class TestMainPerfSubcommand:
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
     @patch("src.cli.TaskQueue")
-    def test_perf_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
+    def test_queue_add_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
         """main() with --key-sizes "0,64" should produce tasks with key_size 0 and 64."""
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "repo1",
-            "--specifier", "unstable",
             "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
             "--key-sizes", "0,64",
         ])
 
         assert exit_code == 0
-        # 1 test * 1 size * 1 io-thread * 1 pipelining * 2 key-sizes = 2 tasks
         assert mock_queue.submit_task.call_count == 2
 
         submitted_key_sizes = sorted(
@@ -262,13 +245,44 @@ class TestMainPerfSubcommand:
         )
         assert submitted_key_sizes == [0, 64]
 
+    @patch("src.cli.TaskQueue")
+    def test_queue_add_defaults(self, mock_queue_cls):
+        """Defaults: source=valkey, specifier=unstable, sizes=512, io-threads=1, pipeline=1, reps=5."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
 
-class TestMainQueueSubcommand:
-    """Unit tests for the queue subcommand via main()."""
+        exit_code = main([
+            "queue", "add",
+            "--tests", "set",
+        ])
+
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 1
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.source == "valkey"
+        assert task.specifier == "unstable"
+        assert task.val_size == 512
+        assert task.io_threads == 1
+        assert task.pipelining == 1
+        assert task.repetitions == 5
+
+
+class TestQueueListSubcommand:
+    """Unit tests for the 'queue list' subcommand via main()."""
 
     @patch("src.cli.TaskQueue")
-    def test_queue_returns_exit_code_0(self, mock_queue_cls):
-        """main(["queue"]) should return exit code 0."""
+    def test_queue_list_returns_exit_code_0(self, mock_queue_cls):
+        """main(["queue", "list"]) should return exit code 0."""
+        mock_queue = MagicMock()
+        mock_queue.get_all_tasks.return_value = []
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "list"])
+        assert exit_code == 0
+
+    @patch("src.cli.TaskQueue")
+    def test_queue_no_subcommand_defaults_to_list(self, mock_queue_cls):
+        """main(["queue"]) with no subcommand should default to list."""
         mock_queue = MagicMock()
         mock_queue.get_all_tasks.return_value = []
         mock_queue_cls.return_value = mock_queue
@@ -280,3 +294,45 @@ class TestMainQueueSubcommand:
         """main([]) with no subcommand should return exit code 1."""
         exit_code = main([])
         assert exit_code == 1
+
+
+class TestQueueRemoveSubcommand:
+    """Unit tests for the 'queue remove' subcommand."""
+
+    @patch("src.cli.TaskQueue")
+    def test_queue_remove_success(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_queue.remove_task.return_value = True
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "remove", "2026.05.17_10.08.33.876407"])
+        assert exit_code == 0
+        mock_queue.remove_task.assert_called_once_with("2026.05.17_10.08.33.876407")
+
+    @patch("src.cli.TaskQueue")
+    def test_queue_remove_not_found(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_queue.remove_task.return_value = False
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "remove", "nonexistent"])
+        assert exit_code == 1
+
+
+class TestQueueClearSubcommand:
+    """Unit tests for the 'queue clear' subcommand."""
+
+    @patch("src.cli.TaskQueue")
+    def test_queue_clear_removes_all(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_task1 = MagicMock()
+        mock_task1.task_id = "task1"
+        mock_task2 = MagicMock()
+        mock_task2.task_id = "task2"
+        mock_queue.get_all_tasks.return_value = [mock_task1, mock_task2]
+        mock_queue.remove_task.return_value = True
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "clear"])
+        assert exit_code == 0
+        assert mock_queue.remove_task.call_count == 2
