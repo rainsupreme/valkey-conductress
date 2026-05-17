@@ -247,7 +247,7 @@ class TestQueueAddSubcommand:
 
     @patch("src.cli.TaskQueue")
     def test_queue_add_defaults(self, mock_queue_cls):
-        """Defaults: source=valkey, specifier=unstable, sizes=512, io-threads=1, pipeline=1, reps=5."""
+        """Defaults: source=valkey, specifier=unstable, sizes=512, io-threads=9, pipeline=10, reps=5."""
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
@@ -262,9 +262,10 @@ class TestQueueAddSubcommand:
         assert task.source == "valkey"
         assert task.specifier == "unstable"
         assert task.val_size == 512
-        assert task.io_threads == 1
-        assert task.pipelining == 1
+        assert task.io_threads == 9
+        assert task.pipelining == 10
         assert task.repetitions == 5
+        assert task.make_args == "USE_FAST_FLOAT=yes"
 
 
 class TestQueueListSubcommand:

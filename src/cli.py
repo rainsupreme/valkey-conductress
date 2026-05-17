@@ -83,29 +83,37 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         "--tests", required=True, help="Comma-separated test names (e.g., get,set)"
     )
     parser.add_argument(
-        "--sizes", default="512", help="Comma-separated value sizes (e.g., 16,512,1KB). Default: 512"
+        "--sizes", default=str(config.DEFAULT_VAL_SIZE),
+        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.DEFAULT_VAL_SIZE}"
     )
     parser.add_argument(
-        "--io-threads", default="1", help="Comma-separated IO thread counts (e.g., 1,9). Default: 1"
+        "--io-threads", default=str(config.DEFAULT_IO_THREADS),
+        help=f"Comma-separated IO thread counts (e.g., 1,9). Default: {config.DEFAULT_IO_THREADS}"
     )
     parser.add_argument(
-        "--pipelining", default="1", help="Comma-separated pipelining values (e.g., 1,4,10). Default: 1"
+        "--pipelining", default=str(config.DEFAULT_PIPELINING),
+        help=f"Comma-separated pipelining values (e.g., 1,4,10). Default: {config.DEFAULT_PIPELINING}"
     )
     parser.add_argument(
-        "--warmup", default="30s", help="Warmup duration (e.g., 30s, 1m). Default: 30s"
+        "--warmup", default=f"{config.DEFAULT_WARMUP}s",
+        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s"
     )
     parser.add_argument(
-        "--duration", default="5m", help="Test duration (e.g., 5m, 15m). Default: 5m"
+        "--duration", default=f"{config.DEFAULT_DURATION}s",
+        help=f"Test duration (e.g., 5m, 15m). Default: {config.DEFAULT_DURATION}s"
     )
     parser.add_argument(
-        "--repetitions", type=int, default=5, help="Number of repetitions per config. Default: 5"
+        "--repetitions", type=int, default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions per config. Default: {config.DEFAULT_REPETITIONS}"
     )
     parser.add_argument(
-        "--key-sizes", default="0", help="Comma-separated key sizes in bytes (0=standard). Default: 0"
+        "--key-sizes", default=str(config.DEFAULT_KEY_SIZE),
+        help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}"
     )
     parser.add_argument("--note", default="", help="Optional note for the tasks")
     parser.add_argument(
-        "--make-args", default="", help="Build arguments (e.g., 'OPTIMIZATION=-O2'). Default: bare make"
+        "--make-args", default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'"
     )
     parser.add_argument(
         "--perf-stat", action="store_true", help="Enable perf stat hardware counter collection"
@@ -288,10 +296,6 @@ def handle_queue_clear(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the CLI module."""
-    # Backward compat: "perf ..." → "queue add ..."
-    if argv and argv[0] == "perf":
-        argv = ["queue", "add"] + argv[1:]
-
     parser = build_parser()
     args = parser.parse_args(argv)
 

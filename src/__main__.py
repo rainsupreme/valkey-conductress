@@ -14,7 +14,6 @@ def main() -> None:
     subparsers.add_parser("tui", help="Launch the TUI")
     subparsers.add_parser("run", help="Start the task runner worker")
     subparsers.add_parser("setup", help="Run setup/bootstrap")
-    subparsers.add_parser("perf", help="Queue perf tasks via CLI (alias for 'queue add')")
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
@@ -104,11 +103,6 @@ def main() -> None:
 
         asyncio.run(update_host_list(update_servers))
         logger.info("Update/setup complete!")
-
-    elif args.command == "perf":
-        from src.cli import main as cli_main
-
-        sys.exit(cli_main(["queue", "add"] + remaining))
 
     elif args.command == "queue":
         from src.cli import main as cli_main

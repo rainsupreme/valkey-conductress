@@ -12,7 +12,17 @@ PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 16  # 75 connections per thread
 
 # Default compiler arguments for Valkey builds
-DEFAULT_MAKE_ARGS = 'USE_FAST_FLOAT=yes OPTIMIZATION=-O3 CFLAGS="-flto -fno-omit-frame-pointer"'
+# Bare make already gives O3+LTO+frame-pointer; USE_FAST_FLOAT enables fast_float library
+DEFAULT_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+
+# Benchmark defaults (single source of truth for CLI and TUI)
+DEFAULT_IO_THREADS = 9
+DEFAULT_PIPELINING = 10
+DEFAULT_WARMUP = 30        # seconds
+DEFAULT_DURATION = 300     # seconds (5m)
+DEFAULT_REPETITIONS = 5
+DEFAULT_VAL_SIZE = 512     # bytes
+DEFAULT_KEY_SIZE = 0       # 0 = standard keys
 
 
 class Features(Enum):
