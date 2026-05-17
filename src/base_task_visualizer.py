@@ -102,6 +102,6 @@ class PlotTaskVisualizer(BaseTaskVisualizer):
         self._update_plot(plot)
         plot.refresh()
 
-    def get_plot_data(self) -> list[float]:
+    def get_plot_data(self) -> "list":
         """Override to provide data points for the scatter plot."""
         raise NotImplementedError("Subclasses must implement get_plot_data()")

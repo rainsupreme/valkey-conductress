@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from math import sqrt
 from statistics import mean, stdev
-from typing import Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 from scipy.stats import t as t_dist
 
@@ -236,7 +236,7 @@ class PerfTaskRunner(BaseTaskRunner):
             preload_custom = self._build_custom_command(self.test, padded_key, is_preload=True)
             test_custom = self._build_custom_command(self.test, padded_key, is_preload=False)
             self.preload_command: Optional[str] = preload_custom
-            self.test_command: str = test_custom
+            self.test_command: Optional[str] = test_custom
         else:
             self.preload_command = self.test.preload_command
             self.test_command = self.test.test_command
@@ -778,12 +778,12 @@ class PerfTaskVisualizer(PlotTaskVisualizer):
     def format_y_tick(self, value: float) -> str:
         return HumanNumber.to_human(value, 3)
 
-    def get_plot_data(self) -> Sequence[Union[float, None]]:
+    def get_plot_data(self) -> "List[Optional[float]]":
         datapoints = self.file_protocol.read_metrics()
-        data: list[float] = [dp.metrics.get("rps", 0.0) for dp in datapoints]
+        data = [dp.metrics.get("rps", 0.0) for dp in datapoints]
 
         if len(data) < 4:
-            return data
+            return data  # type: ignore[return-value]
 
         sorted_data = sorted(data)
         q1_idx: int = len(sorted_data) // 4

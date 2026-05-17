@@ -226,8 +226,8 @@ class Server:
 
             # Create affinity mask with just this CPU enabled
             digits = (total_cpus + 3) // 4
-            mask = 1 << irq_cpu
-            mask = f"{mask:X}".zfill(digits)
+            mask_int = 1 << irq_cpu
+            mask = f"{mask_int:X}".zfill(digits)
             if digits > 8:
                 # Insert commas between every 8 hex digits from the right
                 mask = mask[::-1]  # Reverse for right-to-left processing
@@ -437,8 +437,15 @@ class Server:
 
     def __perf_stat_run_sync(self) -> None:
         """Run perf stat synchronously in thread."""
+        events = ",".join([
+            "L1-icache-load-misses", "L1-icache-loads",
+            "L1-dcache-load-misses", "L1-dcache-loads",
+            "instructions", "cycles",
+            "branch-misses", "branches",
+            "stalled-cycles-frontend", "stalled-cycles-backend",
+        ])
         command = (
-            f"sudo perf stat -d -p {self.valkey_pid} -o {Server.perf_stats_path} "
+            f"perf stat -e {events} -p {self.valkey_pid} -o {Server.perf_stats_path} "
             f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
         )
         if self.ip in ["127.0.0.1", "localhost"]:
@@ -458,12 +465,36 @@ class Server:
             self.perf_stat_thread.join()
             self.perf_stat_thread = None
 
-    async def perf_stat_report(self, result_dir: Path) -> None:
-        """Copy perf stat results to result directory."""
+    async def perf_stat_report(self, result_dir: Path) -> dict:
+        """Copy perf stat results to result directory and return parsed counters."""
         assert result_dir.exists(), f"Result directory {result_dir} must exist"
         perf_stat_path = Path(Server.perf_stats_path)
         local_path = result_dir / "perf_stat.txt"
         await self.get_remote_file(perf_stat_path, local_path)
+        return self.parse_perf_stat(local_path)
+
+    @staticmethod
+    def parse_perf_stat(path: Path) -> dict:
+        """Parse perf stat output file into a dict of event_name -> count."""
+        results: dict[str, int] = {}
+        if not path.exists():
+            return results
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "seconds time elapsed" in line:
+                continue
+            # Format: "  1,234,567  event-name:u  ..."
+            parts = line.split()
+            if len(parts) >= 2:
+                count_str = parts[0].replace(",", "")
+                try:
+                    count = int(count_str)
+                    # Event name is second field, strip :u/:k suffix
+                    event = parts[1].rstrip(":u").rstrip(":k").rstrip(":")
+                    results[event] = count
+                except ValueError:
+                    continue
+        return results
 
     # =============================================================================
     # CPU CONSISTENCY TUNING METHODS
@@ -744,7 +775,7 @@ class Server:
     async def count_items_expires(self) -> tuple[int, int]:
         """Count total items and items with expiry in the keyspace."""
         info = await self.info("keyspace")
-        counts = defaultdict(int)
+        counts: defaultdict[str, int] = defaultdict(int)
         for line in info.values():
             # 'keys=98331,expires=0,avg_ttl=0'
             for item in line.split(","):
@@ -922,7 +953,7 @@ class Server:
         if not self.ssh:
             if self.ip in ["127.0.0.1", "localhost"]:
                 self.ssh = await asyncssh.connect(
-                    self.ip, client_keys=[str(config.SSH_KEYFILE)], known_hosts=None
+                    self.ip, known_hosts=None
                 )
             elif self.username:
                 self.ssh = await asyncssh.connect(

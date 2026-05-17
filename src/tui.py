@@ -199,8 +199,10 @@ class BenchmarkApp(App):
             task_id = str(row[0])
             self.push_screen(ConfirmCancelScreen(task_id), self._remove_queue_task)
 
-    def _remove_queue_task(self, result: tuple[bool, str]) -> None:
+    def _remove_queue_task(self, result: "Optional[tuple]") -> None:
         """Remove a task from the queue."""
+        if result is None:
+            return
         confirmed, task_id = result
         if not confirmed:
             return
@@ -639,14 +641,14 @@ class BaseTaskForm(ScrollableContainer):
             validators=[MakeArgsValidator()],
         )
 
-    def _compose_test_selection(self, tests: tuple[str, ...]) -> SelectionList:
+    def _compose_test_selection(self, tests) -> SelectionList:
         """Create test selection list widget"""
         selections = tuple(Selection[str](name, name) for name in tests)
         return SelectionList[str](*selections, id="test-list")
 
     def _compose_switch_row(self, *switches: tuple[str, str, bool]) -> Horizontal:
         """Create a horizontal row of switches. Each switch is (id, label, default)"""
-        widgets = []
+        widgets: list = []
         for switch_id, label, default in switches:
             widgets.append(Switch(animate=False, value=default, id=switch_id))
             widgets.append(Static(label, classes="switch-label"))

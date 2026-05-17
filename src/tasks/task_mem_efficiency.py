@@ -6,7 +6,8 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import CoroutineType
+from typing import Any
+from collections.abc import Coroutine
 from typing import Optional
 
 import plotext as plt
@@ -130,7 +131,7 @@ class MemTaskRunner(BaseTaskRunner):
 
         port_gen = port_generator()
         semaphore = asyncio.Semaphore(num_servers)
-        result_futures: list[CoroutineType] = []
+        result_futures: list[Coroutine] = []
         for size in self.val_sizes:
             port = next(port_gen)
             result_futures.append(self.test_single_size_overhead(size, port, semaphore))
@@ -160,7 +161,7 @@ class MemTaskRunner(BaseTaskRunner):
 
         # output result
         results.sort(key=lambda x: x["val_size"])
-        score = -1
+        score: float = -1.0
         if len(results) == 1:
             score = results[0]["per_item_overhead"]
         # Write results to file protocol (replaces record_task_result)
@@ -189,7 +190,7 @@ class MemTaskRunner(BaseTaskRunner):
 
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
 
-    async def test_single_size_overhead(self, val_size: int, port: int, semaphore) -> dict[str, float]:
+    async def test_single_size_overhead(self, val_size: int, port: int, semaphore) -> dict[str, Any]:
         """Test memory efficiency for a single item size."""
         async with semaphore:
             assert (

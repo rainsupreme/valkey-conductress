@@ -4,7 +4,7 @@ import argparse
 import itertools
 import logging
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from . import config
 from .task_queue import TaskQueue
@@ -174,6 +174,10 @@ def build_perf_parser(subparsers: argparse._SubParsersAction) -> None:
     perf_parser.add_argument(
         "--make-args", default=config.DEFAULT_MAKE_ARGS, help="Build arguments"
     )
+    perf_parser.add_argument(
+        "--perf-stat", action="store_true", default=False,
+        help="Collect hardware performance counters (perf stat) during benchmark"
+    )
 
 
 def build_queue_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -273,7 +277,7 @@ def handle_perf(args: argparse.Namespace) -> int:
             warmup=warmup,
             duration=duration,
             profiling_sample_rate=0,
-            perf_stat_enabled=False,
+            perf_stat_enabled=args.perf_stat,
             has_expire=False,
             preload_keys=True,
             key_size=key_size,
@@ -329,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: List[str] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the CLI module.
 
     Args:

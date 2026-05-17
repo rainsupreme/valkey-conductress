@@ -91,11 +91,11 @@ class Host:
     async def get_linux_distro(self) -> str:
         """Get the name of the Linux distribution."""
         if not self.distro:
-            data = await self.run("cat /etc/os-release")
-            data = data.splitlines()
-            data = [line for line in data if line.startswith("NAME")]
-            assert len(data) == 1
-            self.distro = data[0].split('"')[1]
+            raw = await self.run("cat /etc/os-release")
+            lines = raw.splitlines()
+            lines = [line for line in lines if line.startswith("NAME")]
+            assert len(lines) == 1
+            self.distro = lines[0].split('"')[1]
         return self.distro
 
     def get_home_path(self) -> Path:
@@ -107,20 +107,21 @@ class Host:
     @classmethod
     async def from_server_info(cls, info: config.ServerInfo) -> "Host":
         """Create a Host instance from a host name."""
+        conn: asyncssh.SSHClientConnection
         if info.ip == "localhost":
-            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
+            conn = await asyncssh.connect(
                 info.ip,
                 client_keys=[str(SSH_KEYFILE)],
                 known_hosts=None,  # Disable known hosts check for localhost
             )
         elif info.username:
-            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
+            conn = await asyncssh.connect(
                 info.ip,
                 username=info.username,
                 client_keys=[str(SSH_KEYFILE)],
             )
         else:
-            conn: asyncssh.SSHClientConnection = await asyncssh.connect(
+            conn = await asyncssh.connect(
                 info.ip,
                 client_keys=[str(SSH_KEYFILE)],
             )
@@ -172,8 +173,8 @@ async def path_exists(host: Host, path: Union[str, Path], expected_type: Optiona
     """Check if a path exists and get its type"""
 
     commands = [f'test -{arg} "{path}"; echo $?' for arg in "efdL"]
-    result = await host.run(" && ".join(commands))
-    result = [int(x) == 0 for x in result.strip().split("\n")]  # return code 0 means test evaluated to true
+    raw_result = await host.run(" && ".join(commands))
+    result = [int(x) == 0 for x in raw_result.strip().split("\n")]  # return code 0 means test evaluated to true
     if not result[0]:
         return False
     if expected_type:
@@ -221,9 +222,9 @@ async def update_rhel_packages(host: Host):
     packages = load_requirements("rhel-requirements")
     host.log_info_msg("Updating RHEL packages")
     await host.run("sudo dnf update -y", check=False)
-    devtools = host.run('sudo dnf groupinstall -y "Development Tools"')
-    packages = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools, packages)
+    devtools_task = host.run('sudo dnf groupinstall -y "Development Tools"')
+    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
+    await asyncio.gather(devtools_task, packages_task)
 
 
 async def update_amazon_packages(host: Host) -> None:
@@ -231,9 +232,9 @@ async def update_amazon_packages(host: Host) -> None:
     packages = load_requirements("amz_requirements")
     host.log_info_msg("Updating Amazon Linux packages")
     await host.run("sudo dnf update -y")
-    devtools = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
-    packages = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools, packages)
+    devtools_task = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
+    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
+    await asyncio.gather(devtools_task, packages_task)
 
 
 async def update_ubuntu_packages(host: Host) -> None:

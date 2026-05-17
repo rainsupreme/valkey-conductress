@@ -27,7 +27,7 @@ class TUIDataService:
         # Refresh statuses for all active tasks
         task_statuses = {}
         for task_id in active_tasks.keys():
-            protocol = FileProtocol(task_id, self._work_dir)
+            protocol = FileProtocol(task_id, "client", base_dir=self._work_dir)
             task_statuses[task_id] = protocol.read_status()
 
         with self._cache_lock:
@@ -58,7 +58,7 @@ class TUIDataService:
             if age < timedelta(seconds=30):
                 return status
 
-        protocol = FileProtocol(task_id, self._work_dir)
+        protocol = FileProtocol(task_id, "client", base_dir=self._work_dir)
         new_status = protocol.read_status()
 
         with self._cache_lock:
