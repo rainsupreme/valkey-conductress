@@ -253,13 +253,14 @@ class TestQueueAddSubcommand:
 
         exit_code = main([
             "queue", "add",
+            "--source", "repo1",
             "--tests", "set",
         ])
 
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 1
         task = mock_queue.submit_task.call_args[0][0]
-        assert task.source == "valkey"
+        assert task.source == "repo1"
         assert task.specifier == "unstable"
         assert task.val_size == 512
         assert task.io_threads == 9

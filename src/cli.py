@@ -121,10 +121,6 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-preload", action="store_true", help="Disable key preloading"
     )
-    perf_parser.add_argument(
-        "--perf-stat", action="store_true", default=False,
-        help="Collect hardware performance counters (perf stat) during benchmark"
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
