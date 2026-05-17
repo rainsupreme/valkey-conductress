@@ -47,9 +47,9 @@ python -m src <subcommand>
 | `tui`      | Launch the interactive TUI for monitoring and queuing tasks |
 | `run`      | Start the task runner worker that executes queued benchmarks |
 | `setup`    | Run the setup/bootstrap script to configure servers |
-| `perf`     | Queue performance benchmark tasks via CLI |
-| `queue`    | List all pending tasks in the queue |
+| `queue`    | Manage the task queue (add, list, remove, clear) |
 | `compare`  | Run statistical comparison between two specifiers |
+| `status`   | Show runner and task status (non-blocking) |
 
 Running `python -m src` without a subcommand prints usage information.
 
@@ -63,10 +63,10 @@ python -m src tui
 python -m src run
 
 # Queue perf tasks (see CLI section below)
-python -m src perf --source valkey --specifier unstable --tests get,set --sizes 512 --io-threads 1 --pipelining 1
+python -m src queue add --tests get,set --sizes 512 --io-threads 1,9
 
 # List queued tasks
-python -m src queue
+python -m src queue list
 
 # Compare two branches
 python -m src compare unstable my-feature-branch --source valkey
@@ -74,54 +74,63 @@ python -m src compare unstable my-feature-branch --source valkey
 
 ## CLI Interface
 
-The CLI provides a non-interactive way to queue benchmark tasks, useful for scripting and automation.
+The CLI provides a non-interactive way to queue and manage benchmark tasks, useful for scripting and automation.
 
 ### Queuing Performance Tasks
 
 ```bash
-python -m src perf \
-  --source valkey \
-  --specifier unstable \
+python -m src queue add \
   --tests get,set,mget \
   --sizes 512,1KB \
   --io-threads 1,9 \
   --pipelining 1,4 \
-  --warmup 1m \
-  --duration 15m \
-  --repetitions 3 \
+  --warmup 30s \
+  --duration 5m \
+  --repetitions 5 \
   --key-sizes 0,64 \
   --note "vstr comparison" \
-  --make-args 'USE_FAST_FLOAT=yes OPTIMIZATION=-O3'
+  --make-args 'OPTIMIZATION=-O2'
 ```
+
+Only `--tests` is required. All other arguments have sensible defaults defined in `src/config.py`.
 
 #### Arguments
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--source` | Yes | — | Repository source name (e.g., `valkey`) |
-| `--specifier` | Yes | — | Branch name, tag, or commit hash |
+| `--source` | No | `valkey` | Repository source name |
+| `--specifier` | No | `unstable` | Branch name, tag, or commit hash |
 | `--tests` | Yes | — | Comma-separated test names (e.g., `get,set,mget`) |
-| `--sizes` | Yes | — | Comma-separated value sizes (e.g., `512,1KB,4KB`) |
-| `--io-threads` | Yes | — | Comma-separated IO thread counts (e.g., `1,9`) |
-| `--pipelining` | Yes | — | Comma-separated pipelining values (e.g., `1,4`) |
-| `--warmup` | No | `1m` | Warmup duration (human-readable, e.g., `30s`, `1m`) |
-| `--duration` | No | `15m` | Test duration (human-readable, e.g., `15m`, `1h`) |
-| `--repetitions` | No | `1` | Number of independent runs per configuration |
+| `--sizes` | No | `512` | Comma-separated value sizes (e.g., `16,512,1KB`) |
+| `--io-threads` | No | `9` | Comma-separated IO thread counts (e.g., `1,9`) |
+| `--pipelining` | No | `10` | Comma-separated pipelining values (e.g., `1,4,10`) |
+| `--warmup` | No | `30s` | Warmup duration (human-readable, e.g., `30s`, `1m`) |
+| `--duration` | No | `5m` | Test duration (human-readable, e.g., `5m`, `15m`) |
+| `--repetitions` | No | `5` | Number of independent runs per configuration |
 | `--key-sizes` | No | `0` | Comma-separated key sizes in bytes (e.g., `0,64,256`) |
 | `--note` | No | `""` | Optional note attached to each task |
-| `--make-args` | No | See config | Build arguments for compiling Valkey |
+| `--make-args` | No | `USE_FAST_FLOAT=yes` | Build arguments for compiling Valkey |
+| `--perf-stat` | No | `false` | Collect hardware performance counters |
+| `--no-preload` | No | `false` | Disable key preloading |
 
 The CLI computes the **Cartesian product** of all multi-valued parameters (`tests`, `sizes`, `io-threads`, `pipelining`, `key-sizes`) and submits each combination as a separate task. For example, `--tests get,set --sizes 512,1KB` creates 4 tasks.
 
 The `--source` value is validated against configured repository names.
 
-### Listing Queued Tasks
+### Managing the Queue
 
 ```bash
-python -m src queue
+# List pending tasks
+python -m src queue list
+
+# Remove a specific task
+python -m src queue remove <task_id>
+
+# Clear all pending tasks
+python -m src queue clear
 ```
 
-Displays all pending tasks with their task ID, type, source, specifier, and description.
+Running `python -m src queue` without a subcommand defaults to listing tasks.
 
 ## Comparison and Analysis
 
@@ -208,14 +217,10 @@ When `key_size` is 0 (the default), standard commands are used without modificat
 
 ```bash
 # Test with 64-byte and 256-byte keys
-python -m src perf --source valkey --specifier unstable \
-  --tests get,set --sizes 512 --io-threads 1 --pipelining 1 \
-  --key-sizes 64,256
+python -m src queue add --tests get,set --key-sizes 64,256
 
 # Mix standard and padded keys
-python -m src perf --source valkey --specifier unstable \
-  --tests get --sizes 512 --io-threads 1 --pipelining 1 \
-  --key-sizes 0,64,256
+python -m src queue add --tests get --key-sizes 0,64,256
 ```
 
 Key sizes are included in the Cartesian product of parameters, so `--key-sizes 0,64` doubles the number of tasks generated.
@@ -238,10 +243,11 @@ When `repetitions` is 1 (the default), the result is recorded as a single run wi
 ### CLI Usage
 
 ```bash
-# Run each configuration 5 times
-python -m src perf --source valkey --specifier unstable \
-  --tests get,set --sizes 512 --io-threads 1 --pipelining 1 \
-  --repetitions 5
+# Run each configuration 5 times (this is the default)
+python -m src queue add --tests get,set
+
+# Override to 10 repetitions
+python -m src queue add --tests get,set --repetitions 10
 ```
 
 ### Using Repetitions with Analysis
@@ -249,12 +255,10 @@ python -m src perf --source valkey --specifier unstable \
 The analysis module uses per-run averages from aggregated results as individual samples for statistical tests. This means running with `--repetitions 5` gives you 5 samples per configuration, enabling meaningful Welch's t-tests in the comparison output.
 
 ```bash
-# Queue benchmarks with repetitions for both specifiers
-python -m src perf --source valkey --specifier unstable \
-  --tests get --sizes 512 --io-threads 1 --pipelining 1 --repetitions 5
+# Queue benchmarks for both specifiers
+python -m src queue add --specifier unstable --tests get
 
-python -m src perf --source valkey --specifier my-feature \
-  --tests get --sizes 512 --io-threads 1 --pipelining 1 --repetitions 5
+python -m src queue add --specifier my-feature --tests get
 
 # After running, compare with statistical significance
 python -m src compare unstable my-feature --source valkey
@@ -296,7 +300,12 @@ Key configuration lives in `src/config.py`:
 
 | Setting | Description |
 |---------|-------------|
-| `DEFAULT_MAKE_ARGS` | Default compiler flags for Valkey builds. Set to `USE_FAST_FLOAT=yes OPTIMIZATION=-O3 CFLAGS="-flto -fno-omit-frame-pointer"` for optimized production binaries. |
+| `DEFAULT_MAKE_ARGS` | Default compiler flags for Valkey builds (`USE_FAST_FLOAT=yes`). Bare make gives proper O3+LTO. |
+| `DEFAULT_IO_THREADS` | Default IO thread count (9) |
+| `DEFAULT_PIPELINING` | Default pipelining value (10) |
+| `DEFAULT_WARMUP` | Default warmup in seconds (30) |
+| `DEFAULT_DURATION` | Default test duration in seconds (300) |
+| `DEFAULT_REPETITIONS` | Default repetitions per config (5) |
 | `PERF_BENCH_KEYSPACE` | Number of keys used in benchmarks (default: 3,000,000) |
 | `PERF_BENCH_CLIENTS` | Number of concurrent clients (default: 1,200) |
 | `PERF_BENCH_THREADS` | Number of benchmark threads (default: 16) |
@@ -327,12 +336,14 @@ See `servers.default.json` for the default localhost configuration.
 - Performance throughput tests based on `valkey-benchmark` with data collection at 4Hz and CPU pinning
 - Memory efficiency tests measuring overhead across a range of value sizes
 - Optional flame graph collection for performance tests
+- Hardware performance counter collection via `perf stat`
 - Support for fork repositories for testing exploratory work
-- Non-interactive CLI for scripted benchmark campaigns
+- Non-interactive CLI for scripted benchmark campaigns (`queue add/list/remove/clear`)
 - Statistical comparison module with Welch's t-test
 - Key-size benchmarking with padded keys
 - Run repetitions with aggregated statistical summaries
 - TUI for interactive monitoring and task management
+- Crash logging and non-blocking status command
 
 ## License
 
