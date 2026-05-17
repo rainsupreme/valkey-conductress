@@ -226,8 +226,8 @@ class Server:
 
             # Create affinity mask with just this CPU enabled
             digits = (total_cpus + 3) // 4
-            mask = 1 << irq_cpu
-            mask = f"{mask:X}".zfill(digits)
+            mask_int = 1 << irq_cpu
+            mask = f"{mask_int:X}".zfill(digits)
             if digits > 8:
                 # Insert commas between every 8 hex digits from the right
                 mask = mask[::-1]  # Reverse for right-to-left processing
@@ -775,7 +775,7 @@ class Server:
     async def count_items_expires(self) -> tuple[int, int]:
         """Count total items and items with expiry in the keyspace."""
         info = await self.info("keyspace")
-        counts = defaultdict(int)
+        counts: defaultdict[str, int] = defaultdict(int)
         for line in info.values():
             # 'keys=98331,expires=0,avg_ttl=0'
             for item in line.split(","):

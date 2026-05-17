@@ -38,7 +38,7 @@ class ReplicationGroup:
 
     async def start(self) -> None:
         """Start servers in parallel (including building if necessary)"""
-        self.servers: list[Server] = await asyncio.gather(
+        self.servers = await asyncio.gather(
             *[self.__start_server(info.ip, info.username) for info in self.server_infos]
         )
         await self.__ensure_no_unknown_replicas(self.servers)

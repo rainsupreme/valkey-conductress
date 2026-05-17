@@ -5,6 +5,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Optional
 
 from src.config import ServerInfo
 from src.file_protocol import BenchmarkResults, BenchmarkStatus
@@ -89,7 +90,7 @@ class SyncTaskRunner(BaseTaskRunner):
         self.status = BenchmarkStatus(steps_total=4, task_type="sync")  # setup, load data, sync, results
         self.file_protocol.write_status(self.status)
 
-        self.replication_group = None
+        self.replication_group: Optional[ReplicationGroup] = None
 
     async def run(self) -> None:
         """Run the full sync test."""

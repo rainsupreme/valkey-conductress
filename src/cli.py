@@ -4,7 +4,7 @@ import argparse
 import itertools
 import logging
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from . import config
 from .task_queue import TaskQueue
@@ -333,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: List[str] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the CLI module.
 
     Args:
