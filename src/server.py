@@ -476,7 +476,7 @@ class Server:
     @staticmethod
     def parse_perf_stat(path: Path) -> dict:
         """Parse perf stat output file into a dict of event_name -> count."""
-        results = {}
+        results: dict[str, int] = {}
         if not path.exists():
             return results
         for line in path.read_text().splitlines():
