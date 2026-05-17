@@ -8,6 +8,8 @@ from src.config import ServerInfo
 from src.server import Server
 from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
 
+pytestmark = pytest.mark.requires_server
+
 
 @pytest.mark.asyncio
 async def test_local_benchmark_cpu_allocation():

@@ -6,6 +6,8 @@ import pytest
 from src.server import Server
 from src.cpu_allocator import AllocationTag
 
+pytestmark = pytest.mark.requires_server
+
 
 @pytest.mark.asyncio
 async def test_l3_cache_detection():
