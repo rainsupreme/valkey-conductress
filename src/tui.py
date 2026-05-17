@@ -576,12 +576,12 @@ class NumberListField:
 
 class PipeliningField(NumberListField):
     def __init__(self):
-        super().__init__("Pipelining (comma-separated)", "pipelining", "4", "1, 4, 8", HumanNumber)
+        super().__init__("Pipelining (comma-separated)", "pipelining", str(config.DEFAULT_PIPELINING), "1, 4, 10", HumanNumber)
 
 
 class IOThreadsField(NumberListField):
     def __init__(self):
-        super().__init__("IO Threads (comma-separated)", "io-threads", "9", "1, 9", HumanNumber)
+        super().__init__("IO Threads (comma-separated)", "io-threads", str(config.DEFAULT_IO_THREADS), "1, 9", HumanNumber)
 
 
 class SizesField(NumberListField):
@@ -589,7 +589,7 @@ class SizesField(NumberListField):
         super().__init__(
             "Sizes (comma separated values or start:stop:step ranges)",
             "sizes",
-            "0.5KB",
+            HumanByte.to_human(config.DEFAULT_VAL_SIZE),
             "256, 1KB, 1KB:16KB:2KB",
             HumanByte,
             allow_ranges=True,
@@ -700,9 +700,9 @@ class PerfTaskForm(BaseTaskForm):
             "0, 64, 256, 1KB",
             HumanByte,
         )
-        self.warmup = NumberField("Warmup (seconds)", "warmup", "1m", "1m", HumanTime)
-        self.duration = NumberField("Duration (seconds)", "duration", "15m", "15m", HumanTime)
-        self.repetitions = NumberField("Repetitions", "repetitions", "1", "1", HumanNumber)
+        self.warmup = NumberField("Warmup (seconds)", "warmup", f"{config.DEFAULT_WARMUP}s", "30s", HumanTime)
+        self.duration = NumberField("Duration (seconds)", "duration", f"{config.DEFAULT_DURATION}s", "5m", HumanTime)
+        self.repetitions = NumberField("Repetitions", "repetitions", str(config.DEFAULT_REPETITIONS), "5", HumanNumber)
 
     def compose(self) -> ComposeResult:
         for widget in self._compose_source_specifier_input():

@@ -54,38 +54,6 @@ class TestSetupSubcommand:
             assert mock_asyncio_run.call_count == 2
 
 
-class TestPerfSubcommand:
-    """Test that the 'perf' subcommand dispatches to src.cli.main()."""
-
-    @patch("sys.argv", ["conductress", "perf", "--source", "valkey", "--specifier", "unstable"])
-    @patch("src.__main__.logging")
-    def test_perf_dispatches_to_cli_main(self, mock_logging):
-        with patch("src.cli.main", return_value=0) as mock_cli_main:
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            assert exc_info.value.code == 0
-            mock_cli_main.assert_called_once_with(
-                ["perf", "--source", "valkey", "--specifier", "unstable"]
-            )
-
-    @patch("sys.argv", ["conductress", "perf"])
-    @patch("src.__main__.logging")
-    def test_perf_dispatches_with_no_extra_args(self, mock_logging):
-        with patch("src.cli.main", return_value=0) as mock_cli_main:
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            assert exc_info.value.code == 0
-            mock_cli_main.assert_called_once_with(["perf"])
-
-    @patch("sys.argv", ["conductress", "perf", "--source", "valkey"])
-    @patch("src.__main__.logging")
-    def test_perf_propagates_nonzero_exit_code(self, mock_logging):
-        with patch("src.cli.main", return_value=1) as mock_cli_main:
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            assert exc_info.value.code == 1
-
-
 class TestQueueSubcommand:
     """Test that the 'queue' subcommand dispatches to src.cli.main()."""
 

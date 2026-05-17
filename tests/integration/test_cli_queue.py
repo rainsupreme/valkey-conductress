@@ -9,7 +9,6 @@ Requirements: 9.8
 """
 
 import json
-from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,12 +55,12 @@ def patch_sources():
 
 
 class TestCliPerfQueuing:
-    """End-to-end tests: invoke CLI perf subcommand, verify task JSON files."""
+    """End-to-end tests: invoke CLI queue add subcommand, verify task JSON files."""
 
-    def test_perf_creates_task_files_in_queue_directory(self, queue_dir):
-        """Invoking perf with a single combination creates exactly one task JSON file."""
+    def test_queue_add_creates_task_files_in_queue_directory(self, queue_dir):
+        """Invoking queue add with a single combination creates exactly one task JSON file."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "unstable",
             "--tests", "get",
@@ -75,10 +74,10 @@ class TestCliPerfQueuing:
         task_files = list(queue_dir.glob("task_*.json"))
         assert len(task_files) == 1
 
-    def test_perf_task_json_has_correct_parameters(self, queue_dir):
+    def test_queue_add_task_json_has_correct_parameters(self, queue_dir):
         """The queued task JSON file contains the correct benchmark parameters."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "v8.0",
             "--tests", "set",
@@ -113,11 +112,11 @@ class TestCliPerfQueuing:
         assert data["note"] == "integration test"
         assert data["task_type"] == "PerfTaskData"
 
-    def test_perf_cartesian_product_creates_correct_number_of_files(self, queue_dir):
+    def test_queue_add_cartesian_product_creates_correct_number_of_files(self, queue_dir):
         """Multiple values for tests, sizes, io-threads, pipelining, key-sizes
         produce the full Cartesian product of task files."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "unstable",
             "--tests", "get,set",
@@ -133,11 +132,11 @@ class TestCliPerfQueuing:
         # 2 tests * 2 sizes * 2 io-threads * 1 pipelining * 2 key-sizes = 16
         assert len(task_files) == 16
 
-    def test_perf_cartesian_product_covers_all_combinations(self, queue_dir):
+    def test_queue_add_cartesian_product_covers_all_combinations(self, queue_dir):
         """Every unique (test, val_size, io_threads, pipelining, key_size) combination
         appears exactly once across the queued task files."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "testrepo",
             "--specifier", "main",
             "--tests", "get,set",
@@ -168,10 +167,10 @@ class TestCliPerfQueuing:
 
         assert len(combos) == 16, "Every combination should be unique"
 
-    def test_perf_invalid_source_creates_no_files(self, queue_dir):
+    def test_queue_add_invalid_source_creates_no_files(self, queue_dir):
         """An invalid source should produce no task files and return exit code 1."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "nonexistent_repo",
             "--specifier", "unstable",
             "--tests", "get",
@@ -184,10 +183,10 @@ class TestCliPerfQueuing:
         task_files = list(queue_dir.glob("task_*.json"))
         assert len(task_files) == 0
 
-    def test_perf_manually_uploaded_source_is_accepted(self, queue_dir):
+    def test_queue_add_manually_uploaded_source_is_accepted(self, queue_dir):
         """The manually_uploaded source should be accepted and create task files."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "manually_uploaded",
             "--specifier", "custom-build",
             "--tests", "get",
@@ -204,16 +203,13 @@ class TestCliPerfQueuing:
             data = json.load(f)
         assert data["source"] == "manually_uploaded"
 
-    def test_perf_default_values_applied(self, queue_dir):
+    def test_queue_add_default_values_applied(self, queue_dir):
         """Default values for warmup, duration, repetitions, key-sizes are applied."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "unstable",
             "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
         ])
 
         assert exit_code == 0
@@ -224,14 +220,14 @@ class TestCliPerfQueuing:
         with open(task_files[0]) as f:
             data = json.load(f)
 
-        # Default warmup is "1m" = 60s
-        assert data["warmup"] == 60
-        # Default duration is "15m" = 900s
-        assert data["duration"] == 900
-        # Default repetitions is 1
-        assert data["repetitions"] == 1
-        # Default key-sizes is "0"
+        assert data["warmup"] == 30
+        assert data["duration"] == 300
+        assert data["repetitions"] == 5
         assert data["key_size"] == 0
+        assert data["io_threads"] == 9
+        assert data["pipelining"] == 10
+        assert data["val_size"] == 512
+        assert data["make_args"] == "USE_FAST_FLOAT=yes"
 
 
 class TestCliQueueListing:
@@ -239,9 +235,8 @@ class TestCliQueueListing:
 
     def test_queue_lists_queued_tasks(self, queue_dir, capsys):
         """After queuing tasks via perf, the queue subcommand should list them."""
-        # First, queue some tasks
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "unstable",
             "--tests", "get,set",
@@ -257,11 +252,7 @@ class TestCliQueueListing:
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        # Should contain the source and specifier
-        assert "valkey" in captured.out
-        assert "unstable" in captured.out
-        # Should list both tasks (get and set)
-        assert "Perf" in captured.out
+        assert "Total: 2 task(s)" in captured.out
 
     def test_queue_empty_shows_no_pending(self, queue_dir, capsys):
         """When no tasks are queued, the queue subcommand shows a no-pending message."""
@@ -275,7 +266,7 @@ class TestCliQueueListing:
         """The queue listing should show the same number of tasks that were queued."""
         # Queue 4 tasks: 2 tests * 2 sizes
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "valkey",
             "--specifier", "unstable",
             "--tests", "get,set",
@@ -284,21 +275,18 @@ class TestCliQueueListing:
             "--pipelining", "1",
         ])
         assert exit_code == 0
-        capsys.readouterr()  # clear the perf output
+        capsys.readouterr()
 
         exit_code = main(["queue"])
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        # Count non-header, non-separator lines that contain "valkey"
-        lines = [line for line in captured.out.strip().split("\n")
-                 if "valkey" in line]
-        assert len(lines) == 4
+        assert "Total: 4 task(s)" in captured.out
 
     def test_queue_shows_task_details(self, queue_dir, capsys):
-        """The queue listing should show task type, source, specifier, and description."""
+        """The queue listing should show task ID, description, and note."""
         exit_code = main([
-            "perf",
+            "queue", "add",
             "--source", "testrepo",
             "--specifier", "feature-branch",
             "--tests", "set",
@@ -308,15 +296,11 @@ class TestCliQueueListing:
             "--note", "detail check",
         ])
         assert exit_code == 0
-        capsys.readouterr()  # clear perf output
+        capsys.readouterr()
 
         exit_code = main(["queue"])
         assert exit_code == 0
 
         captured = capsys.readouterr()
-        assert "testrepo" in captured.out
-        assert "feature-branch" in captured.out
-        # The header should contain column names
+        assert "detail check" in captured.out
         assert "Task ID" in captured.out
-        assert "Source" in captured.out
-        assert "Specifier" in captured.out
