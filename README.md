@@ -15,22 +15,8 @@ Conductress assumes a separate machine (or machines) to run `valkey-server`, dis
    ```bash
    python -m src setup
    ```
-   It may prompt you to make manual fixes, and you may need to run it more than once if it installs its own dependencies.
+   This installs system packages, pip dependencies, and configures servers. It may prompt you to make manual fixes, and you may need to run it more than once if it installs its own dependencies.
 7. Launch the TUI or start queuing tasks via CLI (see below)
-
-## Installation
-
-Install runtime dependencies:
-
-```bash
-pip install -r requirements/pip-requirements.txt
-```
-
-For development (testing, linting, type checking):
-
-```bash
-pip install -r requirements/pip-requirements-dev.txt
-```
 
 ## Unified Entry Point
 
