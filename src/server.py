@@ -31,6 +31,7 @@ class Server:
     # These are remote paths - they exist on the valkey server
     path_root = Path("~")
     remote_build_cache = path_root / "build_cache"
+    server_logfile = path_root / "valkey-server.log"
     # profiling related paths
     flamegraph = path_root / "FlameGraph"
     perf_data_path = path_root / "perf.data"
@@ -669,7 +670,8 @@ class Server:
 
         command = (
             f"{cached_binary_path} --port {self.port} "
-            f"--save --protected-mode no --daemonize yes " + " ".join(self.args)
+            f"--save --protected-mode no --daemonize yes "
+            f"--logfile {Server.server_logfile} " + " ".join(self.args)
         )
 
         # Optionally bind memory to NUMA node for consistent performance
@@ -721,9 +723,19 @@ class Server:
         if self.valkey_pid == -1:
             return
 
-        # ensure process using the port is one of our expected valkey processes
-        # (in case an unexpected process is already using the port for some reason)
-        name, _ = await self.run_host_command(f"ps -p {self.valkey_pid}")
+        # Check if process is still alive (it may have already crashed)
+        try:
+            name, _ = await self.run_host_command(f"ps -p {self.valkey_pid}")
+        except Exception:
+            # Server already dead — log the crash
+            crashed_pid = self.valkey_pid
+            await self._log_server_crash()
+            self.valkey_pid = -1
+            raise RuntimeError(
+                f"valkey-server (pid {crashed_pid}) crashed during benchmark. "
+                "Check runner log for server crash output."
+            )
+
         name = name.strip().split()[-1]
         assert name == VALKEY_BINARY
 
@@ -735,6 +747,34 @@ class Server:
         await self.run_host_command(f"cd {Server.path_root} && rm -f *.rdb", check=False)
         # clean up any files created by profiling or other metric collection
         await self.__data_collection_cleanup()
+
+    async def _log_server_crash(self) -> None:
+        """Read and log the server crash dump from the logfile."""
+        try:
+            # Valkey crash dumps start with this signature
+            crash_log, _ = await self.run_host_command(
+                f"grep -n 'CRASHED BY SIGNAL\\|=== VALKEY BUG REPORT' {Server.server_logfile} "
+                f"| tail -1 | cut -d: -f1",
+                check=False,
+            )
+            crash_line = crash_log.strip()
+            if crash_line:
+                # Grab 10 lines before the crash marker through EOF
+                start = max(1, int(crash_line) - 10)
+                log_tail, _ = await self.run_host_command(
+                    f"sed -n '{start},$p' {Server.server_logfile}", check=False
+                )
+            else:
+                # No crash signature found — grab last 100 lines as fallback
+                log_tail, _ = await self.run_host_command(
+                    f"tail -100 {Server.server_logfile}", check=False
+                )
+            if log_tail.strip():
+                self.logger.error(
+                    "=== valkey-server crash log ===\n%s", log_tail.strip()
+                )
+        except Exception:
+            self.logger.error("Could not read server logfile after crash")
 
     # =============================================================================
     # VALKEY COMMAND EXECUTION METHODS
