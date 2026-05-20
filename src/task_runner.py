@@ -2,13 +2,16 @@
 This script runs tasks from a queue, executing performance and memory tests"""
 
 import asyncio
+import json
 import logging
 import time
+import traceback
+from datetime import datetime
 from typing import Optional
 
 from src.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_LOG, get_servers
+from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, get_servers
 from .file_protocol import FileProtocol
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
@@ -56,13 +59,41 @@ class TaskRunner:
         self.task = queue.get_next_task()
         while True:
             while self.task:
-                await self.__run_task(self.task)
+                try:
+                    await self.__run_task(self.task)
+                except Exception as exc:
+                    self._record_failure(self.task, exc)
                 queue.finish_task(self.task)
                 self.task = queue.get_next_task()
             print("waiting for new jobs in queue")
             while not self.task:
                 time.sleep(4)
                 self.task = queue.get_next_task()
+
+    def _record_failure(self, task: BaseTaskData, exc: Exception) -> None:
+        """Log a task failure to failed_tasks.jsonl and move task file to failed/."""
+        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        error_msg = f"{type(exc).__name__}: {exc}"
+
+        logger.error("Task failed (note=%s, task_id=%s): %s", task.note, task.task_id, error_msg)
+
+        # Append to failed_tasks.jsonl
+        entry = {
+            "task_id": task.task_id,
+            "note": task.note,
+            "source": task.source,
+            "specifier": task.specifier,
+            "error": error_msg,
+            "traceback": "".join(tb),
+            "timestamp": datetime.now().isoformat(),
+        }
+        with open(CONDUCTRESS_FAILED_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+        # Copy task file to failed/ directory for inspection
+        CONDUCTRESS_FAILED_DIR.mkdir(exist_ok=True)
+        task_file = CONDUCTRESS_FAILED_DIR / f"task_{task.task_id}.json"
+        task.save_to_file(task_file)
 
 
 if __name__ == "__main__":

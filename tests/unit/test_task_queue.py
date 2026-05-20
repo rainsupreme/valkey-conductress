@@ -1,3 +1,4 @@
+import logging
 import shutil
 import tempfile
 import types
@@ -150,22 +151,23 @@ def test_invalid_json_file_skipped(temp_dir):
     assert "Invalid JSON in file" in str(excinfo.value)
 
 
-def test_finish_task_raises_runtime_error_when_file_missing(temp_dir):
-    """finish_task() should raise RuntimeError when the task file doesn't exist."""
+def test_finish_task_logs_error_when_file_missing(temp_dir, caplog):
+    """finish_task() should log an error but not crash when the task file doesn't exist."""
     queue = task_queue.TaskQueue(queue_dir=temp_dir)
     task = make_task()
     # Don't submit the task — the file won't exist on disk
-    with pytest.raises(RuntimeError, match="Task file not found and cannot be cleared"):
-        queue.finish_task(task)
+    with caplog.at_level(logging.ERROR):
+        queue.finish_task(task)  # Should not raise
+    assert "Task file not found" in caplog.text
+    assert "This is a bug" in caplog.text
 
 
-def test_finish_task_does_not_call_exit(temp_dir):
-    """finish_task() should raise RuntimeError, not call exit(), when file is missing."""
+def test_finish_task_does_not_crash_when_file_missing(temp_dir):
+    """finish_task() should not raise or call exit() when file is missing."""
     queue = task_queue.TaskQueue(queue_dir=temp_dir)
     task = make_task()
-    # Verify it raises RuntimeError (not SystemExit from exit())
-    with pytest.raises(RuntimeError):
-        queue.finish_task(task)
+    # Should complete without raising
+    queue.finish_task(task)
 
 
 def test_invalid_source_raises_value_error_with_message():
