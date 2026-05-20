@@ -1,4 +1,12 @@
-"""Git operations for sweep: enumerate merge commits, find releases, get HEAD."""
+"""Local git operations for sweep history analysis.
+
+These run locally via subprocess to enumerate and understand commit history
+for the sweep planner. They are distinct from the remote git operations in
+server.py (fetch, checkout, build) which run via asyncssh on benchmark hosts.
+
+Functions here answer "what is the history structure?" while server.py answers
+"prepare a specific commit for benchmarking on a remote host."
+"""
 
 import re
 import subprocess

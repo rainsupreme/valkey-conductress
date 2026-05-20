@@ -1,8 +1,8 @@
-"""Sweep runner: integrates the sweep planner with the Conductress task runner.
+"""Sweep coordinator: bridges the sweep planner with the Conductress task runner.
 
-When --sweep is active, the runner checks the planner for work whenever the
-manual queue is empty. After each sweep task completes, results are recorded
-back into the planner state and the cached binary is deleted.
+This is NOT a separate runner — it's a coordinator that the existing TaskRunner
+calls when --sweep is active and the manual queue is empty. It manages sweep state,
+generates benchmark tasks from the planner's decisions, and records results back.
 """
 
 import logging
@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 from src.config import PROJECT_ROOT
-from src.sweep.git_ops import MergeCommit, get_head, get_merge_commits, get_release_tags
+from src.sweep.git_ops import get_head, get_merge_commits, get_release_tags
 from src.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
-from src.sweep.state import load_state, save_state
 from src.tasks.task_perf_benchmark import PerfTaskData
 
 logger = logging.getLogger(__name__)
@@ -34,12 +33,16 @@ SWEEP_REPETITIONS = 3
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 
-class SweepRunner:
-    """Manages sweep state and generates tasks for the runner."""
+class SweepCoordinator:
+    """Coordinates sweep state and generates tasks for the task runner.
+
+    Not a runner itself — called by TaskRunner when the queue is empty
+    and --sweep mode is active.
+    """
 
     def __init__(self, repo_path: Path):
         self.repo_path = repo_path
-        self.state = load_state(SWEEP_STATE_FILE)
+        self.state = SweepState.load(SWEEP_STATE_FILE)
         self.planner = SweepPlanner(self.state)
 
     def initialize(self) -> None:
@@ -48,7 +51,7 @@ class SweepRunner:
             logger.info("Initializing sweep: enumerating merge commits...")
             self._populate_commits()
             self._populate_landmarks()
-            save_state(self.state, SWEEP_STATE_FILE)
+            self.state.save(SWEEP_STATE_FILE)
             # Rebuild planner index after populating
             self.planner = SweepPlanner(self.state)
             logger.info("Sweep initialized: %d merge commits, %d landmarks",
@@ -59,7 +62,6 @@ class SweepRunner:
 
         Returns None if no sweep work is available.
         """
-        # Check for new HEAD
         try:
             current_head = get_head(self.repo_path)
         except Exception as e:
@@ -75,15 +77,7 @@ class SweepRunner:
 
     def record_result(self, commit: str, rps: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
-        # Try to get PR info from the commit's merge message
-        pr = None
-        pr_title = None
-        for mc in _find_commit_in_list(self.state.merge_commits, self.state, commit):
-            pr = mc.pr
-            pr_title = mc.pr_title
-            break
-
-        self.planner.record_result(commit, rps, cv, reps, pr=pr, pr_title=pr_title)
+        self.planner.record_result(commit, rps, cv, reps)
 
         # Update last_benchmarked_head if this was HEAD
         try:
@@ -93,18 +87,17 @@ class SweepRunner:
         except Exception:
             pass
 
-        save_state(self.state, SWEEP_STATE_FILE)
+        self.state.save(SWEEP_STATE_FILE)
         logger.info("Sweep result recorded: %s -> %.0f rps (CV %.2f%%)", commit[:8], rps, cv)
 
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""
         self.planner.record_build_failure(commit)
-        save_state(self.state, SWEEP_STATE_FILE)
+        self.state.save(SWEEP_STATE_FILE)
         logger.info("Sweep build failure: %s", commit[:8])
 
     def delete_cached_binary(self, commit: str) -> None:
         """Delete the cached binary for a sweep task to save disk space."""
-        # Build cache is at ~/build_cache/{source}/{commit_hash}/
         cache_base = Path.home() / "build_cache" / SWEEP_SOURCE
         commit_dir = cache_base / commit
         if commit_dir.exists():
@@ -116,11 +109,6 @@ class SweepRunner:
         commits = get_merge_commits(self.repo_path)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
-        # Store PR info for later annotation
-        for c in commits:
-            if c.pr is not None:
-                # We'll use this when recording results
-                pass
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release tags."""
@@ -157,12 +145,3 @@ class SweepRunner:
             key_size=0,
             repetitions=SWEEP_REPETITIONS,
         )
-
-
-def _find_commit_in_list(merge_commits: list, state: SweepState,
-                         commit: str) -> list:
-    """Find PR info for a commit by re-parsing (lightweight helper)."""
-    from src.sweep.git_ops import _parse_merge_subject
-    # We don't store full MergeCommit objects in state, so return empty
-    # PR info will be populated during git_ops enumeration
-    return []

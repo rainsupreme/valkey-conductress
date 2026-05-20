@@ -26,13 +26,13 @@ class TaskRunner:
     def __init__(self, sweep: bool = False, repo_path: Optional[Path] = None) -> None:
         self.task: Optional[BaseTaskData] = None
         self.sweep_enabled = sweep
-        self.sweep_runner: Optional["SweepRunner"] = None  # type: ignore[name-defined]
+        self.sweep_runner: Optional["SweepCoordinator"] = None  # type: ignore[name-defined]
         self._sweep_commit: Optional[str] = None  # tracks current sweep task's commit
         if sweep:
-            from src.sweep.runner import SweepRunner
+            from src.sweep.coordinator import SweepCoordinator
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
-            self.sweep_runner = SweepRunner(repo_path)
+            self.sweep_runner = SweepCoordinator(repo_path)
             self.sweep_runner.initialize()
 
     async def __run_task(self, task_data: BaseTaskData) -> None:

@@ -1,4 +1,4 @@
-"""Unit tests for sweep state persistence."""
+"""Unit tests for sweep state persistence (SweepState.save/load)."""
 
 import json
 import tempfile
@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from src.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
-from src.sweep.state import load_state, save_state
 
 
 @pytest.fixture
@@ -22,8 +21,8 @@ class TestStatePersistence:
     def test_empty_state_round_trip(self, tmp_path):
         path = tmp_path / "state.json"
         state = SweepState()
-        save_state(state, path)
-        loaded = load_state(path)
+        state.save(path)
+        loaded = SweepState.load(path)
         assert loaded.threshold == 0.01
         assert loaded.merge_commits == []
         assert loaded.points == {}
@@ -46,8 +45,8 @@ class TestStatePersistence:
             commit="c", date="2024-03-01", status=PointStatus.BUILD_FAILED,
         )
 
-        save_state(state, path)
-        loaded = load_state(path)
+        state.save(path)
+        loaded = SweepState.load(path)
 
         assert loaded.threshold == 0.02
         assert loaded.last_benchmarked_head == "abc123"
@@ -62,20 +61,20 @@ class TestStatePersistence:
 
     def test_load_nonexistent_returns_empty(self, tmp_path):
         path = tmp_path / "nonexistent.json"
-        state = load_state(path)
+        state = SweepState.load(path)
         assert state.merge_commits == []
         assert state.points == {}
 
     def test_creates_parent_directories(self, tmp_path):
         path = tmp_path / "nested" / "dir" / "state.json"
         state = SweepState(merge_commits=["a"])
-        save_state(state, path)
+        state.save(path)
         assert path.exists()
 
     def test_json_is_human_readable(self, tmp_path):
         path = tmp_path / "state.json"
         state = SweepState(merge_commits=["abc123"])
-        save_state(state, path)
+        state.save(path)
         content = path.read_text()
         data = json.loads(content)
         assert "merge_commits" in data
