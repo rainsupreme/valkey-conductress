@@ -12,7 +12,11 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("tui", help="Launch the TUI")
-    subparsers.add_parser("run", help="Start the task runner worker")
+    run_parser = subparsers.add_parser("run", help="Start the task runner worker")
+    run_parser.add_argument("--sweep", action="store_true",
+                            help="Enable sweep mode: auto-generate historical benchmark tasks when queue is empty")
+    run_parser.add_argument("--repo", type=str, default=None,
+                            help="Path to valkey git repo for sweep (default: ~/valkey)")
     subparsers.add_parser("setup", help="Run setup/bootstrap")
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
@@ -44,12 +48,16 @@ def main() -> None:
         import json
         import traceback
         from datetime import datetime
+        from pathlib import Path
 
         from src.config import PROJECT_ROOT
         from src.task_runner import TaskRunner
 
         crash_file = PROJECT_ROOT / "last_crash.json"
-        runner = TaskRunner()
+        repo_path = Path(args.repo) if args.repo else None
+        runner = TaskRunner(sweep=args.sweep, repo_path=repo_path)
+        if args.sweep:
+            print("Sweep mode enabled — will auto-generate tasks when queue is empty")
         try:
             asyncio.run(runner.run())
         except KeyboardInterrupt:
