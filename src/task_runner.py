@@ -11,15 +11,12 @@ from typing import Optional
 
 from src.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_LOG, PROJECT_ROOT, get_servers
+from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, get_servers
 from .file_protocol import FileProtocol
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
 
 logger = logging.getLogger(__name__)
-
-FAILED_TASKS_LOG = PROJECT_ROOT / "failed_tasks.jsonl"
-FAILED_TASKS_DIR = PROJECT_ROOT / "failed"
 
 
 class TaskRunner:
@@ -90,12 +87,12 @@ class TaskRunner:
             "traceback": "".join(tb),
             "timestamp": datetime.now().isoformat(),
         }
-        with open(FAILED_TASKS_LOG, "a") as f:
+        with open(CONDUCTRESS_FAILED_LOG, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
         # Copy task file to failed/ directory for inspection
-        FAILED_TASKS_DIR.mkdir(exist_ok=True)
-        task_file = FAILED_TASKS_DIR / f"task_{task.task_id}.json"
+        CONDUCTRESS_FAILED_DIR.mkdir(exist_ok=True)
+        task_file = CONDUCTRESS_FAILED_DIR / f"task_{task.task_id}.json"
         task.save_to_file(task_file)
 
 

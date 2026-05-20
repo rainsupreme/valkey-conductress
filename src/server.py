@@ -993,7 +993,7 @@ class Server:
         if not self.ssh:
             if self.ip in ["127.0.0.1", "localhost"]:
                 self.ssh = await asyncssh.connect(
-                    self.ip, known_hosts=None
+                    self.ip, known_hosts=None, client_keys=[str(config.SSH_KEYFILE)]
                 )
             elif self.username:
                 self.ssh = await asyncssh.connect(

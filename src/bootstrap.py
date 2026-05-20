@@ -351,7 +351,16 @@ WantedBy=multi-user.target
 
 
 async def install_systemd_service(host: Host) -> None:
-    """Install and enable the conductress systemd service."""
+    """Install and enable the conductress systemd service.
+
+    Skips gracefully on systems without systemd (e.g., macOS, containers).
+    """
+    # Check if systemd is available
+    has_systemd = await host.run("command -v systemctl >/dev/null 2>&1 && echo yes || echo no", check=False)
+    if "yes" not in has_systemd:
+        host.log_info_msg("Skipping systemd service (systemctl not available)")
+        return
+
     workdir = host.get_home_path() / "conductress"
     user = host.username or "ec2-user"
     service_content = SYSTEMD_SERVICE_TEMPLATE.format(user=user, workdir=workdir)

@@ -77,6 +77,8 @@ CONDUCTRESS_OUTPUT = CONDUCTRESS_RESULTS / "output.jsonl"
 
 CONDUCTRESS_QUEUE = PROJECT_ROOT / "benchmark_queue"
 CONDUCTRESS_TMP = PROJECT_ROOT / "tmp"
+CONDUCTRESS_FAILED_LOG = PROJECT_ROOT / "failed_tasks.jsonl"
+CONDUCTRESS_FAILED_DIR = PROJECT_ROOT / "failed"
 
 # ssh key to use when accessing the server
 # Replace this with the path to your private key file
