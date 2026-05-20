@@ -330,6 +330,54 @@ async def cleanup_legacy_build_cache(host: Host) -> None:
         await host.run(f"find {old_cache_path} -type d -empty -delete", check=False)
 
 
+SYSTEMD_SERVICE_TEMPLATE = """\
+[Unit]
+Description=Conductress benchmark runner
+After=network.target
+
+[Service]
+Type=simple
+User={user}
+WorkingDirectory={workdir}
+ExecStart=/usr/bin/python3 -m src run
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+async def install_systemd_service(host: Host) -> None:
+    """Install and enable the conductress systemd service."""
+    workdir = host.get_home_path() / "conductress"
+    user = host.username or "ec2-user"
+    service_content = SYSTEMD_SERVICE_TEMPLATE.format(user=user, workdir=workdir)
+    service_path = "/etc/systemd/system/conductress.service"
+
+    # Check if service file already exists with correct content
+    existing = await host.run(f"cat {service_path} 2>/dev/null || echo ''", check=False)
+    if existing.strip() == service_content.strip():
+        host.log_info_msg("Conductress systemd service already up to date")
+    else:
+        host.log_info_msg("Installing conductress systemd service")
+        # Write service file via sudo tee
+        escaped = service_content.replace("'", "'\\''")
+        await host.run(f"echo '{escaped}' | sudo tee {service_path} > /dev/null")
+        await host.run("sudo systemctl daemon-reload")
+
+    # Enable (auto-start on boot) and start if not running
+    await host.run("sudo systemctl enable conductress", check=False)
+    status = await host.run("systemctl is-active conductress", check=False)
+    if "active" not in status.strip():
+        host.log_info_msg("Starting conductress service")
+        await host.run("sudo systemctl start conductress")
+    else:
+        host.log_info_msg("Conductress service already running")
+
+
 async def update_host(server_info: config.ServerInfo):
     """Perform all updates on host at specified connection"""
     host = await Host.from_server_info(server_info)
@@ -348,6 +396,9 @@ async def update_host(server_info: config.ServerInfo):
 
     # Clean up deprecated/legacy files from older versions
     await cleanup_legacy_build_cache(host)
+
+    # Install and enable systemd service for the runner
+    await install_systemd_service(host)
 
     host.log_info_msg("Ensuring config repos cloned...")
     await asyncio.gather(
