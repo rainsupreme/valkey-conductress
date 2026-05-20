@@ -1,0 +1,103 @@
+"""Unit tests for sweep git operations."""
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from src.sweep.git_ops import (
+    MergeCommit,
+    _parse_merge_subject,
+    get_head,
+    get_merge_commits,
+)
+
+
+@pytest.fixture
+def git_repo():
+    """Create a temporary git repo with merge commits for testing."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        run = lambda cmd: subprocess.run(cmd, cwd=repo, capture_output=True, check=True)
+        run(["git", "init", "-b", "main"])
+        run(["git", "config", "user.email", "test@test.com"])
+        run(["git", "config", "user.name", "Test"])
+
+        # Initial commit on main
+        (repo / "file.txt").write_text("v1")
+        run(["git", "add", "."])
+        run(["git", "commit", "-m", "Initial commit"])
+
+        # Create a branch and merge it (simulates a PR merge)
+        run(["git", "checkout", "-b", "feature-1"])
+        (repo / "feature1.txt").write_text("feature 1")
+        run(["git", "add", "."])
+        run(["git", "commit", "-m", "Add feature 1"])
+        run(["git", "checkout", "main"])
+        run(["git", "merge", "--no-ff", "-m", "Merge pull request #101 from user/feature-1", "feature-1"])
+
+        # Another merge
+        run(["git", "checkout", "-b", "feature-2"])
+        (repo / "feature2.txt").write_text("feature 2")
+        run(["git", "add", "."])
+        run(["git", "commit", "-m", "Add feature 2"])
+        run(["git", "checkout", "main"])
+        run(["git", "merge", "--no-ff", "-m", "Merge pull request #202 from user/feature-2", "feature-2"])
+
+        yield repo
+
+
+class TestGetMergeCommits:
+    """Tests for merge commit enumeration."""
+
+    def test_finds_merge_commits(self, git_repo):
+        commits = get_merge_commits(git_repo)
+        assert len(commits) == 2
+        assert commits[0].pr == 101
+        assert commits[1].pr == 202
+
+    def test_oldest_first(self, git_repo):
+        commits = get_merge_commits(git_repo)
+        # First merge should be older
+        assert commits[0].pr == 101
+        assert commits[1].pr == 202
+
+    def test_has_dates(self, git_repo):
+        commits = get_merge_commits(git_repo)
+        for c in commits:
+            assert len(c.date) == 10  # YYYY-MM-DD
+            assert c.date[4] == "-"
+
+
+class TestGetHead:
+    """Tests for HEAD resolution."""
+
+    def test_returns_full_hash(self, git_repo):
+        head = get_head(git_repo)
+        assert len(head) == 40
+        assert all(c in "0123456789abcdef" for c in head)
+
+
+class TestParseMergeSubject:
+    """Tests for merge commit subject parsing."""
+
+    def test_standard_merge(self):
+        pr, title = _parse_merge_subject("Merge pull request #1847 from user/branch-name")
+        assert pr == 1847
+        assert title is None
+
+    def test_squash_merge(self):
+        pr, title = _parse_merge_subject("Optimize dict rehashing (#2103)")
+        assert pr == 2103
+        assert title == "Optimize dict rehashing"
+
+    def test_no_pr(self):
+        pr, title = _parse_merge_subject("Regular commit message")
+        assert pr is None
+        assert title is None
+
+    def test_squash_with_parens_in_title(self):
+        pr, title = _parse_merge_subject("Fix bug (important) in module (#999)")
+        assert pr == 999
+        assert title == "Fix bug (important) in module"

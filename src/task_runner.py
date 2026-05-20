@@ -7,6 +7,7 @@ import logging
 import time
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from src.task_queue import BaseTaskRunner
@@ -22,8 +23,17 @@ logger = logging.getLogger(__name__)
 class TaskRunner:
     """Takes tasks from queue and runs them"""
 
-    def __init__(self) -> None:
+    def __init__(self, sweep: bool = False, repo_path: Optional[Path] = None) -> None:
         self.task: Optional[BaseTaskData] = None
+        self.sweep_enabled = sweep
+        self.sweep_runner: Optional["SweepRunner"] = None  # type: ignore[name-defined]
+        self._sweep_commit: Optional[str] = None  # tracks current sweep task's commit
+        if sweep:
+            from src.sweep.runner import SweepRunner
+            if repo_path is None:
+                repo_path = Path.home() / "valkey"
+            self.sweep_runner = SweepRunner(repo_path)
+            self.sweep_runner.initialize()
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task"""
@@ -44,6 +54,83 @@ class TaskRunner:
             task_runner.file_protocol.cleanup()
             raise
 
+    def _get_sweep_task(self) -> Optional[BaseTaskData]:
+        """Ask the sweep planner for the next task when queue is empty."""
+        if not self.sweep_runner:
+            return None
+        task = self.sweep_runner.get_next_sweep_task()
+        if task:
+            self._sweep_commit = task.specifier  # commit hash
+            print(f"[sweep] Next: {task.specifier[:8]} - {task.note}")
+        return task
+
+    def _handle_sweep_completion(self, task_data: BaseTaskData) -> None:
+        """After a sweep task completes, record results and clean up."""
+        if not self.sweep_runner or not self._sweep_commit:
+            return
+
+        commit = self._sweep_commit
+        self._sweep_commit = None
+
+        # Read the result from the file protocol output
+        rps, cv = self._extract_result(task_data)
+        if rps is not None and cv is not None:
+            from src.tasks.task_perf_benchmark import PerfTaskData
+            assert isinstance(task_data, PerfTaskData)
+            self.sweep_runner.record_result(commit, rps, cv, task_data.repetitions)
+            self.sweep_runner.delete_cached_binary(commit)
+        else:
+            logger.warning("Could not extract result for sweep commit %s", commit[:8])
+
+    def _handle_sweep_failure(self) -> None:
+        """Record a build/run failure for the current sweep task."""
+        if not self.sweep_runner or not self._sweep_commit:
+            return
+        self.sweep_runner.record_build_failure(self._sweep_commit)
+        self.sweep_runner.delete_cached_binary(self._sweep_commit)
+        self._sweep_commit = None
+
+    def _extract_result(self, task_data: BaseTaskData) -> tuple:
+        """Extract RPS and CV from the most recent completed task's output."""
+        from src.config import CONDUCTRESS_RESULTS
+        from src.file_protocol import FileProtocol
+        import json
+
+        # Find the most recent result file for this task
+        results_dir = CONDUCTRESS_RESULTS
+        if not results_dir.exists():
+            return None, None
+
+        # Look for the task's output in the JSONL file
+        output_file = results_dir / "output.jsonl"
+        if not output_file.exists():
+            return None, None
+
+        # Read the last entry that matches our task
+        last_rps = None
+        last_cv = None
+        try:
+            lines = output_file.read_text().strip().splitlines()
+            for line in reversed(lines):
+                try:
+                    data = json.loads(line)
+                    if data.get("task_id") == task_data.task_id:
+                        last_rps = data.get("mean_rps") or data.get("rps")
+                        # CV from stdev/mean
+                        if "stdev_rps" in data and last_rps:
+                            last_cv = (data["stdev_rps"] / last_rps) * 100
+                        elif "cv_pct" in data:
+                            last_cv = data["cv_pct"]
+                        else:
+                            last_cv = 0.0
+                        break
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except Exception as e:
+            logger.warning("Error reading results: %s", e)
+
+        return last_rps, last_cv
+
     async def run(self):
         """Main function - execute tasks from the queue."""
         # Clean up any orphaned benchmark directories on startup
@@ -59,16 +146,35 @@ class TaskRunner:
         self.task = queue.get_next_task()
         while True:
             while self.task:
+                is_sweep = self._sweep_commit is not None
                 try:
                     await self.__run_task(self.task)
                 except Exception as exc:
+                    if is_sweep:
+                        logger.error("Sweep task failed: %s", exc)
+                        self._handle_sweep_failure()
+                        self.task = queue.get_next_task()
+                        continue
                     self._record_failure(self.task, exc)
-                queue.finish_task(self.task)
+
+                if is_sweep:
+                    self._handle_sweep_completion(self.task)
+                else:
+                    queue.finish_task(self.task)
                 self.task = queue.get_next_task()
+
+            # Queue empty — try sweep if enabled
+            if self.sweep_enabled:
+                self.task = self._get_sweep_task()
+                if self.task:
+                    continue
+
             print("waiting for new jobs in queue")
             while not self.task:
                 time.sleep(4)
                 self.task = queue.get_next_task()
+                if not self.task and self.sweep_enabled:
+                    self.task = self._get_sweep_task()
 
     def _record_failure(self, task: BaseTaskData, exc: Exception) -> None:
         """Log a task failure to failed_tasks.jsonl and move task file to failed/."""
