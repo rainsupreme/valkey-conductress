@@ -153,8 +153,23 @@ class TaskQueue:
         if task_file.exists():
             task_file.unlink()
         else:
-            logger.error("Task file not found: %s", task_file)
-            raise RuntimeError(f"Task file not found and cannot be cleared: {task_file}")
+            logger.error(
+                "Task file not found (task_id=%s, expected=%s). "
+                "This is a bug — task_id does not match filename.",
+                task.task_id,
+                task_file,
+            )
+            # Attempt to find and remove the file by matching timestamp content
+            for candidate in self.queue_dir.glob("task_*.json"):
+                try:
+                    data = json.loads(candidate.read_text())
+                    if data.get("timestamp") == task.timestamp.isoformat():
+                        logger.error("Found matching file by timestamp: %s — removing", candidate)
+                        candidate.unlink()
+                        return
+                except (json.JSONDecodeError, OSError):
+                    continue
+            logger.error("Could not find any matching task file to remove")
 
     def get_all_tasks(self) -> list[BaseTaskData]:
         """Returns list of (timestamp, task) tuples, sorted by timestamp"""
