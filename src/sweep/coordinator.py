@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
 SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
 
-# Default sweep benchmark parameters (GET 16B, single-threaded, pipeline=1)
+# Default sweep benchmark parameters (GET 16B, io-threads=7, pipeline=10)
 SWEEP_SOURCE = "valkey"
 SWEEP_TEST = "get"
 SWEEP_VAL_SIZE = 16
-SWEEP_IO_THREADS = 1
-SWEEP_PIPELINING = 1
+SWEEP_IO_THREADS = 7
+SWEEP_PIPELINING = 10
 SWEEP_WARMUP = 5
 SWEEP_DURATION = 30
 SWEEP_REPETITIONS = 3
