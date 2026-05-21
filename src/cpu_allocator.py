@@ -1,5 +1,6 @@
 """CPU allocation manager for pinning processes to specific cores across hosts."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -56,22 +57,32 @@ class CpuAllocator:
         tag: AllocationTag,
         count: int,
         require_numa: Optional[int] = None,
-        avoid_tags: Optional[list[AllocationTag]] = None,  # Avoid cache overlap with these allocations
-        prefer_different_cache: bool = False,  # Try to use different NUMA/L3 cache from avoid_tags
+        avoid_tags: Optional[list[AllocationTag]] = None,
+        prefer_different_cache: bool = False,
+        minimize_cache_groups: bool = False,
     ) -> list[int]:
         """Allocate CPU cores with cache awareness.
+
+        Allocation priority (applied in order):
+        1. require_numa — filter to a specific NUMA node
+        2. minimize_cache_groups — pack into fewest L3 cache groups (CCDs)
+        3. prefer_different_cache — pick a different L3 group than avoid_tags
+        4. Fallback — first available CPUs
 
         Args:
             host_ip: Host to allocate from
             tag: Allocation identifier
             count: Number of CPUs to allocate
             require_numa: Required NUMA node (None = any node)
-            avoid_tags: List of existing allocations to avoid cache overlap with.
-                       Used to reduce cache contention (e.g., benchmark client avoiding server cache).
-            prefer_different_cache: When True with avoid_tags, tries to allocate from different
-                                   NUMA node or L3 cache. Falls back to any available CPUs if not possible.
-                                   This ensures consistent behavior: cache separation when possible,
-                                   shared cache when unavoidable (e.g., single L3 cache systems).
+            avoid_tags: List of existing allocations whose CPUs we want to avoid.
+                       Used to reduce cache contention (e.g., client avoiding server's L3).
+            prefer_different_cache: Try to allocate from a different L3 cache group
+                                   than avoid_tags. Soft preference — falls back if impossible.
+                                   Purpose: separate client from server's L3 for isolation.
+            minimize_cache_groups: Pack all allocated CPUs into the fewest L3 cache
+                                  groups possible (ideally one). Prevents non-deterministic
+                                  thread placement across chiplets on AMD EPYC.
+                                  Purpose: benchmark client threads stay on one CCD.
 
         Returns:
             List of allocated CPU IDs
@@ -103,7 +114,10 @@ class CpuAllocator:
 
         # Try cache-aware allocation if requested
         allocated = None
-        if prefer_different_cache and avoid_cpus:
+        if minimize_cache_groups and self._l3_caches.get(host_ip):
+            allocated = self._allocate_single_cache(host_ip, available, avoid_cpus, count)
+
+        if allocated is None and prefer_different_cache and avoid_cpus:
             allocated = self._allocate_cache_aware(host_ip, available, avoid_cpus, count, require_numa)
 
         # Fallback to simple allocation
@@ -121,6 +135,70 @@ class CpuAllocator:
 
         self._allocations[host_ip][tag] = allocated
         return allocated
+
+    def _allocate_single_cache(
+        self,
+        host_ip: str,
+        available: set[int],
+        avoid_cpus: set[int],
+        count: int,
+    ) -> Optional[list[int]]:
+        """Allocate CPUs from the minimum number of L3 cache groups (CCDs).
+
+        On chiplet architectures (AMD EPYC), cross-CCD thread placement causes
+        non-deterministic performance. This method minimizes the number of CCDs used:
+        - If count fits in one CCD: use one CCD (ideal)
+        - If not: use the fewest CCDs needed to cover the request
+
+        Prefers cache groups that don't overlap with avoid_cpus.
+        Returns None only if topology data is unavailable.
+        """
+        l3_caches = self._l3_caches.get(host_ip)
+        if not l3_caches:
+            return None
+
+        # Try single CCD first (ideal case)
+        single_candidates = []
+        for l3_id, cpus in l3_caches.items():
+            group_available = sorted(available & set(cpus) - avoid_cpus)
+            if len(group_available) >= count:
+                overlap = len(set(cpus) & avoid_cpus)
+                single_candidates.append((overlap, l3_id, group_available))
+
+        if single_candidates:
+            single_candidates.sort()
+            return single_candidates[0][2][:count]
+
+        # No single CCD is large enough — use minimum number of CCDs
+        # Sort groups by size (largest first) to minimize CCD count
+        groups = []
+        for l3_id, cpus in l3_caches.items():
+            group_available = sorted(available & set(cpus) - avoid_cpus)
+            if group_available:
+                groups.append((len(group_available), l3_id, group_available))
+        groups.sort(reverse=True)
+
+        allocated: list[int] = []
+        ccds_used = 0
+        for _, l3_id, group_available in groups:
+            needed = count - len(allocated)
+            if needed <= 0:
+                break
+            allocated.extend(group_available[:needed])
+            ccds_used += 1
+
+        if len(allocated) >= count:
+            logging.info(
+                "minimize_cache_groups: needed %d CPUs across %d CCDs (max %d per CCD)",
+                count, ccds_used, groups[0][0] if groups else 0,
+            )
+            return allocated[:count]
+
+        logging.warning(
+            "minimize_cache_groups: only %d CPUs available across all CCDs, need %d",
+            len(allocated), count,
+        )
+        return None
 
     def _allocate_cache_aware(
         self,

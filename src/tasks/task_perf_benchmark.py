@@ -463,6 +463,10 @@ class PerfTaskRunner(BaseTaskRunner):
                 server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
 
                 # Allocate CPUs for benchmark client, avoiding server cache
+                # On chiplet architectures, minimize cache groups to prevent
+                # non-deterministic thread placement across CCDs
+                is_chiplet = getattr(server, "_platform_info", None) is not None and \
+                    server._platform_info.needs_single_cache_pinning
                 benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
                 net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
                 benchmark_cpus = client._cpu_allocator.allocate(
@@ -471,7 +475,8 @@ class PerfTaskRunner(BaseTaskRunner):
                     count=PERF_BENCH_THREADS,
                     require_numa=net_numa,
                     avoid_tags=[server_tag],
-                    prefer_different_cache=True,  # Separate caches when possible for consistency
+                    prefer_different_cache=True,
+                    minimize_cache_groups=is_chiplet,
                 )
                 benchmark_cpu_list = ",".join(map(str, benchmark_cpus))
 
@@ -601,6 +606,17 @@ class PerfTaskRunner(BaseTaskRunner):
 
                 # Kill any existing instances and start fresh
                 await replication_group.kill_all_valkey_instances()
+
+                # Drop page caches between reps to prevent accumulated memory state
+                # from causing drift. Skip on Intel (large monolithic L3 stays warm).
+                if rep > 0:
+                    primary_server = replication_group.primary or Server(self.server_infos[0].ip)
+                    platform = getattr(primary_server, "_platform_info", None)
+                    if platform is None or platform.needs_drop_caches:
+                        await primary_server.run_host_command(
+                            "sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False
+                        )
+
                 await replication_group.start()
                 if not replication_group.primary:
                     raise RuntimeError("Replication group failed to start: no primary server available")
@@ -610,6 +626,9 @@ class PerfTaskRunner(BaseTaskRunner):
                 server = replication_group.primary
                 target_ip = server.ip
                 self.commit_hash = server.get_build_hash() or ""
+
+                is_chiplet = getattr(server, "_platform_info", None) is not None and \
+                    server._platform_info.needs_single_cache_pinning
 
                 # Preload data
                 if self.preload_keys and self.preload_command is not None:
@@ -644,6 +663,7 @@ class PerfTaskRunner(BaseTaskRunner):
                             require_numa=net_numa,
                             avoid_tags=[server_tag],
                             prefer_different_cache=True,
+                            minimize_cache_groups=is_chiplet,
                         )
                         benchmark_cpu_list = ",".join(map(str, benchmark_cpus))
                         self.logger.info(

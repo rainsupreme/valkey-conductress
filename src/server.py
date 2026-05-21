@@ -503,7 +503,42 @@ class Server:
 
     async def enable_cpu_consistency_mode(self) -> None:
         """Configure CPU settings for consistent benchmarks across ARM/x86 platforms."""
-        # Check if CPU frequency scaling is supported
+        from .platform import detect_platform
+
+        self._platform_info = await detect_platform(
+            lambda cmd: self.run_host_command(cmd, check=False)
+        )
+
+        # === Universal tunings (all platforms) ===
+
+        # Disable ASLR — single biggest factor for between-run variance (1-3%)
+        await self.run_host_command(
+            "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space", check=False
+        )
+        logging.info("Disabled ASLR (randomize_va_space=0)")
+
+        # THP to madvise — prevents background khugepaged/compaction jitter
+        thp_path = "/sys/kernel/mm/transparent_hugepage/enabled"
+        if await self.check_file_exists(Path(thp_path)):
+            await self.run_host_command(f"echo madvise | sudo tee {thp_path}", check=False)
+            logging.info("Set THP to madvise")
+
+        # Memory/scheduler tuning — reduces jitter from background activity
+        sysctl_settings = [
+            ("vm.compaction_proactiveness", "0"),
+            ("kernel.watchdog", "0"),
+            ("kernel.timer_migration", "0"),
+            ("vm.dirty_writeback_centisecs", "0"),
+        ]
+        for key, value in sysctl_settings:
+            await self.run_host_command(f"sudo sysctl -w {key}={value}", check=False)
+        logging.info("Applied memory/scheduler sysctl tunings")
+
+        # Stop systemd timers that fire during benchmarks
+        for timer in ["sysstat-collect.timer", "nm-cloud-setup.timer", "dnf-makecache.timer"]:
+            await self.run_host_command(f"sudo systemctl stop {timer}", check=False)
+
+        # === Frequency scaling (x86 only — ARM Graviton is fixed) ===
         cpufreq_exists = await self.check_file_exists(
             Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
         )
@@ -563,6 +598,12 @@ class Server:
 
     async def disable_cpu_consistency_mode(self) -> None:
         """Restore default CPU settings across ARM/x86 platforms."""
+        # Restore ASLR
+        await self.run_host_command(
+            "echo 2 | sudo tee /proc/sys/kernel/randomize_va_space", check=False
+        )
+        logging.info("Restored ASLR (randomize_va_space=2)")
+
         # Check if CPU frequency scaling is supported
         cpufreq_exists = await self.check_file_exists(
             Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
