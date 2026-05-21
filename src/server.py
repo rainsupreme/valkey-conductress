@@ -711,7 +711,7 @@ class Server:
 
         command = (
             f"{cached_binary_path} --port {self.port} "
-            f"--save --protected-mode no --daemonize yes "
+            f'--save "" --protected-mode no --daemonize yes '
             f"--logfile {Server.server_logfile} " + " ".join(self.args)
         )
 
@@ -784,8 +784,11 @@ class Server:
         self.valkey_pid = -1
 
         # clean up any rdb files from replication or snapshotting
-        # valkey will automatically load "dump.rdb" if it is present
-        await self.run_host_command(f"cd {Server.path_root} && rm -f *.rdb", check=False)
+        # valkey will automatically load "dump.rdb" if it is present in its working dir
+        await self.run_host_command(
+            f"rm -f {Server.path_root}/*.rdb {config.PROJECT_ROOT}/*.rdb",
+            check=False,
+        )
         # clean up any files created by profiling or other metric collection
         await self.__data_collection_cleanup()
 
