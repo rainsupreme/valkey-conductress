@@ -750,10 +750,10 @@ class Server:
         """Stop all instances of valkey server, regardless of which port they're running on"""
         await self.run_host_command(f"pkill -f {VALKEY_BINARY}", check=False)
 
-        # Clear all non-IRQ allocations for this host
+        # Clear server allocations for this host (keep IRQ and benchmark allocations)
         all_allocations = self._cpu_allocator.get_all_allocations(self.ip)
         for tag in list(all_allocations.keys()):
-            if tag.purpose != "irq":  # Keep IRQ allocations
+            if tag.purpose == "server":
                 self._cpu_allocator.release(self.ip, tag)
 
     async def stop(self):
