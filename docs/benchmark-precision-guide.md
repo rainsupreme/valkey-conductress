@@ -228,6 +228,9 @@ taskset -c 0-7 valkey-server --io-threads 7 --server-cpulist 0-6
 taskset -c 32-39 valkey-benchmark --threads 8
 ```
 
+> **Note**: io-threads=8 (filling all 8 CCD cores) increases CV from 0.024% to ~0.4% and
+> reduces throughput by ~12%. Leaving one core free absorbs OS scheduler and interrupt noise.
+
 **Topology detection**:
 ```bash
 # List L3 cache groups (CCDs)

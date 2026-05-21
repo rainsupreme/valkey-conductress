@@ -21,6 +21,16 @@ def main() -> None:
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
+    sweep_parser = subparsers.add_parser("sweep", help="Sweep management (export, status)")
+    sweep_sub = sweep_parser.add_subparsers(dest="sweep_command")
+    export_parser = sweep_sub.add_parser("export", help="Export sweep results to dashboard JSON")
+    export_parser.add_argument("--platform", required=True,
+                               help="Platform identifier (e.g. amd64, arm64, intel)")
+    export_parser.add_argument("--output", type=str, default=None,
+                               help="Output path (default: ./series-{platform}.json)")
+    export_parser.add_argument("--push", type=str, default=None,
+                               help="Git repo path to commit+push the exported file to")
+    sweep_sub.add_parser("status", help="Show sweep progress summary")
 
     args, remaining = parser.parse_known_args()
 
@@ -126,6 +136,78 @@ def main() -> None:
         from src.status import print_status
 
         sys.exit(print_status())
+
+    elif args.command == "sweep":
+        from pathlib import Path
+
+        from src.sweep.coordinator import SWEEP_STATE_FILE
+        from src.sweep.exporter import export_series
+        from src.sweep.planner import SweepState
+
+        if args.sweep_command == "export":
+            state = SweepState.load(SWEEP_STATE_FILE)
+            points_count = sum(1 for p in state.points.values() if p.rps is not None)
+            if points_count == 0:
+                print("No sweep results to export yet.")
+                sys.exit(1)
+
+            platform = args.platform
+            output = Path(args.output) if args.output else Path(f"series-{platform}.json")
+            platform_labels = {
+                "amd64": "amd64/epyc-9r14/zen4",
+                "arm64": "arm64/c7g.metal/graviton3",
+                "intel": "intel/sapphire-rapids/8488c",
+            }
+            platform_str = platform_labels.get(platform, platform)
+
+            export_series(state, output, platform=platform_str)
+            print(f"Exported {points_count} points to {output}")
+
+            if args.push:
+                import shutil
+                import subprocess
+
+                repo_path = Path(args.push)
+                dest = repo_path / "data" / output.name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(output, dest)
+                subprocess.run(["git", "-C", str(repo_path), "add", str(dest)], check=True)
+                result = subprocess.run(
+                    ["git", "-C", str(repo_path), "diff", "--cached", "--quiet"],
+                    capture_output=True,
+                )
+                if result.returncode != 0:  # there are staged changes
+                    subprocess.run(
+                        ["git", "-C", str(repo_path), "commit", "-m",
+                         f"Update {output.name}: {points_count} points"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(repo_path), "push"], check=True,
+                    )
+                    print(f"Pushed to {repo_path}")
+                else:
+                    print("No changes to push (data unchanged)")
+
+        elif args.sweep_command == "status":
+            state = SweepState.load(SWEEP_STATE_FILE)
+            from src.sweep.planner import SweepPlanner
+            planner = SweepPlanner(state)
+            completed = sum(1 for p in state.points.values() if p.rps is not None)
+            failed = sum(1 for p in state.points.values() if p.status.name == "BUILD_FAILED")
+            segments = planner.get_unresolved_segments()
+            print(f"Commits tracked: {len(state.merge_commits)}")
+            print(f"Points completed: {completed}")
+            print(f"Build failures: {failed}")
+            print(f"Landmarks: {len(state.landmarks)}")
+            print(f"Unresolved segments (>{state.threshold*100:.0f}%): {len(segments)}")
+            if segments:
+                top = segments[0]
+                print(f"Largest gap: {top.abs_delta*100:.1f}% ({top.commit_count} commits)")
+
+        else:
+            sweep_parser.print_usage()
+            sys.exit(1)
 
 
 if __name__ == "__main__":
