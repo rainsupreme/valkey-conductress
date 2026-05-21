@@ -165,6 +165,11 @@ class PerfTaskRunner(BaseTaskRunner):
             preload_command="-t zadd",
             test_command=" -- ZCOUNT myzset __rand_int__ __rand_int__",
         ),
+        "zscore": Test(
+            name="zscore",
+            preload_command="-t zadd",
+            test_command=" -- ZSCORE myzset element:__rand_int__",
+        ),
         "sismember": Test(
             name="sismember",
             preload_command="-t sadd",
@@ -282,6 +287,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 "ping": None,
                 "zrank": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
                 "zcount": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zscore": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
             }
             return preload_map[name]
         else:
@@ -296,6 +302,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 "ping": "-t ping",
                 "zrank": f" -- ZRANK {padded_key} element:__rand_int__",
                 "zcount": f" -- ZCOUNT {padded_key} __rand_int__ __rand_int__",
+                "zscore": f" -- ZSCORE {padded_key} element:__rand_int__",
             }
             return test_map[name]
 
