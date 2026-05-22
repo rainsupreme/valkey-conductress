@@ -201,8 +201,7 @@ class TestTaskRunnerSweepIntegration:
         """Verify TaskRunner can be instantiated with sweep=False without errors."""
         from src.task_runner import TaskRunner
         runner = TaskRunner(sweep=False)
-        assert runner.sweep_enabled is False
-        assert runner.sweep_runner is None
+        assert runner._subscribers == []
 
     @patch("src.sweep.coordinator.SweepCoordinator.initialize")
     @patch("src.sweep.coordinator.get_merge_commits", return_value=[])
@@ -215,5 +214,4 @@ class TestTaskRunnerSweepIntegration:
         state_file = tmp_dir / "state.json"
         with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        assert runner.sweep_enabled is True
-        assert runner.sweep_runner is not None
+        assert len(runner._subscribers) == 1

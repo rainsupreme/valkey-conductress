@@ -17,8 +17,10 @@ class DummyConfig(types.ModuleType):
     REPO_NAMES = ["repo1", "repo2"]
 
 
-# Patch config for tests
-task_queue.config = DummyConfig("dummy_config")
+@pytest.fixture(autouse=True)
+def _patch_task_queue_config(monkeypatch):
+    """Patch config for task_queue tests without leaking to other modules."""
+    monkeypatch.setattr(task_queue, "config", DummyConfig("dummy_config"))
 
 
 @pytest.fixture

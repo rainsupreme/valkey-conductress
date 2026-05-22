@@ -87,6 +87,7 @@ class PerfTaskData(BaseTaskData):
     preload_keys: bool
     key_size: int = 0  # target key size in bytes, 0 = standard keys
     repetitions: int = 1  # number of independent benchmark runs
+    sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
         super().__post_init__()
