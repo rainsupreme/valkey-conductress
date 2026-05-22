@@ -112,6 +112,8 @@ class SweepCoordinator:
         commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
+        self.state.commit_prs = {c.hash: c.pr for c in commits if c.pr is not None}
+        self.state.commit_titles = {c.hash: c.pr_title for c in commits if c.pr_title is not None}
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release branch points on unstable."""

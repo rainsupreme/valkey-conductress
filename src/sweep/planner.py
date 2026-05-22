@@ -96,6 +96,10 @@ class SweepState:
     merge_commits: list[str] = field(default_factory=list)
     # Commit -> date mapping for all known commits
     commit_dates: dict[str, str] = field(default_factory=dict)
+    # Commit -> PR number (from squash merge subject)
+    commit_prs: dict[str, int] = field(default_factory=dict)
+    # Commit -> PR title / commit subject
+    commit_titles: dict[str, str] = field(default_factory=dict)
     # Last known HEAD that was benchmarked
     last_benchmarked_head: Optional[str] = None
     # Threshold for bisection (relative, e.g. 0.01 = 1%)
@@ -110,6 +114,8 @@ class SweepState:
             "last_benchmarked_head": self.last_benchmarked_head,
             "merge_commits": self.merge_commits,
             "commit_dates": self.commit_dates,
+            "commit_prs": self.commit_prs,
+            "commit_titles": self.commit_titles,
             "landmarks": [
                 {"commit": lm.commit, "date": lm.date, "label": lm.label}
                 for lm in self.landmarks
@@ -145,6 +151,8 @@ class SweepState:
             last_benchmarked_head=data.get("last_benchmarked_head"),
             merge_commits=data.get("merge_commits", []),
             commit_dates=data.get("commit_dates", {}),
+            commit_prs=data.get("commit_prs", {}),
+            commit_titles=data.get("commit_titles", {}),
         )
 
         for lm_data in data.get("landmarks", []):
