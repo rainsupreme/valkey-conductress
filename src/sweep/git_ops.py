@@ -24,8 +24,9 @@ class MergeCommit:
     pr_title: Optional[str] = None
 
 
-def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> List[MergeCommit]:
-    """Enumerate first-parent commits (PRs) on the current branch.
+def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None,
+                      ref: str = "HEAD") -> List[MergeCommit]:
+    """Enumerate first-parent commits (PRs) on the given ref.
 
     Valkey uses squash merges, so PRs appear as single-parent commits with
     (#NNNN) in the subject. We enumerate all first-parent commits and parse
@@ -34,6 +35,7 @@ def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> Li
     Args:
         repo_path: Path to the git repository.
         since_commit: If provided, only return commits after this one (exclusive).
+        ref: Git ref to enumerate (e.g. "origin/unstable", "HEAD", "main").
 
     Returns:
         List of MergeCommit, oldest first.
@@ -45,7 +47,9 @@ def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> Li
         "--reverse",
     ]
     if since_commit:
-        cmd.append(f"{since_commit}..HEAD")
+        cmd.append(f"{since_commit}..{ref}")
+    else:
+        cmd.append(ref)
 
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     commits = []
@@ -62,10 +66,10 @@ def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> Li
     return commits
 
 
-def get_head(repo_path: Path) -> str:
-    """Get the current HEAD commit hash."""
+def get_head(repo_path: Path, ref: str = "HEAD") -> str:
+    """Get the latest commit hash for the given ref."""
     result = subprocess.run(
-        ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+        ["git", "-C", str(repo_path), "rev-parse", ref],
         capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
