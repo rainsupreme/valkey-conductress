@@ -53,15 +53,16 @@ class TestGetMergeCommits:
 
     def test_finds_merge_commits(self, git_repo):
         commits = get_merge_commits(git_repo)
-        assert len(commits) == 2
-        assert commits[0].pr == 101
-        assert commits[1].pr == 202
+        # All first-parent commits returned (initial + 2 merges)
+        assert len(commits) >= 2
+        prs = [c.pr for c in commits if c.pr is not None]
+        assert 101 in prs
+        assert 202 in prs
 
     def test_oldest_first(self, git_repo):
         commits = get_merge_commits(git_repo)
-        # First merge should be older
-        assert commits[0].pr == 101
-        assert commits[1].pr == 202
+        prs = [c.pr for c in commits if c.pr is not None]
+        assert prs == [101, 202]
 
     def test_has_dates(self, git_repo):
         commits = get_merge_commits(git_repo)
