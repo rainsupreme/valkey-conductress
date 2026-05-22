@@ -92,7 +92,9 @@ class TestExtractResult:
         output_file = tmp_path / "results" / "output.jsonl"
         output_file.parent.mkdir(parents=True)
         output_file.write_text(json.dumps({
-            "score": 2000000, "stdev_rps": 10000, "task_id": "x"
+            "score": 2000000,
+            "data": {"per_run_rps": [2010000, 1990000, 2000000]},
+            "task_id": "x"
         }))
 
         with patch("src.config.CONDUCTRESS_RESULTS", tmp_path / "results"):
@@ -100,4 +102,4 @@ class TestExtractResult:
             rps, cv = runner._extract_result(_make_failed_task())
 
         assert rps == 2000000
-        assert cv == pytest.approx(0.5)  # 10000/2000000 * 100
+        assert cv == pytest.approx(0.5, abs=0.1)  # ~0.5% CV from those values  # 10000/2000000 * 100
