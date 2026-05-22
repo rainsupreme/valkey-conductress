@@ -75,35 +75,43 @@ def get_head(repo_path: Path, ref: str = "HEAD") -> str:
     return result.stdout.strip()
 
 
-def get_release_tags(repo_path: Path) -> List[Tuple[str, str, str]]:
-    """Get release tags with their commit hash and date.
+def get_release_branch_points(repo_path: Path) -> List[Tuple[str, str, str]]:
+    """Find where release branches diverged from unstable.
 
     Returns:
-        List of (commit_hash, date, tag_name) tuples, sorted by date.
+        List of (commit_hash, date, branch_label) tuples for commits on
+        unstable where each release branch was cut.
     """
+    # Discover release branches (e.g. origin/7.2, origin/8.0, origin/8.1)
     result = subprocess.run(
-        ["git", "-C", str(repo_path), "tag", "--list", "[0-9]*",
-         "--sort=creatordate", "--format=%(objectname:short) %(*objectname:short) %(creatordate:short) %(refname:short)"],
+        ["git", "-C", str(repo_path), "branch", "-r", "--list", "origin/[0-9]*"],
         capture_output=True, text=True, check=True,
     )
-    tags = []
+    branches = []
     for line in result.stdout.strip().splitlines():
-        if not line:
+        branch = line.strip()
+        if branch and re.match(r"origin/\d+\.\d+$", branch):
+            branches.append(branch)
+
+    points = []
+    for branch in sorted(branches):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "merge-base", "origin/unstable", branch],
+                capture_output=True, text=True, check=True,
+            )
+            commit = result.stdout.strip()
+            # Get date
+            date_result = subprocess.run(
+                ["git", "-C", str(repo_path), "log", "-1", "--format=%aI", commit],
+                capture_output=True, text=True, check=True,
+            )
+            date = date_result.stdout.strip()[:10]
+            label = branch.replace("origin/", "")
+            points.append((commit, date, label))
+        except subprocess.CalledProcessError:
             continue
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        # For annotated tags, the dereferenced commit is the second field
-        # For lightweight tags, second field is empty
-        tag_hash = parts[0]
-        deref_hash = parts[1] if len(parts) >= 4 and parts[1] else tag_hash
-        date = parts[-2] if len(parts) >= 4 else parts[1]
-        tag_name = parts[-1]
-        # Resolve to full hash
-        full_hash = _resolve_to_full_hash(repo_path, deref_hash or tag_hash)
-        if full_hash:
-            tags.append((full_hash, date, tag_name))
-    return tags
+    return points
 
 
 def find_fork_point(repo_path: Path, branch: str = "unstable",

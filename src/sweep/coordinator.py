@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.config import PROJECT_ROOT
-from src.sweep.git_ops import get_head, get_merge_commits, get_release_tags
+from src.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
 from src.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
 from src.tasks.task_perf_benchmark import PerfTaskData
 
@@ -114,17 +114,17 @@ class SweepCoordinator:
         self.state.commit_dates = {c.hash: c.date for c in commits}
 
     def _populate_landmarks(self) -> None:
-        """Populate landmarks from release tags."""
+        """Populate landmarks from release branch points on unstable."""
         try:
-            tags = get_release_tags(self.repo_path)
+            points = get_release_branch_points(self.repo_path)
             commit_set = set(self.state.merge_commits)
-            for commit_hash, date, tag_name in tags:
+            for commit_hash, date, label in points:
                 if commit_hash in commit_set:
                     self.state.landmarks.append(
-                        Landmark(commit=commit_hash, date=date, label=tag_name)
+                        Landmark(commit=commit_hash, date=date, label=label)
                     )
         except Exception as e:
-            logger.warning("Failed to enumerate release tags: %s", e)
+            logger.warning("Failed to enumerate release branch points: %s", e)
 
     def _sweep_task_to_perf_task(self, task: SweepTask) -> PerfTaskData:
         """Convert a SweepTask to a PerfTaskData for the runner."""

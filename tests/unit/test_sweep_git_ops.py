@@ -11,6 +11,7 @@ from src.sweep.git_ops import (
     _parse_merge_subject,
     get_head,
     get_merge_commits,
+    get_release_branch_points,
 )
 
 
@@ -102,3 +103,59 @@ class TestParseMergeSubject:
         pr, title = _parse_merge_subject("Fix bug (important) in module (#999)")
         assert pr == 999
         assert title == "Fix bug (important) in module"
+
+
+class TestGetReleaseBranchPoints:
+    """Tests for release branch point discovery."""
+
+    @pytest.fixture
+    def repo_with_release_branch(self):
+        """Create a repo with a simulated release branch (like origin/8.0)."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            run = lambda cmd: subprocess.run(cmd, cwd=repo, capture_output=True, check=True)
+            run(["git", "init", "-b", "unstable"])
+            run(["git", "config", "user.email", "test@test.com"])
+            run(["git", "config", "user.name", "Test"])
+
+            # Initial commits on unstable
+            (repo / "file.txt").write_text("v1")
+            run(["git", "add", "."])
+            run(["git", "commit", "-m", "Initial"])
+
+            (repo / "file.txt").write_text("v2")
+            run(["git", "add", "."])
+            run(["git", "commit", "-m", "Second commit (#1)"])
+
+            # Create release branch at this point
+            run(["git", "branch", "8.0"])
+
+            # More commits on unstable after branch point
+            (repo / "file.txt").write_text("v3")
+            run(["git", "add", "."])
+            run(["git", "commit", "-m", "Third commit (#2)"])
+
+            # Set up origin remote (pointing to self for testing)
+            run(["git", "remote", "add", "origin", repo.as_posix()])
+            run(["git", "fetch", "origin"])
+
+            yield repo
+
+    def test_finds_branch_point(self, repo_with_release_branch):
+        points = get_release_branch_points(repo_with_release_branch)
+        assert len(points) == 1
+        commit_hash, date, label = points[0]
+        assert label == "8.0"
+        assert len(commit_hash) == 40
+        assert len(date) == 10  # YYYY-MM-DD
+
+    def test_branch_point_is_on_unstable(self, repo_with_release_branch):
+        points = get_release_branch_points(repo_with_release_branch)
+        # The branch point commit should be reachable from unstable
+        commit_hash = points[0][0]
+        result = subprocess.run(
+            ["git", "-C", str(repo_with_release_branch),
+             "merge-base", "--is-ancestor", commit_hash, "unstable"],
+            capture_output=True,
+        )
+        assert result.returncode == 0
