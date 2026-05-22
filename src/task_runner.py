@@ -104,11 +104,14 @@ class TaskRunner:
             lines = output_file.read_text().strip().splitlines()
             if not lines:
                 return None, None
-            data = json.loads(lines[-1])
-            rps = data.get("score") or data.get("mean_rps")
-            cv = data.get("cv_pct") or 0.0
-            if cv == 0.0 and "stdev_rps" in data and rps:
-                cv = (data["stdev_rps"] / rps) * 100
+            entry = json.loads(lines[-1])
+            rps = entry.get("score") or entry.get("data", {}).get("mean_rps")
+            # Compute CV from per-run RPS values
+            cv = 0.0
+            per_run = entry.get("data", {}).get("per_run_rps", [])
+            if len(per_run) >= 2 and rps:
+                from statistics import stdev
+                cv = (stdev(per_run) / rps) * 100
             return rps, cv
         except (json.JSONDecodeError, KeyError, TypeError):
             return None, None
