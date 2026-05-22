@@ -105,8 +105,10 @@ class SweepCoordinator:
             logger.info("Deleted cached build: %s", commit_dir)
 
     def _populate_commits(self) -> None:
-        """Populate merge_commits from git history."""
-        commits = get_merge_commits(self.repo_path)
+        """Populate merge_commits from git history (Valkey-era only)."""
+        from src.sweep.git_ops import find_fork_point
+        fork_point = find_fork_point(self.repo_path)
+        commits = get_merge_commits(self.repo_path, since_commit=fork_point)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
 

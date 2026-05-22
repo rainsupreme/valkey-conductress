@@ -25,7 +25,11 @@ class MergeCommit:
 
 
 def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> List[MergeCommit]:
-    """Enumerate merge commits on first-parent path of current branch.
+    """Enumerate first-parent commits (PRs) on the current branch.
+
+    Valkey uses squash merges, so PRs appear as single-parent commits with
+    (#NNNN) in the subject. We enumerate all first-parent commits and parse
+    PR info from the subject line.
 
     Args:
         repo_path: Path to the git repository.
@@ -36,7 +40,7 @@ def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None) -> Li
     """
     cmd = [
         "git", "-C", str(repo_path), "log",
-        "--merges", "--first-parent",
+        "--first-parent",
         "--format=%H %aI %s",
         "--reverse",
     ]
