@@ -52,7 +52,7 @@ class TestSweepCoordinatorInit:
         ]
 
         with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), \
-             patch("src.sweep.coordinator.get_release_tags", return_value=[]):
+             patch("src.sweep.coordinator.get_release_branch_points", return_value=[]):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
 
@@ -206,7 +206,7 @@ class TestTaskRunnerSweepIntegration:
 
     @patch("src.sweep.coordinator.SweepCoordinator.initialize")
     @patch("src.sweep.coordinator.get_merge_commits", return_value=[])
-    @patch("src.sweep.coordinator.get_release_tags", return_value=[])
+    @patch("src.sweep.coordinator.get_release_branch_points", return_value=[])
     @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
     def test_task_runner_sweep_mode_creates_sweep_coordinator(
         self, mock_state, mock_tags, mock_commits, mock_init, tmp_dir
