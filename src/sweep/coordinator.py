@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.config import PROJECT_ROOT
-from src.sweep.git_ops import get_head, get_merge_commits, get_release_tags
+from src.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
 from src.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
 from src.tasks.task_perf_benchmark import PerfTaskData
 
@@ -23,6 +23,7 @@ SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
 
 # Default sweep benchmark parameters (GET 16B, io-threads=7, pipeline=10)
 SWEEP_SOURCE = "valkey"
+SWEEP_REF = "origin/unstable"  # Git ref to track (not HEAD — runner moves it during builds)
 SWEEP_TEST = "get"
 SWEEP_VAL_SIZE = 16
 SWEEP_IO_THREADS = 7
@@ -63,7 +64,7 @@ class SweepCoordinator:
         Returns None if no sweep work is available.
         """
         try:
-            current_head = get_head(self.repo_path)
+            current_head = get_head(self.repo_path, ref=SWEEP_REF)
         except Exception as e:
             logger.warning("Failed to get HEAD: %s", e)
             current_head = None
@@ -81,7 +82,7 @@ class SweepCoordinator:
 
         # Update last_benchmarked_head if this was HEAD
         try:
-            head = get_head(self.repo_path)
+            head = get_head(self.repo_path, ref=SWEEP_REF)
             if commit == head:
                 self.state.last_benchmarked_head = commit
         except Exception:
@@ -108,22 +109,22 @@ class SweepCoordinator:
         """Populate merge_commits from git history (Valkey-era only)."""
         from src.sweep.git_ops import find_fork_point
         fork_point = find_fork_point(self.repo_path)
-        commits = get_merge_commits(self.repo_path, since_commit=fork_point)
+        commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
 
     def _populate_landmarks(self) -> None:
-        """Populate landmarks from release tags."""
+        """Populate landmarks from release branch points on unstable."""
         try:
-            tags = get_release_tags(self.repo_path)
+            points = get_release_branch_points(self.repo_path)
             commit_set = set(self.state.merge_commits)
-            for commit_hash, date, tag_name in tags:
+            for commit_hash, date, label in points:
                 if commit_hash in commit_set:
                     self.state.landmarks.append(
-                        Landmark(commit=commit_hash, date=date, label=tag_name)
+                        Landmark(commit=commit_hash, date=date, label=label)
                     )
         except Exception as e:
-            logger.warning("Failed to enumerate release tags: %s", e)
+            logger.warning("Failed to enumerate release branch points: %s", e)
 
     def _sweep_task_to_perf_task(self, task: SweepTask) -> PerfTaskData:
         """Convert a SweepTask to a PerfTaskData for the runner."""
