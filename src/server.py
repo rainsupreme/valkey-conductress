@@ -661,12 +661,53 @@ class Server:
     # SERVER LIFECYCLE METHODS
     # =============================================================================
 
+    async def verify_cpu_consistency_mode(self) -> bool:
+        """Verify stabilization settings are actually applied. Retry once on failure."""
+        checks: list[tuple[str, str, str]] = [
+            ("ASLR", "cat /proc/sys/kernel/randomize_va_space", "0"),
+        ]
+        cpufreq_exists = await self.check_file_exists(
+            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+        )
+        if cpufreq_exists:
+            checks.append(
+                ("governor", "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "performance")
+            )
+            if await self.check_file_exists(Path("/sys/devices/system/cpu/cpufreq/boost")):
+                checks.append(("boost", "cat /sys/devices/system/cpu/cpufreq/boost", "0"))
+
+        all_ok = True
+        for name, cmd, expected in checks:
+            actual, _ = await self.run_host_command(cmd, check=False)
+            actual = actual.strip()
+            if actual != expected:
+                logging.warning(
+                    "Stabilization FAILED: %s = %r (expected %r). Retrying...",
+                    name, actual, expected,
+                )
+                await self.enable_cpu_consistency_mode()
+                actual, _ = await self.run_host_command(cmd, check=False)
+                actual = actual.strip()
+                if actual != expected:
+                    logging.error(
+                        "Stabilization FAILED after retry: %s = %r (expected %r)",
+                        name, actual, expected,
+                    )
+                    all_ok = False
+                else:
+                    logging.info("Stabilization recovered: %s = %s", name, actual)
+
+        if all_ok:
+            logging.info("Stabilization verified: all checks passed")
+        return all_ok
+
     async def __pre_start(self) -> None:
         """Configuration and preparation before starting Valkey server"""
         await self.ensure_host_cpu_allocation()
 
         if config.check_feature(config.Features.ENABLE_CPU_CONSISTENCY_MODE):
             await self.enable_cpu_consistency_mode()
+            await self.verify_cpu_consistency_mode()
         else:
             await self.disable_cpu_consistency_mode()
 

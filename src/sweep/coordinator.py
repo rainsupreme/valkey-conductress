@@ -10,9 +10,10 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from src.config import PROJECT_ROOT
+from src.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
 from src.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
 from src.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
+from src.task_queue import BaseTaskData, TaskQueue
 from src.tasks.task_perf_benchmark import PerfTaskData
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,70 @@ class SweepCoordinator:
                     )
         except Exception as e:
             logger.warning("Failed to enumerate release branch points: %s", e)
+
+    def on_queue_empty(self) -> None:
+        """TaskSubscriber: called when the queue is empty. Queue next sweep task."""
+        self.queue_next_if_needed()
+
+    def queue_next_if_needed(self) -> bool:
+        """Queue the next sweep task to the normal queue if none is already queued.
+
+        Returns True if a task was queued, False otherwise.
+        """
+        queue = TaskQueue()
+        # Don't queue if a sweep task is already pending
+        for queued in queue.get_all_tasks():
+            if isinstance(queued, PerfTaskData) and queued.sweep_commit:
+                return False
+
+        next_task = self.get_next_sweep_task()
+        if next_task is None:
+            return False
+
+        next_task.sweep_commit = next_task.specifier
+        queue.submit_task(next_task)
+        print(f"[sweep] Queued: {next_task.specifier[:8]} - {next_task.note}")
+        return True
+
+    def on_task_completed(self, task: "BaseTaskData") -> None:
+        """TaskSubscriber: filter to sweep tasks and record results."""
+        if not isinstance(task, PerfTaskData) or not task.sweep_commit:
+            return
+
+        import json as _json
+        from statistics import stdev
+
+        commit = task.sweep_commit
+        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
+        rps, cv = None, None
+
+        if output_file.exists():
+            for line in reversed(output_file.read_text().strip().splitlines()):
+                try:
+                    entry = _json.loads(line)
+                    if entry.get("task_id") == task.task_id:
+                        rps = entry.get("score")
+                        per_run = entry.get("data", {}).get("per_run_rps", [])
+                        cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
+                        break
+                except (ValueError, KeyError, TypeError):
+                    continue
+
+        if rps is not None and cv is not None:
+            self.record_result(commit, rps, cv, task.repetitions)
+            self.delete_cached_binary(commit)
+        else:
+            logger.warning("Could not extract result for sweep commit %s", commit[:8])
+
+        self.queue_next_if_needed()
+
+    def on_task_failed(self, task: "BaseTaskData") -> None:
+        """TaskSubscriber: filter to sweep tasks and record build failures."""
+        if not isinstance(task, PerfTaskData) or not task.sweep_commit:
+            return
+        self.record_build_failure(task.sweep_commit)
+        self.delete_cached_binary(task.sweep_commit)
+        self.queue_next_if_needed()
 
     def _sweep_task_to_perf_task(self, task: SweepTask) -> PerfTaskData:
         """Convert a SweepTask to a PerfTaskData for the runner."""
