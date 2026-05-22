@@ -35,8 +35,12 @@ def export_series(state: SweepState, output_path: Path,
                 }
             },
         }
-        if point.pr is not None:
-            entry["pr"] = point.pr
+        pr = state.commit_prs.get(point.commit) or point.pr
+        pr_title = state.commit_titles.get(point.commit)
+        if pr is not None:
+            entry["pr"] = pr
+        if pr_title is not None:
+            entry["pr_title"] = pr_title
         points.append(entry)
 
     # Build landmarks list
