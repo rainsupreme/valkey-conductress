@@ -92,44 +92,29 @@ class TaskRunner:
 
     def _extract_result(self, task_data: BaseTaskData) -> tuple:
         """Extract RPS and CV from the most recent completed task's output."""
-        from src.config import CONDUCTRESS_RESULTS
-        from src.file_protocol import FileProtocol
         import json
+        from src.config import CONDUCTRESS_RESULTS
 
-        # Find the most recent result file for this task
-        results_dir = CONDUCTRESS_RESULTS
-        if not results_dir.exists():
-            return None, None
-
-        # Look for the task's output in the JSONL file
-        output_file = results_dir / "output.jsonl"
+        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
             return None, None
 
-        # Read the last entry that matches our task
-        last_rps = None
-        last_cv = None
+        # Read the last entry (sweep tasks run sequentially, last = just completed)
         try:
             lines = output_file.read_text().strip().splitlines()
-            for line in reversed(lines):
-                try:
-                    data = json.loads(line)
-                    if data.get("task_id") == task_data.task_id:
-                        last_rps = data.get("mean_rps") or data.get("rps")
-                        # CV from stdev/mean
-                        if "stdev_rps" in data and last_rps:
-                            last_cv = (data["stdev_rps"] / last_rps) * 100
-                        elif "cv_pct" in data:
-                            last_cv = data["cv_pct"]
-                        else:
-                            last_cv = 0.0
-                        break
-                except (json.JSONDecodeError, KeyError):
-                    continue
+            if not lines:
+                return None, None
+            data = json.loads(lines[-1])
+            rps = data.get("score") or data.get("mean_rps")
+            cv = data.get("cv_pct") or 0.0
+            if cv == 0.0 and "stdev_rps" in data and rps:
+                cv = (data["stdev_rps"] / rps) * 100
+            return rps, cv
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return None, None
         except Exception as e:
             logger.warning("Error reading results: %s", e)
-
-        return last_rps, last_cv
+            return None, None
 
     async def run(self):
         """Main function - execute tasks from the queue."""

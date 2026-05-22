@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class AllocationTag:
@@ -253,16 +255,14 @@ class CpuAllocator:
             tag: Allocation identifier
 
         Returns:
-            List of released CPU IDs
-
-        Raises:
-            ValueError: If host not registered or tag doesn't exist
+            List of released CPU IDs (empty if allocation not found)
         """
         if host_ip not in self._all_cpus:
-            raise ValueError(f"Host {host_ip} not registered")
+            return []
 
         if tag not in self._allocations[host_ip]:
-            raise ValueError(f"Allocation {tag} not found on {host_ip}")
+            logger.debug("release() no-op: %s not allocated on %s", tag, host_ip)
+            return []
 
         cpus = self._allocations[host_ip].pop(tag)
         return cpus

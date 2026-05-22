@@ -57,3 +57,47 @@ class TestRecordFailure:
         # Verify the path passed to save_to_file is in the failed dir
         call_path = task.save_to_file.call_args[0][0]
         assert str(failed_dir) in str(call_path)
+
+
+class TestExtractResult:
+    """Tests for _extract_result reading sweep results from output.jsonl."""
+
+    def test_extracts_score_from_last_entry(self, tmp_path):
+        output_file = tmp_path / "results" / "output.jsonl"
+        output_file.parent.mkdir(parents=True)
+        entries = [
+            json.dumps({"score": 1000000, "task_id": "old_task"}),
+            json.dumps({"score": 1952516.22, "task_id": "latest_task"}),
+        ]
+        output_file.write_text("\n".join(entries))
+
+        with patch("src.config.CONDUCTRESS_RESULTS", tmp_path / "results"):
+            runner = TaskRunner()
+            task = _make_failed_task()
+            rps, cv = runner._extract_result(task)
+
+        assert rps == pytest.approx(1952516.22)
+        assert cv == 0.0  # no cv_pct or stdev_rps in entry
+
+    def test_returns_none_when_no_output_file(self, tmp_path):
+        with patch("src.config.CONDUCTRESS_RESULTS", tmp_path / "nonexistent"):
+            runner = TaskRunner()
+            task = _make_failed_task()
+            rps, cv = runner._extract_result(task)
+
+        assert rps is None
+        assert cv is None
+
+    def test_extracts_cv_from_stdev(self, tmp_path):
+        output_file = tmp_path / "results" / "output.jsonl"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text(json.dumps({
+            "score": 2000000, "stdev_rps": 10000, "task_id": "x"
+        }))
+
+        with patch("src.config.CONDUCTRESS_RESULTS", tmp_path / "results"):
+            runner = TaskRunner()
+            rps, cv = runner._extract_result(_make_failed_task())
+
+        assert rps == 2000000
+        assert cv == pytest.approx(0.5)  # 10000/2000000 * 100

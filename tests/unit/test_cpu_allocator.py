@@ -169,8 +169,8 @@ class TestCpuAllocator:
         allocator = CpuAllocator()
         tag = AllocationTag(task_id="task_1", purpose="server")
 
-        with pytest.raises(ValueError, match="Host .* not registered"):
-            allocator.release("192.168.1.1", tag)
+        result = allocator.release("192.168.1.1", tag)
+        assert result == []
 
     def test_release_nonexistent_tag(self):
         allocator = CpuAllocator()
@@ -178,8 +178,8 @@ class TestCpuAllocator:
 
         tag = AllocationTag(task_id="task_1", purpose="server")
 
-        with pytest.raises(ValueError, match="not found"):
-            allocator.release("192.168.1.1", tag)
+        result = allocator.release("192.168.1.1", tag)
+        assert result == []
 
     def test_get_allocation(self):
         allocator = CpuAllocator()
@@ -332,3 +332,44 @@ class TestCpuAllocator:
         assert irq_tag in allocations
         assert bench_tag in allocations
         assert server_tag not in allocations
+
+    def test_release_only_server_purpose_preserves_benchmark(self):
+        """Simulate kill_all_valkey_instances_on_host behavior: only server allocations released."""
+        allocator = CpuAllocator()
+        allocator.register_host("127.0.0.1", all_cpus=list(range(16)))
+
+        server_tag = AllocationTag(task_id="server_127.0.0.1_6379", purpose="server")
+        bench_tag = AllocationTag(task_id="2026.05.21_22.41.50:benchmark", purpose="benchmark")
+        irq_tag = AllocationTag(task_id="irq_127.0.0.1", purpose="irq")
+
+        allocator.allocate("127.0.0.1", server_tag, count=4)
+        allocator.allocate("127.0.0.1", bench_tag, count=4)
+        allocator.allocate("127.0.0.1", irq_tag, count=2)
+
+        # Simulate kill_all: release only server-purpose allocations
+        all_allocs = allocator.get_all_allocations("127.0.0.1")
+        for tag in list(all_allocs.keys()):
+            if tag.purpose == "server":
+                allocator.release("127.0.0.1", tag)
+
+        # Benchmark and IRQ allocations should survive
+        remaining = allocator.get_all_allocations("127.0.0.1")
+        assert bench_tag in remaining
+        assert irq_tag in remaining
+        assert server_tag not in remaining
+
+    def test_double_release_is_graceful(self):
+        """Releasing the same allocation twice should not crash."""
+        allocator = CpuAllocator()
+        allocator.register_host("127.0.0.1", all_cpus=[0, 1, 2, 3])
+
+        tag = AllocationTag(task_id="task_1", purpose="server")
+        allocator.allocate("127.0.0.1", tag, count=2)
+
+        # First release succeeds
+        result = allocator.release("127.0.0.1", tag)
+        assert len(result) == 2
+
+        # Second release is graceful (no crash)
+        result = allocator.release("127.0.0.1", tag)
+        assert result == []
