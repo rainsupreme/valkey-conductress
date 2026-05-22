@@ -342,6 +342,7 @@ WorkingDirectory={workdir}
 ExecStart=/usr/bin/python3 -m src run
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 
