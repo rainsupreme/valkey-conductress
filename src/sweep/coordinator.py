@@ -1,12 +1,13 @@
-"""Sweep coordinator: bridges the sweep planner with the Conductress task runner.
+"""Sweep coordinators: bridge the sweep planner with the Conductress task runner.
 
-This is NOT a separate runner — it's a coordinator that the existing TaskRunner
-calls when --sweep is active and the manual queue is empty. It manages sweep state,
-generates benchmark tasks from the planner's decisions, and records results back.
+BaseSweepCoordinator handles git history, state management, queue interaction,
+and the pub/sub protocol. Subclasses define task creation and result extraction
+for specific metrics (throughput, memory, etc.).
 """
 
 import logging
 import shutil
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
@@ -18,35 +19,24 @@ from src.tasks.task_perf_benchmark import PerfTaskData
 
 logger = logging.getLogger(__name__)
 
-# Sweep configuration
-SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
-SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
-
-# Default sweep benchmark parameters (GET 16B, io-threads=7, pipeline=10)
+# Git configuration (shared across all sweep types)
 SWEEP_SOURCE = "valkey"
-SWEEP_REF = "origin/unstable"  # Git ref to track (not HEAD — runner moves it during builds)
-SWEEP_TEST = "get"
-SWEEP_VAL_SIZE = 16
-SWEEP_IO_THREADS = 7
-SWEEP_PIPELINING = 10
-SWEEP_WARMUP = 5
-SWEEP_DURATION = 30
-SWEEP_REPETITIONS = 3  # minimum reps
-SWEEP_MAX_REPS = 7  # adaptive upper limit
-SWEEP_TARGET_CV = 0.5  # stop early when CV% <= this
-SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+SWEEP_REF = "origin/unstable"
 
 
-class SweepCoordinator:
-    """Coordinates sweep state and generates tasks for the task runner.
+class BaseSweepCoordinator(ABC):
+    """Abstract base for sweep coordinators.
 
-    Not a runner itself — called by TaskRunner when the queue is empty
-    and --sweep mode is active.
+    Handles: git history enumeration, state persistence, queue management,
+    TaskSubscriber protocol (on_task_completed, on_task_failed, on_queue_empty).
+
+    Subclasses define: task creation, result extraction, task filtering.
     """
 
-    def __init__(self, repo_path: Path):
+    def __init__(self, repo_path: Path, state_file: Path):
         self.repo_path = repo_path
-        self.state = SweepState.load(SWEEP_STATE_FILE)
+        self.state_file = state_file
+        self.state = SweepState.load(state_file)
         self.planner = SweepPlanner(self.state)
 
     def initialize(self) -> None:
@@ -55,49 +45,27 @@ class SweepCoordinator:
             logger.info("Initializing sweep: enumerating merge commits...")
             self._populate_commits()
             self._populate_landmarks()
-            self.state.save(SWEEP_STATE_FILE)
-            # Rebuild planner index after populating
+            self.state.save(self.state_file)
             self.planner = SweepPlanner(self.state)
             logger.info("Sweep initialized: %d merge commits, %d landmarks",
                         len(self.state.merge_commits), len(self.state.landmarks))
 
-    def get_next_sweep_task(self) -> Optional[PerfTaskData]:
-        """Get the next sweep task as a PerfTaskData ready for the runner.
-
-        Returns None if no sweep work is available.
-        """
-        try:
-            current_head = get_head(self.repo_path, ref=SWEEP_REF)
-        except Exception as e:
-            logger.warning("Failed to get HEAD: %s", e)
-            current_head = None
-
-        sweep_task = self.planner.get_next_task(current_head)
-        if sweep_task is None:
-            return None
-
-        logger.info("Sweep task: %s (%s)", sweep_task.commit[:8], sweep_task.reason)
-        return self._sweep_task_to_perf_task(sweep_task)
-
     def record_result(self, commit: str, value: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
         self.planner.record_result(commit, value, cv, reps)
-
-        # Update last_benchmarked_head if this was HEAD
         try:
             head = get_head(self.repo_path, ref=SWEEP_REF)
             if commit == head:
                 self.state.last_benchmarked_head = commit
         except Exception:
             pass
-
-        self.state.save(SWEEP_STATE_FILE)
+        self.state.save(self.state_file)
         logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
 
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""
         self.planner.record_build_failure(commit)
-        self.state.save(SWEEP_STATE_FILE)
+        self.state.save(self.state_file)
         logger.info("Sweep build failure: %s", commit[:8])
 
     def delete_cached_binary(self, commit: str) -> None:
@@ -107,6 +75,80 @@ class SweepCoordinator:
         if commit_dir.exists():
             shutil.rmtree(commit_dir)
             logger.info("Deleted cached build: %s", commit_dir)
+
+    # --- TaskSubscriber protocol ---
+
+    def on_queue_empty(self) -> None:
+        """Called when the task queue is empty."""
+        self.queue_next_if_needed()
+
+    def on_task_completed(self, task: BaseTaskData) -> None:
+        """Called on every task completion. Filters to own tasks."""
+        if not self._is_my_task(task):
+            return
+        result = self._extract_result(task)
+        if result:
+            value, cv, reps = result
+            self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
+            self.delete_cached_binary(task.sweep_commit)  # type: ignore[attr-defined]
+        else:
+            commit = getattr(task, "sweep_commit", "?")
+            logger.warning("Could not extract result for sweep commit %s", commit[:8])
+        self.queue_next_if_needed()
+
+    def on_task_failed(self, task: BaseTaskData) -> None:
+        """Called on every task failure. Filters to own tasks."""
+        if not self._is_my_task(task):
+            return
+        commit = getattr(task, "sweep_commit", "")
+        self.record_build_failure(commit)
+        self.delete_cached_binary(commit)
+        self.queue_next_if_needed()
+
+    def queue_next_if_needed(self) -> bool:
+        """Queue the next sweep task if none is already pending."""
+        queue = TaskQueue()
+        for queued in queue.get_all_tasks():
+            if self._is_my_task(queued):
+                return False
+
+        sweep_task = self._get_next_task()
+        if sweep_task is None:
+            return False
+
+        task = self._create_task(sweep_task)
+        task.sweep_commit = sweep_task.commit  # type: ignore[attr-defined]
+        queue.submit_task(task)
+        print(f"[sweep] Queued: {sweep_task.commit[:8]} - {sweep_task.reason}")
+        return True
+
+    # --- Abstract methods (subclass defines) ---
+
+    @abstractmethod
+    def _create_task(self, sweep_task: SweepTask) -> BaseTaskData:
+        """Create a concrete task from a SweepTask."""
+        ...
+
+    @abstractmethod
+    def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
+        """Extract (value, cv, reps) from a completed task. Returns None on failure."""
+        ...
+
+    @abstractmethod
+    def _is_my_task(self, task: BaseTaskData) -> bool:
+        """Return True if this task belongs to this coordinator."""
+        ...
+
+    # --- Private helpers ---
+
+    def _get_next_task(self) -> Optional[SweepTask]:
+        """Get the next sweep task from the planner."""
+        try:
+            current_head = get_head(self.repo_path, ref=SWEEP_REF)
+        except Exception as e:
+            logger.warning("Failed to get HEAD: %s", e)
+            current_head = None
+        return self.planner.get_next_task(current_head)
 
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history (Valkey-era only)."""
@@ -120,12 +162,10 @@ class SweepCoordinator:
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release branch points on unstable."""
-        # Pre-fork baseline: unstable commit from the day of Redis 7.2.4 release
         PRE_FORK_LANDMARKS = [
             Landmark(commit="2b8cde71bb553713cf93794a0fb30a1618c0c955", date="2023-08-16", label="Valkey created"),
             Landmark(commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b", date="2024-01-09", label="7.2.4"),
         ]
-
         try:
             points = get_release_branch_points(self.repo_path)
             commit_set = set(self.state.merge_commits)
@@ -140,78 +180,47 @@ class SweepCoordinator:
         except Exception as e:
             logger.warning("Failed to enumerate release branch points: %s", e)
 
-    def on_queue_empty(self) -> None:
-        """TaskSubscriber: called when the queue is empty. Queue next sweep task."""
-        self.queue_next_if_needed()
 
-    def queue_next_if_needed(self) -> bool:
-        """Queue the next sweep task to the normal queue if none is already queued.
+# =============================================================================
+# Concrete implementation: throughput sweep
+# =============================================================================
 
-        Returns True if a task was queued, False otherwise.
-        """
-        queue = TaskQueue()
-        # Don't queue if a sweep task is already pending
-        for queued in queue.get_all_tasks():
-            if isinstance(queued, PerfTaskData) and queued.sweep_commit:
-                return False
+SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
+SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
 
-        next_task = self.get_next_sweep_task()
-        if next_task is None:
-            return False
+SWEEP_TEST = "get"
+SWEEP_VAL_SIZE = 16
+SWEEP_IO_THREADS = 7
+SWEEP_PIPELINING = 10
+SWEEP_WARMUP = 5
+SWEEP_DURATION = 30
+SWEEP_REPETITIONS = 3
+SWEEP_MAX_REPS = 7
+SWEEP_TARGET_CV = 0.5
+SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
-        next_task.sweep_commit = next_task.specifier
-        queue.submit_task(next_task)
-        print(f"[sweep] Queued: {next_task.specifier[:8]} - {next_task.note}")
-        return True
 
-    def on_task_completed(self, task: "BaseTaskData") -> None:
-        """TaskSubscriber: filter to sweep tasks and record results."""
-        if not isinstance(task, PerfTaskData) or not task.sweep_commit:
-            return
+class SweepCoordinator(BaseSweepCoordinator):
+    """Throughput sweep coordinator (GET 16B, io-threads=7, P=10)."""
 
-        import json as _json
-        from statistics import stdev
+    def __init__(self, repo_path: Path):
+        super().__init__(repo_path, SWEEP_STATE_FILE)
 
-        commit = task.sweep_commit
-        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
-        rps, cv = None, None
+    def get_next_sweep_task(self) -> Optional[PerfTaskData]:
+        """Legacy interface: get next task directly."""
+        sweep_task = self._get_next_task()
+        if sweep_task is None:
+            return None
+        logger.info("Sweep task: %s (%s)", sweep_task.commit[:8], sweep_task.reason)
+        return self._create_task(sweep_task)
 
-        if output_file.exists():
-            for line in reversed(output_file.read_text().strip().splitlines()):
-                try:
-                    entry = _json.loads(line)
-                    if entry.get("task_id") == task.task_id:
-                        rps = entry.get("score")
-                        per_run = entry.get("data", {}).get("per_run_rps", [])
-                        cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
-                        break
-                except (ValueError, KeyError, TypeError):
-                    continue
-
-        if rps is not None and cv is not None:
-            self.record_result(commit, rps, cv, task.repetitions)
-            self.delete_cached_binary(commit)
-        else:
-            logger.warning("Could not extract result for sweep commit %s", commit[:8])
-
-        self.queue_next_if_needed()
-
-    def on_task_failed(self, task: "BaseTaskData") -> None:
-        """TaskSubscriber: filter to sweep tasks and record build failures."""
-        if not isinstance(task, PerfTaskData) or not task.sweep_commit:
-            return
-        self.record_build_failure(task.sweep_commit)
-        self.delete_cached_binary(task.sweep_commit)
-        self.queue_next_if_needed()
-
-    def _sweep_task_to_perf_task(self, task: SweepTask) -> PerfTaskData:
-        """Convert a SweepTask to a PerfTaskData for the runner."""
+    def _create_task(self, sweep_task: SweepTask) -> PerfTaskData:
         return PerfTaskData(
             source=SWEEP_SOURCE,
-            specifier=task.commit,
+            specifier=sweep_task.commit,
             make_args=SWEEP_MAKE_ARGS,
             replicas=0,
-            note=f"[sweep] {task.reason}",
+            note=f"[sweep] {sweep_task.reason}",
             requirements={},
             test=SWEEP_TEST,
             val_size=SWEEP_VAL_SIZE,
@@ -228,3 +237,27 @@ class SweepCoordinator:
             max_reps=SWEEP_MAX_REPS,
             target_cv=SWEEP_TARGET_CV,
         )
+
+    def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
+        import json as _json
+        from statistics import stdev
+
+        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
+        if not output_file.exists():
+            return None
+
+        for line in reversed(output_file.read_text().strip().splitlines()):
+            try:
+                entry = _json.loads(line)
+                if entry.get("task_id") == task.task_id:
+                    rps = entry.get("score")
+                    per_run = entry.get("data", {}).get("per_run_rps", [])
+                    cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
+                    reps = len(per_run) if per_run else 3
+                    return (rps, cv, reps) if rps else None
+            except (ValueError, KeyError, TypeError):
+                continue
+        return None
+
+    def _is_my_task(self, task: BaseTaskData) -> bool:
+        return isinstance(task, PerfTaskData) and bool(task.sweep_commit)
