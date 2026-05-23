@@ -121,7 +121,7 @@ class BinaryManager:
         if not await self._is_binary_cached():
             self._logger.info("building %s:%s...", self.source, self.specifier)
             try:
-                make_command = f"cd {source_path}; make distclean && make -j"
+                make_command = f"cd {source_path}; rm -f valkey-server redis-server; make distclean && make -j"
                 if self.make_args:
                     make_command += f" {self.make_args}"
                 await self._host.run_host_command(make_command)
@@ -129,6 +129,8 @@ class BinaryManager:
                 self._logger.error("Build failed %d:\n%s", e.returncode, e.stderr)
                 raise
             build_binary = source_path / VALKEY_BINARY
+            if not await self._host.check_file_exists(build_binary):
+                build_binary = source_path / "redis-server"  # pre-fork commits
             await self._host.run_host_command(f"mkdir -p {cached_build_path}")
             await self._host.run_host_command(f"cp {build_binary} {cached_binary_path}")
 
