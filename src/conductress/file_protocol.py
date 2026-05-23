@@ -1,3 +1,5 @@
+import logging
+
 """File-based communication protocol for benchmark processes."""
 
 import glob
@@ -13,6 +15,8 @@ from typing import Any, Optional
 
 from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP, get_all_features
 from .utility import datetime_to_task_id
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -299,9 +303,9 @@ class FileProtocol:
             if should_cleanup:
                 try:
                     shutil.rmtree(dir_path)
-                    print(f"Cleaned up orphaned benchmark directory: {dir_name} - {reason}")
+                    logger.info(f"Cleaned up orphaned benchmark directory: {dir_name} - {reason}")
                     cleaned_count += 1
                 except OSError as e:
-                    print(f"Failed to remove {dir_path}: {e}")
+                    logger.warning(f"Failed to remove {dir_path}: {e}")
 
         return cleaned_count

@@ -431,8 +431,8 @@ class PerfTaskRunner(BaseTaskRunner):
         if effective_reps > 1:
             total_steps = (self.warmup + self.duration) * effective_reps
             self.status.steps_total = total_steps
-            print(
-                "preparing:",
+            self.logger.info(
+                "preparing: %s %s",
                 self.title,
                 (
                     f"({effective_reps} max repetitions, target CV {self.target_cv}%)"
@@ -442,7 +442,7 @@ class PerfTaskRunner(BaseTaskRunner):
             )
         else:
             total_steps = self.warmup + self.duration
-            print("preparing:", self.title)
+            self.logger.info("preparing: %s", self.title)
 
         self.file_protocol.write_status(self.status)
 
@@ -615,7 +615,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.status.state = "running"
         self.file_protocol.write_status(self.status)
 
-        print(f"started rt cmd (rep {rep + 1}/{total_reps})")
+        self.logger.info(f"started rt cmd (rep {rep + 1}/{total_reps})")
         last_heartbeat = time.time()
         while command.is_running():
             await self.__collect_metrics(command)

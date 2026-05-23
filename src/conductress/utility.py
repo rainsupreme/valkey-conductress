@@ -1,3 +1,5 @@
+import logging
+
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
 import asyncio
@@ -11,6 +13,8 @@ from typing import Optional, Sequence, Union
 import asyncssh
 
 from .config import SERVER_PORT_RANGE_START, SSH_KEYFILE
+
+logger = logging.getLogger(__name__)
 
 MILLION = 1_000_000
 BILLION = 1_000_000_000
@@ -267,7 +271,7 @@ async def async_run(command: str, check=True) -> tuple[str, str]:
     stderr = stderr_bytes.decode()
 
     if check and process.returncode != 0:
-        print(f"Command ({command}) failed with exit code {process.returncode}: {stderr}")
+        logger.error(f"Command ({command}) failed with exit code {process.returncode}: {stderr}")
         raise RuntimeError(f"Command failed with exit code {process.returncode}: {stderr}")
 
     return stdout, stderr

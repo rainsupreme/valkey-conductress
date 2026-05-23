@@ -1,3 +1,5 @@
+import logging
+
 """Code to manage a group of servers for replication testing."""
 
 import asyncio
@@ -7,6 +9,8 @@ from typing import Optional
 from conductress.config import ServerInfo
 
 from .server import Server
+
+logger = logging.getLogger(__name__)
 
 
 class ReplicationGroup:
@@ -72,7 +76,7 @@ class ReplicationGroup:
             unexpected_ips += [replica for replica in replicas if replica not in expected_ips]
 
         if unexpected_ips:
-            print(f"Unexpected replicas found: {unexpected_ips}")
+            logger.warning(f"Unexpected replicas found: {unexpected_ips}")
             for unexpected in unexpected_ips:
                 await Server(unexpected).replicate(None)
 
@@ -90,7 +94,7 @@ class ReplicationGroup:
         """Set up replication among the servers in the group."""
         if not self.primary:
             raise RuntimeError("No primary server available for replication")
-        print("setting up replication")
+        logger.info("Setting up replication")
         await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
 
     async def wait_for_repl_sync(self):

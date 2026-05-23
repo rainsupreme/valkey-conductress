@@ -76,7 +76,7 @@ class TaskRunner:
         cleaned_count = FileProtocol.cleanup_orphaned_tasks()
         if cleaned_count > 0:
             logger.info(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
-            print(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
+            logger.info(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
 
         await asyncio.gather(*[Server(server.ip).kill_all_valkey_instances_on_host() for server in get_servers()])
 
@@ -108,7 +108,7 @@ class TaskRunner:
             if self.task:
                 continue
 
-            print("waiting for new jobs in queue")
+            logger.debug("waiting for new jobs in queue")
             while not self.task:
                 time.sleep(4)
                 self.task = queue.get_next_task()

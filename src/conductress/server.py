@@ -511,9 +511,9 @@ class Server:
                 out = await self.run_valkey_command("PING")
                 if out == "PONG":
                     return
-                print(out)
+                self.logger.debug(out)
             except asyncssh.ProcessError:
-                print("cli error")
+                self.logger.warning("CLI error during wait_until_ready")
             time.sleep(1)
 
         raise RuntimeError("Server did not start successfully")

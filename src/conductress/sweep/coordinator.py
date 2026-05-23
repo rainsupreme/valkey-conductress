@@ -111,7 +111,7 @@ class BaseSweepCoordinator(ABC):
         task = self._create_task(sweep_task)
         task.sweep_commit = sweep_task.commit  # type: ignore[attr-defined]
         queue.submit_task(task)
-        print(f"[sweep] Queued: {sweep_task.commit[:8]} - {sweep_task.reason}")
+        logger.info(f"[sweep] Queued: {sweep_task.commit[:8]} - {sweep_task.reason}")
         return True
 
     # --- Abstract methods (subclass defines) ---

@@ -110,7 +110,7 @@ class MemTaskRunner(BaseTaskRunner):
     async def run(self) -> None:
         """Run the memory efficiency test for each value size."""
         print_pretty_header(self.title)
-        print(f"Val Sizes: {', '.join(HumanByte.to_human(size) for size in self.val_sizes)}")
+        self.logger.info(f"Val Sizes: {', '.join(HumanByte.to_human(size) for size in self.val_sizes)}")
 
         # Write initial status
         self.file_protocol.write_status(self.status)
@@ -118,12 +118,12 @@ class MemTaskRunner(BaseTaskRunner):
         num_servers: int = await Server(self.server_ip).get_available_cpu_count() // Server.get_num_cpus(1)
         num_servers = MEM_TEST_MAX_CONCURRENT if num_servers > MEM_TEST_MAX_CONCURRENT else num_servers
 
-        print("Ensuring binary is ready")
+        self.logger.info("Ensuring binary is ready")
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
         self.cached_binary_path = await Server(self.server_ip).ensure_binary_cached(
             source=self.source, specifier=self.specifier, make_args=self.make_args
         )
-        print(f"Binary ready! Testing with up to {num_servers} instances on server")
+        self.logger.info(f"Binary ready! Testing with up to {num_servers} instances on server")
 
         # Update progress: setup complete
         self.status.state = "running"
