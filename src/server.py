@@ -23,7 +23,7 @@ PERF_STATUS_FILE = "/tmp/profiling_running"
 PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 
 
-class Server(SshHost):
+class Server:
     """Represents a server running a Valkey instance."""
 
     # Class-level CPU allocator shared across all Server instances
@@ -44,8 +44,10 @@ class Server(SshHost):
     # =============================================================================
 
     def __init__(self, ip: str, port: int = 6379, username="") -> None:
-        super().__init__(ip, username)
+        self._host = SshHost(ip, username)
+        self.ip = ip
         self.port = port
+        self.username = username
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
@@ -1097,5 +1099,26 @@ class Server(SshHost):
         await asyncio.gather(*(delete_host_cache(ip) for ip in server_ips))
 
     # =============================================================================
-    # SSH AND FILE OPERATIONS (inherited from SshHost)
+    # SSH AND FILE OPERATIONS (delegated to SshHost)
     # =============================================================================
+
+    @property
+    def ssh(self):
+        """Access the underlying SSH connection (for asyncssh.scp compatibility)."""
+        return self._host.ssh
+
+    async def run_host_command(self, command: str, check: bool = True) -> tuple[str, str]:
+        """Run a terminal command on the server and return (stdout, stderr)."""
+        return await self._host.run_host_command(command, check)
+
+    async def check_file_exists(self, path: Path) -> bool:
+        """Check if a file exists on the server."""
+        return await self._host.check_file_exists(path)
+
+    async def get_remote_file(self, server_src: Path, local_dest: Path) -> None:
+        """Copy a file from the server to the local machine."""
+        await self._host.get_remote_file(server_src, local_dest)
+
+    async def put_remote_file(self, local_src: Path, server_dest: Path) -> None:
+        """Copy a file from the local machine to the server."""
+        await self._host.put_remote_file(local_src, server_dest)
