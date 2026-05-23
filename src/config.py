@@ -1,11 +1,10 @@
 """Configuration for the Conductress benchmark framework"""
 
 import json
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
-
-from dataclasses import dataclass
 
 PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
@@ -18,11 +17,11 @@ DEFAULT_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 # Benchmark defaults (single source of truth for CLI and TUI)
 DEFAULT_IO_THREADS = 9
 DEFAULT_PIPELINING = 10
-DEFAULT_WARMUP = 30        # seconds
-DEFAULT_DURATION = 300     # seconds (5m)
+DEFAULT_WARMUP = 30  # seconds
+DEFAULT_DURATION = 300  # seconds (5m)
 DEFAULT_REPETITIONS = 5
-DEFAULT_VAL_SIZE = 512     # bytes
-DEFAULT_KEY_SIZE = 0       # 0 = standard keys
+DEFAULT_VAL_SIZE = 512  # bytes
+DEFAULT_KEY_SIZE = 0  # 0 = standard keys
 
 
 class Features(Enum):
@@ -53,9 +52,7 @@ MEM_TEST_ITEM_COUNT = 5_000_000  # 5 million items for memory tests
 MEM_TEST_KEY_SIZE = 16  # Size of "key:__rand_int__" pattern
 MEM_TEST_MEMBER_SIZE = 20  # Size of "element:__rand_int__" pattern (used by sadd/zadd)
 MEM_TEST_SCORE_SIZE = 8  # Size of a double score (used by zadd)
-MEM_TEST_MAX_CONCURRENT = (
-    9  # Max concurrent server instances # TODO max session limit typically 10 by default
-)
+MEM_TEST_MAX_CONCURRENT = 9  # Max concurrent server instances # TODO max session limit typically 10 by default
 MEM_TEST_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days expiration
 
 # TUI refresh interval in seconds
@@ -99,7 +96,9 @@ REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 
 # unique name indicating the binary was uploaded manually
 MANUALLY_UPLOADED = "manually_uploaded"
-assert MANUALLY_UPLOADED not in REPO_NAMES, "MANUALLY_UPLOADED must not overlap with any repository names"
+assert (
+    MANUALLY_UPLOADED not in REPO_NAMES
+), "MANUALLY_UPLOADED must not overlap with any repository names"
 
 
 @dataclass
@@ -134,7 +133,9 @@ def load_server_ips() -> list[ServerInfo]:
     elif default_path.exists():
         data = json.loads(default_path.read_text())["valkey_servers"]
     else:
-        raise FileNotFoundError(f"No server config found at {config_path} or {default_path}")
+        raise FileNotFoundError(
+            f"No server config found at {config_path} or {default_path}"
+        )
     all_servers = [ServerInfo(**entry) for entry in data]
     return [s for s in all_servers if not s.disabled]
 

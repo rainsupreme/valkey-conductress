@@ -12,10 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 def pytest_sessionstart(session):
     """Log additional platform information at test session start."""
-    print("================================== Platform ====================================")
+    print(
+        "================================== Platform ===================================="
+    )
     try:
         # Get CPU info
-        cpu_info = subprocess.run(["lscpu"], capture_output=True, text=True, check=False)
+        cpu_info = subprocess.run(
+            ["lscpu"], capture_output=True, text=True, check=False
+        )
         if cpu_info.returncode == 0:
             for line in cpu_info.stdout.split("\n"):
                 if (
@@ -27,7 +31,9 @@ def pytest_sessionstart(session):
                     print(line.strip())
 
         # Get memory info
-        mem_info = subprocess.run(["free", "-h"], capture_output=True, text=True, check=False)
+        mem_info = subprocess.run(
+            ["free", "-h"], capture_output=True, text=True, check=False
+        )
         if mem_info.returncode == 0:
             lines = mem_info.stdout.split("\n")
             if len(lines) > 1:
@@ -41,6 +47,7 @@ def reset_cpu_allocator():
     """Reset the class-level CPU allocator between tests to prevent state leaks."""
     yield
     from src.cpu_allocator import CpuAllocator
+
     Server._cpu_allocator = CpuAllocator()
 
 

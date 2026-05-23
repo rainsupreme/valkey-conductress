@@ -14,7 +14,6 @@ from hypothesis import strategies as st
 from src import config
 from src.cli import generate_task_combinations, main, validate_source
 
-
 # Patch config for tests (consistent with other test modules)
 config.MANUALLY_UPLOADED = "manual"
 config.REPO_NAMES = ["repo1", "repo2"]
@@ -78,28 +77,28 @@ class TestCartesianProductProperties:
 
         # Verify count equals product of lengths
         expected_count = (
-            len(tests)
-            * len(sizes)
-            * len(io_threads)
-            * len(pipelining)
-            * len(key_sizes)
+            len(tests) * len(sizes) * len(io_threads) * len(pipelining) * len(key_sizes)
         )
-        assert len(result) == expected_count, (
-            f"Expected {expected_count} combinations, got {len(result)}"
-        )
+        assert (
+            len(result) == expected_count
+        ), f"Expected {expected_count} combinations, got {len(result)}"
 
         # Verify every unique combination appears exactly once (no duplicates)
-        assert len(result) == len(set(result)), (
-            f"Found duplicate combinations: {len(result)} total vs {len(set(result))} unique"
-        )
+        assert len(result) == len(
+            set(result)
+        ), f"Found duplicate combinations: {len(result)} total vs {len(set(result))} unique"
 
         # Verify every combination is a valid tuple from the input lists
         for combo in result:
             test, size, io_thread, pipeline, key_size = combo
             assert test in tests, f"Test '{test}' not in input tests"
             assert size in sizes, f"Size {size} not in input sizes"
-            assert io_thread in io_threads, f"IO thread {io_thread} not in input io_threads"
-            assert pipeline in pipelining, f"Pipeline {pipeline} not in input pipelining"
+            assert (
+                io_thread in io_threads
+            ), f"IO thread {io_thread} not in input io_threads"
+            assert (
+                pipeline in pipelining
+            ), f"Pipeline {pipeline} not in input pipelining"
             assert key_size in key_sizes, f"Key size {key_size} not in input key_sizes"
 
 
@@ -174,15 +173,24 @@ class TestQueueAddSubcommand:
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
-        exit_code = main([
-            "queue", "add",
-            "--source", "repo1",
-            "--specifier", "unstable",
-            "--tests", "get,set",
-            "--sizes", "512,1KB",
-            "--io-threads", "1,9",
-            "--pipelining", "1,4",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get,set",
+                "--sizes",
+                "512,1KB",
+                "--io-threads",
+                "1,9",
+                "--pipelining",
+                "1,4",
+            ]
+        )
 
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 16
@@ -190,11 +198,16 @@ class TestQueueAddSubcommand:
     @patch("src.cli.TaskQueue")
     def test_queue_add_invalid_source_returns_exit_code_1(self, mock_queue_cls):
         """main() with an invalid source should return exit code 1."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "invalid_source",
-            "--tests", "get",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "invalid_source",
+                "--tests",
+                "get",
+            ]
+        )
 
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
@@ -202,11 +215,16 @@ class TestQueueAddSubcommand:
     @patch("src.cli.TaskQueue")
     def test_queue_add_empty_tests_returns_exit_code_1(self, mock_queue_cls):
         """main() with empty --tests should return exit code 1."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "repo1",
-            "--tests", "",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--tests",
+                "",
+            ]
+        )
 
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
@@ -214,28 +232,42 @@ class TestQueueAddSubcommand:
     @patch("src.cli.TaskQueue")
     def test_queue_add_repetitions_zero_returns_exit_code_1(self, mock_queue_cls):
         """main() with --repetitions 0 should return exit code 1."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "repo1",
-            "--tests", "get",
-            "--repetitions", "0",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--tests",
+                "get",
+                "--repetitions",
+                "0",
+            ]
+        )
 
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
     @patch("src.cli.TaskQueue")
-    def test_queue_add_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
+    def test_queue_add_key_sizes_produces_tasks_with_correct_values(
+        self, mock_queue_cls
+    ):
         """main() with --key-sizes "0,64" should produce tasks with key_size 0 and 64."""
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
-        exit_code = main([
-            "queue", "add",
-            "--source", "repo1",
-            "--tests", "get",
-            "--key-sizes", "0,64",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--tests",
+                "get",
+                "--key-sizes",
+                "0,64",
+            ]
+        )
 
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 2
@@ -251,11 +283,16 @@ class TestQueueAddSubcommand:
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
 
-        exit_code = main([
-            "queue", "add",
-            "--source", "repo1",
-            "--tests", "set",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--tests",
+                "set",
+            ]
+        )
 
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 1

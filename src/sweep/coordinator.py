@@ -47,8 +47,11 @@ class BaseSweepCoordinator(ABC):
             self._populate_landmarks()
             self.state.save(self.state_file)
             self.planner = SweepPlanner(self.state)
-            logger.info("Sweep initialized: %d merge commits, %d landmarks",
-                        len(self.state.merge_commits), len(self.state.landmarks))
+            logger.info(
+                "Sweep initialized: %d merge commits, %d landmarks",
+                len(self.state.merge_commits),
+                len(self.state.landmarks),
+            )
 
     def record_result(self, commit: str, value: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
@@ -60,7 +63,9 @@ class BaseSweepCoordinator(ABC):
         except Exception:
             pass
         self.state.save(self.state_file)
-        logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
+        logger.info(
+            "Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv
+        )
 
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""
@@ -153,18 +158,31 @@ class BaseSweepCoordinator(ABC):
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history (Valkey-era only)."""
         from src.sweep.git_ops import find_fork_point
+
         fork_point = find_fork_point(self.repo_path)
-        commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)
+        commits = get_merge_commits(
+            self.repo_path, since_commit=fork_point, ref=SWEEP_REF
+        )
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
         self.state.commit_prs = {c.hash: c.pr for c in commits if c.pr is not None}
-        self.state.commit_titles = {c.hash: c.pr_title for c in commits if c.pr_title is not None}
+        self.state.commit_titles = {
+            c.hash: c.pr_title for c in commits if c.pr_title is not None
+        }
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release branch points on unstable."""
         PRE_FORK_LANDMARKS = [
-            Landmark(commit="2b8cde71bb553713cf93794a0fb30a1618c0c955", date="2023-08-16", label="Valkey created"),
-            Landmark(commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b", date="2024-01-09", label="7.2.4"),
+            Landmark(
+                commit="2b8cde71bb553713cf93794a0fb30a1618c0c955",
+                date="2023-08-16",
+                label="Valkey created",
+            ),
+            Landmark(
+                commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b",
+                date="2024-01-09",
+                label="7.2.4",
+            ),
         ]
         try:
             points = get_release_branch_points(self.repo_path)
@@ -252,7 +270,11 @@ class SweepCoordinator(BaseSweepCoordinator):
                 if entry.get("task_id") == task.task_id:
                     rps = entry.get("score")
                     per_run = entry.get("data", {}).get("per_run_rps", [])
-                    cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
+                    cv = (
+                        (stdev(per_run) / rps) * 100
+                        if len(per_run) >= 2 and rps
+                        else 0.0
+                    )
                     reps = len(per_run) if per_run else 3
                     return (rps, cv, reps) if rps else None
             except (ValueError, KeyError, TypeError):

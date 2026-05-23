@@ -77,46 +77,63 @@ def _parse_tests(value: str) -> List[str]:
 
 def _add_perf_args(parser: argparse.ArgumentParser) -> None:
     """Add performance benchmark arguments to a parser."""
-    parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    parser.add_argument(
+        "--source", default="valkey", help="Repository source name (default: valkey)"
+    )
+    parser.add_argument(
+        "--specifier",
+        default="unstable",
+        help="Branch, tag, or commit (default: unstable)",
+    )
     parser.add_argument(
         "--tests", required=True, help="Comma-separated test names (e.g., get,set)"
     )
     parser.add_argument(
-        "--sizes", default=str(config.DEFAULT_VAL_SIZE),
-        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.DEFAULT_VAL_SIZE}"
+        "--sizes",
+        default=str(config.DEFAULT_VAL_SIZE),
+        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.DEFAULT_VAL_SIZE}",
     )
     parser.add_argument(
-        "--io-threads", default=str(config.DEFAULT_IO_THREADS),
-        help=f"Comma-separated IO thread counts (e.g., 1,9). Default: {config.DEFAULT_IO_THREADS}"
+        "--io-threads",
+        default=str(config.DEFAULT_IO_THREADS),
+        help=f"Comma-separated IO thread counts (e.g., 1,9). Default: {config.DEFAULT_IO_THREADS}",
     )
     parser.add_argument(
-        "--pipelining", default=str(config.DEFAULT_PIPELINING),
-        help=f"Comma-separated pipelining values (e.g., 1,4,10). Default: {config.DEFAULT_PIPELINING}"
+        "--pipelining",
+        default=str(config.DEFAULT_PIPELINING),
+        help=f"Comma-separated pipelining values (e.g., 1,4,10). Default: {config.DEFAULT_PIPELINING}",
     )
     parser.add_argument(
-        "--warmup", default=f"{config.DEFAULT_WARMUP}s",
-        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s"
+        "--warmup",
+        default=f"{config.DEFAULT_WARMUP}s",
+        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s",
     )
     parser.add_argument(
-        "--duration", default=f"{config.DEFAULT_DURATION}s",
-        help=f"Test duration (e.g., 5m, 15m). Default: {config.DEFAULT_DURATION}s"
+        "--duration",
+        default=f"{config.DEFAULT_DURATION}s",
+        help=f"Test duration (e.g., 5m, 15m). Default: {config.DEFAULT_DURATION}s",
     )
     parser.add_argument(
-        "--repetitions", type=int, default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions per config. Default: {config.DEFAULT_REPETITIONS}"
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions per config. Default: {config.DEFAULT_REPETITIONS}",
     )
     parser.add_argument(
-        "--key-sizes", default=str(config.DEFAULT_KEY_SIZE),
-        help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}"
+        "--key-sizes",
+        default=str(config.DEFAULT_KEY_SIZE),
+        help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}",
     )
     parser.add_argument("--note", default="", help="Optional note for the tasks")
     parser.add_argument(
-        "--make-args", default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'"
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
     )
     parser.add_argument(
-        "--perf-stat", action="store_true", help="Enable perf stat hardware counter collection"
+        "--perf-stat",
+        action="store_true",
+        help="Enable perf stat hardware counter collection",
     )
     parser.add_argument(
         "--no-preload", action="store_true", help="Disable key preloading"
@@ -139,12 +156,16 @@ def build_parser() -> argparse.ArgumentParser:
     queue_sub.add_parser("list", help="List all pending tasks")
 
     # queue add
-    add_parser = queue_sub.add_parser("add", help="Add performance benchmark tasks to the queue")
+    add_parser = queue_sub.add_parser(
+        "add", help="Add performance benchmark tasks to the queue"
+    )
     _add_perf_args(add_parser)
 
     # queue remove
     remove_parser = queue_sub.add_parser("remove", help="Remove a task from the queue")
-    remove_parser.add_argument("task_id", help="Task ID to remove (from 'queue list' output)")
+    remove_parser.add_argument(
+        "task_id", help="Task ID to remove (from 'queue list' output)"
+    )
 
     # queue clear
     queue_sub.add_parser("clear", help="Remove all pending tasks from the queue")
@@ -209,7 +230,9 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
-    combinations = generate_task_combinations(tests, sizes, io_threads, pipelining, key_sizes)
+    combinations = generate_task_combinations(
+        tests, sizes, io_threads, pipelining, key_sizes
+    )
 
     queue = TaskQueue()
     for test, size, io_thread, pipeline, key_size in combinations:
@@ -237,7 +260,9 @@ def handle_queue_add(args: argparse.Namespace) -> int:
 
     print(f"Queued {len(combinations)} task(s):")
     print(f"  source={args.source} specifier={args.specifier}")
-    print(f"  tests={tests} sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
+    print(
+        f"  tests={tests} sizes={sizes} io-threads={io_threads} pipeline={pipelining}"
+    )
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.make_args:
         print(f"  make-args: {args.make_args}")

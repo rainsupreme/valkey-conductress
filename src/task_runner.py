@@ -12,7 +12,12 @@ from typing import Optional, Protocol
 
 from src.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, get_servers
+from .config import (
+    CONDUCTRESS_FAILED_DIR,
+    CONDUCTRESS_FAILED_LOG,
+    CONDUCTRESS_LOG,
+    get_servers,
+)
 from .file_protocol import FileProtocol
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
@@ -36,6 +41,7 @@ class TaskRunner:
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
             from src.sweep.coordinator import SweepCoordinator
+
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
             coordinator = SweepCoordinator(repo_path)
@@ -51,7 +57,9 @@ class TaskRunner:
                 f"Not enough servers for {task_data.replicas} replicas. Found {len(servers)} servers."
             )
 
-        task_runner: BaseTaskRunner = task_data.prepare_task_runner(servers[:server_count])
+        task_runner: BaseTaskRunner = task_data.prepare_task_runner(
+            servers[:server_count]
+        )
         try:
             await task_runner.run()
             task_runner.file_protocol.mark_completed_and_cleanup()
@@ -63,10 +71,19 @@ class TaskRunner:
         """Main function - execute tasks from the queue."""
         cleaned_count = FileProtocol.cleanup_orphaned_tasks()
         if cleaned_count > 0:
-            logger.info(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
-            print(f"Cleaned up {cleaned_count} orphaned benchmark directories on startup")
+            logger.info(
+                f"Cleaned up {cleaned_count} orphaned benchmark directories on startup"
+            )
+            print(
+                f"Cleaned up {cleaned_count} orphaned benchmark directories on startup"
+            )
 
-        await asyncio.gather(*[Server(server.ip).kill_all_valkey_instances_on_host() for server in get_servers()])
+        await asyncio.gather(
+            *[
+                Server(server.ip).kill_all_valkey_instances_on_host()
+                for server in get_servers()
+            ]
+        )
 
         # Notify subscribers on startup if queue is empty (e.g. sweep queues its first task)
         queue = TaskQueue()
@@ -113,7 +130,9 @@ class TaskRunner:
         tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
         error_msg = f"{type(exc).__name__}: {exc}"
 
-        logger.error("Task failed (note=%s, task_id=%s): %s", task.note, task.task_id, error_msg)
+        logger.error(
+            "Task failed (note=%s, task_id=%s): %s", task.note, task.task_id, error_msg
+        )
 
         entry = {
             "task_id": task.task_id,

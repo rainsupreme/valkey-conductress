@@ -51,19 +51,29 @@ class ReplicationGroup:
         """Start a single server instance."""
         port = 6379
         server: Server = await Server.with_build(
-            server_ip, port, username, self.binary_source, self.specifier, self.threads, self.make_args
+            server_ip,
+            port,
+            username,
+            self.binary_source,
+            self.specifier,
+            self.threads,
+            self.make_args,
         )
         await server.replicate(None)
         await server.wait_until_ready()
         return server
 
-    async def __ensure_no_unknown_replicas(self, expected_servers: list[Server]) -> None:
+    async def __ensure_no_unknown_replicas(
+        self, expected_servers: list[Server]
+    ) -> None:
         """Ensure that there are no unknown replicas in the group."""
         expected_ips = [server.ip for server in expected_servers]
         unexpected_ips = []
         for server in self.servers:
             replicas = await server.get_replicas()
-            unexpected_ips += [replica for replica in replicas if replica not in expected_ips]
+            unexpected_ips += [
+                replica for replica in replicas if replica not in expected_ips
+            ]
 
         if unexpected_ips:
             print(f"Unexpected replicas found: {unexpected_ips}")
@@ -76,16 +86,22 @@ class ReplicationGroup:
             unexpected_ips = []
             for server in self.servers:
                 replicas = await server.get_replicas()
-                unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
+                unexpected_ips += [
+                    replica for replica in replicas if replica not in expected_servers
+                ]
             if unexpected_ips:
-                raise RuntimeError(f"Unexpected replicas remain after cleanup: {unexpected_ips}")
+                raise RuntimeError(
+                    f"Unexpected replicas remain after cleanup: {unexpected_ips}"
+                )
 
     async def begin_replication(self):
         """Set up replication among the servers in the group."""
         if not self.primary:
             raise RuntimeError("No primary server available for replication")
         print("setting up replication")
-        await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
+        await asyncio.gather(
+            *[replica.replicate(self.primary.ip) for replica in self.replicas]
+        )
 
     async def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""
@@ -115,5 +131,7 @@ class ReplicationGroup:
 
     async def kill_all_valkey_instances(self) -> None:
         """Kill server processes on all servers in group."""
-        await asyncio.gather(*[server.kill_all_valkey_instances_on_host() for server in self.servers])
+        await asyncio.gather(
+            *[server.kill_all_valkey_instances_on_host() for server in self.servers]
+        )
         await asyncio.sleep(1)

@@ -1,8 +1,8 @@
 import asyncio
 import time
-import pytest
 from unittest.mock import patch
 
+import pytest
 
 from src.config import REPO_NAMES
 from src.server import Server
@@ -72,7 +72,12 @@ class TestServerIntegration:
                 assert responses[0] and responses[0] == "1"
                 assert responses[1] and responses[1] == f"{index}online"
 
-            await asyncio.gather(*(check_server(instance, index) for index, instance in enumerate(servers)))
+            await asyncio.gather(
+                *(
+                    check_server(instance, index)
+                    for index, instance in enumerate(servers)
+                )
+            )
         finally:
             # Clean up all servers
             await Server("127.0.0.1").kill_all_valkey_instances_on_host()
@@ -213,7 +218,9 @@ class TestServerIntegration:
             # Check that file has some content with stats
             content = result_file.read_text()
             assert len(content) > 0, "Perf stat file should not be empty"
-            assert "Performance counter stats" in content or "seconds" in content, "File should contain perf stat output"
+            assert (
+                "Performance counter stats" in content or "seconds" in content
+            ), "File should contain perf stat output"
 
         finally:
             await valkey_server.kill_all_valkey_instances_on_host()

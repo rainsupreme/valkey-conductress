@@ -79,12 +79,16 @@ class TestWelchTTestProperty:
     @settings(max_examples=100)
     @given(
         samples_a=st.lists(
-            st.floats(min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False),
+            st.floats(
+                min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False
+            ),
             min_size=2,
             max_size=20,
         ),
         samples_b=st.lists(
-            st.floats(min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False),
+            st.floats(
+                min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False
+            ),
             min_size=2,
             max_size=20,
         ),
@@ -122,18 +126,20 @@ class TestWelchTTestProperty:
 
             # Verify p-value matches scipy's ttest_ind
             expected = ttest_ind(samples_a, samples_b, equal_var=False)
-            assert row.p_value is not None, "p_value should not be None when both sides have >= 2 samples"
+            assert (
+                row.p_value is not None
+            ), "p_value should not be None when both sides have >= 2 samples"
 
             # When both samples have zero variance, scipy returns NaN — our module
             # should match that behavior.
             if math.isnan(expected.pvalue):
-                assert math.isnan(row.p_value), (
-                    f"Expected NaN p_value (zero-variance inputs), got {row.p_value}"
-                )
+                assert math.isnan(
+                    row.p_value
+                ), f"Expected NaN p_value (zero-variance inputs), got {row.p_value}"
             else:
-                assert math.isclose(row.p_value, expected.pvalue, rel_tol=1e-9), (
-                    f"p_value={row.p_value} != expected={expected.pvalue}"
-                )
+                assert math.isclose(
+                    row.p_value, expected.pvalue, rel_tol=1e-9
+                ), f"p_value={row.p_value} != expected={expected.pvalue}"
         finally:
             shutil.rmtree(tmp)
 

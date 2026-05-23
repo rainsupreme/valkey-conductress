@@ -7,8 +7,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
-from src.sweep.coordinator import SweepCoordinator, SWEEP_TEST, SWEEP_VAL_SIZE, SWEEP_IO_THREADS
+from src.sweep.coordinator import (
+    SWEEP_IO_THREADS,
+    SWEEP_TEST,
+    SWEEP_VAL_SIZE,
+    SweepCoordinator,
+)
+from src.sweep.planner import (
+    BenchmarkPoint,
+    Landmark,
+    PointStatus,
+    SweepPlanner,
+    SweepState,
+)
 
 
 @pytest.fixture
@@ -21,18 +32,30 @@ def tmp_dir():
 def mock_repo(tmp_dir):
     """Create a minimal git repo for testing."""
     import subprocess
+
     repo = tmp_dir / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@test.com"],
-                   capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"],
-                   capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        capture_output=True,
+        check=True,
+    )
     # Create initial commit
     (repo / "file.txt").write_text("hello")
-    subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "Initial"],
-                   capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "."], capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "Initial"],
+        capture_output=True,
+        check=True,
+    )
     return repo
 
 
@@ -43,6 +66,7 @@ class TestSweepCoordinatorInit:
     @patch("src.sweep.coordinator.get_merge_commits")
     def test_initialize_populates_commits(self, mock_commits, mock_state_file, tmp_dir):
         from src.sweep.git_ops import MergeCommit
+
         mock_state_file.__class__ = Path
         state_file = tmp_dir / "state.json"
 
@@ -51,8 +75,10 @@ class TestSweepCoordinatorInit:
             MergeCommit(hash="bbb222", date="2024-04-15", pr=200, pr_title="Second PR"),
         ]
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), \
-             patch("src.sweep.coordinator.get_release_branch_points", return_value=[]):
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.sweep.coordinator.get_release_branch_points", return_value=[]),
+        ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
 
@@ -64,11 +90,16 @@ class TestSweepCoordinatorInit:
     def test_initialize_skips_if_already_populated(self, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         # Pre-populate state
-        state = SweepState(merge_commits=["abc", "def"], commit_dates={"abc": "2024-01-01", "def": "2024-02-01"})
+        state = SweepState(
+            merge_commits=["abc", "def"],
+            commit_dates={"abc": "2024-01-01", "def": "2024-02-01"},
+        )
         state.save(state_file)
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), \
-             patch("src.sweep.coordinator.get_merge_commits") as mock_git:
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.sweep.coordinator.get_merge_commits") as mock_git,
+        ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             # Should NOT call git since commits already populated
@@ -84,16 +115,26 @@ class TestSweepCoordinatorTaskGeneration:
         state_file = tmp_dir / "state.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
-            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+            commit_dates={
+                "aaa": "2024-01-01",
+                "bbb": "2024-02-01",
+                "ccc": "2024-03-01",
+            },
         )
         state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2024-01-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="aaa",
+            date="2024-01-01",
+            value=100000,
+            cv=0.2,
+            status=PointStatus.COMPLETED,
         )
         state.save(state_file)
         mock_head.return_value = "ccc"
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), \
-             patch("src.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]):
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]),
+        ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             task = coordinator.get_next_sweep_task()
@@ -114,10 +155,18 @@ class TestSweepCoordinatorTaskGeneration:
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},
         )
         state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2024-01-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="aaa",
+            date="2024-01-01",
+            value=100000,
+            cv=0.2,
+            status=PointStatus.COMPLETED,
         )
         state.points["bbb"] = BenchmarkPoint(
-            commit="bbb", date="2024-02-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="bbb",
+            date="2024-02-01",
+            value=100000,
+            cv=0.2,
+            status=PointStatus.COMPLETED,
         )
         state.save(state_file)
         mock_head.return_value = "bbb"
@@ -177,7 +226,9 @@ class TestSweepCoordinatorResults:
     @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
     def test_delete_cached_binary(self, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
-        state = SweepState(merge_commits=["abc123"], commit_dates={"abc123": "2024-01-01"})
+        state = SweepState(
+            merge_commits=["abc123"], commit_dates={"abc123": "2024-01-01"}
+        )
         state.save(state_file)
 
         # Create a fake cache dir
@@ -185,8 +236,10 @@ class TestSweepCoordinatorResults:
         cache_dir.mkdir(parents=True)
         (cache_dir / "valkey-server").write_text("fake binary")
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), \
-             patch("pathlib.Path.home", return_value=tmp_dir):
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("pathlib.Path.home", return_value=tmp_dir),
+        ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             coordinator.delete_cached_binary("abc123")
@@ -200,6 +253,7 @@ class TestTaskRunnerSweepIntegration:
     def test_task_runner_accepts_sweep_flag(self):
         """Verify TaskRunner can be instantiated with sweep=False without errors."""
         from src.task_runner import TaskRunner
+
         runner = TaskRunner(sweep=False)
         assert runner._subscribers == []
 
@@ -211,6 +265,7 @@ class TestTaskRunnerSweepIntegration:
         self, mock_state, mock_tags, mock_commits, mock_init, tmp_dir
     ):
         from src.task_runner import TaskRunner
+
         state_file = tmp_dir / "state.json"
         with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             runner = TaskRunner(sweep=True, repo_path=tmp_dir)

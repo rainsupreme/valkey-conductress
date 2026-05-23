@@ -47,10 +47,12 @@ def isolate_queue(queue_dir):
 @pytest.fixture(autouse=True)
 def patch_sources():
     """Patch REPO_NAMES and MANUALLY_UPLOADED for all tests in this module."""
-    with patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]), \
-         patch("src.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]), \
-         patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"), \
-         patch("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"):
+    with (
+        patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+        patch("src.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+        patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+        patch("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+    ):
         yield
 
 
@@ -59,15 +61,24 @@ class TestCliPerfQueuing:
 
     def test_queue_add_creates_task_files_in_queue_directory(self, queue_dir):
         """Invoking queue add with a single combination creates exactly one task JSON file."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "unstable",
-            "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get",
+                "--sizes",
+                "512",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+            ]
+        )
 
         assert exit_code == 0
 
@@ -76,20 +87,34 @@ class TestCliPerfQueuing:
 
     def test_queue_add_task_json_has_correct_parameters(self, queue_dir):
         """The queued task JSON file contains the correct benchmark parameters."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "v8.0",
-            "--tests", "set",
-            "--sizes", "1024",
-            "--io-threads", "9",
-            "--pipelining", "4",
-            "--warmup", "30s",
-            "--duration", "5m",
-            "--repetitions", "3",
-            "--key-sizes", "64",
-            "--note", "integration test",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "v8.0",
+                "--tests",
+                "set",
+                "--sizes",
+                "1024",
+                "--io-threads",
+                "9",
+                "--pipelining",
+                "4",
+                "--warmup",
+                "30s",
+                "--duration",
+                "5m",
+                "--repetitions",
+                "3",
+                "--key-sizes",
+                "64",
+                "--note",
+                "integration test",
+            ]
+        )
 
         assert exit_code == 0
 
@@ -112,19 +137,31 @@ class TestCliPerfQueuing:
         assert data["note"] == "integration test"
         assert data["task_type"] == "PerfTaskData"
 
-    def test_queue_add_cartesian_product_creates_correct_number_of_files(self, queue_dir):
+    def test_queue_add_cartesian_product_creates_correct_number_of_files(
+        self, queue_dir
+    ):
         """Multiple values for tests, sizes, io-threads, pipelining, key-sizes
         produce the full Cartesian product of task files."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "unstable",
-            "--tests", "get,set",
-            "--sizes", "512,1024",
-            "--io-threads", "1,9",
-            "--pipelining", "1",
-            "--key-sizes", "0,64",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get,set",
+                "--sizes",
+                "512,1024",
+                "--io-threads",
+                "1,9",
+                "--pipelining",
+                "1",
+                "--key-sizes",
+                "0,64",
+            ]
+        )
 
         assert exit_code == 0
 
@@ -135,16 +172,26 @@ class TestCliPerfQueuing:
     def test_queue_add_cartesian_product_covers_all_combinations(self, queue_dir):
         """Every unique (test, val_size, io_threads, pipelining, key_size) combination
         appears exactly once across the queued task files."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "testrepo",
-            "--specifier", "main",
-            "--tests", "get,set",
-            "--sizes", "512,1024",
-            "--io-threads", "1,9",
-            "--pipelining", "1,4",
-            "--key-sizes", "0",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "testrepo",
+                "--specifier",
+                "main",
+                "--tests",
+                "get,set",
+                "--sizes",
+                "512,1024",
+                "--io-threads",
+                "1,9",
+                "--pipelining",
+                "1,4",
+                "--key-sizes",
+                "0",
+            ]
+        )
 
         assert exit_code == 0
 
@@ -169,15 +216,24 @@ class TestCliPerfQueuing:
 
     def test_queue_add_invalid_source_creates_no_files(self, queue_dir):
         """An invalid source should produce no task files and return exit code 1."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "nonexistent_repo",
-            "--specifier", "unstable",
-            "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "nonexistent_repo",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get",
+                "--sizes",
+                "512",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+            ]
+        )
 
         assert exit_code == 1
         task_files = list(queue_dir.glob("task_*.json"))
@@ -185,15 +241,24 @@ class TestCliPerfQueuing:
 
     def test_queue_add_manually_uploaded_source_is_accepted(self, queue_dir):
         """The manually_uploaded source should be accepted and create task files."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "manually_uploaded",
-            "--specifier", "custom-build",
-            "--tests", "get",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "manually_uploaded",
+                "--specifier",
+                "custom-build",
+                "--tests",
+                "get",
+                "--sizes",
+                "512",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+            ]
+        )
 
         assert exit_code == 0
         task_files = list(queue_dir.glob("task_*.json"))
@@ -205,12 +270,18 @@ class TestCliPerfQueuing:
 
     def test_queue_add_default_values_applied(self, queue_dir):
         """Default values for warmup, duration, repetitions, key-sizes are applied."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "unstable",
-            "--tests", "get",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get",
+            ]
+        )
 
         assert exit_code == 0
 
@@ -235,15 +306,24 @@ class TestCliQueueListing:
 
     def test_queue_lists_queued_tasks(self, queue_dir, capsys):
         """After queuing tasks via perf, the queue subcommand should list them."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "unstable",
-            "--tests", "get,set",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get,set",
+                "--sizes",
+                "512",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+            ]
+        )
         assert exit_code == 0
         capsys.readouterr()  # clear perf output
 
@@ -265,15 +345,24 @@ class TestCliQueueListing:
     def test_queue_shows_correct_task_count(self, queue_dir, capsys):
         """The queue listing should show the same number of tasks that were queued."""
         # Queue 4 tasks: 2 tests * 2 sizes
-        exit_code = main([
-            "queue", "add",
-            "--source", "valkey",
-            "--specifier", "unstable",
-            "--tests", "get,set",
-            "--sizes", "512,1024",
-            "--io-threads", "1",
-            "--pipelining", "1",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--tests",
+                "get,set",
+                "--sizes",
+                "512,1024",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+            ]
+        )
         assert exit_code == 0
         capsys.readouterr()
 
@@ -285,16 +374,26 @@ class TestCliQueueListing:
 
     def test_queue_shows_task_details(self, queue_dir, capsys):
         """The queue listing should show task ID, description, and note."""
-        exit_code = main([
-            "queue", "add",
-            "--source", "testrepo",
-            "--specifier", "feature-branch",
-            "--tests", "set",
-            "--sizes", "512",
-            "--io-threads", "1",
-            "--pipelining", "1",
-            "--note", "detail check",
-        ])
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "testrepo",
+                "--specifier",
+                "feature-branch",
+                "--tests",
+                "set",
+                "--sizes",
+                "512",
+                "--io-threads",
+                "1",
+                "--pipelining",
+                "1",
+                "--note",
+                "detail check",
+            ]
+        )
         assert exit_code == 0
         capsys.readouterr()
 

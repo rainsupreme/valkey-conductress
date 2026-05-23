@@ -37,12 +37,19 @@ class TestStatePersistence:
             landmarks=[Landmark(commit="b", date="2024-02-01", label="8.0.0")],
         )
         state.points["a"] = BenchmarkPoint(
-            commit="a", date="2024-01-01", value=150000, cv=0.19,
-            reps=3, pr=1234, pr_title="Optimize dict",
+            commit="a",
+            date="2024-01-01",
+            value=150000,
+            cv=0.19,
+            reps=3,
+            pr=1234,
+            pr_title="Optimize dict",
             status=PointStatus.COMPLETED,
         )
         state.points["c"] = BenchmarkPoint(
-            commit="c", date="2024-03-01", status=PointStatus.BUILD_FAILED,
+            commit="c",
+            date="2024-03-01",
+            status=PointStatus.BUILD_FAILED,
         )
 
         state.save(path)

@@ -38,7 +38,9 @@ class TestCpuAllocator:
     def test_register_host_with_numa(self):
         allocator = CpuAllocator()
         numa_topology = {0: [0, 1, 2, 3], 1: [4, 5, 6, 7]}
-        allocator.register_host("192.168.1.1", all_cpus=list(range(8)), numa_topology=numa_topology)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=list(range(8)), numa_topology=numa_topology
+        )
 
         assert allocator.get_available_count("192.168.1.1") == 8
         assert allocator.get_available_count("192.168.1.1", prefer_numa=0) == 4
@@ -87,7 +89,9 @@ class TestCpuAllocator:
     def test_allocate_with_numa_requirement(self):
         allocator = CpuAllocator()
         numa_topology = {0: [0, 1, 2, 3], 1: [4, 5, 6, 7]}
-        allocator.register_host("192.168.1.1", all_cpus=list(range(8)), numa_topology=numa_topology)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=list(range(8)), numa_topology=numa_topology
+        )
 
         tag = AllocationTag(task_id="task_1", purpose="server")
         cpus = allocator.allocate("192.168.1.1", tag, count=2, require_numa=1)
@@ -97,7 +101,9 @@ class TestCpuAllocator:
     def test_allocate_numa_requirement_insufficient_cpus(self):
         allocator = CpuAllocator()
         numa_topology = {0: [0, 1], 1: [2, 3, 4, 5]}
-        allocator.register_host("192.168.1.1", all_cpus=list(range(6)), numa_topology=numa_topology)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=list(range(6)), numa_topology=numa_topology
+        )
 
         tag = AllocationTag(task_id="task_1", purpose="server")
         # NUMA node 0 only has 2 CPUs, requesting 4 should fail
@@ -107,7 +113,9 @@ class TestCpuAllocator:
     def test_allocate_numa_requirement_invalid_node(self):
         allocator = CpuAllocator()
         numa_topology = {0: [0, 1, 2, 3]}
-        allocator.register_host("192.168.1.1", all_cpus=list(range(4)), numa_topology=numa_topology)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=list(range(4)), numa_topology=numa_topology
+        )
 
         tag = AllocationTag(task_id="task_1", purpose="server")
         with pytest.raises(ValueError, match="NUMA node 1 not found"):
@@ -238,7 +246,9 @@ class TestCpuAllocator:
 
     def test_get_net_interface_numa(self):
         allocator = CpuAllocator()
-        allocator.register_host("192.168.1.1", all_cpus=[0, 1, 2, 3], net_interface_numa=0)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=[0, 1, 2, 3], net_interface_numa=0
+        )
         assert allocator.get_net_interface_numa("192.168.1.1") == 0
 
     def test_get_net_interface_numa_not_set(self):
@@ -253,7 +263,7 @@ class TestCpuAllocator:
     def test_is_host_registered(self):
         allocator = CpuAllocator()
         assert not allocator.is_host_registered("192.168.1.1")
-        
+
         allocator.register_host("192.168.1.1", all_cpus=[0, 1, 2, 3])
         assert allocator.is_host_registered("192.168.1.1")
         assert not allocator.is_host_registered("192.168.1.2")
@@ -302,7 +312,9 @@ class TestCpuAllocator:
         """Test a realistic scenario with IRQ, server, and benchmark allocations."""
         allocator = CpuAllocator()
         numa_topology = {0: list(range(0, 32)), 1: list(range(32, 64))}
-        allocator.register_host("192.168.1.1", all_cpus=list(range(64)), numa_topology=numa_topology)
+        allocator.register_host(
+            "192.168.1.1", all_cpus=list(range(64)), numa_topology=numa_topology
+        )
 
         # Allocate IRQs
         irq_tag = AllocationTag(task_id="system", purpose="irq")
@@ -311,13 +323,34 @@ class TestCpuAllocator:
 
         # Allocate server
         server_tag = AllocationTag(task_id="task_123", purpose="server")
-        server_cpus = allocator.allocate("192.168.1.1", server_tag, count=8, require_numa=0)
+        server_cpus = allocator.allocate(
+            "192.168.1.1", server_tag, count=8, require_numa=0
+        )
         assert server_cpus == [0, 1, 2, 3, 4, 5, 6, 7]
 
         # Allocate benchmark
         bench_tag = AllocationTag(task_id="task_123", purpose="benchmark")
-        bench_cpus = allocator.allocate("192.168.1.1", bench_tag, count=16, require_numa=0)
-        assert bench_cpus == [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+        bench_cpus = allocator.allocate(
+            "192.168.1.1", bench_tag, count=16, require_numa=0
+        )
+        assert bench_cpus == [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+        ]
 
         # Check remaining
         assert allocator.get_available_count("192.168.1.1") == 36
@@ -339,7 +372,9 @@ class TestCpuAllocator:
         allocator.register_host("127.0.0.1", all_cpus=list(range(16)))
 
         server_tag = AllocationTag(task_id="server_127.0.0.1_6379", purpose="server")
-        bench_tag = AllocationTag(task_id="2026.05.21_22.41.50:benchmark", purpose="benchmark")
+        bench_tag = AllocationTag(
+            task_id="2026.05.21_22.41.50:benchmark", purpose="benchmark"
+        )
         irq_tag = AllocationTag(task_id="irq_127.0.0.1", purpose="irq")
 
         allocator.allocate("127.0.0.1", server_tag, count=4)

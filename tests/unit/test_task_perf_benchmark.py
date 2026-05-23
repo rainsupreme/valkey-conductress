@@ -111,7 +111,7 @@ class TestPerfTaskData:
             "has_expire": False,
             "preload_keys": True,
             "task_type": "PerfTaskData",
-            "timestamp": "2024-01-01T00:00:00"
+            "timestamp": "2024-01-01T00:00:00",
         }
 
         with task_file.open("w") as f:
@@ -119,6 +119,7 @@ class TestPerfTaskData:
 
         # Load the task
         from src.task_queue import BaseTaskData
+
         loaded_task = BaseTaskData.from_file(task_file)
 
         assert isinstance(loaded_task, PerfTaskData)
@@ -158,7 +159,10 @@ class TestNewTestTypes:
         entry = PerfTaskRunner.tests["mget"]
         assert entry.name == "mget"
         assert entry.preload_command == "-t set"
-        assert entry.test_command == " -- MGET key:__rand_int__ key:__rand_int__ key:__rand_int__ key:__rand_int__"
+        assert (
+            entry.test_command
+            == " -- MGET key:__rand_int__ key:__rand_int__ key:__rand_int__ key:__rand_int__"
+        )
 
 
 class TestPerfTaskDataSerialization:
@@ -231,12 +235,12 @@ class TestPaddedKeyProperties:
         exactly key_size bytes and start with the base key pattern.
         """
         result = generate_padded_key(key_size)
-        assert len(result) == key_size, (
-            f"Expected padded key length {key_size}, got {len(result)}"
-        )
-        assert result.startswith(BASE_KEY_PATTERN), (
-            f"Padded key must start with '{BASE_KEY_PATTERN}', got '{result[:20]}...'"
-        )
+        assert (
+            len(result) == key_size
+        ), f"Expected padded key length {key_size}, got {len(result)}"
+        assert result.startswith(
+            BASE_KEY_PATTERN
+        ), f"Padded key must start with '{BASE_KEY_PATTERN}', got '{result[:20]}...'"
 
     @settings(max_examples=100)
     @given(key_size=st.integers(min_value=17, max_value=10000))
@@ -253,7 +257,8 @@ class TestPaddedKeyProperties:
 
         # Test types that have a preload_command (not None)
         tests_with_preload = [
-            name for name, test in PerfTaskRunner.tests.items()
+            name
+            for name, test in PerfTaskRunner.tests.items()
             if test.preload_command is not None
         ]
 
@@ -437,22 +442,37 @@ class TestKeySizeUnitTests:
         """hset with key_size=64 produces correct custom commands."""
         padded_key = generate_padded_key(64)
         runner = _make_runner("hset", key_size=64)
-        assert runner.preload_command == f" -- HSET {padded_key} field:__rand_int__ __rand_field__"
-        assert runner.test_command == f" -- HSET {padded_key} field:__rand_int__ __rand_field__"
+        assert (
+            runner.preload_command
+            == f" -- HSET {padded_key} field:__rand_int__ __rand_field__"
+        )
+        assert (
+            runner.test_command
+            == f" -- HSET {padded_key} field:__rand_int__ __rand_field__"
+        )
 
     def test_build_custom_command_zadd(self):
         """zadd with key_size=64 produces correct custom commands."""
         padded_key = generate_padded_key(64)
         runner = _make_runner("zadd", key_size=64)
-        assert runner.preload_command == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
-        assert runner.test_command == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        assert (
+            runner.preload_command
+            == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        )
+        assert (
+            runner.test_command
+            == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        )
 
     def test_build_custom_command_mget(self):
         """mget with key_size=64 produces correct custom commands."""
         padded_key = generate_padded_key(64)
         runner = _make_runner("mget", key_size=64)
         assert runner.preload_command == f" -- SET {padded_key} __rand_field__"
-        assert runner.test_command == f" -- MGET {padded_key} {padded_key} {padded_key} {padded_key}"
+        assert (
+            runner.test_command
+            == f" -- MGET {padded_key} {padded_key} {padded_key} {padded_key}"
+        )
 
     def test_build_custom_command_ping(self):
         """ping with key_size=64: preload is None, test command is '-t ping'."""
@@ -464,15 +484,23 @@ class TestKeySizeUnitTests:
         """zrank with key_size=64 produces correct custom commands."""
         padded_key = generate_padded_key(64)
         runner = _make_runner("zrank", key_size=64)
-        assert runner.preload_command == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        assert (
+            runner.preload_command
+            == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        )
         assert runner.test_command == f" -- ZRANK {padded_key} element:__rand_int__"
 
     def test_build_custom_command_zcount(self):
         """zcount with key_size=64 produces correct custom commands."""
         padded_key = generate_padded_key(64)
         runner = _make_runner("zcount", key_size=64)
-        assert runner.preload_command == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
-        assert runner.test_command == f" -- ZCOUNT {padded_key} __rand_int__ __rand_int__"
+        assert (
+            runner.preload_command
+            == f" -- ZADD {padded_key} __rand_int__ element:__rand_int__"
+        )
+        assert (
+            runner.test_command == f" -- ZCOUNT {padded_key} __rand_int__ __rand_int__"
+        )
 
     # ── Test 3: key_size=0 produces unmodified commands for all test types ──
 
@@ -481,12 +509,12 @@ class TestKeySizeUnitTests:
         """key_size=0 produces the original unmodified commands for all test types."""
         test_def = PerfTaskRunner.tests[test_name]
         runner = _make_runner(test_name, key_size=0)
-        assert runner.test_command == test_def.test_command, (
-            f"{test_name}: test_command should be unmodified when key_size=0"
-        )
-        assert runner.preload_command == test_def.preload_command, (
-            f"{test_name}: preload_command should be unmodified when key_size=0"
-        )
+        assert (
+            runner.test_command == test_def.test_command
+        ), f"{test_name}: test_command should be unmodified when key_size=0"
+        assert (
+            runner.preload_command == test_def.preload_command
+        ), f"{test_name}: preload_command should be unmodified when key_size=0"
 
     # ── Test 4: key_size attribute is stored on the runner ──
 
@@ -512,7 +540,9 @@ class TestStatisticalAggregationProperties:
     @settings(max_examples=100)
     @given(
         per_run_rps=st.lists(
-            st.floats(min_value=1.0, max_value=1e9, allow_nan=False, allow_infinity=False),
+            st.floats(
+                min_value=1.0, max_value=1e9, allow_nan=False, allow_infinity=False
+            ),
             min_size=2,
             max_size=100,
         )
@@ -535,15 +565,17 @@ class TestStatisticalAggregationProperties:
 
         # Verify mean equals arithmetic mean
         expected_mean = statistics.mean(per_run_rps)
-        assert math.isclose(mean_rps, expected_mean, rel_tol=1e-9), (
-            f"mean_rps={mean_rps} != expected arithmetic mean={expected_mean}"
-        )
+        assert math.isclose(
+            mean_rps, expected_mean, rel_tol=1e-9
+        ), f"mean_rps={mean_rps} != expected arithmetic mean={expected_mean}"
 
         # Verify CI equals t_critical * (stdev / sqrt(N))
-        expected_ci = scipy_t.ppf(0.975, n - 1) * (statistics.stdev(per_run_rps) / math.sqrt(n))
-        assert math.isclose(ci_95, expected_ci, rel_tol=1e-9), (
-            f"ci_95={ci_95} != expected CI={expected_ci}"
+        expected_ci = scipy_t.ppf(0.975, n - 1) * (
+            statistics.stdev(per_run_rps) / math.sqrt(n)
         )
+        assert math.isclose(
+            ci_95, expected_ci, rel_tol=1e-9
+        ), f"ci_95={ci_95} != expected CI={expected_ci}"
 
 
 class TestRepetitionsUnitTests:

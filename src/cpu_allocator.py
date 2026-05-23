@@ -26,7 +26,9 @@ class CpuAllocator:
         self._all_cpus: dict[str, list[int]] = {}  # All available CPUs
         self._numa_nodes: dict[str, dict[int, list[int]]] = {}  # numa_node -> [cpus]
         self._l3_caches: dict[str, dict[int, list[int]]] = {}  # l3_cache_id -> [cpus]
-        self._allocations: dict[str, dict[AllocationTag, list[int]]] = {}  # tag -> [cpus]
+        self._allocations: dict[str, dict[AllocationTag, list[int]]] = (
+            {}
+        )  # tag -> [cpus]
         self._net_interface_numa: dict[str, int] = {}  # Network interface NUMA node
 
     def register_host(
@@ -117,15 +119,21 @@ class CpuAllocator:
         # Try cache-aware allocation if requested
         allocated = None
         if minimize_cache_groups and self._l3_caches.get(host_ip):
-            allocated = self._allocate_single_cache(host_ip, available, avoid_cpus, count)
+            allocated = self._allocate_single_cache(
+                host_ip, available, avoid_cpus, count
+            )
 
         if allocated is None and prefer_different_cache and avoid_cpus:
-            allocated = self._allocate_cache_aware(host_ip, available, avoid_cpus, count, require_numa)
+            allocated = self._allocate_cache_aware(
+                host_ip, available, avoid_cpus, count, require_numa
+            )
 
         # Fallback to simple allocation
         if allocated is None:
             if len(available) < count:
-                numa_msg = f" on NUMA node {require_numa}" if require_numa is not None else ""
+                numa_msg = (
+                    f" on NUMA node {require_numa}" if require_numa is not None else ""
+                )
                 raise RuntimeError(
                     f"Insufficient CPUs on {host_ip}{numa_msg}: need {count}, available {len(available)}"
                 )
@@ -192,13 +200,16 @@ class CpuAllocator:
         if len(allocated) >= count:
             logging.info(
                 "minimize_cache_groups: needed %d CPUs across %d CCDs (max %d per CCD)",
-                count, ccds_used, groups[0][0] if groups else 0,
+                count,
+                ccds_used,
+                groups[0][0] if groups else 0,
             )
             return allocated[:count]
 
         logging.warning(
             "minimize_cache_groups: only %d CPUs available across all CCDs, need %d",
-            len(allocated), count,
+            len(allocated),
+            count,
         )
         return None
 
@@ -273,7 +284,9 @@ class CpuAllocator:
             return None
         return self._allocations[host_ip].get(tag)
 
-    def get_available_count(self, host_ip: str, prefer_numa: Optional[int] = None) -> int:
+    def get_available_count(
+        self, host_ip: str, prefer_numa: Optional[int] = None
+    ) -> int:
         """Get number of available CPUs on a host.
 
         Args:

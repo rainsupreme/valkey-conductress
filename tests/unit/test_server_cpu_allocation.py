@@ -1,9 +1,11 @@
 """Unit tests for Server CPU allocation integration with CpuAllocator."""
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from src.cpu_allocator import AllocationTag, CpuAllocator
 from src.server import Server
-from src.cpu_allocator import CpuAllocator, AllocationTag
 
 
 class TestServerCpuAllocation:
@@ -37,7 +39,10 @@ class TestServerCpuAllocation:
         server = Server("192.168.1.1", 9000)
 
         Server._cpu_allocator.register_host(
-            "192.168.1.1", all_cpus=list(range(4)), numa_topology={0: list(range(4))}, net_interface_numa=0
+            "192.168.1.1",
+            all_cpus=list(range(4)),
+            numa_topology={0: list(range(4))},
+            net_interface_numa=0,
         )
 
         await server._allocate_server_cpus(2)
@@ -53,7 +58,10 @@ class TestServerCpuAllocation:
         server = Server("192.168.1.1", 9000)
 
         Server._cpu_allocator.register_host(
-            "192.168.1.1", all_cpus=list(range(4)), numa_topology={0: list(range(4))}, net_interface_numa=0
+            "192.168.1.1",
+            all_cpus=list(range(4)),
+            numa_topology={0: list(range(4))},
+            net_interface_numa=0,
         )
 
         cpus = await server._allocate_server_cpus(2)
@@ -73,7 +81,10 @@ class TestServerCpuAllocation:
         server.valkey_pid = 12345
 
         Server._cpu_allocator.register_host(
-            "192.168.1.1", all_cpus=list(range(8)), numa_topology={0: list(range(8))}, net_interface_numa=0
+            "192.168.1.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: list(range(8))},
+            net_interface_numa=0,
         )
 
         cpus = await server._allocate_server_cpus(3)
@@ -101,7 +112,10 @@ class TestServerCpuAllocation:
         server.run_host_command = AsyncMock(return_value=("", ""))
 
         Server._cpu_allocator.register_host(
-            "192.168.1.1", all_cpus=list(range(8)), numa_topology={0: list(range(8))}, net_interface_numa=0
+            "192.168.1.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: list(range(8))},
+            net_interface_numa=0,
         )
 
         # Allocate IRQ
@@ -177,7 +191,10 @@ class TestServerCpuAllocation:
         server2 = Server("192.168.1.1", 9001)
 
         Server._cpu_allocator.register_host(
-            "192.168.1.1", all_cpus=list(range(8)), numa_topology={0: list(range(8))}, net_interface_numa=0
+            "192.168.1.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: list(range(8))},
+            net_interface_numa=0,
         )
 
         cpus1 = await server1._allocate_server_cpus(3)
