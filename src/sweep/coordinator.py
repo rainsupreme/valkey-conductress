@@ -79,9 +79,9 @@ class SweepCoordinator:
         logger.info("Sweep task: %s (%s)", sweep_task.commit[:8], sweep_task.reason)
         return self._sweep_task_to_perf_task(sweep_task)
 
-    def record_result(self, commit: str, rps: float, cv: float, reps: int) -> None:
+    def record_result(self, commit: str, value: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
-        self.planner.record_result(commit, rps, cv, reps)
+        self.planner.record_result(commit, value, cv, reps)
 
         # Update last_benchmarked_head if this was HEAD
         try:
@@ -92,7 +92,7 @@ class SweepCoordinator:
             pass
 
         self.state.save(SWEEP_STATE_FILE)
-        logger.info("Sweep result recorded: %s -> %.0f rps (CV %.2f%%)", commit[:8], rps, cv)
+        logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
 
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""

@@ -36,7 +36,7 @@ def make_state(
             state.points[commit] = BenchmarkPoint(
                 commit=commit,
                 date=state.commit_dates.get(commit, ""),
-                rps=rps,
+                value=rps,
                 cv=0.2,
                 status=PointStatus.COMPLETED,
             )
@@ -267,17 +267,17 @@ class TestRecordResult:
     def test_record_new_result(self):
         state = make_state(["a", "b", "c"])
         planner = SweepPlanner(state)
-        planner.record_result("b", rps=150000, cv=0.19, pr=1234, pr_title="Optimize dict")
+        planner.record_result("b", value=150000, cv=0.19, pr=1234, pr_title="Optimize dict")
         assert "b" in state.points
-        assert state.points["b"].rps == 150000
+        assert state.points["b"].value == 150000
         assert state.points["b"].pr == 1234
         assert state.points["b"].is_complete
 
     def test_record_updates_existing(self):
         state = make_state(["a", "b"], points={"a": 100000})
         planner = SweepPlanner(state)
-        planner.record_result("a", rps=101000, cv=0.15)
-        assert state.points["a"].rps == 101000
+        planner.record_result("a", value=101000, cv=0.15)
+        assert state.points["a"].value == 101000
         assert state.points["a"].cv == 0.15
 
     def test_record_build_failure(self):

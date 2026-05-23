@@ -36,7 +36,7 @@ class BenchmarkPoint:
     """A single benchmarked commit with its result."""
     commit: str
     date: str  # ISO format YYYY-MM-DD
-    rps: Optional[float] = None
+    value: Optional[float] = None  # metric value (rps, bytes_per_key, etc.)
     cv: Optional[float] = None
     reps: int = 3
     pr: Optional[int] = None
@@ -45,7 +45,7 @@ class BenchmarkPoint:
 
     @property
     def is_complete(self) -> bool:
-        return self.status == PointStatus.COMPLETED and self.rps is not None
+        return self.status == PointStatus.COMPLETED and self.value is not None
 
 
 @dataclass
@@ -61,8 +61,8 @@ class Segment:
     """A range between two benchmarked commits that may contain a performance change."""
     left_commit: str
     right_commit: str
-    left_rps: float
-    right_rps: float
+    left_value: float
+    right_value: float
     commit_count: int  # number of merge commits between left and right (exclusive)
     left_cv: float = 0.0
     right_cv: float = 0.0
@@ -70,9 +70,9 @@ class Segment:
     @property
     def delta(self) -> float:
         """Relative performance change from left to right."""
-        if self.left_rps == 0:
+        if self.left_value == 0:
             return 0.0
-        return (self.right_rps - self.left_rps) / self.left_rps
+        return (self.right_value - self.left_value) / self.left_value
 
     @property
     def abs_delta(self) -> float:
@@ -131,7 +131,7 @@ class SweepState:
                 commit: {
                     "commit": p.commit,
                     "date": p.date,
-                    "rps": p.rps,
+                    "value": p.value,
                     "cv": p.cv,
                     "reps": p.reps,
                     "pr": p.pr,
@@ -173,7 +173,7 @@ class SweepState:
             state.points[commit] = BenchmarkPoint(
                 commit=p_data["commit"],
                 date=p_data.get("date", ""),
-                rps=p_data.get("rps"),
+                value=p_data.get("value", p_data.get("rps")),
                 cv=p_data.get("cv"),
                 reps=p_data.get("reps", 3),
                 pr=p_data.get("pr"),
@@ -230,18 +230,18 @@ class SweepPlanner:
 
         return None
 
-    def record_result(self, commit: str, rps: float, cv: float, reps: int = 3,
+    def record_result(self, commit: str, value: float, cv: float, reps: int = 3,
                       pr: Optional[int] = None, pr_title: Optional[str] = None) -> None:
         """Record a benchmark result for a commit."""
         if commit not in self.state.points:
             date = self.state.commit_dates.get(commit, "")
             self.state.points[commit] = BenchmarkPoint(
-                commit=commit, date=date, rps=rps, cv=cv, reps=reps,
+                commit=commit, date=date, value=value, cv=cv, reps=reps,
                 pr=pr, pr_title=pr_title, status=PointStatus.COMPLETED,
             )
         else:
             point = self.state.points[commit]
-            point.rps = rps
+            point.value = value
             point.cv = cv
             point.reps = reps
             point.status = PointStatus.COMPLETED
@@ -275,8 +275,8 @@ class SweepPlanner:
                 seg = Segment(
                     left_commit=left.commit,
                     right_commit=right.commit,
-                    left_rps=left.rps,  # type: ignore[arg-type]
-                    right_rps=right.rps,  # type: ignore[arg-type]
+                    left_value=left.value,  # type: ignore[arg-type]
+                    right_value=right.value,  # type: ignore[arg-type]
                     commit_count=commit_count,
                     left_cv=left.cv or 0.0,
                     right_cv=right.cv or 0.0,

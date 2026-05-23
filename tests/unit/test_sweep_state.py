@@ -37,7 +37,7 @@ class TestStatePersistence:
             landmarks=[Landmark(commit="b", date="2024-02-01", label="8.0.0")],
         )
         state.points["a"] = BenchmarkPoint(
-            commit="a", date="2024-01-01", rps=150000, cv=0.19,
+            commit="a", date="2024-01-01", value=150000, cv=0.19,
             reps=3, pr=1234, pr_title="Optimize dict",
             status=PointStatus.COMPLETED,
         )
@@ -54,7 +54,7 @@ class TestStatePersistence:
         assert loaded.commit_dates == state.commit_dates
         assert len(loaded.landmarks) == 1
         assert loaded.landmarks[0].label == "8.0.0"
-        assert loaded.points["a"].rps == 150000
+        assert loaded.points["a"].value == 150000
         assert loaded.points["a"].pr == 1234
         assert loaded.points["a"].status == PointStatus.COMPLETED
         assert loaded.points["c"].status == PointStatus.BUILD_FAILED

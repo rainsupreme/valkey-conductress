@@ -37,7 +37,7 @@ def export_series(state: SweepState, output_path: Path,
             "commit_index": commit_index.get(point.commit, 0),
             "results": {
                 workload: {
-                    "rps": point.rps,
+                    "rps": point.value,
                     "cv": point.cv,
                     "reps": point.reps,
                 }
@@ -97,8 +97,8 @@ def _build_annotations(state: SweepState, planner: SweepPlanner,
 
         # Adjacent commits — this is a pinpointed change
         if right_idx - left_idx == 1:
-            assert left.rps is not None and right.rps is not None
-            delta = (right.rps - left.rps) / left.rps
+            assert left.value is not None and right.value is not None
+            delta = (right.value - left.value) / left.value
             noise_floor = max(left.cv or 0.0, right.cv or 0.0) / 100.0
             if abs(delta) >= max(state.threshold, noise_floor):
                 annotation: dict[str, Any] = {
