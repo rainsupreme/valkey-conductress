@@ -27,20 +27,20 @@ def make_state_with_results() -> SweepState:
         landmarks=[Landmark(commit="c", date="2024-05-10", label="8.0.0")],
     )
     state.points["a"] = BenchmarkPoint(
-        commit="a", date="2024-03-20", rps=148000, cv=0.19,
+        commit="a", date="2024-03-20", value=148000, cv=0.19,
         status=PointStatus.COMPLETED,
     )
     state.points["b"] = BenchmarkPoint(
-        commit="b", date="2024-04-15", rps=139000, cv=0.21,
+        commit="b", date="2024-04-15", value=139000, cv=0.21,
         pr=1847, pr_title="Refactor output buffer",
         status=PointStatus.COMPLETED,
     )
     state.points["c"] = BenchmarkPoint(
-        commit="c", date="2024-05-10", rps=140000, cv=0.18,
+        commit="c", date="2024-05-10", value=140000, cv=0.18,
         status=PointStatus.COMPLETED,
     )
     state.points["e"] = BenchmarkPoint(
-        commit="e", date="2024-07-01", rps=152000, cv=0.20,
+        commit="e", date="2024-07-01", value=152000, cv=0.20,
         status=PointStatus.COMPLETED,
     )
     return state

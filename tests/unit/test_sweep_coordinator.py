@@ -87,7 +87,7 @@ class TestSweepCoordinatorTaskGeneration:
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
         )
         state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2024-01-01", rps=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="aaa", date="2024-01-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
         )
         state.save(state_file)
         mock_head.return_value = "ccc"
@@ -114,10 +114,10 @@ class TestSweepCoordinatorTaskGeneration:
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},
         )
         state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2024-01-01", rps=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="aaa", date="2024-01-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
         )
         state.points["bbb"] = BenchmarkPoint(
-            commit="bbb", date="2024-02-01", rps=100000, cv=0.2, status=PointStatus.COMPLETED
+            commit="bbb", date="2024-02-01", value=100000, cv=0.2, status=PointStatus.COMPLETED
         )
         state.save(state_file)
         mock_head.return_value = "bbb"
@@ -149,12 +149,12 @@ class TestSweepCoordinatorResults:
         with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
-            coordinator.record_result("aaa", rps=150000, cv=0.19, reps=3)
+            coordinator.record_result("aaa", value=150000, cv=0.19, reps=3)
 
         # Reload and verify
         loaded = SweepState.load(state_file)
         assert "aaa" in loaded.points
-        assert loaded.points["aaa"].rps == 150000
+        assert loaded.points["aaa"].value == 150000
         assert loaded.points["aaa"].status == PointStatus.COMPLETED
 
     @patch("src.sweep.coordinator.SWEEP_STATE_FILE")

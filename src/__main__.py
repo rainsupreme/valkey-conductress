@@ -146,7 +146,7 @@ def main() -> None:
 
         if args.sweep_command == "export":
             state = SweepState.load(SWEEP_STATE_FILE)
-            points_count = sum(1 for p in state.points.values() if p.rps is not None)
+            points_count = sum(1 for p in state.points.values() if p.value is not None)
             if points_count == 0:
                 print("No sweep results to export yet.")
                 sys.exit(1)
@@ -193,7 +193,7 @@ def main() -> None:
             state = SweepState.load(SWEEP_STATE_FILE)
             from src.sweep.planner import SweepPlanner
             planner = SweepPlanner(state)
-            completed = sum(1 for p in state.points.values() if p.rps is not None)
+            completed = sum(1 for p in state.points.values() if p.value is not None)
             failed = sum(1 for p in state.points.values() if p.status.name == "BUILD_FAILED")
             segments = planner.get_unresolved_segments()
             print(f"Commits tracked: {len(state.merge_commits)}")
