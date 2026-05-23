@@ -35,6 +35,7 @@ class MemTaskData(BaseTaskData):
     type: str
     val_sizes: list[int]
     has_expire: bool
+    sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def short_description(self) -> str:
         description = self.type
