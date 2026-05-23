@@ -548,9 +548,8 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.logger.info("Local benchmark detected - optimizing CPU allocation")
         server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
-        is_chiplet = (
-            getattr(server, "_platform_info", None) is not None and server._platform_info.needs_single_cache_pinning
-        )
+        platform = getattr(server, "_platform_info", None)
+        is_chiplet = platform is not None and platform.needs_single_cache_pinning
         benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
         benchmark_cpus = client._cpu_allocator.allocate(
