@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.cpu_allocator import AllocationTag, CpuAllocator
+from conductress.cpu_allocator import AllocationTag, CpuAllocator
 
 
 class TestCacheAwareAllocation:

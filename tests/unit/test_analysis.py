@@ -17,7 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.stats import ttest_ind
 
-from src.analysis import AnalysisModule, ComparisonRow, _format_size
+from conductress.analysis import AnalysisModule, ComparisonRow, _format_size
 
 
 @pytest.fixture

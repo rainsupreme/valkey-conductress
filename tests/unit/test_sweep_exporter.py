@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from src.sweep.exporter import export_series
-from src.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
+from conductress.sweep.exporter import export_series
+from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
 
 
 @pytest.fixture

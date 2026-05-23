@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import ServerInfo
-from src.file_protocol import BenchmarkStatus
-from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.tui_data_service import TUIDataService
+from conductress.config import ServerInfo
+from conductress.file_protocol import BenchmarkStatus
+from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.tui_data_service import TUIDataService
 
 
 @dataclass
@@ -45,8 +45,8 @@ def test_init(temp_dir):
     assert service._cached_task_statuses == {}
 
 
-@patch("src.tui_data_service.TaskQueue")
-@patch("src.tui_data_service.FileProtocol")
+@patch("conductress.tui_data_service.TaskQueue")
+@patch("conductress.tui_data_service.FileProtocol")
 def test_refresh_all(mock_file_protocol_class, mock_task_queue_class, service):
     mock_tasks = [MagicMock(), MagicMock()]
     mock_active = {"task1": MagicMock(), "task2": MagicMock()}
@@ -85,7 +85,7 @@ def test_get_active_tasks(service):
     assert result is mock_active
 
 
-@patch("src.tui_data_service.FileProtocol")
+@patch("conductress.tui_data_service.FileProtocol")
 def test_get_task_status_fresh(mock_file_protocol_class, service):
     task_id = "task1"
     mock_status = BenchmarkStatus(steps_total=10, task_type="test")
@@ -98,7 +98,7 @@ def test_get_task_status_fresh(mock_file_protocol_class, service):
     mock_file_protocol_class.assert_not_called()
 
 
-@patch("src.tui_data_service.FileProtocol")
+@patch("conductress.tui_data_service.FileProtocol")
 def test_get_task_status_stale(mock_file_protocol_class, service):
     task_id = "task1"
     old_status = BenchmarkStatus(steps_total=10, task_type="test")
@@ -117,7 +117,7 @@ def test_get_task_status_stale(mock_file_protocol_class, service):
     assert service._cached_task_statuses[task_id] == new_status
 
 
-@patch("src.tui_data_service.FileProtocol")
+@patch("conductress.tui_data_service.FileProtocol")
 def test_get_task_status_not_cached(mock_file_protocol_class, service):
     task_id = "task1"
     new_status = BenchmarkStatus(steps_total=10, task_type="test")

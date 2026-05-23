@@ -4,11 +4,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from src.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
-from src.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
-from src.sweep.planner import SweepState, SweepTask
-from src.task_queue import BaseTaskData
-from src.tasks.task_mem_efficiency import MemTaskData
+from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
+from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
+from conductress.sweep.planner import SweepState, SweepTask
+from conductress.task_queue import BaseTaskData
+from conductress.tasks.task_mem_efficiency import MemTaskData
 
 logger = logging.getLogger(__name__)
 

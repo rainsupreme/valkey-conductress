@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 
 import pytest
 
-from src.sweep.planner import (
+from conductress.sweep.planner import (
     BenchmarkPoint,
     Landmark,
     PointStatus,

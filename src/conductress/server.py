@@ -9,12 +9,12 @@ from typing import Optional
 
 import asyncssh
 
-from src.binary_manager import BinaryManager
-from src.cpu_allocator import AllocationTag, CpuAllocator
-from src.profiling_manager import ProfilingManager
-from src.ssh_host import SshHost
-from src.stabilization_manager import StabilizationManager
-from src.utility import async_run
+from conductress.binary_manager import BinaryManager
+from conductress.cpu_allocator import AllocationTag, CpuAllocator
+from conductress.profiling_manager import ProfilingManager
+from conductress.ssh_host import SshHost
+from conductress.stabilization_manager import StabilizationManager
+from conductress.utility import async_run
 
 from . import config
 

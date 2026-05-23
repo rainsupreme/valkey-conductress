@@ -7,17 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config import ServerInfo
-from src.file_protocol import BenchmarkResults
-from src.server import Server
-from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
+from conductress.config import ServerInfo
+from conductress.file_protocol import BenchmarkResults
+from conductress.server import Server
+from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 
 
 class TestMemTaskData:
     """Test MemTaskData class."""
 
-    @patch("src.config.REPO_NAMES", ["valkey", "test_repo"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
     def test_init_valid_data(self):
         """Test initialization with valid data."""
         task = MemTaskData(
@@ -35,8 +35,8 @@ class TestMemTaskData:
         assert task.val_sizes == [64, 128, 256]
         assert task.has_expire is False
 
-    @patch("src.config.REPO_NAMES", ["valkey", "test_repo"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
     def test_short_description_single_size(self):
         """Test short description with single value size."""
         task = MemTaskData(
@@ -55,8 +55,8 @@ class TestMemTaskData:
         assert "1KB" in desc
         assert "expiration" not in desc
 
-    @patch("src.config.REPO_NAMES", ["valkey", "test_repo"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
     def test_short_description_multiple_sizes(self):
         """Test short description with multiple value sizes."""
         task = MemTaskData(
@@ -75,8 +75,8 @@ class TestMemTaskData:
         assert "3 sizes" in desc
         assert "with expiration" in desc
 
-    @patch("src.config.REPO_NAMES", ["valkey", "test_repo"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.config.REPO_NAMES", ["valkey", "test_repo"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "test_repo"])
     def test_prepare_task_runner(self):
         """Test task runner preparation."""
         task = MemTaskData(
@@ -149,8 +149,8 @@ class TestMemTaskRunner:
                 note="test note",
             )
 
-    @patch("src.tasks.task_mem_efficiency.Server")
-    @patch("src.tasks.task_mem_efficiency.print_pretty_header")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.print_pretty_header")
     @pytest.mark.asyncio
     async def test_run_basic_flow(self, mock_print, mock_server_class, runner, mock_server):
         """Test basic run flow."""
@@ -188,7 +188,7 @@ class TestMemTaskRunner:
         assert runner.file_protocol.write_status.call_count >= 2
         runner.file_protocol.write_results.assert_called_once()
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_test_single_size_overhead(self, mock_server_class, runner, mock_server):
         """Test single size overhead calculation."""
@@ -216,7 +216,7 @@ class TestMemTaskRunner:
         mock_server.run_valkey_command_over_keyspace.assert_called()
         mock_server.count_items_expires.assert_called_once()
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_expiration_with_non_set_command(self, mock_server_class, runner, mock_server):
         """Test that expiration with non-set command logs error."""
@@ -233,7 +233,7 @@ class TestMemTaskRunner:
         # Set cached_binary_path as it would be set in run()
         runner.cached_binary_path = Path("/mock/binary")
 
-        with patch("src.tasks.task_mem_efficiency.logger") as mock_logger:
+        with patch("conductress.tasks.task_mem_efficiency.logger") as mock_logger:
             semaphore = asyncio.Semaphore(1)
             with pytest.raises(RuntimeError):  # Should fail since expire_count != count
                 await runner.test_single_size_overhead(64, 6379, semaphore)
@@ -242,7 +242,7 @@ class TestMemTaskRunner:
                 "Expiration is only supported for sets, skipping expiration test."
             )
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_expiration_with_set_command(self, mock_server_class, runner, mock_server):
         """Test expiration works with set command."""
@@ -271,7 +271,7 @@ class TestMemTaskRunner:
 
     def test_plot_basic(self, runner):
         """Test basic plotting functionality."""
-        with patch("src.tasks.task_mem_efficiency.plt") as mock_plt:
+        with patch("conductress.tasks.task_mem_efficiency.plt") as mock_plt:
             efficiency_map = {64: 10.5, 128: 12.3}
             runner.plot(efficiency_map)
 
@@ -282,7 +282,7 @@ class TestMemTaskRunner:
 
     def test_plot_with_missing_data(self, runner):
         """Test plotting with missing data points."""
-        with patch("src.tasks.task_mem_efficiency.plt") as mock_plt:
+        with patch("conductress.tasks.task_mem_efficiency.plt") as mock_plt:
             # Only one size has data
             efficiency_map = {64: 10.5}
             runner.plot(efficiency_map)
@@ -293,7 +293,7 @@ class TestMemTaskRunner:
             overheads = plot_args[1]
             assert None in overheads  # Missing data should be None
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_memory_calculation_accuracy(self, mock_server_class, runner, mock_server):
         """Test memory calculation accuracy."""
@@ -324,7 +324,7 @@ class TestMemTaskRunner:
         assert result["per_item_overhead"] == expected_overhead
         assert result["user_data_per_item"] == key_size + val_size
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_assertion_failures(self, mock_server_class, runner, mock_server):
         """Test assertion failures in count verification."""
@@ -344,7 +344,7 @@ class TestMemTaskRunner:
         with pytest.raises(RuntimeError):
             await runner.test_single_size_overhead(64, 6379, semaphore)
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_expire_count_assertion(self, mock_server_class, runner, mock_server):
         """Test expire count assertion."""
@@ -375,7 +375,7 @@ class TestMemTaskRunner:
         assert runner.status.state == "starting"
         assert runner.status.steps_completed == 0
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_cpu_limit_handling(self, mock_server_class, runner, mock_server):
         """Test CPU limit handling."""
@@ -421,7 +421,7 @@ class TestMemTaskRunner:
         assert results_data.score == 10.0
         assert len(results_data.data) == 2
 
-    @patch("src.tasks.task_mem_efficiency.Server")
+    @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
     async def test_concurrent_execution(self, mock_server_class, runner, mock_server):
         """Test concurrent execution of multiple size tests."""

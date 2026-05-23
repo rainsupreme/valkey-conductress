@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Optional
 
-from src.config import ServerInfo
+from conductress.config import ServerInfo
 
 from .server import Server
 

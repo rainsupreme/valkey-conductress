@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from src import task_queue
-from src.config import ServerInfo
+from conductress import task_queue
+from conductress.config import ServerInfo
 
 
 class DummyConfig(types.ModuleType):

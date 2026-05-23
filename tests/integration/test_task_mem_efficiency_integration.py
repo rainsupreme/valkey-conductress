@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import ServerInfo
-from src.file_protocol import FileProtocol
-from src.tasks.task_mem_efficiency import MemTaskData
+from conductress.config import ServerInfo
+from conductress.file_protocol import FileProtocol
+from conductress.tasks.task_mem_efficiency import MemTaskData
 
 
 class TestMemTaskIntegration:
@@ -21,14 +21,14 @@ class TestMemTaskIntegration:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             with (
-                patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"),
-                patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
+                patch("conductress.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"),
+                patch("conductress.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
             ):
                 yield tmp_path
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
-    @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
     async def test_full_workflow_integration(self, temp_dir):
         """Test complete MemTaskRunner workflow with real valkey binary."""
@@ -49,7 +49,7 @@ class TestMemTaskIntegration:
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
-        with patch("src.tasks.task_mem_efficiency.plt"):
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
             await runner.run()
 
         # Verify results were written to legacy output
@@ -78,9 +78,9 @@ class TestMemTaskIntegration:
             status = json.load(f)
         assert status["state"] == "completed"
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
-    @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
     async def test_expiration_workflow_integration(self, temp_dir):
         """Test MemTaskRunner with expiration enabled."""
@@ -101,7 +101,7 @@ class TestMemTaskIntegration:
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
-        with patch("src.tasks.task_mem_efficiency.plt"):
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
             await runner.run()
 
         # Verify results include expiration data
@@ -116,9 +116,9 @@ class TestMemTaskIntegration:
         result = results["data"]["results"][0]
         assert result["has_expire"] is True
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
-    @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
     async def test_concurrent_size_testing(self, temp_dir):
         """Test MemTaskRunner handles multiple sizes concurrently."""
@@ -139,7 +139,7 @@ class TestMemTaskIntegration:
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
-        with patch("src.tasks.task_mem_efficiency.plt"):
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
             await runner.run()
 
         # Verify all sizes were tested
@@ -159,8 +159,8 @@ class TestMemTaskIntegration:
     async def test_error_handling_integration(self, temp_dir):
         """Test MemTaskRunner error handling with invalid configuration."""
         with (
-            patch("src.config.REPO_NAMES", ["valkey"]),
-            patch("src.task_queue.config.REPO_NAMES", ["valkey"]),
+            patch("conductress.config.REPO_NAMES", ["valkey"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey"]),
         ):
             task_data = MemTaskData(
                 source="valkey",
@@ -181,7 +181,7 @@ class TestMemTaskIntegration:
 
         # Mock server to raise exception during binary caching
         with patch(
-            "src.server.Server.ensure_binary_cached",
+            "conductress.server.Server.ensure_binary_cached",
             side_effect=Exception("Binary not found"),
         ):
             with pytest.raises(Exception):
@@ -198,8 +198,8 @@ class TestMemTaskIntegration:
         assert "state" in status
         assert "start_time" in status
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     def test_task_data_serialization_integration(self, temp_dir):
         """Test MemTaskData serialization/deserialization."""
         original_task = MemTaskData(
@@ -236,9 +236,9 @@ class TestMemTaskIntegration:
         assert runner.test == "zadd"
         assert runner.val_sizes == [64, 128, 256]
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
-    @patch("src.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
     @pytest.mark.asyncio
     async def test_file_protocol_integration(self, temp_dir):
         """Test FileProtocol integration with MemTaskRunner."""
@@ -259,7 +259,7 @@ class TestMemTaskIntegration:
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
-        with patch("src.tasks.task_mem_efficiency.plt"):
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
             await runner.run()
 
         # Verify expected files were created

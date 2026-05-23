@@ -1,6 +1,6 @@
 """Unit tests for SshHost — SSH connection and output normalization."""
 
-from src.ssh_host import SshHost
+from conductress.ssh_host import SshHost
 
 
 class TestEnsureStr:

@@ -3,7 +3,7 @@
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from src.server import Server
+from conductress.server import Server
 
 SAMPLE_PERF_STAT_OUTPUT = """\
 # started on Sat May 17 08:00:00 2026

@@ -27,11 +27,11 @@ from textual.widgets import (
 )
 from textual.widgets.selection_list import Selection
 
-from src.file_protocol import FileProtocol
-from src.tasks.task_full_sync import SyncTaskData
-from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
-from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
-from src.tui_data_service import TUIDataService
+from conductress.file_protocol import FileProtocol
+from conductress.tasks.task_full_sync import SyncTaskData
+from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
+from conductress.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
+from conductress.tui_data_service import TUIDataService
 
 from . import config
 from .base_task_visualizer import BaseTaskVisualizer, PlaceholderTaskVisualizer

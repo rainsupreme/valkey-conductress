@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.stabilization_manager import StabilizationManager
+from conductress.stabilization_manager import StabilizationManager
 
 
 @pytest.fixture

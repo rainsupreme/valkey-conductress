@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.binary_manager import BinaryManager
-from src.server import Server
+from conductress.binary_manager import BinaryManager
+from conductress.server import Server
 
 
 class TestGetCachedBuildPath:
@@ -99,7 +99,7 @@ class TestReleaseServerCpus:
     """Tests for Server._release_server_cpus()."""
 
     def test_release_clears_state(self):
-        from src.cpu_allocator import AllocationTag, CpuAllocator
+        from conductress.cpu_allocator import AllocationTag, CpuAllocator
 
         allocator = CpuAllocator()
         allocator.register_host("127.0.0.1", all_cpus=list(range(16)))

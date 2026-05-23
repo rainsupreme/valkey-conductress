@@ -338,7 +338,7 @@ def _format_size(size_bytes: int) -> str:
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for the analysis CLI."""
     parser = argparse.ArgumentParser(
-        prog="python -m src.analysis",
+        prog="conductress compare",
         description="Compare benchmark results between two specifiers.",
     )
     parser.add_argument(

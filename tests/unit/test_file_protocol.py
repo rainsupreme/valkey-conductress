@@ -7,8 +7,8 @@ from threading import Thread
 
 import pytest
 
-import src.file_protocol
-from src.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
+import conductress.file_protocol
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 
 
 class TestFileProtocol:
@@ -21,12 +21,12 @@ class TestFileProtocol:
         output_file = tmp_path / "output.txt"
 
         # Store originals
-        original_results = src.file_protocol.CONDUCTRESS_RESULTS
-        original_output = src.file_protocol.CONDUCTRESS_OUTPUT
+        original_results = conductress.file_protocol.CONDUCTRESS_RESULTS
+        original_output = conductress.file_protocol.CONDUCTRESS_OUTPUT
 
         # Apply mocks
-        src.file_protocol.CONDUCTRESS_RESULTS = results_dir
-        src.file_protocol.CONDUCTRESS_OUTPUT = output_file
+        conductress.file_protocol.CONDUCTRESS_RESULTS = results_dir
+        conductress.file_protocol.CONDUCTRESS_OUTPUT = output_file
 
         # Make tmp_path available to test methods
         self.tmp_path = tmp_path
@@ -34,8 +34,8 @@ class TestFileProtocol:
         yield
 
         # Restore originals
-        src.file_protocol.CONDUCTRESS_RESULTS = original_results
-        src.file_protocol.CONDUCTRESS_OUTPUT = original_output
+        conductress.file_protocol.CONDUCTRESS_RESULTS = original_results
+        conductress.file_protocol.CONDUCTRESS_OUTPUT = original_output
 
     def test_status_write_read(self):
         """Test status file operations."""
@@ -91,7 +91,7 @@ class TestFileProtocol:
         protocol.write_results(results)
 
         # Verify legacy output was written
-        output_file = src.file_protocol.CONDUCTRESS_OUTPUT
+        output_file = conductress.file_protocol.CONDUCTRESS_OUTPUT
         assert output_file.exists()
         with open(output_file, encoding="utf-8") as f:
             line = f.readline()
@@ -230,7 +230,7 @@ class TestFileProtocol:
         protocol.write_results(results)
 
         # Check if metrics file was copied to task subdirectory
-        task_results_dir = src.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
+        task_results_dir = conductress.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
         assert task_results_dir.exists()
         copied_files = list(task_results_dir.glob("*.jsonl"))
         assert len(copied_files) == 1
@@ -393,7 +393,7 @@ class TestFileProtocol:
 
         protocol.write_results(results)
 
-        task_results_dir = src.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
+        task_results_dir = conductress.file_protocol.CONDUCTRESS_RESULTS / "copy_test"
         assert task_results_dir.exists()
         copied_files = list(task_results_dir.glob("*.jsonl"))
         assert len(copied_files) == 1

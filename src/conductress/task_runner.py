@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Protocol
 
-from src.task_queue import BaseTaskRunner
+from conductress.task_queue import BaseTaskRunner
 
 from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, get_servers
 from .file_protocol import FileProtocol
@@ -40,7 +40,7 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from src.sweep.coordinator import SweepCoordinator
+            from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
@@ -48,7 +48,7 @@ class TaskRunner:
             coordinator.initialize()
             self._subscribers.append(coordinator)
         if memory_sweep:
-            from src.sweep.memory_coordinator import MemorySweepCoordinator
+            from conductress.sweep.memory_coordinator import MemorySweepCoordinator
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"

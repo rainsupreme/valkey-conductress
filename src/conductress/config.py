@@ -63,7 +63,7 @@ TUI_REFRESH_INTERVAL = 15
 SERVER_PORT_RANGE_START = 9000
 
 # TODO fix paths for remote hosts?
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
 
 VALKEY_CLI = "valkey-cli"

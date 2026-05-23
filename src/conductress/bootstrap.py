@@ -57,7 +57,7 @@ except ImportError:
     except ImportError:
         logger.error("asyncssh is not available even after installation. Try again - python may need to be restarted.")
         sys.exit(1)
-from src.utility import async_run
+from conductress.utility import async_run
 
 
 @dataclass

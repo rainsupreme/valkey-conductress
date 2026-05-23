@@ -7,8 +7,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from src import config
-from src.tasks.task_perf_benchmark import (
+from conductress import config
+from conductress.tasks.task_perf_benchmark import (
     BASE_KEY_PATTERN,
     BASE_KEY_SIZE,
     PerfTaskData,
@@ -114,7 +114,7 @@ class TestPerfTaskData:
             json.dump(task_data, f)
 
         # Load the task
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         loaded_task = BaseTaskData.from_file(task_file)
 
@@ -164,7 +164,7 @@ class TestPerfTaskDataSerialization:
     @pytest.mark.parametrize("test_name", ["sismember", "ping", "mget"])
     def test_serialize_deserialize_new_test_types(self, test_name, temp_dir):
         """Verify PerfTaskData round-trips correctly for each new test type."""
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         task = _make_perf_task_data(test=test_name)
         task_file = temp_dir / f"task_{test_name}.json"
@@ -180,7 +180,7 @@ class TestPerfTaskDataSerialization:
     @pytest.mark.parametrize("test_name", ["sismember", "ping", "mget"])
     def test_deserialize_new_test_types_from_raw_json(self, test_name, temp_dir):
         """Verify PerfTaskData deserializes from raw JSON for new test types."""
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         task_data = {
             "source": "manual",
@@ -561,7 +561,7 @@ class TestRepetitionsUnitTests:
 
     def test_perf_task_data_repetitions_1_serialization(self, temp_dir):
         """PerfTaskData with repetitions=1 serializes and deserializes correctly."""
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         task = _make_perf_task_data(repetitions=1)
         task_file = temp_dir / "task_rep1.json"
@@ -573,7 +573,7 @@ class TestRepetitionsUnitTests:
 
     def test_perf_task_data_repetitions_3_serialization(self, temp_dir):
         """PerfTaskData with repetitions=3 serializes and deserializes correctly."""
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         task = _make_perf_task_data(repetitions=3)
         task_file = temp_dir / "task_rep3.json"
@@ -585,7 +585,7 @@ class TestRepetitionsUnitTests:
 
     def test_perf_task_data_backward_compat_no_repetitions_field(self, temp_dir):
         """PerfTaskData deserializes from JSON without repetitions field (defaults to 1)."""
-        from src.task_queue import BaseTaskData
+        from conductress.task_queue import BaseTaskData
 
         task_data = {
             "source": "manual",

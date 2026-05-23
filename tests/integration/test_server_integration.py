@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import REPO_NAMES
-from src.server import Server
+from conductress.config import REPO_NAMES
+from conductress.server import Server
 
 TEST_REPO = REPO_NAMES[0]
 TEST_SPECIFIER = "8.0"
@@ -13,7 +13,7 @@ DEFAULT_PORT = 6379
 TEST_PORTS = 9000
 
 
-@patch("src.config.REPO_NAMES", REPO_NAMES)
+@patch("conductress.config.REPO_NAMES", REPO_NAMES)
 class TestServerIntegration:
 
     pytestmark = pytest.mark.requires_server

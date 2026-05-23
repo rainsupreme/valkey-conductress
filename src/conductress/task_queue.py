@@ -41,7 +41,7 @@ class BaseTaskData(ABC):
         for task_file in tasks_dir.glob("task_*.py"):
             module_name = task_file.stem
             logger.info("Importing task module: %s", module_name)
-            import_module(f"src.tasks.{module_name}")
+            import_module(f"conductress.tasks.{module_name}")
 
     def __init_subclass__(cls, **kwargs):
         """Register subclasses in the task registry."""

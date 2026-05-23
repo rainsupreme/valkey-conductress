@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from src import config
-from src.cli import generate_task_combinations, main, validate_source
+from conductress import config
+from conductress.cli import generate_task_combinations, main, validate_source
 
 # Patch config for tests (consistent with other test modules)
 config.MANUALLY_UPLOADED = "manual"
@@ -151,7 +151,7 @@ class TestValidateSource:
 class TestQueueAddSubcommand:
     """Unit tests for the 'queue add' subcommand via main()."""
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_correct_number_of_tasks(self, mock_queue_cls):
         """main(["queue", "add", ...]) with 2 tests, 2 sizes, 2 io-threads, 2 pipelining, 1 key-size
         should queue 2*2*2*2*1 = 16 tasks."""
@@ -180,7 +180,7 @@ class TestQueueAddSubcommand:
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 16
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_invalid_source_returns_exit_code_1(self, mock_queue_cls):
         """main() with an invalid source should return exit code 1."""
         exit_code = main(
@@ -197,7 +197,7 @@ class TestQueueAddSubcommand:
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_empty_tests_returns_exit_code_1(self, mock_queue_cls):
         """main() with empty --tests should return exit code 1."""
         exit_code = main(
@@ -214,7 +214,7 @@ class TestQueueAddSubcommand:
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_repetitions_zero_returns_exit_code_1(self, mock_queue_cls):
         """main() with --repetitions 0 should return exit code 1."""
         exit_code = main(
@@ -233,7 +233,7 @@ class TestQueueAddSubcommand:
         assert exit_code == 1
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
         """main() with --key-sizes "0,64" should produce tasks with key_size 0 and 64."""
         mock_queue = MagicMock()
@@ -258,7 +258,7 @@ class TestQueueAddSubcommand:
         submitted_key_sizes = sorted(call.args[0].key_size for call in mock_queue.submit_task.call_args_list)
         assert submitted_key_sizes == [0, 64]
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_defaults(self, mock_queue_cls):
         """Defaults: source=valkey, specifier=unstable, sizes=512, io-threads=9, pipeline=10, reps=5."""
         mock_queue = MagicMock()
@@ -290,7 +290,7 @@ class TestQueueAddSubcommand:
 class TestQueueListSubcommand:
     """Unit tests for the 'queue list' subcommand via main()."""
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_list_returns_exit_code_0(self, mock_queue_cls):
         """main(["queue", "list"]) should return exit code 0."""
         mock_queue = MagicMock()
@@ -300,7 +300,7 @@ class TestQueueListSubcommand:
         exit_code = main(["queue", "list"])
         assert exit_code == 0
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_no_subcommand_defaults_to_list(self, mock_queue_cls):
         """main(["queue"]) with no subcommand should default to list."""
         mock_queue = MagicMock()
@@ -319,7 +319,7 @@ class TestQueueListSubcommand:
 class TestQueueRemoveSubcommand:
     """Unit tests for the 'queue remove' subcommand."""
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_remove_success(self, mock_queue_cls):
         mock_queue = MagicMock()
         mock_queue.remove_task.return_value = True
@@ -329,7 +329,7 @@ class TestQueueRemoveSubcommand:
         assert exit_code == 0
         mock_queue.remove_task.assert_called_once_with("2026.05.17_10.08.33.876407")
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_remove_not_found(self, mock_queue_cls):
         mock_queue = MagicMock()
         mock_queue.remove_task.return_value = False
@@ -342,7 +342,7 @@ class TestQueueRemoveSubcommand:
 class TestQueueClearSubcommand:
     """Unit tests for the 'queue clear' subcommand."""
 
-    @patch("src.cli.TaskQueue")
+    @patch("conductress.cli.TaskQueue")
     def test_queue_clear_removes_all(self, mock_queue_cls):
         mock_queue = MagicMock()
         mock_task1 = MagicMock()

@@ -29,12 +29,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      - run: pip install 'black==25.11.0' 'isort==5.13.2' 'pylint>=3.0,<4.0'
+      - run: pip install -e . 'black==25.11.0' 'isort==5.13.2' 'pylint>=3.0,<4.0'
       - run: black --check --line-length 120 src/ tests/
       - run: isort --check-only --profile black --line-length 120 src/ tests/
       - run: pylint --errors-only --disable=import-error src/
-        env:
-          PYTHONPATH: ${{ github.workspace }}
 
   test:
     strategy:
@@ -46,16 +44,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: pip install -r requirements/pip-requirements.txt -r requirements/pip-requirements-dev.txt
+      - name: Install package and dependencies
+        run: pip install -e . -r requirements/pip-requirements-dev.txt
       - name: Run unit tests
-        run: pytest tests/unit --cov=src --cov-report=term-missing --cov-report=xml
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: pytest tests/unit --cov=conductress --cov-report=term-missing --cov-report=xml
       - name: Run integration tests
         run: pytest tests/integration -m "not requires_server"
-        env:
-          PYTHONPATH: ${{ github.workspace }}
       - name: Type checking
         run: mypy src/ --ignore-missing-imports
       - name: Upload coverage
