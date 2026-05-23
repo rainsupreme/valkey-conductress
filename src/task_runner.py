@@ -36,7 +36,12 @@ class TaskSubscriber(Protocol):
 class TaskRunner:
     """Takes tasks from queue and runs them"""
 
-    def __init__(self, sweep: bool = False, repo_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        sweep: bool = False,
+        memory_sweep: bool = False,
+        repo_path: Optional[Path] = None,
+    ) -> None:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
@@ -47,6 +52,14 @@ class TaskRunner:
             coordinator = SweepCoordinator(repo_path)
             coordinator.initialize()
             self._subscribers.append(coordinator)
+        if memory_sweep:
+            from src.sweep.memory_coordinator import MemorySweepCoordinator
+
+            if repo_path is None:
+                repo_path = Path.home() / "valkey"
+            mem_coordinator = MemorySweepCoordinator(repo_path)
+            mem_coordinator.initialize()
+            self._subscribers.append(mem_coordinator)
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task"""
