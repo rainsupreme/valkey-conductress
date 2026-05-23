@@ -71,6 +71,22 @@ def compute_aggregated_stats(per_run_rps: list[float]) -> tuple[float, float]:
     return mean_rps, ci_95
 
 
+def should_stop_adaptive(per_run_rps: list[float], rep: int, min_reps: int,
+                         target_cv: float) -> bool:
+    """Return True if adaptive precision target is met and we can stop early.
+
+    Args:
+        per_run_rps: RPS values collected so far.
+        rep: Current repetition index (0-based).
+        min_reps: Minimum number of reps before early exit is allowed.
+        target_cv: Target CV% threshold. 0 = disabled.
+    """
+    if target_cv <= 0 or rep < min_reps - 1 or len(per_run_rps) < 2:
+        return False
+    cv = stdev(per_run_rps) / mean(per_run_rps) * 100
+    return cv <= target_cv
+
+
 @dataclass
 class PerfTaskData(BaseTaskData):
     """data class for performance benchmark task"""
@@ -86,7 +102,9 @@ class PerfTaskData(BaseTaskData):
     has_expire: bool
     preload_keys: bool
     key_size: int = 0  # target key size in bytes, 0 = standard keys
-    repetitions: int = 1  # number of independent benchmark runs
+    repetitions: int = 1  # number of independent benchmark runs (min reps in adaptive mode)
+    max_reps: int = 0  # 0 = fixed reps; >0 = adaptive mode upper limit
+    target_cv: float = 0.0  # adaptive: stop early when CV% <= this; 0 = disabled
     sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
@@ -125,6 +143,8 @@ class PerfTaskData(BaseTaskData):
             note=self.note,
             key_size=self.key_size,
             repetitions=self.repetitions,
+            max_reps=self.max_reps,
+            target_cv=self.target_cv,
         )
 
 
@@ -208,6 +228,8 @@ class PerfTaskRunner(BaseTaskRunner):
         note: str = "",
         key_size: int = 0,
         repetitions: int = 1,
+        max_reps: int = 0,
+        target_cv: float = 0.0,
     ):
         super().__init__(task_name)
 
@@ -231,6 +253,8 @@ class PerfTaskRunner(BaseTaskRunner):
         self.make_args = make_args
         self.key_size = key_size
         self.repetitions = repetitions
+        self.max_reps = max_reps
+        self.target_cv = target_cv
 
         self.profiling_thread = None
         self.profiling = self.sample_rate > 0
@@ -413,7 +437,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
         When repetitions == 1, preserves existing single-run behavior unchanged.
         """
-        if self.repetitions > 1:
+        if self.repetitions > 1 or self.max_reps > 0:
             await self._run_with_repetitions()
         else:
             await self._run_single()
@@ -593,10 +617,11 @@ class PerfTaskRunner(BaseTaskRunner):
         per_run_rps: list[float] = []
 
         # setup
-        print("preparing:", self.title, f"({self.repetitions} repetitions)")
+        effective_max = self.max_reps if self.max_reps > 0 else self.repetitions
+        print("preparing:", self.title, f"({effective_max} max repetitions, target CV {self.target_cv}%)" if self.target_cv > 0 else f"({self.repetitions} repetitions)")
 
         # Update status for total steps across all repetitions
-        total_steps = (self.warmup + self.duration) * self.repetitions
+        total_steps = (self.warmup + self.duration) * effective_max
         self.status.steps_total = total_steps
         self.file_protocol.write_status(self.status)
 
@@ -609,8 +634,8 @@ class PerfTaskRunner(BaseTaskRunner):
         server = None
 
         try:
-            for rep in range(self.repetitions):
-                self.logger.info("Starting repetition %d/%d", rep + 1, self.repetitions)
+            for rep in range(effective_max):
+                self.logger.info("Starting repetition %d/%d", rep + 1, effective_max)
 
                 # Kill any existing instances and start fresh
                 await replication_group.kill_all_valkey_instances()
@@ -703,7 +728,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 self.rps_data = []
 
                 command = RealtimeCommand(command_string)
-                self.logger.info("Starting realtime command (rep %d/%d): %s", rep + 1, self.repetitions, command_string)
+                self.logger.info("Starting realtime command (rep %d/%d): %s", rep + 1, effective_max, command_string)
                 command.start()
                 start_time = time.monotonic()
                 test_start_time = start_time + self.warmup
@@ -714,7 +739,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 self.status.state = "running"
                 self.file_protocol.write_status(self.status)
 
-                print(f"started rt cmd (rep {rep + 1}/{self.repetitions})")
+                print(f"started rt cmd (rep {rep + 1}/{effective_max})")
                 last_heartbeat = time.time()
                 while command.is_running():
                     await self.__collect_metrics(command)
@@ -750,7 +775,16 @@ class PerfTaskRunner(BaseTaskRunner):
                     raise RuntimeError(f"No results recorded for repetition {rep + 1}")
                 run_avg_rps = sum(self.rps_data) / len(self.rps_data)
                 per_run_rps.append(run_avg_rps)
-                self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, self.repetitions, run_avg_rps)
+                self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_max, run_avg_rps)
+
+                # Adaptive early exit: stop if we've reached target CV
+                if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
+                    self.logger.info(
+                        "Target CV reached: %.2f%% <= %.2f%% after %d reps",
+                        stdev(per_run_rps) / mean(per_run_rps) * 100,
+                        self.target_cv, rep + 1,
+                    )
+                    break
 
                 # Handle profiling/perf_stat reports per run
                 if self.profiling:
@@ -764,7 +798,7 @@ class PerfTaskRunner(BaseTaskRunner):
                     await server.perf_stat_report(result_dir)
 
                 # Stop the replication group between repetitions (except after the last one)
-                if rep < self.repetitions - 1:
+                if rep < effective_max - 1:
                     await replication_group.stop_all_servers()
 
             # All repetitions complete — write aggregated result

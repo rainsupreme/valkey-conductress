@@ -110,7 +110,7 @@ class SweepState:
     # Last known HEAD that was benchmarked
     last_benchmarked_head: Optional[str] = None
     # Threshold for bisection (relative, e.g. 0.01 = 1%)
-    threshold: float = 0.01
+    threshold: float = 0.02
 
     def save(self, path: Path) -> None:
         """Serialize sweep state to a JSON file."""
@@ -154,7 +154,7 @@ class SweepState:
 
         data = json.loads(path.read_text())
         state = cls(
-            threshold=data.get("threshold", 0.01),
+            threshold=data.get("threshold", 0.02),
             last_benchmarked_head=data.get("last_benchmarked_head"),
             merge_commits=data.get("merge_commits", []),
             commit_dates=data.get("commit_dates", {}),

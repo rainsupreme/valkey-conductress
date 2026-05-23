@@ -31,7 +31,9 @@ SWEEP_IO_THREADS = 7
 SWEEP_PIPELINING = 10
 SWEEP_WARMUP = 5
 SWEEP_DURATION = 30
-SWEEP_REPETITIONS = 3
+SWEEP_REPETITIONS = 3  # minimum reps
+SWEEP_MAX_REPS = 7  # adaptive upper limit
+SWEEP_TARGET_CV = 0.5  # stop early when CV% <= this
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 
@@ -222,4 +224,6 @@ class SweepCoordinator:
             preload_keys=True,
             key_size=0,
             repetitions=SWEEP_REPETITIONS,
+            max_reps=SWEEP_MAX_REPS,
+            target_cv=SWEEP_TARGET_CV,
         )
