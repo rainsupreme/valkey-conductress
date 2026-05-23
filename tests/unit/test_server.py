@@ -1,83 +1,85 @@
 """Unit tests for Server class pure logic (no SSH/network required)."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from src.binary_manager import BinaryManager
 from src.server import Server
 
 
 class TestGetCachedBuildPath:
-    """Tests for Server.__get_cached_build_path() — build cache path construction."""
+    """Tests for BinaryManager.get_cached_build_path() — build cache path construction."""
+
+    def _make_manager(self, source="valkey", hash_val="abc123", make_args=""):
+        host = MagicMock()
+        host.ip = "127.0.0.1"
+        mgr = BinaryManager(host)
+        mgr.source = source
+        mgr.hash = hash_val
+        mgr.make_args = make_args
+        return mgr
 
     def test_basic_path_construction(self):
-        server = Server("127.0.0.1")
-        server.source = "valkey"
-        server.hash = "abc123def456"
-        server.make_args = "USE_FAST_FLOAT=yes"
-
-        path = server._Server__get_cached_build_path()
+        mgr = self._make_manager(source="valkey", hash_val="abc123def456", make_args="USE_FAST_FLOAT=yes")
+        path = mgr.get_cached_build_path()
 
         assert path.parts[-3] == "valkey"
         assert path.parts[-2] == "abc123def456"
-        # make_args hash is 16 chars of md5
         assert len(path.parts[-1]) == 16
 
     def test_different_make_args_different_path(self):
-        server = Server("127.0.0.1")
-        server.source = "valkey"
-        server.hash = "abc123"
+        mgr = self._make_manager(hash_val="abc123")
 
-        server.make_args = "USE_FAST_FLOAT=yes"
-        path1 = server._Server__get_cached_build_path()
+        mgr.make_args = "USE_FAST_FLOAT=yes"
+        path1 = mgr.get_cached_build_path()
 
-        server.make_args = ""
-        path2 = server._Server__get_cached_build_path()
+        mgr.make_args = ""
+        path2 = mgr.get_cached_build_path()
 
         assert path1 != path2
 
     def test_empty_make_args_valid(self):
-        server = Server("127.0.0.1")
-        server.source = "valkey"
-        server.hash = "abc123"
-        server.make_args = ""
-
-        path = server._Server__get_cached_build_path()
-        assert len(path.parts[-1]) == 16  # still a valid md5 prefix
+        mgr = self._make_manager(hash_val="abc123", make_args="")
+        path = mgr.get_cached_build_path()
+        assert len(path.parts[-1]) == 16
 
     def test_raises_when_source_none(self):
-        server = Server("127.0.0.1")
-        server.source = None
-        server.hash = "abc123"
+        mgr = self._make_manager()
+        mgr.source = None
 
         with pytest.raises(RuntimeError, match="source and hash must be set"):
-            server._Server__get_cached_build_path()
+            mgr.get_cached_build_path()
 
     def test_raises_when_hash_none(self):
-        server = Server("127.0.0.1")
-        server.source = "valkey"
-        server.hash = None
+        mgr = self._make_manager()
+        mgr.hash = None
 
         with pytest.raises(RuntimeError, match="source and hash must be set"):
-            server._Server__get_cached_build_path()
+            mgr.get_cached_build_path()
 
 
 class TestGetSourceBinaryPath:
-    """Tests for Server.__get_source_binary_path()."""
+    """Tests for BinaryManager.get_source_binary_path()."""
 
     def test_basic_path(self):
-        server = Server("127.0.0.1")
-        server.source = "valkey"
+        host = MagicMock()
+        host.ip = "127.0.0.1"
+        mgr = BinaryManager(host)
+        mgr.source = "valkey"
 
-        path = server._Server__get_source_binary_path()
+        path = mgr.get_source_binary_path()
         assert str(path).endswith("valkey/src")
 
     def test_raises_when_source_none(self):
-        server = Server("127.0.0.1")
-        server.source = None
+        host = MagicMock()
+        host.ip = "127.0.0.1"
+        mgr = BinaryManager(host)
+        mgr.source = None
 
         with pytest.raises(RuntimeError, match="source must be set"):
-            server._Server__get_source_binary_path()
+            mgr.get_source_binary_path()
 
 
 class TestGetBuildHash:
