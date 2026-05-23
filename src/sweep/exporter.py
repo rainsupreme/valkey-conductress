@@ -20,6 +20,7 @@ def export_series(state: SweepState, output_path: Path,
         workload: Workload identifier string.
     """
     planner = SweepPlanner(state)
+    commit_index = planner._commit_index
 
     # Build ordered points list
     points: list[dict[str, Any]] = []
@@ -27,6 +28,7 @@ def export_series(state: SweepState, output_path: Path,
         entry: dict[str, Any] = {
             "commit": point.commit,
             "date": point.date,
+            "commit_index": commit_index.get(point.commit, 0),
             "results": {
                 workload: {
                     "rps": point.rps,
@@ -59,6 +61,7 @@ def export_series(state: SweepState, output_path: Path,
             "platform": platform,
             "workload": workload,
             "generated": datetime.now(timezone.utc).isoformat(),
+            "total_commits": len(state.merge_commits),
         },
         "workloads": [workload],
         "points": points,
