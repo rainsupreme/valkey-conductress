@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-import src.config as config_module
-from src.config import ServerInfo, get_servers, load_server_ips
+import conductress.config as config_module
+from conductress.config import ServerInfo, get_servers, load_server_ips
 
 
 class TestServerInfo:
@@ -27,7 +27,7 @@ class TestLoadServerIps:
         }
         config_file = tmp_path / "servers.json"
         config_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
 
         servers = load_server_ips()
         assert len(servers) == 2
@@ -42,7 +42,7 @@ class TestLoadServerIps:
         }
         config_file = tmp_path / "servers.json"
         config_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
 
         servers = load_server_ips()
         assert len(servers) == 0
@@ -56,7 +56,7 @@ class TestLoadServerIps:
         }
         config_file = tmp_path / "servers.json"
         config_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
 
         servers = load_server_ips()
         assert len(servers) == 2
@@ -75,7 +75,7 @@ class TestGetServers:
         }
         config_file = tmp_path / "servers.json"
         config_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
         # Reset the cached _SERVERS so get_servers() re-loads
         monkeypatch.setattr(config_module, "_SERVERS", None)
 
@@ -86,7 +86,7 @@ class TestGetServers:
 
     def test_get_servers_raises_when_no_config(self, tmp_path, monkeypatch):
         """get_servers() should raise FileNotFoundError when no config file exists."""
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(config_module, "_SERVERS", None)
 
         with pytest.raises(FileNotFoundError):
@@ -101,7 +101,7 @@ class TestGetServers:
         }
         config_file = tmp_path / "servers.json"
         config_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(config_module, "_SERVERS", None)
 
         first_call = get_servers()
@@ -118,7 +118,7 @@ class TestGetServers:
         }
         default_file = tmp_path / "servers.default.json"
         default_file.write_text(json.dumps(config))
-        monkeypatch.setattr("src.config.PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(config_module, "_SERVERS", None)
 
         servers = get_servers()

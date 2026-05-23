@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from src.cpu_allocator import AllocationTag
-from src.server import Server
+from conductress.cpu_allocator import AllocationTag
+from conductress.server import Server
 
 pytestmark = pytest.mark.requires_server
 

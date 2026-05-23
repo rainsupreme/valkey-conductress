@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
-from src.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
+from conductress.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
 
 
 class TestFileDescriptorLimits:
@@ -176,7 +176,7 @@ class TestBootstrapImportOrdering:
 
     def test_bootstrap_imports_non_stdlib(self):
         """Verify bootstrap.py imports non-stdlib modules (expected behavior for runtime script)"""
-        bootstrap_path = Path(__file__).parent.parent.parent / "src" / "bootstrap.py"
+        bootstrap_path = Path(__file__).parent.parent.parent / "src" / "conductress" / "bootstrap.py"
 
         with open(bootstrap_path) as f:
             tree = ast.parse(f.read())

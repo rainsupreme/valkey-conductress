@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.task_runner import TaskRunner
+from conductress.task_runner import TaskRunner
 
 
 @pytest.fixture
 def temp_project_root(tmp_path):
     """Patch FAILED_TASKS paths to a temp directory for test isolation."""
     with (
-        patch("src.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"),
-        patch("src.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"),
+        patch("conductress.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"),
+        patch("conductress.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"),
     ):
         yield tmp_path
 
@@ -67,7 +67,7 @@ class TestSubscribers:
     """Tests for the pub/sub task completion pattern."""
 
     def test_subscriber_registered_when_sweep_enabled(self):
-        with patch("src.sweep.coordinator.SweepCoordinator") as MockCoord:
+        with patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord:
             MockCoord.return_value.initialize = MagicMock()
             runner = TaskRunner(sweep=True)
             assert len(runner._subscribers) == 1

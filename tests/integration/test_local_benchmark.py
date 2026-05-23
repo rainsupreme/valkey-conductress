@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from src.config import ServerInfo
-from src.server import Server
-from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
+from conductress.config import ServerInfo
+from conductress.server import Server
+from conductress.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
 
 pytestmark = pytest.mark.requires_server
 
@@ -42,7 +42,7 @@ async def test_local_benchmark_no_irq_pinning():
     await server.ensure_host_cpu_allocation()
 
     # Check that no IRQ allocation was created for loopback
-    from src.cpu_allocator import AllocationTag
+    from conductress.cpu_allocator import AllocationTag
 
     irq_tag = AllocationTag(task_id="system", purpose="irq")
     irq_allocation = server._cpu_allocator.get_allocation(server.ip, irq_tag)
@@ -56,7 +56,7 @@ async def test_local_benchmark_end_to_end():
     """Test a complete local benchmark run with minimal duration."""
 
     # Just test detection logic, don't create full task
-    from src.tasks.task_perf_benchmark import PerfTaskRunner
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
     # Test local benchmark detection
     runner = PerfTaskRunner(
@@ -84,7 +84,7 @@ async def test_local_benchmark_end_to_end():
 
 def test_is_local_benchmark_ipv4_localhost():
     """Test 127.0.0.1 is detected as local."""
-    from src.tasks.task_perf_benchmark import PerfTaskRunner
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
     runner = PerfTaskRunner(
         task_name="test",
@@ -106,7 +106,7 @@ def test_is_local_benchmark_ipv4_localhost():
 
 def test_is_local_benchmark_ipv6_localhost():
     """Test ::1 is detected as local."""
-    from src.tasks.task_perf_benchmark import PerfTaskRunner
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
     runner = PerfTaskRunner(
         task_name="test",
@@ -128,7 +128,7 @@ def test_is_local_benchmark_ipv6_localhost():
 
 def test_is_local_benchmark_hostname_localhost():
     """Test 'localhost' string is detected as local."""
-    from src.tasks.task_perf_benchmark import PerfTaskRunner
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
     runner = PerfTaskRunner(
         task_name="test",
@@ -150,7 +150,7 @@ def test_is_local_benchmark_hostname_localhost():
 
 def test_is_local_benchmark_remote_ip():
     """Test remote IPs are not detected as local."""
-    from src.tasks.task_perf_benchmark import PerfTaskRunner
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
     runner = PerfTaskRunner(
         task_name="test",
@@ -175,7 +175,7 @@ def test_is_local_benchmark_remote_ip():
 async def test_cpu_isolation_local_benchmark():
     """Test that server and client CPUs don't overlap in local benchmarks."""
 
-    from src.cpu_allocator import AllocationTag
+    from conductress.cpu_allocator import AllocationTag
 
     server = Server("127.0.0.1", port=9000)
     await server.ensure_host_cpu_allocation()

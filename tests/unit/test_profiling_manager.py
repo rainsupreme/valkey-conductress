@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.profiling_manager import ProfilingManager
+from conductress.profiling_manager import ProfilingManager
 
 
 @pytest.fixture

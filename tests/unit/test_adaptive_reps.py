@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.tasks.task_perf_benchmark import should_stop_adaptive
+from conductress.tasks.task_perf_benchmark import should_stop_adaptive
 
 
 class TestShouldStopAdaptive:

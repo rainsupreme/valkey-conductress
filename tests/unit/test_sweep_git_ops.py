@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from src.sweep.git_ops import MergeCommit, _parse_merge_subject, get_head, get_merge_commits, get_release_branch_points
+from conductress.sweep.git_ops import (
+    MergeCommit,
+    _parse_merge_subject,
+    get_head,
+    get_merge_commits,
+    get_release_branch_points,
+)
 
 
 @pytest.fixture

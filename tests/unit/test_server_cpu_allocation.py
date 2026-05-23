@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.cpu_allocator import AllocationTag, CpuAllocator
-from src.server import Server
+from conductress.cpu_allocator import AllocationTag, CpuAllocator
+from conductress.server import Server
 
 
 class TestServerCpuAllocation:

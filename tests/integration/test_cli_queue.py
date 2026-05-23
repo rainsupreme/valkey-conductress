@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
-from src import config
-from src.cli import main
-from src.task_queue import TaskQueue
+from conductress import config
+from conductress.cli import main
+from conductress.task_queue import TaskQueue
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def isolate_queue(queue_dir):
         def __init__(self, queue_dir_override=None):
             super().__init__(queue_dir=queue_dir)
 
-    with patch("src.cli.TaskQueue", _IsolatedTaskQueue):
+    with patch("conductress.cli.TaskQueue", _IsolatedTaskQueue):
         yield
 
 
@@ -49,9 +49,9 @@ def patch_sources():
     """Patch REPO_NAMES and MANUALLY_UPLOADED for all tests in this module."""
     with (
         patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
-        patch("src.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+        patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
         patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
-        patch("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+        patch("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
     ):
         yield
 

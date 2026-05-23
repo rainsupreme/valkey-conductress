@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 from scipy.stats import ttest_ind
 
-from src.analysis import AnalysisModule, main
+from conductress.analysis import AnalysisModule, main
 
 
 def _make_record(
@@ -234,11 +234,11 @@ class TestAnalysisFormatTable:
 
 
 class TestAnalysisCLIEntryPoint:
-    """Test the CLI entry point src.analysis.main() with the fixture file."""
+    """Test the CLI entry point conductress.analysis.main() with the fixture file."""
 
     def test_main_with_fixture_file(self, fixture_file, capsys):
         """main() prints a formatted comparison table to stdout."""
-        with patch("src.analysis.AnalysisModule") as MockModule:
+        with patch("conductress.analysis.AnalysisModule") as MockModule:
             # Use a real AnalysisModule pointed at the fixture
             real_module = AnalysisModule(results_path=fixture_file)
             MockModule.return_value = real_module
@@ -256,7 +256,7 @@ class TestAnalysisCLIEntryPoint:
     def test_main_missing_results_file(self, tmp_path, capsys):
         """main() returns 1 when the results file does not exist."""
         nonexistent = tmp_path / "nonexistent.jsonl"
-        with patch("src.analysis.AnalysisModule") as MockModule:
+        with patch("conductress.analysis.AnalysisModule") as MockModule:
             real_module = AnalysisModule(results_path=nonexistent)
             MockModule.return_value = real_module
 
@@ -268,7 +268,7 @@ class TestAnalysisCLIEntryPoint:
 
     def test_main_no_matching_results(self, fixture_file, capsys):
         """main() returns 0 with a message when no results match the specifiers."""
-        with patch("src.analysis.AnalysisModule") as MockModule:
+        with patch("conductress.analysis.AnalysisModule") as MockModule:
             real_module = AnalysisModule(results_path=fixture_file)
             MockModule.return_value = real_module
             real_module.results_path = fixture_file
@@ -281,7 +281,7 @@ class TestAnalysisCLIEntryPoint:
 
     def test_main_with_source_filter(self, fixture_file, capsys):
         """main() passes --source filter through to the analysis module."""
-        with patch("src.analysis.AnalysisModule") as MockModule:
+        with patch("conductress.analysis.AnalysisModule") as MockModule:
             real_module = AnalysisModule(results_path=fixture_file)
             MockModule.return_value = real_module
             real_module.results_path = fixture_file
@@ -294,7 +294,7 @@ class TestAnalysisCLIEntryPoint:
 
     def test_main_with_method_filter(self, fixture_file, capsys):
         """main() passes --method filter through to the analysis module."""
-        with patch("src.analysis.AnalysisModule") as MockModule:
+        with patch("conductress.analysis.AnalysisModule") as MockModule:
             real_module = AnalysisModule(results_path=fixture_file)
             MockModule.return_value = real_module
             real_module.results_path = fixture_file

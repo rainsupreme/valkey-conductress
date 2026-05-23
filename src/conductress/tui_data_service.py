@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
-from src.file_protocol import FileProtocol
-from src.task_queue import BaseTaskData, TaskQueue
+from conductress.file_protocol import FileProtocol
+from conductress.task_queue import BaseTaskData, TaskQueue
 
 
 class TUIDataService:

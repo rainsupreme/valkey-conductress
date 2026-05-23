@@ -2,7 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.tui import (
+from conductress.tui import (
     CommaSeparatedIntsValidator,
     MakeArgsValidator,
     NumberField,
@@ -12,7 +12,7 @@ from src.tui import (
     SingleNumberValidator,
     SourceSpeciferValidator,
 )
-from src.utility import HumanByte, HumanNumber, HumanTime
+from conductress.utility import HumanByte, HumanNumber, HumanTime
 
 
 class TestSingleNumberValidator:
@@ -213,7 +213,7 @@ class TestSourceSpecifierValidator:
             REPO_NAMES = ["repo1", "repo2"]
             MANUALLY_UPLOADED = "manually_uploaded"
 
-        monkeypatch.setattr("src.tui.config", DummyConfig)
+        monkeypatch.setattr("conductress.tui.config", DummyConfig)
 
     @pytest.mark.parametrize(
         "input_str,expected_result,expected_error",
@@ -413,7 +413,7 @@ class TestPerfTaskFormCartesianProduct:
         """The Cartesian product order in submit_task is (sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args)."""
         import inspect
 
-        from src.tui import PerfTaskForm
+        from conductress.tui import PerfTaskForm
 
         source = inspect.getsource(PerfTaskForm.submit_task)
         # Verify key_sizes is in the product call
@@ -423,10 +423,10 @@ class TestPerfTaskFormCartesianProduct:
 
     def test_repetitions_passed_to_perf_task_data(self, monkeypatch):
         """Repetitions value should be passed through to each PerfTaskData."""
-        monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+        monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["repo1"])
+        monkeypatch.setattr("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
 
-        from src.tasks.task_perf_benchmark import PerfTaskData
+        from conductress.tasks.task_perf_benchmark import PerfTaskData
 
         repetitions = 5
         task = PerfTaskData(
@@ -454,10 +454,10 @@ class TestPerfTaskFormCartesianProduct:
 
     def test_key_size_default_in_perf_task_data(self, monkeypatch):
         """PerfTaskData should default key_size=0 and repetitions=1."""
-        monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+        monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["repo1"])
+        monkeypatch.setattr("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
 
-        from src.tasks.task_perf_benchmark import PerfTaskData
+        from conductress.tasks.task_perf_benchmark import PerfTaskData
 
         task = PerfTaskData(
             source="repo1",
@@ -484,7 +484,7 @@ class TestPerfTaskFormCartesianProduct:
         """Verify submit_task passes repetitions to PerfTaskData constructor."""
         import inspect
 
-        from src.tui import PerfTaskForm
+        from conductress.tui import PerfTaskForm
 
         source = inspect.getsource(PerfTaskForm.submit_task)
         assert "repetitions=repetitions" in source
@@ -493,7 +493,7 @@ class TestPerfTaskFormCartesianProduct:
         """Verify submit_task passes key_size to PerfTaskData constructor."""
         import inspect
 
-        from src.tui import PerfTaskForm
+        from conductress.tui import PerfTaskForm
 
         source = inspect.getsource(PerfTaskForm.submit_task)
         assert "key_size=key_size" in source

@@ -10,11 +10,11 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from src.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
-from src.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
-from src.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
-from src.task_queue import BaseTaskData, TaskQueue
-from src.tasks.task_perf_benchmark import PerfTaskData
+from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
+from conductress.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
+from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
+from conductress.task_queue import BaseTaskData, TaskQueue
+from conductress.tasks.task_perf_benchmark import PerfTaskData
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class BaseSweepCoordinator(ABC):
 
     def export(self, output_path: Path, platform: str) -> int:
         """Export this coordinator's data to a series JSON file. Returns point count."""
-        from src.sweep.exporter import export_series
+        from conductress.sweep.exporter import export_series
 
         export_series(self.state, output_path, platform=platform, workload=self.metric_id)
         return sum(1 for p in self.state.points.values() if p.value is not None)
@@ -169,7 +169,7 @@ class BaseSweepCoordinator(ABC):
 
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history (Valkey-era only)."""
-        from src.sweep.git_ops import find_fork_point
+        from conductress.sweep.git_ops import find_fork_point
 
         fork_point = find_fork_point(self.repo_path)
         commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)

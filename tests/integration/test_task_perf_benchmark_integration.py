@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import ServerInfo
-from src.file_protocol import FileProtocol
-from src.tasks.task_perf_benchmark import PerfTaskData
+from conductress.config import ServerInfo
+from conductress.file_protocol import FileProtocol
+from conductress.tasks.task_perf_benchmark import PerfTaskData
 
 
 class TestPerfTaskIntegration:
@@ -21,13 +21,13 @@ class TestPerfTaskIntegration:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             with (
-                patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"),
-                patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
+                patch("conductress.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"),
+                patch("conductress.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
             ):
                 yield tmp_path
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.asyncio
     async def test_full_workflow_integration(self, temp_dir):
         """Test complete PerfTaskRunner workflow with real valkey binary."""
@@ -92,8 +92,8 @@ class TestPerfTaskIntegration:
             status = json.load(f)
         assert status["state"] == "completed"
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.parametrize("command_name", ["set", "get", "sadd", "hset", "zadd", "zrank", "zcount"])
     @pytest.mark.asyncio
     async def test_all_commands_integration(self, temp_dir, command_name):
@@ -133,8 +133,8 @@ class TestPerfTaskIntegration:
         assert results["method"] == f"perf-{command_name}"
         assert results["data"]["avg_rps"] > 0
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.asyncio
     async def test_no_preload_integration(self, temp_dir):
         """Test PerfTaskRunner with GET command without preloading."""
@@ -174,8 +174,8 @@ class TestPerfTaskIntegration:
         assert results["data"]["preload_keys"] is False
         assert results["data"]["avg_rps"] > 0
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.asyncio
     async def test_expiration_workflow_integration(self, temp_dir):
         """Test PerfTaskRunner with expiration enabled."""
@@ -214,8 +214,8 @@ class TestPerfTaskIntegration:
         assert results["data"]["has_expire"] is True
         assert results["data"]["avg_rps"] > 0
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.asyncio
     async def test_heartbeat_and_progress_integration(self, temp_dir):
         """Test that heartbeat and progress steps are tracked correctly."""
@@ -260,8 +260,8 @@ class TestPerfTaskIntegration:
     async def test_error_handling_integration(self, temp_dir):
         """Test PerfTaskRunner error handling with invalid configuration."""
         with (
-            patch("src.config.REPO_NAMES", ["valkey"]),
-            patch("src.task_queue.config.REPO_NAMES", ["valkey"]),
+            patch("conductress.config.REPO_NAMES", ["valkey"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey"]),
         ):
             task_data = PerfTaskData(
                 source="valkey",
@@ -288,7 +288,7 @@ class TestPerfTaskIntegration:
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         with patch(
-            "src.server.Server.ensure_binary_cached",
+            "conductress.server.Server.ensure_binary_cached",
             side_effect=Exception("Binary not found"),
         ):
             with pytest.raises(Exception):
@@ -302,8 +302,8 @@ class TestPerfTaskIntegration:
         assert "state" in status
         assert "start_time" in status
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     def test_task_data_serialization_integration(self, temp_dir):
         """Test PerfTaskData serialization/deserialization."""
         original_task = PerfTaskData(
@@ -348,8 +348,8 @@ class TestPerfTaskIntegration:
         assert runner.test.name == "get"
         assert runner.valsize == 256
 
-    @patch("src.config.REPO_NAMES", ["valkey"])
-    @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
     @pytest.mark.asyncio
     async def test_profiling_flamegraph_integration(self, temp_dir):
         """Test PerfTaskRunner with profiling enabled generates flamegraph."""

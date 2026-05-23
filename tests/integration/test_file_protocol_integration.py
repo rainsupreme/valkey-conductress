@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config import ServerInfo
-from src.file_protocol import BenchmarkStatus, FileProtocol, MetricData
-from src.task_runner import TaskRunner
-from src.tasks.task_perf_benchmark import PerfTaskRunner
+from conductress.config import ServerInfo
+from conductress.file_protocol import BenchmarkStatus, FileProtocol, MetricData
+from conductress.task_runner import TaskRunner
+from conductress.tasks.task_perf_benchmark import PerfTaskRunner
 
 
 class TestPerfTaskRunnerIntegration:
@@ -106,7 +106,7 @@ class TestTaskRunnerCleanup:
         return tmp_path
 
     @pytest.mark.asyncio
-    @patch("src.task_runner.get_servers", return_value=[ServerInfo(ip="127.0.0.1")])
+    @patch("conductress.task_runner.get_servers", return_value=[ServerInfo(ip="127.0.0.1")])
     async def test_task_runner_cleans_up_files(self, mock_get_servers, tmp_dir):
         """Test that TaskRunner cleans up file protocol files after task completion."""
 

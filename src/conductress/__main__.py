@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 
-from src.config import CONDUCTRESS_LOG
+from conductress.config import CONDUCTRESS_LOG
 
 
 def main() -> None:
@@ -78,7 +78,7 @@ def main() -> None:
         sys.exit(0)
 
     if args.command == "tui":
-        from src.tui import BenchmarkApp
+        from conductress.tui import BenchmarkApp
 
         app = BenchmarkApp()
         app.run()
@@ -90,8 +90,8 @@ def main() -> None:
         from datetime import datetime
         from pathlib import Path
 
-        from src.config import PROJECT_ROOT
-        from src.task_runner import TaskRunner
+        from conductress.config import PROJECT_ROOT
+        from conductress.task_runner import TaskRunner
 
         crash_file = PROJECT_ROOT / "last_crash.json"
         repo_path = Path(args.repo) if args.repo else None
@@ -127,8 +127,8 @@ def main() -> None:
     elif args.command == "setup":
         import asyncio
 
-        from src import config
-        from src.bootstrap import SERVERS, ensure_server_ssh_fingerprints, ensure_ssh_key, update_host_list
+        from conductress import config
+        from conductress.bootstrap import SERVERS, ensure_server_ssh_fingerprints, ensure_ssh_key, update_host_list
 
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
@@ -148,26 +148,26 @@ def main() -> None:
         logger.info("Update/setup complete!")
 
     elif args.command == "queue":
-        from src.cli import main as cli_main
+        from conductress.cli import main as cli_main
 
         sys.exit(cli_main(["queue"] + remaining))
 
     elif args.command == "compare":
-        from src.analysis import main as analysis_main
+        from conductress.analysis import main as analysis_main
 
         sys.exit(analysis_main(remaining))
 
     elif args.command == "status":
-        from src.status import print_status
+        from conductress.status import print_status
 
         sys.exit(print_status())
 
     elif args.command == "sweep":
         from pathlib import Path
 
-        from src.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
-        from src.sweep.memory_coordinator import MEMORY_STATE_FILE, MemorySweepCoordinator
-        from src.sweep.planner import SweepState
+        from conductress.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
+        from conductress.sweep.memory_coordinator import MEMORY_STATE_FILE, MemorySweepCoordinator
+        from conductress.sweep.planner import SweepState
 
         if args.sweep_command == "export":
             platform = args.platform
@@ -241,7 +241,7 @@ def main() -> None:
 
         elif args.sweep_command == "status":
             state = SweepState.load(SWEEP_STATE_FILE)
-            from src.sweep.planner import SweepPlanner
+            from conductress.sweep.planner import SweepPlanner
 
             planner = SweepPlanner(state)
             completed = sum(1 for p in state.points.values() if p.value is not None)

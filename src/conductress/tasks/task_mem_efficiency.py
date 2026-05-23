@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import plotext as plt
 
-from src.config import (
+from conductress.config import (
     MEM_TEST_EXPIRE_SECONDS,
     MEM_TEST_ITEM_COUNT,
     MEM_TEST_KEY_SIZE,
@@ -20,10 +20,10 @@ from src.config import (
     MEM_TEST_SCORE_SIZE,
     ServerInfo,
 )
-from src.file_protocol import BenchmarkResults, BenchmarkStatus
-from src.server import Server
-from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.utility import HumanByte, port_generator, print_pretty_header
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.server import Server
+from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.utility import HumanByte, port_generator, print_pretty_header
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ class MemTaskRunner(BaseTaskRunner):
             self.plot(efficiency_map)
 
             # Log metric data point
-            from src.file_protocol import MetricData
+            from conductress.file_protocol import MetricData
 
             metric = MetricData(
                 metrics={

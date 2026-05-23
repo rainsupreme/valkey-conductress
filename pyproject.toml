@@ -1,3 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conductress"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "asyncssh>=2.14.0,<3.0",
+    "plotext>=5.2,<6.0",
+    "scipy>=1.11,<2.0",
+    "textual>=0.80,<1.0",
+    "textual-plotext>=1.0,<2.0",
+]
+
+[project.scripts]
+conductress = "conductress.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.black]
 line-length = 120
 

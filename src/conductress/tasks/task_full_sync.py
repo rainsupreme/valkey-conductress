@@ -7,11 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
 
-from src.config import ServerInfo
-from src.file_protocol import BenchmarkResults, BenchmarkStatus
-from src.replication_group import ReplicationGroup
-from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.utility import HumanByte, HumanNumber, print_pretty_header
+from conductress.config import ServerInfo
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.replication_group import ReplicationGroup
+from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.utility import HumanByte, HumanNumber, print_pretty_header
 
 
 @dataclass

@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_TEST, SWEEP_VAL_SIZE, SweepCoordinator
-from src.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
+from conductress.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_TEST, SWEEP_VAL_SIZE, SweepCoordinator
+from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
 
 
 @pytest.fixture
@@ -49,10 +49,10 @@ def mock_repo(tmp_dir):
 class TestSweepCoordinatorInit:
     """Tests for SweepCoordinator initialization."""
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
-    @patch("src.sweep.coordinator.get_merge_commits")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.get_merge_commits")
     def test_initialize_populates_commits(self, mock_commits, mock_state_file, tmp_dir):
-        from src.sweep.git_ops import MergeCommit
+        from conductress.sweep.git_ops import MergeCommit
 
         mock_state_file.__class__ = Path
         state_file = tmp_dir / "state.json"
@@ -63,8 +63,8 @@ class TestSweepCoordinatorInit:
         ]
 
         with (
-            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
-            patch("src.sweep.coordinator.get_release_branch_points", return_value=[]),
+            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
@@ -73,7 +73,7 @@ class TestSweepCoordinatorInit:
         assert coordinator.state.merge_commits[0] == "aaa111"
         assert coordinator.state.commit_dates["bbb222"] == "2024-04-15"
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
     def test_initialize_skips_if_already_populated(self, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         # Pre-populate state
@@ -84,8 +84,8 @@ class TestSweepCoordinatorInit:
         state.save(state_file)
 
         with (
-            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
-            patch("src.sweep.coordinator.get_merge_commits") as mock_git,
+            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.sweep.coordinator.get_merge_commits") as mock_git,
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
@@ -96,8 +96,8 @@ class TestSweepCoordinatorInit:
 class TestSweepCoordinatorTaskGeneration:
     """Tests for sweep task generation."""
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
-    @patch("src.sweep.coordinator.get_head")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.get_head")
     def test_generates_task_for_new_head(self, mock_head, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         state = SweepState(
@@ -119,8 +119,8 @@ class TestSweepCoordinatorTaskGeneration:
         mock_head.return_value = "ccc"
 
         with (
-            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
-            patch("src.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]),
+            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
@@ -133,8 +133,8 @@ class TestSweepCoordinatorTaskGeneration:
         assert task.io_threads == SWEEP_IO_THREADS
         assert "[sweep]" in task.note
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
-    @patch("src.sweep.coordinator.get_head")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.get_head")
     def test_returns_none_when_all_done(self, mock_head, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         state = SweepState(
@@ -160,7 +160,7 @@ class TestSweepCoordinatorTaskGeneration:
         state.last_benchmarked_head = "bbb"
         state.save(state_file)
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             task = coordinator.get_next_sweep_task()
@@ -171,8 +171,8 @@ class TestSweepCoordinatorTaskGeneration:
 class TestSweepCoordinatorResults:
     """Tests for recording results and cleanup."""
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
-    @patch("src.sweep.coordinator.get_head")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.get_head")
     def test_record_result_persists(self, mock_head, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         state = SweepState(
@@ -182,7 +182,7 @@ class TestSweepCoordinatorResults:
         state.save(state_file)
         mock_head.return_value = "bbb"
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             coordinator.record_result("aaa", value=150000, cv=0.19, reps=3)
@@ -193,7 +193,7 @@ class TestSweepCoordinatorResults:
         assert loaded.points["aaa"].value == 150000
         assert loaded.points["aaa"].status == PointStatus.COMPLETED
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
     def test_record_build_failure_persists(self, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
         state = SweepState(
@@ -202,7 +202,7 @@ class TestSweepCoordinatorResults:
         )
         state.save(state_file)
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             coordinator.record_build_failure("aaa")
@@ -216,21 +216,21 @@ class TestTaskRunnerSweepIntegration:
 
     def test_task_runner_accepts_sweep_flag(self):
         """Verify TaskRunner can be instantiated with sweep=False without errors."""
-        from src.task_runner import TaskRunner
+        from conductress.task_runner import TaskRunner
 
         runner = TaskRunner(sweep=False)
         assert runner._subscribers == []
 
-    @patch("src.sweep.coordinator.SweepCoordinator.initialize")
-    @patch("src.sweep.coordinator.get_merge_commits", return_value=[])
-    @patch("src.sweep.coordinator.get_release_branch_points", return_value=[])
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
+    @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
+    @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
     def test_task_runner_sweep_mode_creates_sweep_coordinator(
         self, mock_state, mock_tags, mock_commits, mock_init, tmp_dir
     ):
-        from src.task_runner import TaskRunner
+        from conductress.task_runner import TaskRunner
 
         state_file = tmp_dir / "state.json"
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             runner = TaskRunner(sweep=True, repo_path=tmp_dir)
         assert len(runner._subscribers) == 1

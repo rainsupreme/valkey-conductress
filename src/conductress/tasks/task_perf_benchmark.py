@@ -10,8 +10,8 @@ from typing import List, Optional, Sequence, Union
 
 from scipy.stats import t as t_dist
 
-from src.base_task_visualizer import PlotTaskVisualizer
-from src.config import (
+from conductress.base_task_visualizer import PlotTaskVisualizer
+from conductress.config import (
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
@@ -19,12 +19,12 @@ from src.config import (
     VALKEY_BENCHMARK,
     ServerInfo,
 )
-from src.cpu_allocator import AllocationTag
-from src.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
-from src.replication_group import ReplicationGroup
-from src.server import Server
-from src.task_queue import BaseTaskData, BaseTaskRunner
-from src.utility import BILLION, HumanByte, HumanNumber, HumanTime, RealtimeCommand
+from conductress.cpu_allocator import AllocationTag
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
+from conductress.replication_group import ReplicationGroup
+from conductress.server import Server
+from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.utility import BILLION, HumanByte, HumanNumber, HumanTime, RealtimeCommand
 
 BASE_KEY_PATTERN = "key:__rand_int__"
 BASE_KEY_SIZE = len(BASE_KEY_PATTERN)  # 16 bytes

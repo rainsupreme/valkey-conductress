@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from src.utility import (
+from conductress.utility import (
     HumanByte,
     HumanNumber,
     HumanTime,
@@ -109,7 +109,7 @@ class TestPrintFunctions:
 
     @pytest.fixture
     def mock_console_width(self, monkeypatch):
-        monkeypatch.setattr("src.utility.get_console_width", lambda: TEST_CONSOLE_WIDTH)
+        monkeypatch.setattr("conductress.utility.get_console_width", lambda: TEST_CONSOLE_WIDTH)
         return TEST_CONSOLE_WIDTH
 
     @pytest.fixture
@@ -156,7 +156,7 @@ class TestPrintFunctions:
         ],
     )
     def test_various_text_lengths(self, monkeypatch, captured_print, text, width):
-        monkeypatch.setattr("src.utility.get_console_width", lambda: width)
+        monkeypatch.setattr("conductress.utility.get_console_width", lambda: width)
         print_centered_text(text)
         printed_text = captured_print()
         assert len(printed_text) == width
