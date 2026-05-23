@@ -345,6 +345,31 @@ WantedBy=multi-user.target
 """
 
 
+SYSTEMD_STATUS_SERVICE_TEMPLATE = """\
+[Unit]
+Description=Conductress status export
+
+[Service]
+Type=oneshot
+User={user}
+WorkingDirectory={workdir}
+ExecStart=/usr/bin/python3 -m conductress status-export
+"""
+
+SYSTEMD_STATUS_TIMER_TEMPLATE = """\
+[Unit]
+Description=Export Conductress status every 60s
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+"""
+
+
 async def install_systemd_service(host: Host) -> None:
     """Install and enable the conductress systemd service.
 
@@ -382,6 +407,38 @@ async def install_systemd_service(host: Host) -> None:
         host.log_info_msg("Conductress service already running")
 
 
+async def install_status_timer(host: Host) -> None:
+    """Install the status export timer (writes status.json every 60s)."""
+    has_systemd = await host.run("command -v systemctl >/dev/null 2>&1 && echo yes || echo no", check=False)
+    if "yes" not in has_systemd:
+        return
+
+    workdir = host.get_home_path() / "conductress"
+    user = host.username or "ec2-user"
+
+    service_content = SYSTEMD_STATUS_SERVICE_TEMPLATE.format(user=user, workdir=workdir)
+    timer_content = SYSTEMD_STATUS_TIMER_TEMPLATE
+
+    service_path = "/etc/systemd/system/conductress-status.service"
+    timer_path = "/etc/systemd/system/conductress-status.timer"
+
+    # Install service
+    existing = await host.run(f"cat {service_path} 2>/dev/null || echo ''", check=False)
+    if existing.strip() != service_content.strip():
+        escaped = service_content.replace("'", "'\\''")
+        await host.run(f"echo '{escaped}' | sudo tee {service_path} > /dev/null")
+
+    # Install timer
+    existing = await host.run(f"cat {timer_path} 2>/dev/null || echo ''", check=False)
+    if existing.strip() != timer_content.strip():
+        escaped = timer_content.replace("'", "'\\''")
+        await host.run(f"echo '{escaped}' | sudo tee {timer_path} > /dev/null")
+        await host.run("sudo systemctl daemon-reload")
+
+    await host.run("sudo systemctl enable --now conductress-status.timer", check=False)
+    host.log_info_msg("Status export timer installed and running")
+
+
 async def update_host(server_info: config.ServerInfo):
     """Perform all updates on host at specified connection"""
     host = await Host.from_server_info(server_info)
@@ -403,6 +460,7 @@ async def update_host(server_info: config.ServerInfo):
 
     # Install and enable systemd service for the runner
     await install_systemd_service(host)
+    await install_status_timer(host)
 
     host.log_info_msg("Ensuring config repos cloned...")
     await asyncio.gather(*(ensure_git_repo_cloned(host, repo_url, target_dir) for repo_url, target_dir in REPOSITORIES))
