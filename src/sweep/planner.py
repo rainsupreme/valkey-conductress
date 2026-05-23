@@ -64,6 +64,8 @@ class Segment:
     left_rps: float
     right_rps: float
     commit_count: int  # number of merge commits between left and right (exclusive)
+    left_cv: float = 0.0
+    right_cv: float = 0.0
 
     @property
     def delta(self) -> float:
@@ -75,6 +77,11 @@ class Segment:
     @property
     def abs_delta(self) -> float:
         return abs(self.delta)
+
+    @property
+    def noise_floor(self) -> float:
+        """Minimum detectable change given the CV of both endpoints (as fraction)."""
+        return max(self.left_cv, self.right_cv) / 100.0
 
 
 @dataclass
@@ -271,6 +278,8 @@ class SweepPlanner:
                     left_rps=left.rps,  # type: ignore[arg-type]
                     right_rps=right.rps,  # type: ignore[arg-type]
                     commit_count=commit_count,
+                    left_cv=left.cv or 0.0,
+                    right_cv=right.cv or 0.0,
                 )
                 segments.append(seg)
 
@@ -278,10 +287,10 @@ class SweepPlanner:
         return segments
 
     def get_unresolved_segments(self) -> list[Segment]:
-        """Get segments that exceed the threshold and have commits to bisect."""
+        """Get segments that exceed the noise floor and have commits to bisect."""
         return [
             s for s in self.get_segments()
-            if s.abs_delta >= self.state.threshold and s.commit_count > 0
+            if s.abs_delta >= max(self.state.threshold, s.noise_floor) and s.commit_count > 0
         ]
 
     def _check_nightly(self, current_head: Optional[str]) -> Optional[SweepTask]:
