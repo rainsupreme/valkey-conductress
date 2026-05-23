@@ -127,6 +127,31 @@ class BaseSweepCoordinator(ABC):
 
     # --- Abstract methods (subclass defines) ---
 
+    # --- Abstract properties (subclass defines) ---
+
+    @property
+    @abstractmethod
+    def metric_id(self) -> str:
+        """Identifier for this metric (e.g. 'throughput', 'memory')."""
+        ...
+
+    @property
+    @abstractmethod
+    def metric_unit(self) -> str:
+        """Display unit (e.g. 'ops/sec', 'bytes/item')."""
+        ...
+
+    # --- Export ---
+
+    def export(self, output_path: Path, platform: str) -> int:
+        """Export this coordinator's data to a series JSON file. Returns point count."""
+        from src.sweep.exporter import export_series
+
+        export_series(self.state, output_path, platform=platform, workload=self.metric_id)
+        return sum(1 for p in self.state.points.values() if p.value is not None)
+
+    # --- Abstract methods (subclass defines) ---
+
     @abstractmethod
     def _create_task(self, sweep_task: SweepTask) -> BaseTaskData:
         """Create a concrete task from a SweepTask."""
@@ -212,6 +237,9 @@ SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 class SweepCoordinator(BaseSweepCoordinator):
     """Throughput sweep coordinator (GET 16B, io-threads=7, P=10)."""
+
+    metric_id = "throughput"
+    metric_unit = "ops/sec"
 
     def __init__(self, repo_path: Path):
         super().__init__(repo_path, SWEEP_STATE_FILE)
