@@ -18,6 +18,7 @@ from typing import Optional
 
 class PointStatus(Enum):
     """Status of a benchmarked commit."""
+
     COMPLETED = auto()
     BUILD_FAILED = auto()
     PENDING = auto()
@@ -25,6 +26,7 @@ class PointStatus(Enum):
 
 class TaskPriority(Enum):
     """Priority levels for sweep tasks, lower value = higher priority."""
+
     NIGHTLY = 1
     BISECTION = 2
     LANDMARK = 3
@@ -34,6 +36,7 @@ class TaskPriority(Enum):
 @dataclass
 class BenchmarkPoint:
     """A single benchmarked commit with its result."""
+
     commit: str
     date: str  # ISO format YYYY-MM-DD
     value: Optional[float] = None  # metric value (rps, bytes_per_key, etc.)
@@ -51,6 +54,7 @@ class BenchmarkPoint:
 @dataclass
 class Landmark:
     """A release commit that must always be benchmarked."""
+
     commit: str
     date: str
     label: str  # e.g. "8.0.0"
@@ -59,6 +63,7 @@ class Landmark:
 @dataclass
 class Segment:
     """A range between two benchmarked commits that may contain a performance change."""
+
     left_commit: str
     right_commit: str
     left_value: float
@@ -87,6 +92,7 @@ class Segment:
 @dataclass
 class SweepTask:
     """A task to benchmark a specific commit."""
+
     commit: str
     date: str
     priority: TaskPriority
@@ -97,6 +103,7 @@ class SweepTask:
 @dataclass
 class SweepState:
     """Complete state of the sweep planner, persisted to disk."""
+
     points: dict[str, BenchmarkPoint] = field(default_factory=dict)
     landmarks: list[Landmark] = field(default_factory=list)
     # Ordered list of all merge commits (oldest first)
@@ -163,11 +170,13 @@ class SweepState:
         )
 
         for lm_data in data.get("landmarks", []):
-            state.landmarks.append(Landmark(
-                commit=lm_data["commit"],
-                date=lm_data["date"],
-                label=lm_data["label"],
-            ))
+            state.landmarks.append(
+                Landmark(
+                    commit=lm_data["commit"],
+                    date=lm_data["date"],
+                    label=lm_data["label"],
+                )
+            )
 
         for commit, p_data in data.get("points", {}).items():
             state.points[commit] = BenchmarkPoint(
@@ -230,14 +239,27 @@ class SweepPlanner:
 
         return None
 
-    def record_result(self, commit: str, value: float, cv: float, reps: int = 3,
-                      pr: Optional[int] = None, pr_title: Optional[str] = None) -> None:
+    def record_result(
+        self,
+        commit: str,
+        value: float,
+        cv: float,
+        reps: int = 3,
+        pr: Optional[int] = None,
+        pr_title: Optional[str] = None,
+    ) -> None:
         """Record a benchmark result for a commit."""
         if commit not in self.state.points:
             date = self.state.commit_dates.get(commit, "")
             self.state.points[commit] = BenchmarkPoint(
-                commit=commit, date=date, value=value, cv=cv, reps=reps,
-                pr=pr, pr_title=pr_title, status=PointStatus.COMPLETED,
+                commit=commit,
+                date=date,
+                value=value,
+                cv=cv,
+                reps=reps,
+                pr=pr,
+                pr_title=pr_title,
+                status=PointStatus.COMPLETED,
             )
         else:
             point = self.state.points[commit]
@@ -255,7 +277,9 @@ class SweepPlanner:
         date = self.state.commit_dates.get(commit, "")
         if commit not in self.state.points:
             self.state.points[commit] = BenchmarkPoint(
-                commit=commit, date=date, status=PointStatus.BUILD_FAILED,
+                commit=commit,
+                date=date,
+                status=PointStatus.BUILD_FAILED,
             )
         else:
             self.state.points[commit].status = PointStatus.BUILD_FAILED
@@ -289,8 +313,10 @@ class SweepPlanner:
     def get_unresolved_segments(self) -> list[Segment]:
         """Get segments that exceed the noise floor and have commits to bisect."""
         return [
-            s for s in self.get_segments()
-            if s.abs_delta >= max(self.state.threshold, s.noise_floor) and s.commit_count > 0
+            s
+            for s in self.get_segments()
+            if s.abs_delta >= max(self.state.threshold, s.noise_floor)
+            and s.commit_count > 0
         ]
 
     def _check_nightly(self, current_head: Optional[str]) -> Optional[SweepTask]:
@@ -327,7 +353,7 @@ class SweepPlanner:
             date=self.state.commit_dates.get(midpoint, ""),
             priority=TaskPriority.BISECTION,
             reason=f"Bisecting {abs(segment.delta)*100:.1f}% {direction} "
-                   f"between {segment.left_commit[:8]} and {segment.right_commit[:8]}",
+            f"between {segment.left_commit[:8]} and {segment.right_commit[:8]}",
         )
 
     def _check_landmarks(self) -> Optional[SweepTask]:
@@ -432,7 +458,8 @@ class SweepPlanner:
     def _get_ordered_completed_points(self) -> list[BenchmarkPoint]:
         """Get all completed points ordered by their position in merge_commits."""
         completed = [
-            p for p in self.state.points.values()
+            p
+            for p in self.state.points.values()
             if p.is_complete and p.commit in self._commit_index
         ]
         completed.sort(key=lambda p: self._commit_index[p.commit])
@@ -457,10 +484,14 @@ class SweepPlanner:
         """Find the middle commit between left and right, skipping build failures."""
         return self._find_midpoint_by_index(left, right)
 
-    def _find_midpoint_by_index(self, left: Optional[str], right: Optional[str]) -> Optional[str]:
+    def _find_midpoint_by_index(
+        self, left: Optional[str], right: Optional[str]
+    ) -> Optional[str]:
         """Find midpoint between two commits (either can be None for edges)."""
         left_idx = self._commit_index[left] if left else -1
-        right_idx = self._commit_index[right] if right else len(self.state.merge_commits)
+        right_idx = (
+            self._commit_index[right] if right else len(self.state.merge_commits)
+        )
 
         # Collect valid candidates (not already benchmarked, not build-failed)
         candidates = []

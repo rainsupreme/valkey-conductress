@@ -5,8 +5,8 @@ import os
 import shlex
 import signal
 import subprocess
-from typing import Optional, Sequence, Union
 from datetime import datetime
+from typing import Optional, Sequence, Union
 
 import asyncssh
 
@@ -55,14 +55,19 @@ class HumanNumber:
         number = float(number)
         unit_index = 0
         if isinstance(cls.base, int):
-            while number >= cls.base * cls.threshold and unit_index + 1 < len(cls.units):
+            while number >= cls.base * cls.threshold and unit_index + 1 < len(
+                cls.units
+            ):
                 unit_index += 1
                 number /= cls.base
         else:
             bases: Sequence[int] = cls.base
             assert len(bases) == len(cls.units)
             unit_index = 0
-            while unit_index + 1 < len(bases) and number >= bases[unit_index + 1] * cls.threshold:
+            while (
+                unit_index + 1 < len(bases)
+                and number >= bases[unit_index + 1] * cls.threshold
+            ):
                 unit_index += 1
                 number /= bases[unit_index]
 
@@ -110,7 +115,9 @@ class HumanNumber:
                 number *= base
                 if unit == unit_suffix:
                     return number
-        raise ValueError(f"Invalid unit '{unit}'. Expected one of {cls.units} (case insensitive).")
+        raise ValueError(
+            f"Invalid unit '{unit}'. Expected one of {cls.units} (case insensitive)."
+        )
 
 
 class HumanByte(HumanNumber):
@@ -264,8 +271,12 @@ async def async_run(command: str, check=True) -> tuple[str, str]:
     stderr = stderr_bytes.decode()
 
     if check and process.returncode != 0:
-        print(f"Command ({command}) failed with exit code {process.returncode}: {stderr}")
-        raise RuntimeError(f"Command failed with exit code {process.returncode}: {stderr}")
+        print(
+            f"Command ({command}) failed with exit code {process.returncode}: {stderr}"
+        )
+        raise RuntimeError(
+            f"Command failed with exit code {process.returncode}: {stderr}"
+        )
 
     return stdout, stderr
 

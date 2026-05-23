@@ -113,7 +113,10 @@ async def detect_platform(run_command) -> PlatformInfo:
     )
     logger.info(
         "Detected platform: %s, %s, %d L3 caches × %d cores",
-        vendor.name, cache_topology.name, l3_count, cores_per_l3,
+        vendor.name,
+        cache_topology.name,
+        l3_count,
+        cores_per_l3,
     )
     return info
 

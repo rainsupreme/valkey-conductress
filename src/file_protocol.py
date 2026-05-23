@@ -11,7 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP, get_all_features
+from .config import (
+    CONDUCTRESS_OUTPUT,
+    CONDUCTRESS_RESULTS,
+    CONDUCTRESS_TMP,
+    get_all_features,
+)
 from .utility import datetime_to_task_id
 
 
@@ -42,7 +47,9 @@ class MetricData:
 
     metrics: dict[str, Any]  # name-value pairs for flexible metrics
     timestamp: float = field(default_factory=time.time)
-    source: str = "client"  # role identifier: "client", "server", "primary", "replica", etc.
+    source: str = (
+        "client"  # role identifier: "client", "server", "primary", "replica", etc.
+    )
 
 
 @dataclass
@@ -68,7 +75,9 @@ class FileProtocol:
 
     def __init__(self, task_id: str, role_id: str, base_dir: Path = CONDUCTRESS_TMP):
         self.task_id = task_id
-        self.role_id = role_id  # Role identifier (e.g., "client", "server", "primary", "replica")
+        self.role_id = (
+            role_id  # Role identifier (e.g., "client", "server", "primary", "replica")
+        )
         self.work_dir = base_dir / f"benchmark_{task_id}"
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,7 +144,9 @@ class FileProtocol:
 
         # Copy metrics file to result directory
         if self.metrics_file.exists():
-            shutil.copy2(self.metrics_file, result_dir / f"metrics_{self.role_id}.jsonl")
+            shutil.copy2(
+                self.metrics_file, result_dir / f"metrics_{self.role_id}.jsonl"
+            )
 
         # Write to output file
         os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
@@ -174,7 +185,9 @@ class FileProtocol:
 
     def _write_json_atomic(self, file_path: Path, data: dict[str, Any]) -> None:
         """Atomically write JSON data to file."""
-        with tempfile.NamedTemporaryFile(mode="w", dir=file_path.parent, delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=file_path.parent, delete=False
+        ) as tmp_file:
             json.dump(data, tmp_file)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
@@ -193,7 +206,9 @@ class FileProtocol:
             return None
 
     @staticmethod
-    def get_active_task_ids(base_dir: Path = CONDUCTRESS_TMP) -> dict[str, BenchmarkStatus]:
+    def get_active_task_ids(
+        base_dir: Path = CONDUCTRESS_TMP,
+    ) -> dict[str, BenchmarkStatus]:
         """Get dict of active task IDs mapped to their BenchmarkStatus."""
         active_tasks = {}
         for dir_path in glob.glob(str(base_dir / "benchmark_*")):
@@ -288,7 +303,9 @@ class FileProtocol:
                         reason = f"Process {pid} no longer running"
                     elif FileProtocol._is_stale_task(status_file):
                         should_cleanup = True
-                        reason = "Task is stale (old heartbeat or stuck in starting state)"
+                        reason = (
+                            "Task is stale (old heartbeat or stuck in starting state)"
+                        )
 
                 except (json.JSONDecodeError, FileNotFoundError):
                     should_cleanup = True
@@ -297,7 +314,9 @@ class FileProtocol:
             if should_cleanup:
                 try:
                     shutil.rmtree(dir_path)
-                    print(f"Cleaned up orphaned benchmark directory: {dir_name} - {reason}")
+                    print(
+                        f"Cleaned up orphaned benchmark directory: {dir_name} - {reason}"
+                    )
                     cleaned_count += 1
                 except OSError as e:
                     print(f"Failed to remove {dir_path}: {e}")

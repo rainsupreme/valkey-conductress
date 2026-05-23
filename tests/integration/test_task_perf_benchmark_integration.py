@@ -20,9 +20,9 @@ class TestPerfTaskIntegration:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), patch(
-                "src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"
-            ):
+            with patch(
+                "src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"
+            ), patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
                 yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -93,7 +93,9 @@ class TestPerfTaskIntegration:
 
     @patch("src.config.REPO_NAMES", ["valkey"])
     @patch("src.task_queue.config.REPO_NAMES", ["valkey"])
-    @pytest.mark.parametrize("command_name", ["set", "get", "sadd", "hset", "zadd", "zrank", "zcount"])
+    @pytest.mark.parametrize(
+        "command_name", ["set", "get", "sadd", "hset", "zadd", "zrank", "zcount"]
+    )
     @pytest.mark.asyncio
     async def test_all_commands_integration(self, temp_dir, command_name):
         """Test PerfTaskRunner with all command types."""
@@ -285,7 +287,10 @@ class TestPerfTaskIntegration:
         task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.test}_perf"
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
-        with patch("src.server.Server.ensure_binary_cached", side_effect=Exception("Binary not found")):
+        with patch(
+            "src.server.Server.ensure_binary_cached",
+            side_effect=Exception("Binary not found"),
+        ):
             with pytest.raises(Exception):
                 await runner.run()
 

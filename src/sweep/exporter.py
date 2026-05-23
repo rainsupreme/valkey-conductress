@@ -8,9 +8,12 @@ from typing import Any
 from src.sweep.planner import PointStatus, SweepPlanner, SweepState
 
 
-def export_series(state: SweepState, output_path: Path,
-                  platform: str = "arm64/c7g.metal/graviton3",
-                  workload: str = "") -> None:
+def export_series(
+    state: SweepState,
+    output_path: Path,
+    platform: str = "arm64/c7g.metal/graviton3",
+    workload: str = "",
+) -> None:
     """Export sweep state to dashboard-ready series.json.
 
     Args:
@@ -21,8 +24,12 @@ def export_series(state: SweepState, output_path: Path,
     """
     if not workload:
         from src.sweep.coordinator import (
-            SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE,
+            SWEEP_IO_THREADS,
+            SWEEP_PIPELINING,
+            SWEEP_TEST,
+            SWEEP_VAL_SIZE,
         )
+
         workload = f"{SWEEP_TEST.upper()}_{SWEEP_VAL_SIZE}B_t{SWEEP_IO_THREADS}_p{SWEEP_PIPELINING}"
 
     planner = SweepPlanner(state)
@@ -53,8 +60,13 @@ def export_series(state: SweepState, output_path: Path,
 
     # Build landmarks list
     landmarks = [
-        {"commit": lm.commit, "date": lm.date, "label": lm.label, "type": "release",
-         "commit_index": commit_index.get(lm.commit, 0)}
+        {
+            "commit": lm.commit,
+            "date": lm.date,
+            "label": lm.label,
+            "type": "release",
+            "commit_index": commit_index.get(lm.commit, 0),
+        }
         for lm in state.landmarks
     ]
 
@@ -80,8 +92,9 @@ def export_series(state: SweepState, output_path: Path,
     output_path.write_text(json.dumps(series, indent=2))
 
 
-def _build_annotations(state: SweepState, planner: SweepPlanner,
-                       workload: str) -> list[dict[str, Any]]:
+def _build_annotations(
+    state: SweepState, planner: SweepPlanner, workload: str
+) -> list[dict[str, Any]]:
     """Build annotations for commits where a change was pinpointed."""
     annotations: list[dict[str, Any]] = []
 

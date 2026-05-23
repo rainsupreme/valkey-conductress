@@ -88,7 +88,9 @@ class SyncTaskRunner(BaseTaskRunner):
         print_pretty_header(self.title)
 
         # Initialize status
-        self.status = BenchmarkStatus(steps_total=4, task_type="sync")  # setup, load data, sync, results
+        self.status = BenchmarkStatus(
+            steps_total=4, task_type="sync"
+        )  # setup, load data, sync, results
         self.file_protocol.write_status(self.status)
 
         self.replication_group: Optional[ReplicationGroup] = None
@@ -98,10 +100,18 @@ class SyncTaskRunner(BaseTaskRunner):
         profiling = self.profiling_sample_rate > 0
 
         # Setup replication group
-        self.logger.info("setting up replication group with %d servers", len(self.server_ips))
-        server_infos = [ServerInfo(ip=ip) for ip in self.server_ips]  # TODO: clean up this AI mess
+        self.logger.info(
+            "setting up replication group with %d servers", len(self.server_ips)
+        )
+        server_infos = [
+            ServerInfo(ip=ip) for ip in self.server_ips
+        ]  # TODO: clean up this AI mess
         self.replication_group = ReplicationGroup(
-            server_infos, self.binary_source, self.specifier, self.io_threads, self.make_args
+            server_infos,
+            self.binary_source,
+            self.specifier,
+            self.io_threads,
+            self.make_args,
         )
 
         # Update progress: setup complete
@@ -186,7 +196,10 @@ class SyncTaskRunner(BaseTaskRunner):
             raise RuntimeError("Replication group not initialized")
         tasks = [
             (self.replication_group.primary, "primary"),
-            *[(replica, f"replica{i}") for i, replica in enumerate(self.replication_group.replicas)],
+            *[
+                (replica, f"replica{i}")
+                for i, replica in enumerate(self.replication_group.replicas)
+            ],
         ]
         with ThreadPoolExecutor() as executor:
             executor.map(

@@ -74,7 +74,11 @@ class PlotTaskVisualizer(BaseTaskVisualizer):
         self, data_min: float, data_max: float, available_space: int, min_spacing: int
     ) -> list[float]:
         """Calculate tick mark positions based on data range and spacing constraints."""
-        num_ticks = min(9, available_space // min_spacing) if available_space >= min_spacing else 0
+        num_ticks = (
+            min(9, available_space // min_spacing)
+            if available_space >= min_spacing
+            else 0
+        )
         if num_ticks > 1:
             interval = (data_max - data_min) / (num_ticks - 1)
             return [data_min + i * interval for i in range(num_ticks)]
@@ -93,7 +97,9 @@ class PlotTaskVisualizer(BaseTaskVisualizer):
             plt.xticks(xticks, [self.format_x_tick(x) for x in xticks])
         valid_data = [d for d in data if d is not None]
         if valid_data:
-            yticks = self._calculate_ticks(min(valid_data), max(valid_data), plot.size.height, 4)
+            yticks = self._calculate_ticks(
+                min(valid_data), max(valid_data), plot.size.height, 4
+            )
             if yticks:
                 plt.yticks(yticks, [self.format_y_tick(y) for y in yticks])
 

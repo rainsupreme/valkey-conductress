@@ -36,7 +36,16 @@ def git_repo():
         run(["git", "add", "."])
         run(["git", "commit", "-m", "Add feature 1"])
         run(["git", "checkout", "main"])
-        run(["git", "merge", "--no-ff", "-m", "Merge pull request #101 from user/feature-1", "feature-1"])
+        run(
+            [
+                "git",
+                "merge",
+                "--no-ff",
+                "-m",
+                "Merge pull request #101 from user/feature-1",
+                "feature-1",
+            ]
+        )
 
         # Another merge
         run(["git", "checkout", "-b", "feature-2"])
@@ -44,7 +53,16 @@ def git_repo():
         run(["git", "add", "."])
         run(["git", "commit", "-m", "Add feature 2"])
         run(["git", "checkout", "main"])
-        run(["git", "merge", "--no-ff", "-m", "Merge pull request #202 from user/feature-2", "feature-2"])
+        run(
+            [
+                "git",
+                "merge",
+                "--no-ff",
+                "-m",
+                "Merge pull request #202 from user/feature-2",
+                "feature-2",
+            ]
+        )
 
         yield repo
 
@@ -85,7 +103,9 @@ class TestParseMergeSubject:
     """Tests for merge commit subject parsing."""
 
     def test_standard_merge(self):
-        pr, title = _parse_merge_subject("Merge pull request #1847 from user/branch-name")
+        pr, title = _parse_merge_subject(
+            "Merge pull request #1847 from user/branch-name"
+        )
         assert pr == 1847
         assert title == "Merge pull request #1847 from user/branch-name"
 
@@ -113,7 +133,9 @@ class TestGetReleaseBranchPoints:
         """Create a repo with a simulated release branch (like origin/8.0)."""
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
-            run = lambda cmd: subprocess.run(cmd, cwd=repo, capture_output=True, check=True)
+            run = lambda cmd: subprocess.run(
+                cmd, cwd=repo, capture_output=True, check=True
+            )
             run(["git", "init", "-b", "unstable"])
             run(["git", "config", "user.email", "test@test.com"])
             run(["git", "config", "user.name", "Test"])
@@ -154,8 +176,15 @@ class TestGetReleaseBranchPoints:
         # The branch point commit should be reachable from unstable
         commit_hash = points[0][0]
         result = subprocess.run(
-            ["git", "-C", str(repo_with_release_branch),
-             "merge-base", "--is-ancestor", commit_hash, "unstable"],
+            [
+                "git",
+                "-C",
+                str(repo_with_release_branch),
+                "merge-base",
+                "--is-ancestor",
+                commit_hash,
+                "unstable",
+            ],
             capture_output=True,
         )
         assert result.returncode == 0

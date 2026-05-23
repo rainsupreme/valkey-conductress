@@ -30,8 +30,9 @@ class TestRunSubcommand:
     @patch("src.__main__.logging")
     def test_run_dispatches_to_task_runner(self, mock_logging):
         mock_runner = MagicMock()
-        with patch("src.task_runner.TaskRunner", return_value=mock_runner) as mock_cls, \
-             patch("asyncio.run") as mock_asyncio_run:
+        with patch(
+            "src.task_runner.TaskRunner", return_value=mock_runner
+        ) as mock_cls, patch("asyncio.run") as mock_asyncio_run:
             main()
             mock_cls.assert_called_once()
             mock_asyncio_run.assert_called_once_with(mock_runner.run())
@@ -43,11 +44,15 @@ class TestSetupSubcommand:
     @patch("sys.argv", ["conductress", "setup"])
     @patch("src.__main__.logging")
     def test_setup_dispatches_to_bootstrap(self, mock_logging):
-        with patch("src.bootstrap.ensure_ssh_key") as mock_ssh_key, \
-             patch("src.bootstrap.ensure_server_ssh_fingerprints") as mock_fingerprints, \
-             patch("src.bootstrap.update_host_list") as mock_update, \
-             patch("src.bootstrap.SERVERS", [MagicMock()]), \
-             patch("asyncio.run") as mock_asyncio_run:
+        with patch("src.bootstrap.ensure_ssh_key") as mock_ssh_key, patch(
+            "src.bootstrap.ensure_server_ssh_fingerprints"
+        ) as mock_fingerprints, patch(
+            "src.bootstrap.update_host_list"
+        ) as mock_update, patch(
+            "src.bootstrap.SERVERS", [MagicMock()]
+        ), patch(
+            "asyncio.run"
+        ) as mock_asyncio_run:
             main()
             mock_ssh_key.assert_called_once()
             # asyncio.run is called twice: once for fingerprints, once for update_host_list
@@ -96,7 +101,10 @@ class TestCompareSubcommand:
             assert exc_info.value.code == 0
             mock_analysis_main.assert_called_once_with([])
 
-    @patch("sys.argv", ["conductress", "compare", "branch-a", "branch-b", "--source", "valkey"])
+    @patch(
+        "sys.argv",
+        ["conductress", "compare", "branch-a", "branch-b", "--source", "valkey"],
+    )
     @patch("src.__main__.logging")
     def test_compare_passes_remaining_args(self, mock_logging):
         with patch("src.analysis.main", return_value=0) as mock_analysis_main:

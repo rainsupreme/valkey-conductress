@@ -1,4 +1,5 @@
 """Tests for TaskRunner resilience — failed tasks don't crash the runner."""
+
 import json
 import tempfile
 from pathlib import Path
@@ -12,14 +13,16 @@ from src.task_runner import TaskRunner
 @pytest.fixture
 def temp_project_root(tmp_path):
     """Patch FAILED_TASKS paths to a temp directory for test isolation."""
-    with patch("src.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"), \
-         patch("src.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"):
+    with patch(
+        "src.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"
+    ), patch("src.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"):
         yield tmp_path
 
 
 def _make_failed_task():
     """Create a minimal task for failure testing."""
     from unittest.mock import MagicMock
+
     task = MagicMock()
     task.task_id = "2026.05.20_12.00.00.000000"
     task.note = "test-task"

@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import Mock
+
+import pytest
 
 from src.tui import (
     CommaSeparatedIntsValidator,
@@ -139,9 +140,24 @@ class TestRangeListValidator:
             (HumanNumber, "1,10:14:2,20", [1, 10, 12, 14, 20], None),
             (HumanNumber, "1:100:50", [1, 51, 101], None),
             (HumanNumber, "1:5:10", [1, 11], None),
-            (HumanNumber, "1:5", None, "ranges are of the format value, or start:end:step"),
-            (HumanNumber, "1:3", None, "ranges are of the format value, or start:end:step"),
-            (HumanNumber, "1:5:0", None, "range step (start:end:step) value must not be zero"),
+            (
+                HumanNumber,
+                "1:5",
+                None,
+                "ranges are of the format value, or start:end:step",
+            ),
+            (
+                HumanNumber,
+                "1:3",
+                None,
+                "ranges are of the format value, or start:end:step",
+            ),
+            (
+                HumanNumber,
+                "1:5:0",
+                None,
+                "range step (start:end:step) value must not be zero",
+            ),
             (HumanNumber, "", [], "input cannot be empty"),
             (HumanNumber, "abc", [], "could not convert string to float"),
             (HumanNumber, "1:abc:2", [], "could not convert string to float"),
@@ -149,12 +165,19 @@ class TestRangeListValidator:
             (HumanByte, "0.5KB", [512], None),
             (HumanByte, "1KB:3KB:1KB", [1024, 2048, 3072], None),
             (HumanByte, "1KB,2KB:4KB:1KB", [1024, 2048, 3072, 4096], None),
-            (HumanByte, "1KB:2KB", None, "ranges are of the format value, or start:end:step"),
+            (
+                HumanByte,
+                "1KB:2KB",
+                None,
+                "ranges are of the format value, or start:end:step",
+            ),
             (HumanByte, "-1KB", [-1024], None),
             (HumanByte, "0.5MB:128KB:-128KB", [524288, 393216, 262144, 131072], None),
         ],
     )
-    def test_parse_range_list(self, number_type, input_str, expected_result, expected_error):
+    def test_parse_range_list(
+        self, number_type, input_str, expected_result, expected_error
+    ):
         validator = RangeListValidator(number_type)
         result, error = validator.parse_range_list(input_str)
         if expected_error is None:
@@ -191,6 +214,7 @@ class TestSourceSpecifierValidator:
         class DummyConfig:
             REPO_NAMES = ["repo1", "repo2"]
             MANUALLY_UPLOADED = "manually_uploaded"
+
         monkeypatch.setattr("src.tui.config", DummyConfig)
 
     @pytest.mark.parametrize(
@@ -212,7 +236,9 @@ class TestSourceSpecifierValidator:
             ("repo1:abc:def", [], "Invalid item format: repo1:abc:def"),
         ],
     )
-    def test_parse_source_specifier_list(self, input_str, expected_result, expected_error, mock_config):
+    def test_parse_source_specifier_list(
+        self, input_str, expected_result, expected_error, mock_config
+    ):
         result, error = SourceSpeciferValidator.parse_source_specifier_list(input_str)
         if expected_error is None:
             assert error is None
@@ -238,7 +264,6 @@ class TestBaseTaskFormValidation:
         tests = ["test1"]
         error = "No tests selected" if not tests else None
         assert error is None
-
 
 
 class TestNumberListField:
@@ -271,6 +296,7 @@ class TestPerfTaskFormFields:
         the expected parameters by inspecting the class definition.
         """
         import inspect
+
         source = inspect.getsource(PerfTaskForm.__init__)
         assert "self.key_sizes = NumberListField(" in source
         assert '"Key Sizes (comma-separated, 0=standard)"' in source
@@ -281,6 +307,7 @@ class TestPerfTaskFormFields:
     def test_repetitions_field_is_number_field_with_correct_config(self):
         """Verify repetitions would be a NumberField with the right attributes."""
         import inspect
+
         source = inspect.getsource(PerfTaskForm.__init__)
         assert "self.repetitions = NumberField(" in source
         assert '"Repetitions"' in source
@@ -345,7 +372,13 @@ class TestPerfTaskFormCartesianProduct:
 
         all_combos = list(
             itertools_product(
-                sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args_list
+                sizes,
+                pipelining,
+                io_threads,
+                tests,
+                key_sizes,
+                specifiers,
+                make_args_list,
             )
         )
         # With 3 key_sizes, we should get 3 combinations
@@ -368,7 +401,13 @@ class TestPerfTaskFormCartesianProduct:
 
         all_combos = list(
             itertools_product(
-                sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args_list
+                sizes,
+                pipelining,
+                io_threads,
+                tests,
+                key_sizes,
+                specifiers,
+                make_args_list,
             )
         )
         expected = 2 * 2 * 2 * 2 * 2 * 1 * 1  # 32
@@ -377,7 +416,9 @@ class TestPerfTaskFormCartesianProduct:
     def test_submit_task_cartesian_product_order_matches_tui(self):
         """The Cartesian product order in submit_task is (sizes, pipelining, io_threads, tests, key_sizes, specifiers, make_args)."""
         import inspect
+
         from src.tui import PerfTaskForm
+
         source = inspect.getsource(PerfTaskForm.submit_task)
         # Verify key_sizes is in the product call
         assert "key_sizes," in source
@@ -387,7 +428,9 @@ class TestPerfTaskFormCartesianProduct:
     def test_repetitions_passed_to_perf_task_data(self, monkeypatch):
         """Repetitions value should be passed through to each PerfTaskData."""
         monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+        monkeypatch.setattr(
+            "src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"
+        )
 
         from src.tasks.task_perf_benchmark import PerfTaskData
 
@@ -418,7 +461,9 @@ class TestPerfTaskFormCartesianProduct:
     def test_key_size_default_in_perf_task_data(self, monkeypatch):
         """PerfTaskData should default key_size=0 and repetitions=1."""
         monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
+        monkeypatch.setattr(
+            "src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"
+        )
 
         from src.tasks.task_perf_benchmark import PerfTaskData
 
@@ -446,14 +491,18 @@ class TestPerfTaskFormCartesianProduct:
     def test_submit_task_passes_repetitions_to_perf_task_data(self):
         """Verify submit_task passes repetitions to PerfTaskData constructor."""
         import inspect
+
         from src.tui import PerfTaskForm
+
         source = inspect.getsource(PerfTaskForm.submit_task)
         assert "repetitions=repetitions" in source
 
     def test_submit_task_passes_key_size_to_perf_task_data(self):
         """Verify submit_task passes key_size to PerfTaskData constructor."""
         import inspect
+
         from src.tui import PerfTaskForm
+
         source = inspect.getsource(PerfTaskForm.submit_task)
         assert "key_size=key_size" in source
 
@@ -464,14 +513,34 @@ class TestMakeArgsValidator:
         [
             ("", [""], None),
             ("OPTIMIZATION=-O2", ["OPTIMIZATION=-O2"], None),
-            ("OPTIMIZATION=-O2;; MALLOC=libc", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
-            ("OPTIMIZATION=-O2;;MALLOC=libc", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
-            (" OPTIMIZATION=-O2 ;; MALLOC=libc ", ["OPTIMIZATION=-O2", "MALLOC=libc"], None),
-            ("OPTIMIZATION=-O2;; MALLOC=libc;; OPTIMIZATION=-O3", ["OPTIMIZATION=-O2", "MALLOC=libc", "OPTIMIZATION=-O3"], None),
+            (
+                "OPTIMIZATION=-O2;; MALLOC=libc",
+                ["OPTIMIZATION=-O2", "MALLOC=libc"],
+                None,
+            ),
+            (
+                "OPTIMIZATION=-O2;;MALLOC=libc",
+                ["OPTIMIZATION=-O2", "MALLOC=libc"],
+                None,
+            ),
+            (
+                " OPTIMIZATION=-O2 ;; MALLOC=libc ",
+                ["OPTIMIZATION=-O2", "MALLOC=libc"],
+                None,
+            ),
+            (
+                "OPTIMIZATION=-O2;; MALLOC=libc;; OPTIMIZATION=-O3",
+                ["OPTIMIZATION=-O2", "MALLOC=libc", "OPTIMIZATION=-O3"],
+                None,
+            ),
             (";;", [""], None),
             ("OPTIMIZATION=-O2;;", ["OPTIMIZATION=-O2"], None),
             (";;OPTIMIZATION=-O2", ["OPTIMIZATION=-O2"], None),
-            ("MALLOC=jemalloc OPTIMIZATION=-O3", ["MALLOC=jemalloc OPTIMIZATION=-O3"], None),
+            (
+                "MALLOC=jemalloc OPTIMIZATION=-O3",
+                ["MALLOC=jemalloc OPTIMIZATION=-O3"],
+                None,
+            ),
         ],
     )
     def test_parse_make_args_list(self, input_str, expected_result, expected_error):

@@ -1,7 +1,9 @@
 import json
+
 import pytest
+
 import src.config as config_module
-from src.config import ServerInfo, load_server_ips, get_servers
+from src.config import ServerInfo, get_servers, load_server_ips
 
 
 class TestServerInfo:
@@ -63,7 +65,9 @@ class TestLoadServerIps:
 class TestGetServers:
     """Tests for the lazy-load get_servers() accessor."""
 
-    def test_get_servers_returns_servers_when_config_exists(self, tmp_path, monkeypatch):
+    def test_get_servers_returns_servers_when_config_exists(
+        self, tmp_path, monkeypatch
+    ):
         """get_servers() should return the server list when servers.json exists."""
         config = {
             "valkey_servers": [

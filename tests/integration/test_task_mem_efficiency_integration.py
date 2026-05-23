@@ -20,9 +20,9 @@ class TestMemTaskIntegration:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"), patch(
-                "src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"
-            ):
+            with patch(
+                "src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"
+            ), patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
                 yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -178,7 +178,10 @@ class TestMemTaskIntegration:
         runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
 
         # Mock server to raise exception during binary caching
-        with patch("src.server.Server.ensure_binary_cached", side_effect=Exception("Binary not found")):
+        with patch(
+            "src.server.Server.ensure_binary_cached",
+            side_effect=Exception("Binary not found"),
+        ):
             with pytest.raises(Exception):
                 await runner.run()
 

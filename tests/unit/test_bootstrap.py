@@ -1,9 +1,15 @@
 import ast
-import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
-from src.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
+import pytest
+
+from src.bootstrap import (
+    Host,
+    ensure_file_descriptor_limits,
+    load_requirements,
+    path_exists,
+)
 
 
 class TestFileDescriptorLimits:
@@ -100,18 +106,30 @@ class TestHostGetHomePath:
 class TestHostGetLinuxDistro:
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("os_release,expected_name", [
-        ('PRETTY_NAME="Ubuntu 22.04.3 LTS"\nNAME="Ubuntu"\nVERSION_ID="22.04"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n', "Ubuntu"),
-        ('NAME="Red Hat Enterprise Linux"\nVERSION="9.2 (Plow)"\nID="rhel"\nID_LIKE="fedora"\n', "Red Hat Enterprise Linux"),
-        ('NAME="Amazon Linux"\nVERSION="2023"\nID="amzn"\nID_LIKE="fedora"\nVERSION_ID="2023"\n', "Amazon Linux"),
-    ])
+    @pytest.mark.parametrize(
+        "os_release,expected_name",
+        [
+            (
+                'PRETTY_NAME="Ubuntu 22.04.3 LTS"\nNAME="Ubuntu"\nVERSION_ID="22.04"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n',
+                "Ubuntu",
+            ),
+            (
+                'NAME="Red Hat Enterprise Linux"\nVERSION="9.2 (Plow)"\nID="rhel"\nID_LIKE="fedora"\n',
+                "Red Hat Enterprise Linux",
+            ),
+            (
+                'NAME="Amazon Linux"\nVERSION="2023"\nID="amzn"\nID_LIKE="fedora"\nVERSION_ID="2023"\n',
+                "Amazon Linux",
+            ),
+        ],
+    )
     async def test_parse_distro(self, os_release, expected_name):
         host = MagicMock(spec=Host)
         host.distro = ""
         host.run = AsyncMock(return_value=os_release)
-        
+
         result = await Host.get_linux_distro(host)
-        
+
         assert result == expected_name
         assert host.distro == expected_name
 
@@ -120,16 +138,16 @@ class TestHostGetLinuxDistro:
         host = MagicMock(spec=Host)
         host.distro = "Cached Distro"
         host.run = AsyncMock()
-        
+
         result = await Host.get_linux_distro(host)
-        
+
         assert result == "Cached Distro"
         host.run.assert_not_called()
 
 
 class TestBootstrapImportOrdering:
     """Guards against importing non-stdlib modules before they're installed.
-    
+
     This prevents the common packaging mistake where setup.py (or similar packaging files)
     imports dependencies at module level before pip has installed them, causing installation
     to fail for users installing from source.
@@ -139,43 +157,45 @@ class TestBootstrapImportOrdering:
         """Verify detection logic works for non-stdlib imports"""
         code = "import asyncssh\nfrom setuptools import setup"
         tree = ast.parse(code)
-        stdlib_modules = {'os', 'sys', 'setuptools'}
-        
+        stdlib_modules = {"os", "sys", "setuptools"}
+
         with pytest.raises(AssertionError, match="non-stdlib module: asyncssh"):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        module = alias.name.split('.')[0]
+                        module = alias.name.split(".")[0]
                         assert module in stdlib_modules, f"non-stdlib module: {module}"
 
     def test_detects_non_stdlib_from_import(self):
         """Verify detection logic works for non-stdlib from imports"""
         code = "from asyncssh import connect"
         tree = ast.parse(code)
-        stdlib_modules = {'os', 'sys', 'setuptools'}
-        
+        stdlib_modules = {"os", "sys", "setuptools"}
+
         with pytest.raises(AssertionError, match="non-stdlib module: asyncssh"):
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
                     if node.module:
-                        module = node.module.split('.')[0]
+                        module = node.module.split(".")[0]
                         assert module in stdlib_modules, f"non-stdlib module: {module}"
 
     def test_bootstrap_imports_non_stdlib(self):
         """Verify bootstrap.py imports non-stdlib modules (expected behavior for runtime script)"""
         bootstrap_path = Path(__file__).parent.parent.parent / "src" / "bootstrap.py"
-        
+
         with open(bootstrap_path) as f:
             tree = ast.parse(f.read())
-        
+
         found_asyncssh = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name == "asyncssh":
                         found_asyncssh = True
-        
-        assert found_asyncssh, "bootstrap.py should import asyncssh (it's a runtime script, not packaging)"
+
+        assert (
+            found_asyncssh
+        ), "bootstrap.py should import asyncssh (it's a runtime script, not packaging)"
 
 
 class TestPathExists:
@@ -184,43 +204,43 @@ class TestPathExists:
     async def test_path_not_exists(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="1\n1\n1\n1\n")
-        
+
         result = await path_exists(host, "/nonexistent")
-        
+
         assert result is False
 
     @pytest.mark.asyncio
     async def test_file_exists(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n0\n1\n1\n")
-        
+
         result = await path_exists(host, "/some/file", expected_type="file")
-        
+
         assert result is True
 
     @pytest.mark.asyncio
     async def test_directory_exists(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n1\n0\n1\n")
-        
+
         result = await path_exists(host, "/some/dir", expected_type="directory")
-        
+
         assert result is True
 
     @pytest.mark.asyncio
     async def test_symlink_exists(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n1\n1\n0\n")
-        
+
         result = await path_exists(host, "/some/link", expected_type="symlink")
-        
+
         assert result is True
 
     @pytest.mark.asyncio
     async def test_expected_file_but_is_directory(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n1\n0\n1\n")
-        
+
         with pytest.raises(RuntimeError, match="Expected .* to be a file"):
             await path_exists(host, "/some/dir", expected_type="file")
 
@@ -228,7 +248,7 @@ class TestPathExists:
     async def test_expected_directory_but_is_file(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n0\n1\n1\n")
-        
+
         with pytest.raises(RuntimeError, match="Expected .* to be a directory"):
             await path_exists(host, "/some/file", expected_type="directory")
 
@@ -236,6 +256,6 @@ class TestPathExists:
     async def test_expected_symlink_but_is_file(self):
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n0\n1\n1\n")
-        
+
         with pytest.raises(RuntimeError, match="Expected .* to be a symlink"):
             await path_exists(host, "/some/file", expected_type="symlink")

@@ -51,7 +51,10 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
-        if self.source != config.MANUALLY_UPLOADED and self.source not in config.REPO_NAMES:
+        if (
+            self.source != config.MANUALLY_UPLOADED
+            and self.source not in config.REPO_NAMES
+        ):
             raise ValueError(
                 f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}"
             )
@@ -72,7 +75,9 @@ class BaseTaskData(ABC):
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
-    def prepare_task_runner(self, server_infos: list[config.ServerInfo]) -> "BaseTaskRunner":
+    def prepare_task_runner(
+        self, server_infos: list[config.ServerInfo]
+    ) -> "BaseTaskRunner":
         """Return the task runner for this task."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -164,7 +169,9 @@ class TaskQueue:
                 try:
                     data = json.loads(candidate.read_text())
                     if data.get("timestamp") == task.timestamp.isoformat():
-                        logger.error("Found matching file by timestamp: %s — removing", candidate)
+                        logger.error(
+                            "Found matching file by timestamp: %s — removing", candidate
+                        )
                         candidate.unlink()
                         return
                 except (json.JSONDecodeError, OSError):
