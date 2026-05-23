@@ -47,7 +47,8 @@ def export_series(state: SweepState, output_path: Path,
 
     # Build landmarks list
     landmarks = [
-        {"commit": lm.commit, "date": lm.date, "label": lm.label, "type": "release"}
+        {"commit": lm.commit, "date": lm.date, "label": lm.label, "type": "release",
+         "commit_index": commit_index.get(lm.commit, 0)}
         for lm in state.landmarks
     ]
 
