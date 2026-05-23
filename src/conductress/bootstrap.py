@@ -42,7 +42,7 @@ def subprocess_command(command: str) -> None:
         stderr=subprocess.PIPE,
     )
     if result.stderr:
-        print(repr(result.stderr))
+        logger.error(repr(result.stderr))
 
 
 # ======== ensure asyncssh installed and imported ========
@@ -71,8 +71,8 @@ class Host:
     async def run(self, command: str, check=True) -> str:
         result = await self.conn.run(command)
         if result.exit_status != 0:
-            print(f"Command failed: {command} on {self.ip} with exit status {result.exit_status} (stderr below)")
-            print(result.stderr)
+            logger.error(f"Command failed: {command} on {self.ip} with exit status {result.exit_status} (stderr below)")
+            logger.error(result.stderr)
             if check:
                 raise Exception(result.stderr)
         out = result.stdout
