@@ -48,9 +48,7 @@ async def test_local_benchmark_no_irq_pinning():
     irq_allocation = server._cpu_allocator.get_allocation(server.ip, irq_tag)
 
     # For loopback, IRQ allocation should be None since we skip IRQ pinning
-    assert (
-        irq_allocation is None
-    ), "IRQ allocation should not exist for loopback interface"
+    assert irq_allocation is None, "IRQ allocation should not exist for loopback interface"
 
 
 @pytest.mark.asyncio
@@ -79,9 +77,7 @@ async def test_local_benchmark_end_to_end():
 
     # Verify local benchmark is detected
     assert runner._is_local_benchmark("127.0.0.1"), "Should detect local benchmark"
-    assert not runner._is_local_benchmark(
-        "172.31.38.30"
-    ), "Should not detect remote as local"
+    assert not runner._is_local_benchmark("172.31.38.30"), "Should not detect remote as local"
 
     print("Local benchmark detection working correctly")
 

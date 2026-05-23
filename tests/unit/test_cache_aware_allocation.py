@@ -21,9 +21,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=4, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=4, require_numa=0)
         assert server_cpus == [0, 1, 2, 3]
 
         # Try cache-aware allocation (should fail, fall back to simple)
@@ -58,9 +56,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server on L3 cache 0
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
         assert server_cpus == [0, 1, 2, 3, 4, 5]
 
         # Allocate client avoiding server cache
@@ -97,9 +93,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server on NUMA 0
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=4, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=4, require_numa=0)
         assert server_cpus == [0, 1, 2, 3]
 
         # Allocate client without NUMA constraint - should prefer NUMA 1
@@ -138,9 +132,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server on NUMA 0, L3 cache 0
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
         assert server_cpus == [0, 1, 2, 3, 4, 5]
 
         # Allocate client without NUMA constraint - should prefer NUMA 1
@@ -173,9 +165,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
         assert server_cpus == [0, 1, 2, 3, 4, 5]
 
         # Allocate IRQs avoiding server cache
@@ -208,9 +198,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
 
         # Try to allocate 12 CPUs avoiding server cache (only 10 available in L3 cache 1)
         client_tag = AllocationTag(task_id="client", purpose="benchmark")
@@ -240,9 +228,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
 
         # Allocate client (should fall back to simple allocation)
         client_tag = AllocationTag(task_id="client", purpose="benchmark")
@@ -283,9 +269,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server on NUMA 0
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
         assert server_cpus == [0, 1, 2, 3, 4, 5]
 
         # Allocate client without NUMA constraint
@@ -345,9 +329,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server (gets first CPUs)
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=6, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=6, require_numa=0)
         assert server_cpus == [0, 1, 2, 3, 4, 5]  # L3 cache 0
 
         # Allocate IRQs (gets last CPUs due to purpose="irq")
@@ -382,9 +364,7 @@ class TestCacheAwareAllocation:
 
         # Allocate server
         server_tag = AllocationTag(task_id="server", purpose="server")
-        server_cpus = allocator.allocate(
-            "test_host", server_tag, count=4, require_numa=0
-        )
+        server_cpus = allocator.allocate("test_host", server_tag, count=4, require_numa=0)
 
         # Allocate client with prefer_different_cache (should succeed with fallback)
         client_tag = AllocationTag(task_id="client", purpose="benchmark")

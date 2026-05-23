@@ -137,9 +137,7 @@ class TestCliPerfQueuing:
         assert data["note"] == "integration test"
         assert data["task_type"] == "PerfTaskData"
 
-    def test_queue_add_cartesian_product_creates_correct_number_of_files(
-        self, queue_dir
-    ):
+    def test_queue_add_cartesian_product_creates_correct_number_of_files(self, queue_dir):
         """Multiple values for tests, sizes, io-threads, pipelining, key-sizes
         produce the full Cartesian product of task files."""
         exit_code = main(

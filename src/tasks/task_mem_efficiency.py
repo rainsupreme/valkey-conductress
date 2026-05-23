@@ -83,14 +83,10 @@ class MemTaskRunner(BaseTaskRunner):
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + test)
 
-        self.title = (
-            f"{test} memory efficiency, {source}:{specifier}, has_expire={has_expire}"
-        )
+        self.title = f"{test} memory efficiency, {source}:{specifier}, has_expire={has_expire}"
 
         if test not in self.tests:
-            raise ValueError(
-                f"Test {test} is not supported. Supported tests: {self.tests}"
-            )
+            raise ValueError(f"Test {test} is not supported. Supported tests: {self.tests}")
 
         # settings
         self.server_ip = server_ip
@@ -114,21 +110,13 @@ class MemTaskRunner(BaseTaskRunner):
     async def run(self) -> None:
         """Run the memory efficiency test for each value size."""
         print_pretty_header(self.title)
-        print(
-            f"Val Sizes: {', '.join(HumanByte.to_human(size) for size in self.val_sizes)}"
-        )
+        print(f"Val Sizes: {', '.join(HumanByte.to_human(size) for size in self.val_sizes)}")
 
         # Write initial status
         self.file_protocol.write_status(self.status)
 
-        num_servers: int = await Server(
-            self.server_ip
-        ).get_available_cpu_count() // Server.get_num_cpus(1)
-        num_servers = (
-            MEM_TEST_MAX_CONCURRENT
-            if num_servers > MEM_TEST_MAX_CONCURRENT
-            else num_servers
-        )
+        num_servers: int = await Server(self.server_ip).get_available_cpu_count() // Server.get_num_cpus(1)
+        num_servers = MEM_TEST_MAX_CONCURRENT if num_servers > MEM_TEST_MAX_CONCURRENT else num_servers
 
         print("Ensuring binary is ready")
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
@@ -208,31 +196,21 @@ class MemTaskRunner(BaseTaskRunner):
 
         await Server(self.server_ip).kill_all_valkey_instances_on_host()
 
-    async def test_single_size_overhead(
-        self, val_size: int, port: int, semaphore
-    ) -> dict[str, Any]:
+    async def test_single_size_overhead(self, val_size: int, port: int, semaphore) -> dict[str, Any]:
         """Test memory efficiency for a single item size."""
         async with semaphore:
             if self.cached_binary_path is None:
-                raise RuntimeError(
-                    "cached_binary_path must be set before calling test_single_size_overhead"
-                )
-            valkey = await Server.with_path(
-                self.server_ip, port, self.cached_binary_path, io_threads=1
-            )
+                raise RuntimeError("cached_binary_path must be set before calling test_single_size_overhead")
+            valkey = await Server.with_path(self.server_ip, port, self.cached_binary_path, io_threads=1)
             self.commit_hash = valkey.get_build_hash()
 
             before_memory: dict[str, str] = await valkey.info("memory")
 
             count = MEM_TEST_ITEM_COUNT
-            await valkey.run_valkey_command_over_keyspace(
-                count, f"-d {val_size} -t {self.test}"
-            )
+            await valkey.run_valkey_command_over_keyspace(count, f"-d {val_size} -t {self.test}")
             if self.has_expire:
                 if self.test != "set":
-                    logger.error(
-                        "Expiration is only supported for sets, skipping expiration test."
-                    )
+                    logger.error("Expiration is only supported for sets, skipping expiration test.")
                 else:
                     await valkey.run_valkey_command_over_keyspace(
                         count, f"EXPIRE key:__rand_int__ {MEM_TEST_EXPIRE_SECONDS}"
@@ -247,35 +225,23 @@ class MemTaskRunner(BaseTaskRunner):
             else:
                 # SADD/ZADD create a single collection with N members
                 if key_count != 1:
-                    raise RuntimeError(
-                        f"Expected 1 collection key but found {key_count} on port {port}"
-                    )
+                    raise RuntimeError(f"Expected 1 collection key but found {key_count} on port {port}")
                 if self.test == "zadd":
                     cardinality_cmd, key_name = "ZCARD", "myzset"
                 else:
                     cardinality_cmd, key_name = "SCARD", "myset"
-                result_str = await valkey.run_valkey_command(
-                    f"{cardinality_cmd} {key_name}"
-                )
+                result_str = await valkey.run_valkey_command(f"{cardinality_cmd} {key_name}")
                 if result_str is None:
-                    raise RuntimeError(
-                        f"{cardinality_cmd} returned None on port {port}"
-                    )
+                    raise RuntimeError(f"{cardinality_cmd} returned None on port {port}")
                 item_count = int(result_str)
             if item_count != count:
-                raise RuntimeError(
-                    f"Expected {count} items but found {item_count} on port {port}"
-                )
+                raise RuntimeError(f"Expected {count} items but found {item_count} on port {port}")
             if self.has_expire:
                 if expire_count != count:
-                    raise RuntimeError(
-                        f"Expected {count} expires but found {expire_count} on port {port}"
-                    )
+                    raise RuntimeError(f"Expected {count} expires but found {expire_count} on port {port}")
             else:
                 if expire_count != 0:
-                    raise RuntimeError(
-                        f"Expected 0 expires but found {expire_count} on port {port}"
-                    )
+                    raise RuntimeError(f"Expected 0 expires but found {expire_count} on port {port}")
 
             await valkey.stop()  # required cleanup, release CPU allocations, etc
 

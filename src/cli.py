@@ -77,17 +77,13 @@ def _parse_tests(value: str) -> List[str]:
 
 def _add_perf_args(parser: argparse.ArgumentParser) -> None:
     """Add performance benchmark arguments to a parser."""
-    parser.add_argument(
-        "--source", default="valkey", help="Repository source name (default: valkey)"
-    )
+    parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
     parser.add_argument(
         "--specifier",
         default="unstable",
         help="Branch, tag, or commit (default: unstable)",
     )
-    parser.add_argument(
-        "--tests", required=True, help="Comma-separated test names (e.g., get,set)"
-    )
+    parser.add_argument("--tests", required=True, help="Comma-separated test names (e.g., get,set)")
     parser.add_argument(
         "--sizes",
         default=str(config.DEFAULT_VAL_SIZE),
@@ -135,9 +131,7 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Enable perf stat hardware counter collection",
     )
-    parser.add_argument(
-        "--no-preload", action="store_true", help="Disable key preloading"
-    )
+    parser.add_argument("--no-preload", action="store_true", help="Disable key preloading")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,16 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     queue_sub.add_parser("list", help="List all pending tasks")
 
     # queue add
-    add_parser = queue_sub.add_parser(
-        "add", help="Add performance benchmark tasks to the queue"
-    )
+    add_parser = queue_sub.add_parser("add", help="Add performance benchmark tasks to the queue")
     _add_perf_args(add_parser)
 
     # queue remove
     remove_parser = queue_sub.add_parser("remove", help="Remove a task from the queue")
-    remove_parser.add_argument(
-        "task_id", help="Task ID to remove (from 'queue list' output)"
-    )
+    remove_parser.add_argument("task_id", help="Task ID to remove (from 'queue list' output)")
 
     # queue clear
     queue_sub.add_parser("clear", help="Remove all pending tasks from the queue")
@@ -178,8 +168,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
     if not validate_source(args.source):
         valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
         print(
-            f"Error: Invalid source '{args.source}'. "
-            f"Valid sources: {', '.join(valid_sources)}",
+            f"Error: Invalid source '{args.source}'. " f"Valid sources: {', '.join(valid_sources)}",
             file=sys.stderr,
         )
         return 1
@@ -230,9 +219,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
-    combinations = generate_task_combinations(
-        tests, sizes, io_threads, pipelining, key_sizes
-    )
+    combinations = generate_task_combinations(tests, sizes, io_threads, pipelining, key_sizes)
 
     queue = TaskQueue()
     for test, size, io_thread, pipeline, key_size in combinations:
@@ -260,9 +247,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
 
     print(f"Queued {len(combinations)} task(s):")
     print(f"  source={args.source} specifier={args.specifier}")
-    print(
-        f"  tests={tests} sizes={sizes} io-threads={io_threads} pipeline={pipelining}"
-    )
+    print(f"  tests={tests} sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.make_args:
         print(f"  make-args: {args.make_args}")

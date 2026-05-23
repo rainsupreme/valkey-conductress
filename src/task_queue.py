@@ -51,13 +51,8 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
-        if (
-            self.source != config.MANUALLY_UPLOADED
-            and self.source not in config.REPO_NAMES
-        ):
-            raise ValueError(
-                f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}"
-            )
+        if self.source != config.MANUALLY_UPLOADED and self.source not in config.REPO_NAMES:
+            raise ValueError(f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}")
 
     def __eq__(self, other):
         if not isinstance(other, BaseTaskData):
@@ -75,9 +70,7 @@ class BaseTaskData(ABC):
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
-    def prepare_task_runner(
-        self, server_infos: list[config.ServerInfo]
-    ) -> "BaseTaskRunner":
+    def prepare_task_runner(self, server_infos: list[config.ServerInfo]) -> "BaseTaskRunner":
         """Return the task runner for this task."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -115,6 +108,7 @@ class BaseTaskRunner(ABC):
     """Base class for task runners"""
 
     def __init__(self, task_name: str):
+        self.task_name = task_name
         self.file_protocol = FileProtocol(task_name, role_id="client")
 
     @abstractmethod
@@ -159,8 +153,7 @@ class TaskQueue:
             task_file.unlink()
         else:
             logger.error(
-                "Task file not found (task_id=%s, expected=%s). "
-                "This is a bug — task_id does not match filename.",
+                "Task file not found (task_id=%s, expected=%s). " "This is a bug — task_id does not match filename.",
                 task.task_id,
                 task_file,
             )
@@ -169,9 +162,7 @@ class TaskQueue:
                 try:
                     data = json.loads(candidate.read_text())
                     if data.get("timestamp") == task.timestamp.isoformat():
-                        logger.error(
-                            "Found matching file by timestamp: %s — removing", candidate
-                        )
+                        logger.error("Found matching file by timestamp: %s — removing", candidate)
                         candidate.unlink()
                         return
                 except (json.JSONDecodeError, OSError):

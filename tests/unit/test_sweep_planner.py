@@ -112,9 +112,7 @@ class TestSweepPlannerBisection:
     def test_bisection_skips_build_failures(self):
         state = make_state(["a", "b", "c", "d", "e"], points={"a": 100000, "e": 90000})
         # Mark midpoint as build failure
-        state.points["c"] = BenchmarkPoint(
-            commit="c", date="2024-03-01", status=PointStatus.BUILD_FAILED
-        )
+        state.points["c"] = BenchmarkPoint(commit="c", date="2024-03-01", status=PointStatus.BUILD_FAILED)
         planner = SweepPlanner(state)
         task = planner.get_next_task()
         assert task is not None
@@ -205,9 +203,7 @@ class TestSweepPlannerBackfill:
         assert 1 <= idx <= 8
 
     def test_all_benchmarked_returns_none(self):
-        state = make_state(
-            ["a", "b", "c"], points={"a": 100000, "b": 100000, "c": 100000}
-        )
+        state = make_state(["a", "b", "c"], points={"a": 100000, "b": 100000, "c": 100000})
         planner = SweepPlanner(state)
         task = planner.get_next_task()
         assert task is None
@@ -269,9 +265,7 @@ class TestRecordResult:
     def test_record_new_result(self):
         state = make_state(["a", "b", "c"])
         planner = SweepPlanner(state)
-        planner.record_result(
-            "b", value=150000, cv=0.19, pr=1234, pr_title="Optimize dict"
-        )
+        planner.record_result("b", value=150000, cv=0.19, pr=1234, pr_title="Optimize dict")
         assert "b" in state.points
         assert state.points["b"].value == 150000
         assert state.points["b"].pr == 1234
@@ -352,9 +346,7 @@ class TestEdgeCases:
     def test_all_build_failures_between(self):
         state = make_state(["a", "b", "c", "d", "e"], points={"a": 100000, "e": 90000})
         for c in ["b", "c", "d"]:
-            state.points[c] = BenchmarkPoint(
-                commit=c, date="", status=PointStatus.BUILD_FAILED
-            )
+            state.points[c] = BenchmarkPoint(commit=c, date="", status=PointStatus.BUILD_FAILED)
         planner = SweepPlanner(state)
         # All midpoints are build failures — no bisection possible
         task = planner.get_next_task()

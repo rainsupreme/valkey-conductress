@@ -63,9 +63,7 @@ class BaseSweepCoordinator(ABC):
         except Exception:
             pass
         self.state.save(self.state_file)
-        logger.info(
-            "Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv
-        )
+        logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
 
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""
@@ -160,15 +158,11 @@ class BaseSweepCoordinator(ABC):
         from src.sweep.git_ops import find_fork_point
 
         fork_point = find_fork_point(self.repo_path)
-        commits = get_merge_commits(
-            self.repo_path, since_commit=fork_point, ref=SWEEP_REF
-        )
+        commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
         self.state.commit_prs = {c.hash: c.pr for c in commits if c.pr is not None}
-        self.state.commit_titles = {
-            c.hash: c.pr_title for c in commits if c.pr_title is not None
-        }
+        self.state.commit_titles = {c.hash: c.pr_title for c in commits if c.pr_title is not None}
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release branch points on unstable."""
@@ -192,9 +186,7 @@ class BaseSweepCoordinator(ABC):
                     self.state.landmarks.append(lm)
             for commit_hash, date, label in points:
                 if commit_hash in commit_set:
-                    self.state.landmarks.append(
-                        Landmark(commit=commit_hash, date=date, label=label)
-                    )
+                    self.state.landmarks.append(Landmark(commit=commit_hash, date=date, label=label))
         except Exception as e:
             logger.warning("Failed to enumerate release branch points: %s", e)
 
@@ -270,11 +262,7 @@ class SweepCoordinator(BaseSweepCoordinator):
                 if entry.get("task_id") == task.task_id:
                     rps = entry.get("score")
                     per_run = entry.get("data", {}).get("per_run_rps", [])
-                    cv = (
-                        (stdev(per_run) / rps) * 100
-                        if len(per_run) >= 2 and rps
-                        else 0.0
-                    )
+                    cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
                     reps = len(per_run) if per_run else 3
                     return (rps, cv, reps) if rps else None
             except (ValueError, KeyError, TypeError):

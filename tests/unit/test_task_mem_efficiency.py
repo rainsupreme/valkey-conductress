@@ -152,9 +152,7 @@ class TestMemTaskRunner:
     @patch("src.tasks.task_mem_efficiency.Server")
     @patch("src.tasks.task_mem_efficiency.print_pretty_header")
     @pytest.mark.asyncio
-    async def test_run_basic_flow(
-        self, mock_print, mock_server_class, runner, mock_server
-    ):
+    async def test_run_basic_flow(self, mock_print, mock_server_class, runner, mock_server):
         """Test basic run flow."""
         # Ensure Server() instantiation returns mock_server
         mock_server_class.return_value = mock_server
@@ -192,9 +190,7 @@ class TestMemTaskRunner:
 
     @patch("src.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_test_single_size_overhead(
-        self, mock_server_class, runner, mock_server
-    ):
+    async def test_test_single_size_overhead(self, mock_server_class, runner, mock_server):
         """Test single size overhead calculation."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
 
@@ -222,9 +218,7 @@ class TestMemTaskRunner:
 
     @patch("src.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_expiration_with_non_set_command(
-        self, mock_server_class, runner, mock_server
-    ):
+    async def test_expiration_with_non_set_command(self, mock_server_class, runner, mock_server):
         """Test that expiration with non-set command logs error."""
         runner.test = "zadd"
         runner.has_expire = True
@@ -234,9 +228,7 @@ class TestMemTaskRunner:
             {"used_memory": "1000000"},
             {"used_memory": "2000000"},
         ]
-        mock_server.count_items_expires = AsyncMock(
-            return_value=(5000000, 0)
-        )  # No expiration for non-set
+        mock_server.count_items_expires = AsyncMock(return_value=(5000000, 0))  # No expiration for non-set
 
         # Set cached_binary_path as it would be set in run()
         runner.cached_binary_path = Path("/mock/binary")
@@ -252,9 +244,7 @@ class TestMemTaskRunner:
 
     @patch("src.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_expiration_with_set_command(
-        self, mock_server_class, runner, mock_server
-    ):
+    async def test_expiration_with_set_command(self, mock_server_class, runner, mock_server):
         """Test expiration works with set command."""
         runner.has_expire = True
 
@@ -305,9 +295,7 @@ class TestMemTaskRunner:
 
     @patch("src.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_memory_calculation_accuracy(
-        self, mock_server_class, runner, mock_server
-    ):
+    async def test_memory_calculation_accuracy(self, mock_server_class, runner, mock_server):
         """Test memory calculation accuracy."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
 
@@ -330,9 +318,7 @@ class TestMemTaskRunner:
         result = await runner.test_single_size_overhead(val_size, 6379, semaphore)
 
         expected_per_key = (after_mem - before_mem) / count  # 1.0 bytes per key
-        expected_overhead = (
-            expected_per_key - val_size - key_size
-        )  # user_data = key_size + val_size for "set"
+        expected_overhead = expected_per_key - val_size - key_size  # user_data = key_size + val_size for "set"
 
         assert result["per_key_size"] == expected_per_key
         assert result["per_item_overhead"] == expected_overhead
@@ -399,9 +385,7 @@ class TestMemTaskRunner:
         mock_server_class.get_num_cpus = MagicMock(return_value=1)
 
         runner.file_protocol = MagicMock()
-        runner.test_single_size_overhead = AsyncMock(
-            return_value={"val_size": 64, "per_item_overhead": 10.0}
-        )
+        runner.test_single_size_overhead = AsyncMock(return_value={"val_size": 64, "per_item_overhead": 10.0})
         runner.plot = MagicMock()
 
         await runner.run()
@@ -447,9 +431,7 @@ class TestMemTaskRunner:
         mock_server_instance = MagicMock()
         mock_server_instance.get_available_cpu_count = AsyncMock(return_value=2)
         mock_server_instance.kill_all_valkey_instances_on_host = AsyncMock()
-        mock_server_instance.ensure_binary_cached = AsyncMock(
-            return_value=Path("/mock/binary")
-        )
+        mock_server_instance.ensure_binary_cached = AsyncMock(return_value=Path("/mock/binary"))
         mock_server_class.return_value = mock_server_instance
         mock_server_class.get_num_cpus = MagicMock(return_value=1)
 

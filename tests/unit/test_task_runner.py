@@ -14,9 +14,7 @@ from src.task_runner import TaskRunner
 def temp_project_root(tmp_path):
     """Patch FAILED_TASKS paths to a temp directory for test isolation."""
     with (
-        patch(
-            "src.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"
-        ),
+        patch("src.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed_tasks.jsonl"),
         patch("src.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"),
     ):
         yield tmp_path

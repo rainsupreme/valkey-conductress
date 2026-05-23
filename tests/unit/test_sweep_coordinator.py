@@ -7,19 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sweep.coordinator import (
-    SWEEP_IO_THREADS,
-    SWEEP_TEST,
-    SWEEP_VAL_SIZE,
-    SweepCoordinator,
-)
-from src.sweep.planner import (
-    BenchmarkPoint,
-    Landmark,
-    PointStatus,
-    SweepPlanner,
-    SweepState,
-)
+from src.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_TEST, SWEEP_VAL_SIZE, SweepCoordinator
+from src.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
 
 
 @pytest.fixture
@@ -48,9 +37,7 @@ def mock_repo(tmp_dir):
     )
     # Create initial commit
     (repo / "file.txt").write_text("hello")
-    subprocess.run(
-        ["git", "-C", str(repo), "add", "."], capture_output=True, check=True
-    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True, check=True)
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", "Initial"],
         capture_output=True,
@@ -226,9 +213,7 @@ class TestSweepCoordinatorResults:
     @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
     def test_delete_cached_binary(self, mock_state_file, tmp_dir):
         state_file = tmp_dir / "state.json"
-        state = SweepState(
-            merge_commits=["abc123"], commit_dates={"abc123": "2024-01-01"}
-        )
+        state = SweepState(merge_commits=["abc123"], commit_dates={"abc123": "2024-01-01"})
         state.save(state_file)
 
         # Create a fake cache dir

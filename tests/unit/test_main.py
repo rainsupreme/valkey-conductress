@@ -110,9 +110,7 @@ class TestCompareSubcommand:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 0
-            mock_analysis_main.assert_called_once_with(
-                ["branch-a", "branch-b", "--source", "valkey"]
-            )
+            mock_analysis_main.assert_called_once_with(["branch-a", "branch-b", "--source", "valkey"])
 
     @patch("sys.argv", ["conductress", "compare", "branch-a", "branch-b"])
     @patch("src.__main__.logging")

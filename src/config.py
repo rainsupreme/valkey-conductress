@@ -96,9 +96,7 @@ REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 
 # unique name indicating the binary was uploaded manually
 MANUALLY_UPLOADED = "manually_uploaded"
-assert (
-    MANUALLY_UPLOADED not in REPO_NAMES
-), "MANUALLY_UPLOADED must not overlap with any repository names"
+assert MANUALLY_UPLOADED not in REPO_NAMES, "MANUALLY_UPLOADED must not overlap with any repository names"
 
 
 @dataclass
@@ -133,9 +131,7 @@ def load_server_ips() -> list[ServerInfo]:
     elif default_path.exists():
         data = json.loads(default_path.read_text())["valkey_servers"]
     else:
-        raise FileNotFoundError(
-            f"No server config found at {config_path} or {default_path}"
-        )
+        raise FileNotFoundError(f"No server config found at {config_path} or {default_path}")
     all_servers = [ServerInfo(**entry) for entry in data]
     return [s for s in all_servers if not s.disabled]
 

@@ -79,9 +79,7 @@ class Server:
         """Create a server instance and ensure it is running with the specified build."""
         server = cls(ip, port, username)
 
-        cached_binary_path: Path = await server.ensure_binary_cached(
-            binary_source, specifier, make_args
-        )
+        cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier, make_args)
         await server.start(cached_binary_path, io_threads)
         return server
 
@@ -142,9 +140,7 @@ class Server:
             net_interface_numa = 0  # use NUMA node 0 for cache locality
         else:
             # Get the numa node matching interface
-            numa_stdout, _ = await self.run_host_command(
-                f'cat "/sys/class/net/{net_interface}/device/numa_node"'
-            )
+            numa_stdout, _ = await self.run_host_command(f'cat "/sys/class/net/{net_interface}/device/numa_node"')
             net_interface_numa = int(numa_stdout.strip())
 
         # Register host with allocator
@@ -156,9 +152,7 @@ class Server:
             net_interface_numa=net_interface_numa,
         )
 
-    async def _detect_l3_cache_topology(
-        self, all_cpus: list[int]
-    ) -> dict[int, list[int]]:
+    async def _detect_l3_cache_topology(self, all_cpus: list[int]) -> dict[int, list[int]]:
         """Detect L3 cache topology by parsing sysfs.
 
         Returns mapping of L3 cache ID -> list of CPUs sharing that cache.
@@ -168,9 +162,7 @@ class Server:
         for cpu in all_cpus:
             # Read L3 cache ID for this CPU
             cache_path = f"/sys/devices/system/cpu/cpu{cpu}/cache/index3/id"
-            result, _ = await self.run_host_command(
-                f"cat {cache_path} 2>/dev/null || echo -1", check=False
-            )
+            result, _ = await self.run_host_command(f"cat {cache_path} 2>/dev/null || echo -1", check=False)
 
             try:
                 l3_id = int(result.strip())
@@ -205,20 +197,14 @@ class Server:
             return
 
         # Get IRQ interrupts for interface
-        stdout, _ = await self.run_host_command(
-            f"grep -i {net_interface} /proc/interrupts"
-        )
-        net_irqs = [
-            int(irq.split(":")[0].strip()) for irq in stdout.strip().split("\n")
-        ]
+        stdout, _ = await self.run_host_command(f"grep -i {net_interface} /proc/interrupts")
+        net_irqs = [int(irq.split(":")[0].strip()) for irq in stdout.strip().split("\n")]
 
         # Allocate CPUs for IRQs on the network interface NUMA node
         # Try to avoid server cache if server already allocated
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
         server_tags = [
-            tag
-            for tag in self._cpu_allocator.get_all_allocations(self.ip).keys()
-            if tag.purpose == "server"
+            tag for tag in self._cpu_allocator.get_all_allocations(self.ip).keys() if tag.purpose == "server"
         ]
 
         irq_cpus = self._cpu_allocator.allocate(
@@ -249,9 +235,7 @@ class Server:
                 mask = mask[::-1]  # Reverse back to normal order
 
             # Set the IRQ affinity using the mask
-            await self.run_host_command(
-                f"sudo sh -c 'echo {mask} > /proc/irq/{irq}/smp_affinity'"
-            )
+            await self.run_host_command(f"sudo sh -c 'echo {mask} > /proc/irq/{irq}/smp_affinity'")
 
         logging.info(
             "Pinned net IRQs %s for %s to CPUs %s (NUMA node %d)",
@@ -267,9 +251,7 @@ class Server:
         self._validate_sufficient_cpus()
 
         # Create allocation tag for this server
-        self._allocation_tag = AllocationTag(
-            task_id=f"server_{self.ip}_{self.port}", purpose="server"
-        )
+        self._allocation_tag = AllocationTag(task_id=f"server_{self.ip}_{self.port}", purpose="server")
 
         # Allocate on network interface NUMA node
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
@@ -295,9 +277,7 @@ class Server:
         pid_out, _ = await self.run_host_command(f"lsof -ti :{self.port}")
         main_pid = pid_out.strip()
 
-        threads_out, _ = await self.run_host_command(
-            f"ps -T -p {main_pid} -o tid,comm --no-headers"
-        )
+        threads_out, _ = await self.run_host_command(f"ps -T -p {main_pid} -o tid,comm --no-headers")
 
         # Pin main thread to first CPU
         main_cpu = self.server_cpus[0]
@@ -351,15 +331,12 @@ class Server:
             RuntimeError: If insufficient CPUs available for server needs
         """
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
-        available = self._cpu_allocator.get_available_count(
-            self.ip, prefer_numa=net_numa
-        )
+        available = self._cpu_allocator.get_available_count(self.ip, prefer_numa=net_numa)
         needed = Server.get_num_cpus(self.threads)
 
         if available < needed:
             raise RuntimeError(
-                f"Insufficient CPUs on {self.ip} NUMA node {net_numa}: "
-                f"need {needed}, available {available}"
+                f"Insufficient CPUs on {self.ip} NUMA node {net_numa}: " f"need {needed}, available {available}"
             )
 
     # =============================================================================
@@ -371,9 +348,7 @@ class Server:
         if self.is_profiling():
             raise RuntimeError("Profiling already started")
 
-        self.profiling_thread = Thread(
-            target=self.__profiling_run_sync, args=(sample_rate,)
-        )
+        self.profiling_thread = Thread(target=self.__profiling_run_sync, args=(sample_rate,))
         self.profiling_thread.start()
 
     def __profiling_run_sync(self, sample_rate: int) -> None:
@@ -382,9 +357,7 @@ class Server:
         if self.ip in ["127.0.0.1", "localhost"]:
             subprocess.run(command, shell=True, check=True)
         else:
-            subprocess.run(
-                ["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True
-            )
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
 
         perf_command = (
             f"sudo perf record -F {sample_rate} -a -g -o {Server.perf_data_path} "
@@ -434,24 +407,17 @@ class Server:
         await self.run_host_command(
             f"sudo chmod a+r {Server.perf_data_path}",
         )
-        await self.run_host_command(
-            f"perf script -i {Server.perf_data_path} > {out_perf_path}"
-        )
+        await self.run_host_command(f"perf script -i {Server.perf_data_path} > {out_perf_path}")
         print("collapsing stacks")
         await self.run_host_command(
-            f"{Server.flamegraph/'stackcollapse-perf.pl'} "
-            f"{out_perf_path} > {out_folded_path}"
+            f"{Server.flamegraph/'stackcollapse-perf.pl'} " f"{out_perf_path} > {out_folded_path}"
         )
-        await self.run_host_command(
-            f"{Server.flamegraph/'flamegraph.pl'} {out_folded_path} > {Server.flamegraph_path}"
-        )
+        await self.run_host_command(f"{Server.flamegraph/'flamegraph.pl'} {out_folded_path} > {Server.flamegraph_path}")
         await self.run_host_command(f"rm -f {out_perf_path} {out_folded_path}")
 
         print("copying perf data from server")
         await self.get_remote_file(Server.perf_data_path, result_dir / "perf.data")
-        await self.get_remote_file(
-            Server.flamegraph_path, result_dir / "flamegraph.svg"
-        )
+        await self.get_remote_file(Server.flamegraph_path, result_dir / "flamegraph.svg")
 
     async def __data_collection_cleanup(self):
         command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path} {Server.perf_stats_path}"
@@ -493,9 +459,7 @@ class Server:
         if self.ip in ["127.0.0.1", "localhost"]:
             subprocess.run(command, shell=True, check=True)
         else:
-            subprocess.run(
-                ["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True
-            )
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
 
     async def perf_stat_stop(self) -> None:
         """Signals perf stat to stop. Use perf_stat_wait() to ensure that it actually finishes."""
@@ -549,24 +513,18 @@ class Server:
         """Configure CPU settings for consistent benchmarks across ARM/x86 platforms."""
         from .platform import detect_platform
 
-        self._platform_info = await detect_platform(
-            lambda cmd: self.run_host_command(cmd, check=False)
-        )
+        self._platform_info = await detect_platform(lambda cmd: self.run_host_command(cmd, check=False))
 
         # === Universal tunings (all platforms) ===
 
         # Disable ASLR — single biggest factor for between-run variance (1-3%)
-        await self.run_host_command(
-            "echo 0 | sudo tee /proc/sys/kernel/randomize_va_space", check=False
-        )
+        await self.run_host_command("echo 0 | sudo tee /proc/sys/kernel/randomize_va_space", check=False)
         logging.info("Disabled ASLR (randomize_va_space=0)")
 
         # THP to madvise — prevents background khugepaged/compaction jitter
         thp_path = "/sys/kernel/mm/transparent_hugepage/enabled"
         if await self.check_file_exists(Path(thp_path)):
-            await self.run_host_command(
-                f"echo madvise | sudo tee {thp_path}", check=False
-            )
+            await self.run_host_command(f"echo madvise | sudo tee {thp_path}", check=False)
             logging.info("Set THP to madvise")
 
         # Memory/scheduler tuning — reduces jitter from background activity
@@ -602,9 +560,7 @@ class Server:
             available_governors = governors_out.strip().split() if governors_out else []
 
             if "performance" in available_governors:
-                await self.run_host_command(
-                    "sudo cpupower frequency-set -g performance"
-                )
+                await self.run_host_command("sudo cpupower frequency-set -g performance")
                 logging.info("Set performance governor")
             elif "userspace" in available_governors:
                 # Fallback for some ARM systems
@@ -623,28 +579,20 @@ class Server:
             ]
             for boost_path in boost_paths:
                 if await self.check_file_exists(Path(boost_path)):
-                    await self.run_host_command(
-                        f"echo 0 | sudo tee {boost_path}", check=False
-                    )
+                    await self.run_host_command(f"echo 0 | sudo tee {boost_path}", check=False)
                     logging.info("Disabled boost/turbo at %s", boost_path)
                     break
         else:
-            logging.info(
-                "No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)"
-            )
+            logging.info("No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)")
 
         # Handle idle states across platforms
         idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
         if "No idle states" in idle_result or "CPUidle driver: none" in idle_result:
-            logging.info(
-                "No CPU idle states - processor maintains consistent performance"
-            )
+            logging.info("No CPU idle states - processor maintains consistent performance")
         else:
             # Disable common idle states (C1, C2) that can cause latency spikes
             for state in [1, 2, 3]:  # C1, C2, C3
-                await self.run_host_command(
-                    f"sudo cpupower idle-set -d {state}", check=False
-                )
+                await self.run_host_command(f"sudo cpupower idle-set -d {state}", check=False)
             logging.info("Disabled CPU idle states for latency consistency")
 
         # Cross-platform scheduler optimizations
@@ -659,17 +607,13 @@ class Server:
 
         for path, value, description in scheduler_settings:
             if await self.check_file_exists(Path(path)):
-                await self.run_host_command(
-                    f"echo {value} | sudo tee {path}", check=False
-                )
+                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
                 logging.info("Disabled %s for consistent performance", description)
 
     async def disable_cpu_consistency_mode(self) -> None:
         """Restore default CPU settings across ARM/x86 platforms."""
         # Restore ASLR
-        await self.run_host_command(
-            "echo 2 | sudo tee /proc/sys/kernel/randomize_va_space", check=False
-        )
+        await self.run_host_command("echo 2 | sudo tee /proc/sys/kernel/randomize_va_space", check=False)
         logging.info("Restored ASLR (randomize_va_space=2)")
 
         # Check if CPU frequency scaling is supported
@@ -693,9 +637,7 @@ class Server:
                 await self.run_host_command("sudo cpupower frequency-set -g ondemand")
                 logging.info("Restored ondemand governor")
             else:
-                logging.warning(
-                    "No suitable default governor found: %s", available_governors
-                )
+                logging.warning("No suitable default governor found: %s", available_governors)
 
             # Re-enable turbo/boost
             boost_paths = [
@@ -704,9 +646,7 @@ class Server:
             ]
             for boost_path in boost_paths:
                 if await self.check_file_exists(Path(boost_path)):
-                    await self.run_host_command(
-                        f"echo 1 | sudo tee {boost_path}", check=False
-                    )
+                    await self.run_host_command(f"echo 1 | sudo tee {boost_path}", check=False)
                     logging.info("Re-enabled boost/turbo at %s", boost_path)
                     break
         else:
@@ -714,14 +654,9 @@ class Server:
 
         # Re-enable idle states if they were disabled
         idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
-        if (
-            "No idle states" not in idle_result
-            and "CPUidle driver: none" not in idle_result
-        ):
+        if "No idle states" not in idle_result and "CPUidle driver: none" not in idle_result:
             for state in [1, 2, 3]:  # C1, C2, C3
-                await self.run_host_command(
-                    f"sudo cpupower idle-set -e {state}", check=False
-                )
+                await self.run_host_command(f"sudo cpupower idle-set -e {state}", check=False)
             logging.info("Re-enabled CPU idle states")
 
         # Restore default scheduler settings
@@ -736,9 +671,7 @@ class Server:
 
         for path, value, description in scheduler_settings:
             if await self.check_file_exists(Path(path)):
-                await self.run_host_command(
-                    f"echo {value} | sudo tee {path}", check=False
-                )
+                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
                 logging.info("Re-enabled %s", description)
 
     # =============================================================================
@@ -761,12 +694,8 @@ class Server:
                     "performance",
                 )
             )
-            if await self.check_file_exists(
-                Path("/sys/devices/system/cpu/cpufreq/boost")
-            ):
-                checks.append(
-                    ("boost", "cat /sys/devices/system/cpu/cpufreq/boost", "0")
-                )
+            if await self.check_file_exists(Path("/sys/devices/system/cpu/cpufreq/boost")):
+                checks.append(("boost", "cat /sys/devices/system/cpu/cpufreq/boost", "0"))
 
         all_ok = True
         for name, cmd, expected in checks:
@@ -808,21 +737,15 @@ class Server:
             await self.disable_cpu_consistency_mode()
 
         # Enable memory overcommit
-        await self.run_host_command(
-            "sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'"
-        )
+        await self.run_host_command("sudo sh -c 'echo 1 > /proc/sys/vm/overcommit_memory'")
 
         await self.stop()
-        await asyncio.sleep(
-            1
-        )  # short delay to it doesn't get our new server (TODO verify this)
+        await asyncio.sleep(1)  # short delay to it doesn't get our new server (TODO verify this)
 
     @staticmethod
     def get_num_cpus(io_threads: int) -> int:
         """Get number of CPUs allocated for server with specified io-threads parameter"""
-        return (
-            io_threads + 2
-        )  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
+        return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
     async def start(self, cached_binary_path: Path, io_threads: int) -> None:
         """Ensure specified build is running on the server."""
@@ -923,9 +846,7 @@ class Server:
 
         name = name.strip().split()[-1]
         if name != VALKEY_BINARY:
-            raise RuntimeError(
-                f"Process on port {self.port} is '{name}', expected '{VALKEY_BINARY}'"
-            )
+            raise RuntimeError(f"Process on port {self.port} is '{name}', expected '{VALKEY_BINARY}'")
 
         await self.run_host_command(f"kill -9 {self.valkey_pid}")
         self.valkey_pid = -1
@@ -952,18 +873,12 @@ class Server:
             if crash_line:
                 # Grab 10 lines before the crash marker through EOF
                 start = max(1, int(crash_line) - 10)
-                log_tail, _ = await self.run_host_command(
-                    f"sed -n '{start},$p' {Server.server_logfile}", check=False
-                )
+                log_tail, _ = await self.run_host_command(f"sed -n '{start},$p' {Server.server_logfile}", check=False)
             else:
                 # No crash signature found — grab last 100 lines as fallback
-                log_tail, _ = await self.run_host_command(
-                    f"tail -100 {Server.server_logfile}", check=False
-                )
+                log_tail, _ = await self.run_host_command(f"tail -100 {Server.server_logfile}", check=False)
             if log_tail.strip():
-                self.logger.error(
-                    "=== valkey-server crash log ===\n%s", log_tail.strip()
-                )
+                self.logger.error("=== valkey-server crash log ===\n%s", log_tail.strip())
         except Exception:
             self.logger.error("Could not read server logfile after crash")
 
@@ -974,16 +889,11 @@ class Server:
     async def run_valkey_command(self, command: str) -> Optional[str]:
         """Run a valkey command on the server and return its output."""
         self.logger.info("Valkey cli command: %s", command)
-        cli_command: str = (
-            f"{str(config.PROJECT_ROOT / config.VALKEY_CLI)} -h {self.ip} -p {self.port} "
-            + command
-        )
+        cli_command: str = f"{str(config.PROJECT_ROOT / config.VALKEY_CLI)} -h {self.ip} -p {self.port} " + command
         stdout, _ = await async_run(cli_command, check=False)
         return stdout.strip() if stdout else None
 
-    async def run_valkey_command_over_keyspace(
-        self, keyspace_size: int, command: str
-    ) -> None:
+    async def run_valkey_command_over_keyspace(self, keyspace_size: int, command: str) -> None:
         """Run valkey-benchmark, sequentially covering the entire keyspace."""
         sequential_command: str = (
             f"{str(config.PROJECT_ROOT / config.VALKEY_BENCHMARK)} -h {self.ip} -p {self.port} -c 32 -P 20 "
@@ -1051,9 +961,7 @@ class Server:
             port = "one"
         response = await self.run_valkey_command(f"replicaof {primary_ip} {port}")
         if response != "OK":
-            raise RuntimeError(
-                f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}"
-            )
+            raise RuntimeError(f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}")
 
     # =============================================================================
     # BINARY MANAGEMENT METHODS
@@ -1095,9 +1003,7 @@ class Server:
 
     def __get_cached_build_path(self) -> Path:
         if self.source is None or self.hash is None:
-            raise RuntimeError(
-                "source and hash must be set before accessing cached build path"
-            )
+            raise RuntimeError("source and hash must be set before accessing cached build path")
         # Use actual make_args value - empty string is a valid override
         make_args_hash = hashlib.md5(self.make_args.encode()).hexdigest()[:16]
         return Server.remote_build_cache / self.source / self.hash / make_args_hash
@@ -1108,9 +1014,7 @@ class Server:
         return Server.path_root / self.source / "src"
 
     async def __is_binary_cached(self) -> bool:
-        return await self.check_file_exists(
-            self.__get_cached_build_path() / VALKEY_BINARY
-        )
+        return await self.check_file_exists(self.__get_cached_build_path() / VALKEY_BINARY)
 
     async def __normalize_specifier(self, specifier) -> str:
         """Checks if specifier is a valid branch on origin. Fetches first."""
@@ -1127,9 +1031,7 @@ class Server:
             )
         result = result.strip()
         if result == "":
-            raise ValueError(
-                f"{specifier} is an invalid specifier in {self.source} (empty result)"
-            )
+            raise ValueError(f"{specifier} is an invalid specifier in {self.source} (empty result)")
         if result == "--":
             return specifier
         if result.startswith("refs/remotes/origin/"):
@@ -1139,9 +1041,7 @@ class Server:
     async def __ensure_build_cached(self) -> Path:
         source_path: Path = self.__get_source_binary_path()
         sync_target: str = await self.__normalize_specifier(self.specifier)
-        await self.run_host_command(
-            f"cd {source_path} && git reset --hard {sync_target}"
-        )
+        await self.run_host_command(f"cd {source_path} && git reset --hard {sync_target}")
         self.hash = await self.__get_current_commit_hash()
 
         cached_build_path = self.__get_cached_build_path()
@@ -1193,9 +1093,7 @@ class Server:
         """Delete the entire build cache on all servers. This is a destructive operation."""
 
         async def delete_host_cache(ip):
-            async with asyncssh.connect(
-                ip, client_keys=[str(config.SSH_KEYFILE)]
-            ) as conn:
+            async with asyncssh.connect(ip, client_keys=[str(config.SSH_KEYFILE)]) as conn:
                 await conn.run(f"rm -rf {Server.remote_build_cache}", check=False)
 
         await asyncio.gather(*(delete_host_cache(ip) for ip in server_ips))
@@ -1207,9 +1105,7 @@ class Server:
     async def __ensure_ssh_connection(self) -> None:
         if not self.ssh:
             if self.ip in ["127.0.0.1", "localhost"]:
-                self.ssh = await asyncssh.connect(
-                    self.ip, known_hosts=None, client_keys=[str(config.SSH_KEYFILE)]
-                )
+                self.ssh = await asyncssh.connect(self.ip, known_hosts=None, client_keys=[str(config.SSH_KEYFILE)])
             elif self.username:
                 self.ssh = await asyncssh.connect(
                     self.ip,
@@ -1217,9 +1113,7 @@ class Server:
                     client_keys=[str(config.SSH_KEYFILE)],
                 )
             else:
-                self.ssh = await asyncssh.connect(
-                    self.ip, client_keys=[str(config.SSH_KEYFILE)]
-                )
+                self.ssh = await asyncssh.connect(self.ip, client_keys=[str(config.SSH_KEYFILE)])
 
     @staticmethod
     def __ensure_str(output: Union[None, bytes, str]) -> str:

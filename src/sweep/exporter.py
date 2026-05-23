@@ -23,12 +23,7 @@ def export_series(
         workload: Workload identifier string.
     """
     if not workload:
-        from src.sweep.coordinator import (
-            SWEEP_IO_THREADS,
-            SWEEP_PIPELINING,
-            SWEEP_TEST,
-            SWEEP_VAL_SIZE,
-        )
+        from src.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
 
         workload = f"{SWEEP_TEST.upper()}_{SWEEP_VAL_SIZE}B_t{SWEEP_IO_THREADS}_p{SWEEP_PIPELINING}"
 
@@ -92,9 +87,7 @@ def export_series(
     output_path.write_text(json.dumps(series, indent=2))
 
 
-def _build_annotations(
-    state: SweepState, planner: SweepPlanner, workload: str
-) -> list[dict[str, Any]]:
+def _build_annotations(state: SweepState, planner: SweepPlanner, workload: str) -> list[dict[str, Any]]:
     """Build annotations for commits where a change was pinpointed."""
     annotations: list[dict[str, Any]] = []
 

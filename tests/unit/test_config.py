@@ -65,9 +65,7 @@ class TestLoadServerIps:
 class TestGetServers:
     """Tests for the lazy-load get_servers() accessor."""
 
-    def test_get_servers_returns_servers_when_config_exists(
-        self, tmp_path, monkeypatch
-    ):
+    def test_get_servers_returns_servers_when_config_exists(self, tmp_path, monkeypatch):
         """get_servers() should return the server list when servers.json exists."""
         config = {
             "valkey_servers": [

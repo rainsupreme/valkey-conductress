@@ -301,26 +301,18 @@ class AnalysisModule:
         if ci_pcts:
             avg_ci = sum(ci_pcts) / len(ci_pcts)
             max_ci = max(ci_pcts)
-            lines.append(
-                f"Measurement precision: avg ±{avg_ci:.2f}%, max ±{max_ci:.2f}% (95% CI as % of mean)"
-            )
+            lines.append(f"Measurement precision: avg ±{avg_ci:.2f}%, max ±{max_ci:.2f}% (95% CI as % of mean)")
 
             # Guidance on whether more testing would help
             if avg_ci > 2.0:
-                lines.append(
-                    "⚠ High variance — consider more repetitions to improve precision."
-                )
+                lines.append("⚠ High variance — consider more repetitions to improve precision.")
             elif avg_ci > 1.0:
-                lines.append(
-                    "Moderate precision — more repetitions would help detect sub-1% effects."
-                )
+                lines.append("Moderate precision — more repetitions would help detect sub-1% effects.")
             else:
                 lines.append("Good precision — sufficient to detect effects ≥1%.")
 
             # Detectable effect size estimate (rough: need delta > 2x pooled CI to be significant)
-            lines.append(
-                f"Minimum detectable effect: ~±{avg_ci * 2:.1f}% (approximate)"
-            )
+            lines.append(f"Minimum detectable effect: ~±{avg_ci * 2:.1f}% (approximate)")
 
         return "\n".join(lines)
 

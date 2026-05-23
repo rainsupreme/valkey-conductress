@@ -39,9 +39,7 @@ class MockTaskData(task_queue.BaseTaskData):
     def short_description(self) -> str:
         return "Mock task"
 
-    def prepare_task_runner(
-        self, server_infos: list[ServerInfo]
-    ) -> "task_queue.BaseTaskRunner":
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "task_queue.BaseTaskRunner":
         return MockTaskRunner(server_infos)
 
 

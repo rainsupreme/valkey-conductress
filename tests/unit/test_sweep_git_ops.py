@@ -6,13 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.sweep.git_ops import (
-    MergeCommit,
-    _parse_merge_subject,
-    get_head,
-    get_merge_commits,
-    get_release_branch_points,
-)
+from src.sweep.git_ops import MergeCommit, _parse_merge_subject, get_head, get_merge_commits, get_release_branch_points
 
 
 @pytest.fixture
@@ -103,9 +97,7 @@ class TestParseMergeSubject:
     """Tests for merge commit subject parsing."""
 
     def test_standard_merge(self):
-        pr, title = _parse_merge_subject(
-            "Merge pull request #1847 from user/branch-name"
-        )
+        pr, title = _parse_merge_subject("Merge pull request #1847 from user/branch-name")
         assert pr == 1847
         assert title == "Merge pull request #1847 from user/branch-name"
 
@@ -133,9 +125,7 @@ class TestGetReleaseBranchPoints:
         """Create a repo with a simulated release branch (like origin/8.0)."""
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
-            run = lambda cmd: subprocess.run(
-                cmd, cwd=repo, capture_output=True, check=True
-            )
+            run = lambda cmd: subprocess.run(cmd, cwd=repo, capture_output=True, check=True)
             run(["git", "init", "-b", "unstable"])
             run(["git", "config", "user.email", "test@test.com"])
             run(["git", "config", "user.name", "Test"])

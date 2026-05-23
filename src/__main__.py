@@ -8,9 +8,7 @@ from src.config import CONDUCTRESS_LOG
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="conductress", description="Valkey Conductress"
-    )
+    parser = argparse.ArgumentParser(prog="conductress", description="Valkey Conductress")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("tui", help="Launch the TUI")
@@ -35,13 +33,9 @@ def main() -> None:
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
-    sweep_parser = subparsers.add_parser(
-        "sweep", help="Sweep management (export, status)"
-    )
+    sweep_parser = subparsers.add_parser("sweep", help="Sweep management (export, status)")
     sweep_sub = sweep_parser.add_subparsers(dest="sweep_command")
-    export_parser = sweep_sub.add_parser(
-        "export", help="Export sweep results to dashboard JSON"
-    )
+    export_parser = sweep_sub.add_parser("export", help="Export sweep results to dashboard JSON")
     export_parser.add_argument(
         "--platform",
         required=True,
@@ -94,9 +88,7 @@ def main() -> None:
 
         crash_file = PROJECT_ROOT / "last_crash.json"
         repo_path = Path(args.repo) if args.repo else None
-        runner = TaskRunner(
-            sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path
-        )
+        runner = TaskRunner(sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path)
         if args.sweep:
             print("Sweep mode enabled — will auto-generate tasks when queue is empty")
         try:
@@ -129,12 +121,7 @@ def main() -> None:
         import asyncio
 
         from src import config
-        from src.bootstrap import (
-            SERVERS,
-            ensure_server_ssh_fingerprints,
-            ensure_ssh_key,
-            update_host_list,
-        )
+        from src.bootstrap import SERVERS, ensure_server_ssh_fingerprints, ensure_ssh_key, update_host_list
 
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
@@ -183,9 +170,7 @@ def main() -> None:
                 sys.exit(1)
 
             platform = args.platform
-            output = (
-                Path(args.output) if args.output else Path(f"series-{platform}.json")
-            )
+            output = Path(args.output) if args.output else Path(f"series-{platform}.json")
             platform_labels = {
                 "amd64": "amd64/epyc-9r14/zen4",
                 "arm64": "arm64/c7g.metal/graviton3",
@@ -204,9 +189,7 @@ def main() -> None:
                 dest = repo_path / "data" / output.name
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(output, dest)
-                subprocess.run(
-                    ["git", "-C", str(repo_path), "add", str(dest)], check=True
-                )
+                subprocess.run(["git", "-C", str(repo_path), "add", str(dest)], check=True)
                 result = subprocess.run(
                     ["git", "-C", str(repo_path), "diff", "--cached", "--quiet"],
                     capture_output=True,
@@ -237,9 +220,7 @@ def main() -> None:
 
             planner = SweepPlanner(state)
             completed = sum(1 for p in state.points.values() if p.value is not None)
-            failed = sum(
-                1 for p in state.points.values() if p.status.name == "BUILD_FAILED"
-            )
+            failed = sum(1 for p in state.points.values() if p.status.name == "BUILD_FAILED")
             segments = planner.get_unresolved_segments()
             print(f"Commits tracked: {len(state.merge_commits)}")
             print(f"Points completed: {completed}")
@@ -248,9 +229,7 @@ def main() -> None:
             print(f"Unresolved segments (>{state.threshold*100:.0f}%): {len(segments)}")
             if segments:
                 top = segments[0]
-                print(
-                    f"Largest gap: {top.abs_delta*100:.1f}% ({top.commit_count} commits)"
-                )
+                print(f"Largest gap: {top.abs_delta*100:.1f}% ({top.commit_count} commits)")
 
         else:
             sweep_parser.print_usage()
