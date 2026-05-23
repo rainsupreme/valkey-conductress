@@ -8,11 +8,12 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from threading import Thread
-from typing import Optional, Union
+from typing import Optional
 
 import asyncssh
 
 from src.cpu_allocator import AllocationTag, CpuAllocator
+from src.ssh_host import SshHost
 from src.utility import async_run
 
 from . import config
@@ -22,7 +23,7 @@ PERF_STATUS_FILE = "/tmp/profiling_running"
 PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 
 
-class Server:
+class Server(SshHost):
     """Represents a server running a Valkey instance."""
 
     # Class-level CPU allocator shared across all Server instances
@@ -43,13 +44,10 @@ class Server:
     # =============================================================================
 
     def __init__(self, ip: str, port: int = 6379, username="") -> None:
-        self.ip = ip
+        super().__init__(ip, username)
         self.port = port
-        self.username = username
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
-
-        self.ssh: Optional[asyncssh.SSHClientConnection] = None
 
         self.source: Optional[str] = None
         self.specifier: Optional[str] = None
@@ -1099,59 +1097,5 @@ class Server:
         await asyncio.gather(*(delete_host_cache(ip) for ip in server_ips))
 
     # =============================================================================
-    # SSH AND FILE OPERATIONS
+    # SSH AND FILE OPERATIONS (inherited from SshHost)
     # =============================================================================
-
-    async def __ensure_ssh_connection(self) -> None:
-        if not self.ssh:
-            if self.ip in ["127.0.0.1", "localhost"]:
-                self.ssh = await asyncssh.connect(self.ip, known_hosts=None, client_keys=[str(config.SSH_KEYFILE)])
-            elif self.username:
-                self.ssh = await asyncssh.connect(
-                    self.ip,
-                    username=self.username,
-                    client_keys=[str(config.SSH_KEYFILE)],
-                )
-            else:
-                self.ssh = await asyncssh.connect(self.ip, client_keys=[str(config.SSH_KEYFILE)])
-
-    @staticmethod
-    def __ensure_str(output: Union[None, bytes, str]) -> str:
-        if not output:
-            return ""
-        elif isinstance(output, memoryview):
-            # Convert memoryview to bytes, then decode
-            return bytes(output).decode()
-        elif isinstance(output, bytes) or isinstance(output, bytearray):
-            # If it's already bytes, just decode
-            return output.decode()
-        else:
-            return output
-
-    async def run_host_command(self, command: str, check=True):
-        """Run a terminal command on the server and return its output."""
-        self.logger.info("Host command: %s", command)
-        await self.__ensure_ssh_connection()
-        if not self.ssh:
-            raise RuntimeError(f"SSH connection to {self.ip} not established")
-        result: asyncssh.SSHCompletedProcess = await self.ssh.run(command, check=check)
-        return self.__ensure_str(result.stdout), self.__ensure_str(result.stderr)
-
-    async def check_file_exists(self, path: Path) -> bool:
-        """Check if a file exists on the server."""
-        result, _ = await self.run_host_command(f"[[ -f {path} ]] && echo 1 || echo 0;")
-        return result.strip() == "1"
-
-    async def __normalize_remote_path(self, server_path: Path):
-        out, _ = await self.run_host_command(f"echo {server_path}")
-        return out.strip()
-
-    async def get_remote_file(self, server_src: Path, local_dest: Path) -> None:
-        """Copy a file from the server to the local machine."""
-        server_str = await self.__normalize_remote_path(server_src)
-        await asyncssh.scp((self.ssh, server_str), local_dest)
-
-    async def put_remote_file(self, local_src: Path, server_dest: Path) -> None:
-        """Copy a file from the local machine to the server."""
-        server_str = await self.__normalize_remote_path(server_dest)
-        await asyncssh.scp(local_src, (self.ssh, server_str))

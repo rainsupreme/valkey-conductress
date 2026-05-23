@@ -1,40 +1,10 @@
 """Unit tests for Server class pure logic (no SSH/network required)."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from src.server import Server
-
-
-class TestEnsureStr:
-    """Tests for Server.__ensure_str() — output normalization."""
-
-    def test_none_returns_empty(self):
-        assert Server._Server__ensure_str(None) == ""
-
-    def test_empty_string_returns_empty(self):
-        assert Server._Server__ensure_str("") == ""
-
-    def test_empty_bytes_returns_empty(self):
-        assert Server._Server__ensure_str(b"") == ""
-
-    def test_string_passthrough(self):
-        assert Server._Server__ensure_str("hello") == "hello"
-
-    def test_bytes_decoded(self):
-        assert Server._Server__ensure_str(b"hello") == "hello"
-
-    def test_bytearray_decoded(self):
-        assert Server._Server__ensure_str(bytearray(b"hello")) == "hello"
-
-    def test_memoryview_decoded(self):
-        data = memoryview(b"hello world")
-        assert Server._Server__ensure_str(data) == "hello world"
-
-    def test_utf8_bytes(self):
-        assert Server._Server__ensure_str("café".encode()) == "café"
 
 
 class TestGetCachedBuildPath:
