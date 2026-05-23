@@ -118,9 +118,17 @@ class SweepCoordinator:
 
     def _populate_landmarks(self) -> None:
         """Populate landmarks from release branch points on unstable."""
+        # Pre-fork baseline: unstable commit from the day of Redis 7.2.4 release
+        PRE_FORK_LANDMARKS = [
+            Landmark(commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b", date="2024-01-09", label="7.2.4"),
+        ]
+
         try:
             points = get_release_branch_points(self.repo_path)
             commit_set = set(self.state.merge_commits)
+            for lm in PRE_FORK_LANDMARKS:
+                if lm.commit in commit_set:
+                    self.state.landmarks.append(lm)
             for commit_hash, date, label in points:
                 if commit_hash in commit_set:
                     self.state.landmarks.append(
