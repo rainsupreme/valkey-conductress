@@ -1,7 +1,6 @@
 import json
 import shutil
 import tempfile
-import types
 from pathlib import Path
 
 import pytest
@@ -19,14 +18,11 @@ from src.tasks.task_perf_benchmark import (
 )
 
 
-class DummyConfig(types.ModuleType):
-    MANUALLY_UPLOADED = "manual"
-    REPO_NAMES = ["repo1", "repo2"]
-
-
-# Patch config for tests
-config.MANUALLY_UPLOADED = "manual"
-config.REPO_NAMES = ["repo1", "repo2"]
+@pytest.fixture(autouse=True)
+def patch_config(monkeypatch):
+    """Patch config values for test isolation instead of mutating module globals."""
+    monkeypatch.setattr(config, "MANUALLY_UPLOADED", "manual")
+    monkeypatch.setattr(config, "REPO_NAMES", ["repo1", "repo2"])
 
 
 def _make_perf_task_data(test: str = "set", **overrides) -> PerfTaskData:

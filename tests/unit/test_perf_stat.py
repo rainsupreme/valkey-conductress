@@ -71,3 +71,25 @@ def test_parse_perf_stat_icache_miss_rate():
 
     miss_rate = result["L1-icache-load-misses"] / result["L1-icache-loads"]
     assert 0.13 < miss_rate < 0.14  # ~13.56%
+
+
+def test_parse_perf_stat_suffix_stripping():
+    """Verify :u/:k suffixes are stripped as substrings, not character sets.
+
+    Regression test: rstrip(":k") strips all trailing chars in {':','k'},
+    mangling 'cpu-clock:k' → 'cpu-cloc'. removesuffix() correctly yields 'cpu-clock'.
+    """
+    content = """\
+     123,456,789      stalled-cycles-frontend:u
+   1,000,000,000      cpu-clock:k
+     500,000,000      task-clock:u
+"""
+    with NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write(content)
+        f.flush()
+        result = Server.parse_perf_stat(Path(f.name))
+
+    assert "stalled-cycles-frontend" in result
+    assert "cpu-clock" in result, f"Got keys: {list(result.keys())}"
+    assert "task-clock" in result, f"Got keys: {list(result.keys())}"
+    assert result["cpu-clock"] == 1_000_000_000
