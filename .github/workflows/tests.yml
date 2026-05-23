@@ -28,10 +28,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: pip install 'black==25.11.0' 'isort==5.13.2'
-      - run: black --check --target-version py312 src/ tests/
-      - run: isort --check-only --profile black src/ tests/
+          python-version: '3.9'
+      - run: pip install 'black==25.11.0' 'isort==5.13.2' 'pylint>=3.0,<4.0'
+      - run: black --check --line-length 120 src/ tests/
+      - run: isort --check-only --profile black --line-length 120 src/ tests/
+      - run: pylint --errors-only --disable=import-error src/
+        env:
+          PYTHONPATH: ${{ github.workspace }}
 
   test:
     strategy:

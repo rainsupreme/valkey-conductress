@@ -25,9 +25,7 @@ class MergeCommit:
     pr_title: Optional[str] = None
 
 
-def get_merge_commits(
-    repo_path: Path, since_commit: Optional[str] = None, ref: str = "HEAD"
-) -> List[MergeCommit]:
+def get_merge_commits(repo_path: Path, since_commit: Optional[str] = None, ref: str = "HEAD") -> List[MergeCommit]:
     """Enumerate first-parent commits (PRs) on the given ref.
 
     Valkey uses squash merges, so PRs appear as single-parent commits with
@@ -127,9 +125,7 @@ def get_release_branch_points(repo_path: Path) -> List[Tuple[str, str, str]]:
     return points
 
 
-def find_fork_point(
-    repo_path: Path, branch: str = "unstable", upstream: str = "origin"
-) -> Optional[str]:
+def find_fork_point(repo_path: Path, branch: str = "unstable", upstream: str = "origin") -> Optional[str]:
     """Find the fork point where the branch diverged from a known base.
 
     For Valkey, this is approximately where it forked from Redis.

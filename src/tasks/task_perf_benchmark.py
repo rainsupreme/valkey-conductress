@@ -20,12 +20,7 @@ from src.config import (
     ServerInfo,
 )
 from src.cpu_allocator import AllocationTag
-from src.file_protocol import (
-    BenchmarkResults,
-    BenchmarkStatus,
-    FileProtocol,
-    MetricData,
-)
+from src.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 from src.replication_group import ReplicationGroup
 from src.server import Server
 from src.task_queue import BaseTaskData, BaseTaskRunner
@@ -70,9 +65,7 @@ def compute_aggregated_stats(per_run_rps: list[float]) -> tuple[float, float]:
     return mean_rps, ci_95
 
 
-def should_stop_adaptive(
-    per_run_rps: list[float], rep: int, min_reps: int, target_cv: float
-) -> bool:
+def should_stop_adaptive(per_run_rps: list[float], rep: int, min_reps: int, target_cv: float) -> bool:
     """Return True if adaptive precision target is met and we can stop early.
 
     Args:
@@ -102,9 +95,7 @@ class PerfTaskData(BaseTaskData):
     has_expire: bool
     preload_keys: bool
     key_size: int = 0  # target key size in bytes, 0 = standard keys
-    repetitions: int = (
-        1  # number of independent benchmark runs (min reps in adaptive mode)
-    )
+    repetitions: int = 1  # number of independent benchmark runs (min reps in adaptive mode)
     max_reps: int = 0  # 0 = fixed reps; >0 = adaptive mode upper limit
     target_cv: float = 0.0  # adaptive: stop early when CV% <= this; 0 = disabled
     sweep_commit: str = ""  # non-empty marks this as a sweep task
@@ -265,12 +256,8 @@ class PerfTaskRunner(BaseTaskRunner):
         # Build custom commands when key_size > 0
         if self.key_size > 0:
             padded_key = generate_padded_key(self.key_size)
-            preload_custom = self._build_custom_command(
-                self.test, padded_key, is_preload=True
-            )
-            test_custom = self._build_custom_command(
-                self.test, padded_key, is_preload=False
-            )
+            preload_custom = self._build_custom_command(self.test, padded_key, is_preload=True)
+            test_custom = self._build_custom_command(self.test, padded_key, is_preload=False)
             self.preload_command: Optional[str] = preload_custom
             self.test_command: Optional[str] = test_custom
         else:
@@ -296,13 +283,9 @@ class PerfTaskRunner(BaseTaskRunner):
         self.commit_hash = ""
 
         # Initialize status
-        self.status = BenchmarkStatus(
-            steps_total=self.warmup + self.duration, task_type=f"perf-{test}"
-        )
+        self.status = BenchmarkStatus(steps_total=self.warmup + self.duration, task_type=f"perf-{test}")
 
-    def _build_custom_command(
-        self, test: "PerfTaskRunner.Test", padded_key: str, is_preload: bool
-    ) -> Optional[str]:
+    def _build_custom_command(self, test: "PerfTaskRunner.Test", padded_key: str, is_preload: bool) -> Optional[str]:
         """Build a custom command string for the given test type using the padded key.
 
         Returns the custom command string, or None if the test has no preload
@@ -483,9 +466,7 @@ class PerfTaskRunner(BaseTaskRunner):
                     await replication_group.stop_all_servers()
                     # Drop page caches between reps to prevent drift.
                     # Skip on Intel (large monolithic L3 stays warm).
-                    primary_server = replication_group.primary or Server(
-                        self.server_infos[0].ip
-                    )
+                    primary_server = replication_group.primary or Server(self.server_infos[0].ip)
                     platform = getattr(primary_server, "_platform_info", None)
                     if platform is None or platform.needs_drop_caches:
                         await primary_server.run_host_command(
@@ -497,9 +478,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 await replication_group.kill_all_valkey_instances()
                 await replication_group.start()
                 if not replication_group.primary:
-                    raise RuntimeError(
-                        "Replication group failed to start: no primary server available"
-                    )
+                    raise RuntimeError("Replication group failed to start: no primary server available")
 
                 await replication_group.begin_replication()
                 await replication_group.wait_for_repl_sync()
@@ -513,13 +492,9 @@ class PerfTaskRunner(BaseTaskRunner):
                     )
                     if self.has_expire:
                         if not self.test.expire_command:
-                            self.logger.warning(
-                                "Expire command not available, skipping expiration"
-                            )
+                            self.logger.warning("Expire command not available, skipping expiration")
                         else:
-                            await server.run_valkey_command_over_keyspace(
-                                PERF_BENCH_KEYSPACE, self.test.expire_command
-                            )
+                            await server.run_valkey_command_over_keyspace(PERF_BENCH_KEYSPACE, self.test.expire_command)
 
                 # Setup client CPU allocation (once)
                 if client is None:
@@ -528,24 +503,16 @@ class PerfTaskRunner(BaseTaskRunner):
                     benchmark_alloc_tag = self._allocate_benchmark_cpus(client, server)
 
                 # Build and execute benchmark command
-                command_string = self._build_benchmark_command(
-                    client, server.ip, benchmark_alloc_tag
-                )
-                avg_rps = await self._execute_benchmark_loop(
-                    command_string, server, rep, effective_reps
-                )
+                command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)
+                avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
                 per_run_rps.append(avg_rps)
-                self.logger.info(
-                    "Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps
-                )
+                self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps)
 
                 # Collect profiling reports
                 await self._collect_profiling_reports(server)
 
                 # Adaptive early exit
-                if should_stop_adaptive(
-                    per_run_rps, rep, self.repetitions, self.target_cv
-                ):
+                if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
                     self.logger.info(
                         "Target CV reached: %.2f%% <= %.2f%% after %d reps",
                         stdev(per_run_rps) / mean(per_run_rps) * 100,
@@ -573,21 +540,16 @@ class PerfTaskRunner(BaseTaskRunner):
             if benchmark_alloc_tag and client:
                 client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
 
-    def _allocate_benchmark_cpus(
-        self, client: "Server", server: "Server"
-    ) -> Optional[AllocationTag]:
+    def _allocate_benchmark_cpus(self, client: "Server", server: "Server") -> Optional[AllocationTag]:
         """Allocate CPUs for the benchmark client. Returns the tag or None."""
         target_ip = server.ip
         if not self._is_local_benchmark(target_ip):
             return None
 
         self.logger.info("Local benchmark detected - optimizing CPU allocation")
-        server_tag = AllocationTag(
-            task_id=f"server_{server.ip}_{server.port}", purpose="server"
-        )
+        server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
         is_chiplet = (
-            getattr(server, "_platform_info", None) is not None
-            and server._platform_info.needs_single_cache_pinning
+            getattr(server, "_platform_info", None) is not None and server._platform_info.needs_single_cache_pinning
         )
         benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
@@ -617,9 +579,7 @@ class PerfTaskRunner(BaseTaskRunner):
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
 
         if benchmark_alloc_tag and self._is_local_benchmark(target_ip):
-            allocated = client._cpu_allocator.get_allocation(
-                client.ip, benchmark_alloc_tag
-            )
+            allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
             benchmark_cpu_list = ",".join(map(str, allocated)) if allocated else ""
             return (
                 f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
@@ -635,9 +595,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test_command}"
             )
 
-    async def _execute_benchmark_loop(
-        self, command_string: str, server: "Server", rep: int, total_reps: int
-    ) -> float:
+    async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
         """Execute one benchmark run (warmup + measurement). Returns avg RPS."""
         benchmark_update_interval = 0.1
         self.rps_data = []
@@ -667,12 +625,8 @@ class PerfTaskRunner(BaseTaskRunner):
 
             if time.time() - last_heartbeat > 5.0:
                 elapsed_total_time = now - start_time
-                steps_this_rep = min(
-                    int(elapsed_total_time), self.warmup + self.duration
-                )
-                self.status.steps_completed = (
-                    rep * (self.warmup + self.duration) + steps_this_rep
-                )
+                steps_this_rep = min(int(elapsed_total_time), self.warmup + self.duration)
+                self.status.steps_completed = rep * (self.warmup + self.duration) + steps_this_rep
                 self.file_protocol.write_status(self.status)
                 last_heartbeat = time.time()
 

@@ -72,12 +72,7 @@ class TestServerIntegration:
                 assert responses[0] and responses[0] == "1"
                 assert responses[1] and responses[1] == f"{index}online"
 
-            await asyncio.gather(
-                *(
-                    check_server(instance, index)
-                    for index, instance in enumerate(servers)
-                )
-            )
+            await asyncio.gather(*(check_server(instance, index) for index, instance in enumerate(servers)))
         finally:
             # Clean up all servers
             await Server("127.0.0.1").kill_all_valkey_instances_on_host()
@@ -150,17 +145,13 @@ class TestServerIntegration:
         await server.kill_all_valkey_instances_on_host()
 
         # First call should build and cache
-        path1 = await server.ensure_binary_cached(
-            source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2"
-        )
+        path1 = await server.ensure_binary_cached(source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2")
 
         # Get modification time of cached binary
         mtime1 = await server.run_host_command(f"stat -c %Y {path1}")
 
         # Second call with same args should use cache (no rebuild)
-        path2 = await server.ensure_binary_cached(
-            source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2"
-        )
+        path2 = await server.ensure_binary_cached(source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2")
 
         # Should return same path and binary should not be rebuilt
         assert path1 == path2
@@ -169,9 +160,7 @@ class TestServerIntegration:
 
         # Delete cached binary and verify it gets rebuilt
         await server.run_host_command(f"rm {path1}")
-        path3 = await server.ensure_binary_cached(
-            source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2"
-        )
+        path3 = await server.ensure_binary_cached(source=TEST_REPO, specifier=TEST_SPECIFIER, make_args="CFLAGS=-O2")
 
         # Should return same path but binary should be rebuilt (newer mtime)
         assert path1 == path3

@@ -30,11 +30,7 @@ from textual.widgets.selection_list import Selection
 from src.file_protocol import FileProtocol
 from src.tasks.task_full_sync import SyncTaskData
 from src.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
-from src.tasks.task_perf_benchmark import (
-    PerfTaskData,
-    PerfTaskRunner,
-    PerfTaskVisualizer,
-)
+from src.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
 from src.tui_data_service import TUIDataService
 
 from . import config
@@ -141,9 +137,7 @@ class BenchmarkApp(App):
             with TabPane("Queue", id="tab-queue"):
                 yield Static("Last update: Never", id="queue-table-status")
                 yield DataTable(id="queue-table", cursor_type="row")
-                yield Button(
-                    "Remove Selected Task", variant="warning", id="remove-queue-task"
-                )
+                yield Button("Remove Selected Task", variant="warning", id="remove-queue-task")
             with TabPane("Create Task", id="tab-create-task"):
                 with TabbedContent():
                     with TabPane("Perf"):
@@ -298,25 +292,19 @@ class BenchmarkApp(App):
                 ],
                 self._queue_rows(tasks, active_tasks),
             )
-            self.query_one("#queue-table-status", Static).update(
-                f"Last polled: {timestamp}"
-            )
+            self.query_one("#queue-table-status", Static).update(f"Last polled: {timestamp}")
         elif active_tab == "tab-status":
             self._populate_table(
                 "#status-table",
                 ["Task ID", "State", "PID", "Progress"],
                 self._status_rows(active_tasks),
             )
-            self.query_one("#status-table-status", Static).update(
-                f"Last update: {timestamp}"
-            )
+            self.query_one("#status-table-status", Static).update(f"Last update: {timestamp}")
             self._update_visualizer(active_tasks)
             if self.current_visualizer:
                 self.current_visualizer.refresh_data()
 
-    def _populate_table(
-        self, table_id: str, columns: list[str], rows: list[tuple]
-    ) -> None:
+    def _populate_table(self, table_id: str, columns: list[str], rows: list[tuple]) -> None:
         """Populate a table with data, preserving cursor position."""
         table = self.query_one(table_id, DataTable)
         cursor_row = table.cursor_row
@@ -339,11 +327,7 @@ class BenchmarkApp(App):
             task_status = ""
             if task.task_id in active_tasks:
                 status = active_tasks[task.task_id]
-                progress = (
-                    status.steps_completed / status.steps_total
-                    if status.steps_total
-                    else 0
-                )
+                progress = status.steps_completed / status.steps_total if status.steps_total else 0
                 task_status = f"{status.state} {progress*100:.0f}%"
             rows.append(
                 (
@@ -449,9 +433,7 @@ class RangeListValidator(Validator):
             elif len(rangespec) == 3:
                 if rangespec[2] == 0:
                     return [], "range step (start:end:step) value must not be zero"
-                result.extend(
-                    range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2])
-                )
+                result.extend(range(rangespec[0], rangespec[1] + rangespec[2], rangespec[2]))
             else:
                 return [], "ranges are of the format value, or start:end:step"
         return result, None
@@ -595,14 +577,10 @@ class NumberListField:
 
     def values(self) -> list[int]:
         if self.allow_ranges:
-            value_list, _ = RangeListValidator(self.number_type).parse_range_list(
-                self.input.value
-            )
+            value_list, _ = RangeListValidator(self.number_type).parse_range_list(self.input.value)
             return value_list
         else:
-            return CommaSeparatedIntsValidator(self.number_type).parse_ints(
-                self.input.value
-            )
+            return CommaSeparatedIntsValidator(self.number_type).parse_ints(self.input.value)
 
 
 class PipeliningField(NumberListField):
@@ -641,9 +619,7 @@ class SizesField(NumberListField):
 
 class CountsField(NumberListField):
     def __init__(self):
-        super().__init__(
-            "Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber
-        )
+        super().__init__("Value counts (comma-separated)", "counts", "10M", "1M, 30M", HumanNumber)
 
 
 class BaseTaskForm(ScrollableContainer):
@@ -707,9 +683,7 @@ class BaseTaskForm(ScrollableContainer):
         note = self.query_one("#note", Input).value.strip()
         make_args_input = self.query_one("#make-args", Input).value.strip()
 
-        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(
-            source_specifier_list
-        )
+        specifiers, error = SourceSpeciferValidator.parse_source_specifier_list(source_specifier_list)
         if error:
             return [], "", [], f"source:specifier list: {error}"
 
@@ -749,9 +723,7 @@ class PerfTaskForm(BaseTaskForm):
             "0, 64, 256, 1KB",
             HumanByte,
         )
-        self.warmup = NumberField(
-            "Warmup (seconds)", "warmup", f"{config.DEFAULT_WARMUP}s", "30s", HumanTime
-        )
+        self.warmup = NumberField("Warmup (seconds)", "warmup", f"{config.DEFAULT_WARMUP}s", "30s", HumanTime)
         self.duration = NumberField(
             "Duration (seconds)",
             "duration",

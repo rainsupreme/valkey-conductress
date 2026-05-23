@@ -175,9 +175,7 @@ class TestRangeListValidator:
             (HumanByte, "0.5MB:128KB:-128KB", [524288, 393216, 262144, 131072], None),
         ],
     )
-    def test_parse_range_list(
-        self, number_type, input_str, expected_result, expected_error
-    ):
+    def test_parse_range_list(self, number_type, input_str, expected_result, expected_error):
         validator = RangeListValidator(number_type)
         result, error = validator.parse_range_list(input_str)
         if expected_error is None:
@@ -236,9 +234,7 @@ class TestSourceSpecifierValidator:
             ("repo1:abc:def", [], "Invalid item format: repo1:abc:def"),
         ],
     )
-    def test_parse_source_specifier_list(
-        self, input_str, expected_result, expected_error, mock_config
-    ):
+    def test_parse_source_specifier_list(self, input_str, expected_result, expected_error, mock_config):
         result, error = SourceSpeciferValidator.parse_source_specifier_list(input_str)
         if expected_error is None:
             assert error is None
@@ -428,9 +424,7 @@ class TestPerfTaskFormCartesianProduct:
     def test_repetitions_passed_to_perf_task_data(self, monkeypatch):
         """Repetitions value should be passed through to each PerfTaskData."""
         monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr(
-            "src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"
-        )
+        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
 
         from src.tasks.task_perf_benchmark import PerfTaskData
 
@@ -461,9 +455,7 @@ class TestPerfTaskFormCartesianProduct:
     def test_key_size_default_in_perf_task_data(self, monkeypatch):
         """PerfTaskData should default key_size=0 and repetitions=1."""
         monkeypatch.setattr("src.task_queue.config.REPO_NAMES", ["repo1"])
-        monkeypatch.setattr(
-            "src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"
-        )
+        monkeypatch.setattr("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded")
 
         from src.tasks.task_perf_benchmark import PerfTaskData
 

@@ -4,12 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
-from src.bootstrap import (
-    Host,
-    ensure_file_descriptor_limits,
-    load_requirements,
-    path_exists,
-)
+from src.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
 
 
 class TestFileDescriptorLimits:
@@ -193,9 +188,7 @@ class TestBootstrapImportOrdering:
                     if alias.name == "asyncssh":
                         found_asyncssh = True
 
-        assert (
-            found_asyncssh
-        ), "bootstrap.py should import asyncssh (it's a runtime script, not packaging)"
+        assert found_asyncssh, "bootstrap.py should import asyncssh (it's a runtime script, not packaging)"
 
 
 class TestPathExists:

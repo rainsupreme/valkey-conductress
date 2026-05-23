@@ -130,10 +130,7 @@ class SweepState:
             "commit_dates": self.commit_dates,
             "commit_prs": self.commit_prs,
             "commit_titles": self.commit_titles,
-            "landmarks": [
-                {"commit": lm.commit, "date": lm.date, "label": lm.label}
-                for lm in self.landmarks
-            ],
+            "landmarks": [{"commit": lm.commit, "date": lm.date, "label": lm.label} for lm in self.landmarks],
             "points": {
                 commit: {
                     "commit": p.commit,
@@ -203,9 +200,7 @@ class SweepPlanner:
     def __init__(self, state: SweepState):
         self.state = state
         # Build index for fast commit position lookup
-        self._commit_index: dict[str, int] = {
-            c: i for i, c in enumerate(state.merge_commits)
-        }
+        self._commit_index: dict[str, int] = {c: i for i, c in enumerate(state.merge_commits)}
 
     def get_next_task(self, current_head: Optional[str] = None) -> Optional[SweepTask]:
         """Determine the highest-priority task to execute next.
@@ -315,8 +310,7 @@ class SweepPlanner:
         return [
             s
             for s in self.get_segments()
-            if s.abs_delta >= max(self.state.threshold, s.noise_floor)
-            and s.commit_count > 0
+            if s.abs_delta >= max(self.state.threshold, s.noise_floor) and s.commit_count > 0
         ]
 
     def _check_nightly(self, current_head: Optional[str]) -> Optional[SweepTask]:
@@ -457,11 +451,7 @@ class SweepPlanner:
 
     def _get_ordered_completed_points(self) -> list[BenchmarkPoint]:
         """Get all completed points ordered by their position in merge_commits."""
-        completed = [
-            p
-            for p in self.state.points.values()
-            if p.is_complete and p.commit in self._commit_index
-        ]
+        completed = [p for p in self.state.points.values() if p.is_complete and p.commit in self._commit_index]
         completed.sort(key=lambda p: self._commit_index[p.commit])
         return completed
 
@@ -484,14 +474,10 @@ class SweepPlanner:
         """Find the middle commit between left and right, skipping build failures."""
         return self._find_midpoint_by_index(left, right)
 
-    def _find_midpoint_by_index(
-        self, left: Optional[str], right: Optional[str]
-    ) -> Optional[str]:
+    def _find_midpoint_by_index(self, left: Optional[str], right: Optional[str]) -> Optional[str]:
         """Find midpoint between two commits (either can be None for edges)."""
         left_idx = self._commit_index[left] if left else -1
-        right_idx = (
-            self._commit_index[right] if right else len(self.state.merge_commits)
-        )
+        right_idx = self._commit_index[right] if right else len(self.state.merge_commits)
 
         # Collect valid candidates (not already benchmarked, not build-failed)
         candidates = []

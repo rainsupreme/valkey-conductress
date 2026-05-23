@@ -79,16 +79,12 @@ class TestWelchTTestProperty:
     @settings(max_examples=100)
     @given(
         samples_a=st.lists(
-            st.floats(
-                min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False
-            ),
+            st.floats(min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False),
             min_size=2,
             max_size=20,
         ),
         samples_b=st.lists(
-            st.floats(
-                min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False
-            ),
+            st.floats(min_value=1.0, max_value=1e6, allow_nan=False, allow_infinity=False),
             min_size=2,
             max_size=20,
         ),
@@ -107,13 +103,9 @@ class TestWelchTTestProperty:
             # Build JSONL with one record per sample for each specifier
             records = []
             for val in samples_a:
-                records.append(
-                    _make_result(specifier="spec-a", method="perf-get", score=val)
-                )
+                records.append(_make_result(specifier="spec-a", method="perf-get", score=val))
             for val in samples_b:
-                records.append(
-                    _make_result(specifier="spec-b", method="perf-get", score=val)
-                )
+                records.append(_make_result(specifier="spec-b", method="perf-get", score=val))
 
             output_path = Path(tmp) / "output.jsonl"
             _write_jsonl(output_path, records)
@@ -126,16 +118,12 @@ class TestWelchTTestProperty:
 
             # Verify p-value matches scipy's ttest_ind
             expected = ttest_ind(samples_a, samples_b, equal_var=False)
-            assert (
-                row.p_value is not None
-            ), "p_value should not be None when both sides have >= 2 samples"
+            assert row.p_value is not None, "p_value should not be None when both sides have >= 2 samples"
 
             # When both samples have zero variance, scipy returns NaN — our module
             # should match that behavior.
             if math.isnan(expected.pvalue):
-                assert math.isnan(
-                    row.p_value
-                ), f"Expected NaN p_value (zero-variance inputs), got {row.p_value}"
+                assert math.isnan(row.p_value), f"Expected NaN p_value (zero-variance inputs), got {row.p_value}"
             else:
                 assert math.isclose(
                     row.p_value, expected.pvalue, rel_tol=1e-9
@@ -507,9 +495,7 @@ class TestAggregatedVsSingleRun:
         assert row.p_value is not None
 
         # Verify p-value matches scipy
-        expected_p = ttest_ind(
-            [100.0, 105.0, 110.0], [200.0, 205.0, 210.0], equal_var=False
-        ).pvalue
+        expected_p = ttest_ind([100.0, 105.0, 110.0], [200.0, 205.0, 210.0], equal_var=False).pvalue
         assert row.p_value == pytest.approx(expected_p, rel=1e-9)
 
     def test_mixed_aggregated_and_single_run(self, temp_dir):

@@ -160,30 +160,14 @@ class TestAnalysisCompare:
     def test_compare_with_different_parameters(self, tmp_path):
         """Results with different io-threads form separate comparison groups."""
         records = [
-            _make_record(
-                specifier="a", method="perf-get", io_threads=1, score=100000.0
-            ),
-            _make_record(
-                specifier="a", method="perf-get", io_threads=1, score=101000.0
-            ),
-            _make_record(
-                specifier="b", method="perf-get", io_threads=1, score=110000.0
-            ),
-            _make_record(
-                specifier="b", method="perf-get", io_threads=1, score=111000.0
-            ),
-            _make_record(
-                specifier="a", method="perf-get", io_threads=9, score=800000.0
-            ),
-            _make_record(
-                specifier="a", method="perf-get", io_threads=9, score=810000.0
-            ),
-            _make_record(
-                specifier="b", method="perf-get", io_threads=9, score=900000.0
-            ),
-            _make_record(
-                specifier="b", method="perf-get", io_threads=9, score=910000.0
-            ),
+            _make_record(specifier="a", method="perf-get", io_threads=1, score=100000.0),
+            _make_record(specifier="a", method="perf-get", io_threads=1, score=101000.0),
+            _make_record(specifier="b", method="perf-get", io_threads=1, score=110000.0),
+            _make_record(specifier="b", method="perf-get", io_threads=1, score=111000.0),
+            _make_record(specifier="a", method="perf-get", io_threads=9, score=800000.0),
+            _make_record(specifier="a", method="perf-get", io_threads=9, score=810000.0),
+            _make_record(specifier="b", method="perf-get", io_threads=9, score=900000.0),
+            _make_record(specifier="b", method="perf-get", io_threads=9, score=910000.0),
         ]
         path = tmp_path / "output.jsonl"
         _write_fixture(path, records)
@@ -330,30 +314,14 @@ class TestAnalysisFiltering:
     def test_source_filter_excludes_other_sources(self, tmp_path):
         """Only results matching the source filter are included in comparison."""
         records = [
-            _make_record(
-                specifier="a", source="valkey", method="perf-get", score=100000.0
-            ),
-            _make_record(
-                specifier="a", source="valkey", method="perf-get", score=101000.0
-            ),
-            _make_record(
-                specifier="b", source="valkey", method="perf-get", score=110000.0
-            ),
-            _make_record(
-                specifier="b", source="valkey", method="perf-get", score=111000.0
-            ),
-            _make_record(
-                specifier="a", source="other-repo", method="perf-get", score=999999.0
-            ),
-            _make_record(
-                specifier="a", source="other-repo", method="perf-get", score=999999.0
-            ),
-            _make_record(
-                specifier="b", source="other-repo", method="perf-get", score=999999.0
-            ),
-            _make_record(
-                specifier="b", source="other-repo", method="perf-get", score=999999.0
-            ),
+            _make_record(specifier="a", source="valkey", method="perf-get", score=100000.0),
+            _make_record(specifier="a", source="valkey", method="perf-get", score=101000.0),
+            _make_record(specifier="b", source="valkey", method="perf-get", score=110000.0),
+            _make_record(specifier="b", source="valkey", method="perf-get", score=111000.0),
+            _make_record(specifier="a", source="other-repo", method="perf-get", score=999999.0),
+            _make_record(specifier="a", source="other-repo", method="perf-get", score=999999.0),
+            _make_record(specifier="b", source="other-repo", method="perf-get", score=999999.0),
+            _make_record(specifier="b", source="other-repo", method="perf-get", score=999999.0),
         ]
         path = tmp_path / "output.jsonl"
         _write_fixture(path, records)
@@ -391,38 +359,20 @@ class TestAnalysisFiltering:
     def test_combined_source_and_method_filter(self, tmp_path):
         """Both source and method filters are applied simultaneously."""
         records = [
-            _make_record(
-                specifier="a", source="valkey", method="perf-get", score=100000.0
-            ),
-            _make_record(
-                specifier="a", source="valkey", method="perf-get", score=101000.0
-            ),
-            _make_record(
-                specifier="b", source="valkey", method="perf-get", score=110000.0
-            ),
-            _make_record(
-                specifier="b", source="valkey", method="perf-get", score=111000.0
-            ),
-            _make_record(
-                specifier="a", source="valkey", method="perf-set", score=50000.0
-            ),
-            _make_record(
-                specifier="b", source="valkey", method="perf-set", score=60000.0
-            ),
-            _make_record(
-                specifier="a", source="other", method="perf-get", score=999999.0
-            ),
-            _make_record(
-                specifier="b", source="other", method="perf-get", score=999999.0
-            ),
+            _make_record(specifier="a", source="valkey", method="perf-get", score=100000.0),
+            _make_record(specifier="a", source="valkey", method="perf-get", score=101000.0),
+            _make_record(specifier="b", source="valkey", method="perf-get", score=110000.0),
+            _make_record(specifier="b", source="valkey", method="perf-get", score=111000.0),
+            _make_record(specifier="a", source="valkey", method="perf-set", score=50000.0),
+            _make_record(specifier="b", source="valkey", method="perf-set", score=60000.0),
+            _make_record(specifier="a", source="other", method="perf-get", score=999999.0),
+            _make_record(specifier="b", source="other", method="perf-get", score=999999.0),
         ]
         path = tmp_path / "output.jsonl"
         _write_fixture(path, records)
 
         module = AnalysisModule(results_path=path)
-        rows = module.compare(
-            "a", "b", source_filter="valkey", method_filter="perf-get"
-        )
+        rows = module.compare("a", "b", source_filter="valkey", method_filter="perf-get")
 
         assert len(rows) == 1
         assert rows[0].method == "perf-get"
@@ -507,9 +457,7 @@ class TestAnalysisAggregatedResults:
         assert row.mean_a == pytest.approx(141500.0)
         assert row.p_value is not None
 
-    def test_single_aggregated_result_per_specifier_insufficient_for_ttest(
-        self, tmp_path
-    ):
+    def test_single_aggregated_result_per_specifier_insufficient_for_ttest(self, tmp_path):
         """A single aggregated result with repetitions > 1 provides enough samples for t-test."""
         records = [
             _make_record(

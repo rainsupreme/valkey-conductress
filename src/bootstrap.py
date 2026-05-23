@@ -55,9 +55,7 @@ except ImportError:
     try:
         import asyncssh
     except ImportError:
-        logger.error(
-            "asyncssh is not available even after installation. Try again - python may need to be restarted."
-        )
+        logger.error("asyncssh is not available even after installation. Try again - python may need to be restarted.")
         sys.exit(1)
 from src.utility import async_run
 
@@ -73,9 +71,7 @@ class Host:
     async def run(self, command: str, check=True) -> str:
         result = await self.conn.run(command)
         if result.exit_status != 0:
-            print(
-                f"Command failed: {command} on {self.ip} with exit status {result.exit_status} (stderr below)"
-            )
+            print(f"Command failed: {command} on {self.ip} with exit status {result.exit_status} (stderr below)")
             print(result.stderr)
             if check:
                 raise Exception(result.stderr)
@@ -95,9 +91,7 @@ class Host:
             lines = raw.splitlines()
             lines = [line for line in lines if line.startswith("NAME")]
             if len(lines) != 1:
-                raise RuntimeError(
-                    f"Expected exactly 1 NAME line in /etc/os-release, got {len(lines)}"
-                )
+                raise RuntimeError(f"Expected exactly 1 NAME line in /etc/os-release, got {len(lines)}")
             self.distro = lines[0].split('"')[1]
         return self.distro
 
@@ -172,16 +166,12 @@ async def ensure_server_ssh_fingerprints() -> None:
         await ensure_server_known(server)
 
 
-async def path_exists(
-    host: Host, path: Union[str, Path], expected_type: Optional[str] = None
-) -> bool:
+async def path_exists(host: Host, path: Union[str, Path], expected_type: Optional[str] = None) -> bool:
     """Check if a path exists and get its type"""
 
     commands = [f'test -{arg} "{path}"; echo $?' for arg in "efdL"]
     raw_result = await host.run(" && ".join(commands))
-    result = [
-        int(x) == 0 for x in raw_result.strip().split("\n")
-    ]  # return code 0 means test evaluated to true
+    result = [int(x) == 0 for x in raw_result.strip().split("\n")]  # return code 0 means test evaluated to true
     if not result[0]:
         return False
     if expected_type:
@@ -242,9 +232,7 @@ async def update_amazon_packages(host: Host) -> None:
     packages = load_requirements("amz_requirements")
     host.log_info_msg("Updating Amazon Linux packages")
     await host.run("sudo dnf update -y")
-    devtools_task = host.run(
-        "sudo dnf install -y gcc gcc-c++ make automake autoconf libtool"
-    )
+    devtools_task = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
     packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
     await asyncio.gather(devtools_task, packages_task)
 
@@ -266,31 +254,19 @@ async def ensure_file_descriptor_limits(host: Host) -> None:
         return
 
     limits_conf = await host.run("cat /etc/security/limits.conf")
-    lines = [
-        line.split()
-        for line in limits_conf.split("\n")
-        if "nofile" in line and not line.strip().startswith("#")
-    ]
+    lines = [line.split() for line in limits_conf.split("\n") if "nofile" in line and not line.strip().startswith("#")]
     lines = [line for line in lines if len(line) >= 4 and line[0] == "*"]
 
     if lines:
         configured_limit = min([int(line[3]) for line in lines])
         if configured_limit >= desired_limit:
-            host.log_info_msg(
-                f"File descriptor limit already configured to {configured_limit}"
-            )
+            host.log_info_msg(f"File descriptor limit already configured to {configured_limit}")
             return
-        raise RuntimeError(
-            f"Insufficient file limit in limits.conf: {configured_limit} < {desired_limit}"
-        )
+        raise RuntimeError(f"Insufficient file limit in limits.conf: {configured_limit} < {desired_limit}")
 
     host.log_info_msg(f"Configuring file descriptor limit to {desired_limit}")
-    await host.run(
-        f"sudo sh -c \"echo '* soft nofile {desired_limit}' >> /etc/security/limits.conf\""
-    )
-    await host.run(
-        f"sudo sh -c \"echo '* hard nofile {desired_limit}' >> /etc/security/limits.conf\""
-    )
+    await host.run(f"sudo sh -c \"echo '* soft nofile {desired_limit}' >> /etc/security/limits.conf\"")
+    await host.run(f"sudo sh -c \"echo '* hard nofile {desired_limit}' >> /etc/security/limits.conf\"")
 
 
 async def ensure_git_repo_cloned(host: Host, repo_url, target_dir):
@@ -321,21 +297,15 @@ async def ensure_conductress(host: Host, pull=False):
     ):
         host.log_info_msg("retrieving and building needed binaries")
         valkey_path = conductress_path / "valkey"
-        await ensure_git_repo_cloned(
-            host, "https://github.com/valkey-io/valkey.git", valkey_path
-        )
+        await ensure_git_repo_cloned(host, "https://github.com/valkey-io/valkey.git", valkey_path)
 
         await host.run(
             f"cd {valkey_path} && git fetch && git reset --hard origin/unstable && make distclean && make -j"
         )
 
         await asyncio.gather(
-            host.run(
-                f"cp {valkey_path / 'src/valkey-cli'} {conductress_path / config.VALKEY_CLI}"
-            ),
-            host.run(
-                f"cp {valkey_path / 'src/valkey-benchmark'} {conductress_path / config.VALKEY_BENCHMARK}"
-            ),
+            host.run(f"cp {valkey_path / 'src/valkey-cli'} {conductress_path / config.VALKEY_CLI}"),
+            host.run(f"cp {valkey_path / 'src/valkey-benchmark'} {conductress_path / config.VALKEY_BENCHMARK}"),
         )
 
 
@@ -350,9 +320,7 @@ async def cleanup_legacy_build_cache(host: Host) -> None:
     if await path_exists(host, old_cache_path, expected_type="directory"):
         host.log_info_msg("Cleaning up old build cache files")
         # Remove old cache structure that didn't include make_args in path
-        await host.run(
-            f"find {old_cache_path} -name 'valkey-server' -delete", check=False
-        )
+        await host.run(f"find {old_cache_path} -name 'valkey-server' -delete", check=False)
         await host.run(f"find {old_cache_path} -type d -empty -delete", check=False)
 
 
@@ -383,9 +351,7 @@ async def install_systemd_service(host: Host) -> None:
     Skips gracefully on systems without systemd (e.g., macOS, containers).
     """
     # Check if systemd is available
-    has_systemd = await host.run(
-        "command -v systemctl >/dev/null 2>&1 && echo yes || echo no", check=False
-    )
+    has_systemd = await host.run("command -v systemctl >/dev/null 2>&1 && echo yes || echo no", check=False)
     if "yes" not in has_systemd:
         host.log_info_msg("Skipping systemd service (systemctl not available)")
         return
@@ -430,9 +396,7 @@ async def update_host(server_info: config.ServerInfo):
     await update_pip_packages(host)
     await ensure_file_descriptor_limits(host)
     await ensure_conductress(host, pull=(server_info != "localhost"))
-    await ensure_git_repo_cloned(
-        host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph"
-    )
+    await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
 
     # Clean up deprecated/legacy files from older versions
     await cleanup_legacy_build_cache(host)
@@ -441,12 +405,7 @@ async def update_host(server_info: config.ServerInfo):
     await install_systemd_service(host)
 
     host.log_info_msg("Ensuring config repos cloned...")
-    await asyncio.gather(
-        *(
-            ensure_git_repo_cloned(host, repo_url, target_dir)
-            for repo_url, target_dir in REPOSITORIES
-        )
-    )
+    await asyncio.gather(*(ensure_git_repo_cloned(host, repo_url, target_dir) for repo_url, target_dir in REPOSITORIES))
     host.log_info_msg("Done.")
 
 

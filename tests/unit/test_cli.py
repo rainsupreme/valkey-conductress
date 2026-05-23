@@ -59,9 +59,7 @@ class TestCartesianProductProperties:
             unique=True,
         ),
     )
-    def test_cartesian_product_task_count(
-        self, tests, sizes, io_threads, pipelining, key_sizes
-    ):
+    def test_cartesian_product_task_count(self, tests, sizes, io_threads, pipelining, key_sizes):
         """**Validates: Requirements 3.3**
 
         Feature: benchmark-tooling-enhancements, Property 4: Cartesian product task count
@@ -71,17 +69,11 @@ class TestCartesianProductProperties:
         and every unique combination of (test, size, io_thread, pipeline, key_size) must
         appear exactly once.
         """
-        result = generate_task_combinations(
-            tests, sizes, io_threads, pipelining, key_sizes
-        )
+        result = generate_task_combinations(tests, sizes, io_threads, pipelining, key_sizes)
 
         # Verify count equals product of lengths
-        expected_count = (
-            len(tests) * len(sizes) * len(io_threads) * len(pipelining) * len(key_sizes)
-        )
-        assert (
-            len(result) == expected_count
-        ), f"Expected {expected_count} combinations, got {len(result)}"
+        expected_count = len(tests) * len(sizes) * len(io_threads) * len(pipelining) * len(key_sizes)
+        assert len(result) == expected_count, f"Expected {expected_count} combinations, got {len(result)}"
 
         # Verify every unique combination appears exactly once (no duplicates)
         assert len(result) == len(
@@ -93,12 +85,8 @@ class TestCartesianProductProperties:
             test, size, io_thread, pipeline, key_size = combo
             assert test in tests, f"Test '{test}' not in input tests"
             assert size in sizes, f"Size {size} not in input sizes"
-            assert (
-                io_thread in io_threads
-            ), f"IO thread {io_thread} not in input io_threads"
-            assert (
-                pipeline in pipelining
-            ), f"Pipeline {pipeline} not in input pipelining"
+            assert io_thread in io_threads, f"IO thread {io_thread} not in input io_threads"
+            assert pipeline in pipelining, f"Pipeline {pipeline} not in input pipelining"
             assert key_size in key_sizes, f"Key size {key_size} not in input key_sizes"
 
 
@@ -120,8 +108,7 @@ class TestSourceValidationProperties:
         expected = s in valid_set
         result = validate_source(s)
         assert result == expected, (
-            f"validate_source({s!r}) returned {result}, expected {expected}. "
-            f"Valid sources: {valid_set}"
+            f"validate_source({s!r}) returned {result}, expected {expected}. " f"Valid sources: {valid_set}"
         )
 
 
@@ -141,9 +128,7 @@ class TestGenerateTaskCombinations:
 
     def test_full_cartesian_product(self):
         """Multiple values per parameter produce the full Cartesian product."""
-        result = generate_task_combinations(
-            ["get", "set"], [512, 1024], [1, 9], [1, 4], [0, 64]
-        )
+        result = generate_task_combinations(["get", "set"], [512, 1024], [1, 9], [1, 4], [0, 64])
         assert len(result) == 2 * 2 * 2 * 2 * 2  # 32 combinations
 
 
@@ -249,9 +234,7 @@ class TestQueueAddSubcommand:
         mock_queue_cls.return_value.submit_task.assert_not_called()
 
     @patch("src.cli.TaskQueue")
-    def test_queue_add_key_sizes_produces_tasks_with_correct_values(
-        self, mock_queue_cls
-    ):
+    def test_queue_add_key_sizes_produces_tasks_with_correct_values(self, mock_queue_cls):
         """main() with --key-sizes "0,64" should produce tasks with key_size 0 and 64."""
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue
@@ -272,9 +255,7 @@ class TestQueueAddSubcommand:
         assert exit_code == 0
         assert mock_queue.submit_task.call_count == 2
 
-        submitted_key_sizes = sorted(
-            call.args[0].key_size for call in mock_queue.submit_task.call_args_list
-        )
+        submitted_key_sizes = sorted(call.args[0].key_size for call in mock_queue.submit_task.call_args_list)
         assert submitted_key_sizes == [0, 64]
 
     @patch("src.cli.TaskQueue")

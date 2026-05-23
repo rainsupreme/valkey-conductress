@@ -98,9 +98,7 @@ async def detect_platform(run_command) -> PlatformInfo:
     has_frequency_scaling = "yes" in has_freq
 
     # Detect idle states
-    has_idle, _ = await run_command(
-        "test -d /sys/devices/system/cpu/cpu0/cpuidle/state0 && echo yes || echo no"
-    )
+    has_idle, _ = await run_command("test -d /sys/devices/system/cpu/cpu0/cpuidle/state0 && echo yes || echo no")
     has_idle_states = "yes" in has_idle
 
     info = PlatformInfo(

@@ -21,9 +21,7 @@ class TestMemTaskIntegration:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             with (
-                patch(
-                    "src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"
-                ),
+                patch("src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"),
                 patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
             ):
                 yield tmp_path
