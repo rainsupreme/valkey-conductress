@@ -13,6 +13,7 @@ from src.binary_manager import BinaryManager
 from src.cpu_allocator import AllocationTag, CpuAllocator
 from src.profiling_manager import ProfilingManager
 from src.ssh_host import SshHost
+from src.stabilization_manager import StabilizationManager
 from src.utility import async_run
 
 from . import config
@@ -38,6 +39,7 @@ class Server:
         self._host = SshHost(ip, username)
         self._binary = BinaryManager(self._host)
         self._profiling = ProfilingManager(self._host)
+        self._stabilization = StabilizationManager(self._host)
         self.ip = ip
         self.port = port
         self.username = username
@@ -409,225 +411,25 @@ class Server:
         return ProfilingManager.parse_perf_stat(path)
 
     # =============================================================================
-    # CPU CONSISTENCY TUNING METHODS
+    # CPU CONSISTENCY TUNING METHODS (delegated to StabilizationManager)
     # =============================================================================
 
     async def enable_cpu_consistency_mode(self) -> None:
-        """Configure CPU settings for consistent benchmarks across ARM/x86 platforms."""
-        from .platform import detect_platform
-
-        self._platform_info = await detect_platform(lambda cmd: self.run_host_command(cmd, check=False))
-
-        # === Universal tunings (all platforms) ===
-
-        # Disable ASLR — single biggest factor for between-run variance (1-3%)
-        await self.run_host_command("echo 0 | sudo tee /proc/sys/kernel/randomize_va_space", check=False)
-        logging.info("Disabled ASLR (randomize_va_space=0)")
-
-        # THP to madvise — prevents background khugepaged/compaction jitter
-        thp_path = "/sys/kernel/mm/transparent_hugepage/enabled"
-        if await self.check_file_exists(Path(thp_path)):
-            await self.run_host_command(f"echo madvise | sudo tee {thp_path}", check=False)
-            logging.info("Set THP to madvise")
-
-        # Memory/scheduler tuning — reduces jitter from background activity
-        sysctl_settings = [
-            ("vm.compaction_proactiveness", "0"),
-            ("kernel.watchdog", "0"),
-            ("kernel.timer_migration", "0"),
-            ("vm.dirty_writeback_centisecs", "0"),
-        ]
-        for key, value in sysctl_settings:
-            await self.run_host_command(f"sudo sysctl -w {key}={value}", check=False)
-        logging.info("Applied memory/scheduler sysctl tunings")
-
-        # Stop systemd timers that fire during benchmarks
-        for timer in [
-            "sysstat-collect.timer",
-            "nm-cloud-setup.timer",
-            "dnf-makecache.timer",
-        ]:
-            await self.run_host_command(f"sudo systemctl stop {timer}", check=False)
-
-        # === Frequency scaling (x86 only — ARM Graviton is fixed) ===
-        cpufreq_exists = await self.check_file_exists(
-            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
-        )
-
-        if cpufreq_exists:
-            # Try performance governor first, fallback to available governors
-            governors_out, _ = await self.run_host_command(
-                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors",
-                check=False,
-            )
-            available_governors = governors_out.strip().split() if governors_out else []
-
-            if "performance" in available_governors:
-                await self.run_host_command("sudo cpupower frequency-set -g performance")
-                logging.info("Set performance governor")
-            elif "userspace" in available_governors:
-                # Fallback for some ARM systems
-                await self.run_host_command("sudo cpupower frequency-set -g userspace")
-                logging.info("Set userspace governor (performance fallback)")
-            else:
-                logging.warning(
-                    "No suitable performance governor available: %s",
-                    available_governors,
-                )
-
-            # Disable turbo/boost on x86, check ARM boost paths
-            boost_paths = [
-                "/sys/devices/system/cpu/cpufreq/boost",  # x86 turbo boost
-                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_boost_frequencies",  # Some ARM
-            ]
-            for boost_path in boost_paths:
-                if await self.check_file_exists(Path(boost_path)):
-                    await self.run_host_command(f"echo 0 | sudo tee {boost_path}", check=False)
-                    logging.info("Disabled boost/turbo at %s", boost_path)
-                    break
-        else:
-            logging.info("No CPU frequency scaling - likely fixed-frequency processor (Graviton/server-class)")
-
-        # Handle idle states across platforms
-        idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
-        if "No idle states" in idle_result or "CPUidle driver: none" in idle_result:
-            logging.info("No CPU idle states - processor maintains consistent performance")
-        else:
-            # Disable common idle states (C1, C2) that can cause latency spikes
-            for state in [1, 2, 3]:  # C1, C2, C3
-                await self.run_host_command(f"sudo cpupower idle-set -d {state}", check=False)
-            logging.info("Disabled CPU idle states for latency consistency")
-
-        # Cross-platform scheduler optimizations
-        scheduler_settings = [
-            ("/proc/sys/kernel/sched_energy_aware", "0", "energy-aware scheduling"),
-            (
-                "/proc/sys/kernel/sched_autogroup_enabled",
-                "0",
-                "automatic process grouping",
-            ),
-        ]
-
-        for path, value, description in scheduler_settings:
-            if await self.check_file_exists(Path(path)):
-                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
-                logging.info("Disabled %s for consistent performance", description)
+        """Configure CPU settings for consistent benchmarks."""
+        await self._stabilization.enable()
+        self._platform_info = self._stabilization.platform_info
 
     async def disable_cpu_consistency_mode(self) -> None:
-        """Restore default CPU settings across ARM/x86 platforms."""
-        # Restore ASLR
-        await self.run_host_command("echo 2 | sudo tee /proc/sys/kernel/randomize_va_space", check=False)
-        logging.info("Restored ASLR (randomize_va_space=2)")
+        """Restore default CPU settings."""
+        await self._stabilization.disable()
 
-        # Check if CPU frequency scaling is supported
-        cpufreq_exists = await self.check_file_exists(
-            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
-        )
-
-        if cpufreq_exists:
-            # Restore appropriate default governor based on platform
-            governors_out, _ = await self.run_host_command(
-                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors",
-                check=False,
-            )
-            available_governors = governors_out.strip().split() if governors_out else []
-
-            # Prefer schedutil (modern), fallback to ondemand (older systems)
-            if "schedutil" in available_governors:
-                await self.run_host_command("sudo cpupower frequency-set -g schedutil")
-                logging.info("Restored schedutil governor")
-            elif "ondemand" in available_governors:
-                await self.run_host_command("sudo cpupower frequency-set -g ondemand")
-                logging.info("Restored ondemand governor")
-            else:
-                logging.warning("No suitable default governor found: %s", available_governors)
-
-            # Re-enable turbo/boost
-            boost_paths = [
-                "/sys/devices/system/cpu/cpufreq/boost",
-                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_boost_frequencies",
-            ]
-            for boost_path in boost_paths:
-                if await self.check_file_exists(Path(boost_path)):
-                    await self.run_host_command(f"echo 1 | sudo tee {boost_path}", check=False)
-                    logging.info("Re-enabled boost/turbo at %s", boost_path)
-                    break
-        else:
-            logging.info("Fixed-frequency processor - no frequency settings to restore")
-
-        # Re-enable idle states if they were disabled
-        idle_result, _ = await self.run_host_command("cpupower idle-info", check=False)
-        if "No idle states" not in idle_result and "CPUidle driver: none" not in idle_result:
-            for state in [1, 2, 3]:  # C1, C2, C3
-                await self.run_host_command(f"sudo cpupower idle-set -e {state}", check=False)
-            logging.info("Re-enabled CPU idle states")
-
-        # Restore default scheduler settings
-        scheduler_settings = [
-            ("/proc/sys/kernel/sched_energy_aware", "1", "energy-aware scheduling"),
-            (
-                "/proc/sys/kernel/sched_autogroup_enabled",
-                "1",
-                "automatic process grouping",
-            ),
-        ]
-
-        for path, value, description in scheduler_settings:
-            if await self.check_file_exists(Path(path)):
-                await self.run_host_command(f"echo {value} | sudo tee {path}", check=False)
-                logging.info("Re-enabled %s", description)
+    async def verify_cpu_consistency_mode(self) -> bool:
+        """Verify stabilization settings are applied. Retry once on failure."""
+        return await self._stabilization.verify()
 
     # =============================================================================
     # SERVER LIFECYCLE METHODS
     # =============================================================================
-
-    async def verify_cpu_consistency_mode(self) -> bool:
-        """Verify stabilization settings are actually applied. Retry once on failure."""
-        checks: list[tuple[str, str, str]] = [
-            ("ASLR", "cat /proc/sys/kernel/randomize_va_space", "0"),
-        ]
-        cpufreq_exists = await self.check_file_exists(
-            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
-        )
-        if cpufreq_exists:
-            checks.append(
-                (
-                    "governor",
-                    "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-                    "performance",
-                )
-            )
-            if await self.check_file_exists(Path("/sys/devices/system/cpu/cpufreq/boost")):
-                checks.append(("boost", "cat /sys/devices/system/cpu/cpufreq/boost", "0"))
-
-        all_ok = True
-        for name, cmd, expected in checks:
-            actual, _ = await self.run_host_command(cmd, check=False)
-            actual = actual.strip()
-            if actual != expected:
-                logging.warning(
-                    "Stabilization FAILED: %s = %r (expected %r). Retrying...",
-                    name,
-                    actual,
-                    expected,
-                )
-                await self.enable_cpu_consistency_mode()
-                actual, _ = await self.run_host_command(cmd, check=False)
-                actual = actual.strip()
-                if actual != expected:
-                    logging.error(
-                        "Stabilization FAILED after retry: %s = %r (expected %r)",
-                        name,
-                        actual,
-                        expected,
-                    )
-                    all_ok = False
-                else:
-                    logging.info("Stabilization recovered: %s = %s", name, actual)
-
-        if all_ok:
-            logging.info("Stabilization verified: all checks passed")
-        return all_ok
 
     async def __pre_start(self) -> None:
         """Configuration and preparation before starting Valkey server"""
