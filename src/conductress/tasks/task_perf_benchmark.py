@@ -12,6 +12,9 @@ from scipy.stats import t as t_dist
 
 from conductress.base_task_visualizer import PlotTaskVisualizer
 from conductress.config import (
+    BENCHMARK_MAX_ITERATIONS,
+    BENCHMARK_UPDATE_INTERVAL,
+    HEARTBEAT_INTERVAL,
     PERF_BENCH_CLIENTS,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
@@ -24,7 +27,7 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FilePro
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.utility import BILLION, HumanByte, HumanNumber, HumanTime, RealtimeCommand
+from conductress.utility import HumanByte, HumanNumber, HumanTime, RealtimeCommand
 
 BASE_KEY_PATTERN = "key:__rand_int__"
 BASE_KEY_SIZE = len(BASE_KEY_PATTERN)  # 16 bytes
@@ -584,19 +587,19 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
                 f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test_command}"
+                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         else:
             return (
                 f"numactl --cpunodebind={net_numa} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
                 f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {2 * BILLION} {self.test_command}"
+                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
 
     async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
         """Execute one benchmark run (warmup + measurement). Returns avg RPS."""
-        benchmark_update_interval = 0.1
+        benchmark_update_interval = BENCHMARK_UPDATE_INTERVAL
         self.rps_data = []
 
         command = RealtimeCommand(command_string)
@@ -622,7 +625,7 @@ class PerfTaskRunner(BaseTaskRunner):
             time.sleep(benchmark_update_interval)
             now = time.monotonic()
 
-            if time.time() - last_heartbeat > 5.0:
+            if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
                 elapsed_total_time = now - start_time
                 steps_this_rep = min(int(elapsed_total_time), self.warmup + self.duration)
                 self.status.steps_completed = rep * (self.warmup + self.duration) + steps_this_rep

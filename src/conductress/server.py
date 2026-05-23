@@ -322,7 +322,7 @@ class Server:
                     io_thread_cpu_index += 1
 
         # Brief delay to ensure scheduler applies affinity changes
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(config.THREAD_PIN_SETTLE_DELAY)
 
     def _release_server_cpus(self):
         """Release CPUs allocated to this server"""
@@ -506,7 +506,7 @@ class Server:
 
     async def wait_until_ready(self) -> None:
         """Wait until the server is ready to accept commands."""
-        for _ in range(10):
+        for _ in range(config.SERVER_READY_MAX_RETRIES):
             try:
                 out = await self.run_valkey_command("PING")
                 if out == "PONG":
@@ -514,7 +514,7 @@ class Server:
                 self.logger.debug(out)
             except asyncssh.ProcessError:
                 self.logger.warning("CLI error during wait_until_ready")
-            time.sleep(1)
+            time.sleep(config.SERVER_READY_RETRY_DELAY)
 
         raise RuntimeError("Server did not start successfully")
 

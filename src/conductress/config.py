@@ -58,6 +58,29 @@ MEM_TEST_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days expiration
 # TUI refresh interval in seconds
 TUI_REFRESH_INTERVAL = 15
 
+# =============================================================================
+# RUNTIME CONSTANTS
+# =============================================================================
+
+# Task runner polls the queue at this interval when idle (seconds)
+QUEUE_POLL_INTERVAL = 4
+
+# Benchmark metric collection interval (seconds). valkey-benchmark outputs ~4/sec.
+BENCHMARK_UPDATE_INTERVAL = 0.1
+
+# Status heartbeat interval during benchmark runs (seconds)
+HEARTBEAT_INTERVAL = 5.0
+
+# Maximum iterations for valkey-benchmark (-n flag). Set high so duration controls exit.
+BENCHMARK_MAX_ITERATIONS = 2_000_000_000
+
+# Server readiness: max attempts and delay between retries
+SERVER_READY_MAX_RETRIES = 10
+SERVER_READY_RETRY_DELAY = 1.0  # seconds
+
+# Thread pinning: brief delay for scheduler to apply affinity changes
+THREAD_PIN_SETTLE_DELAY = 0.1  # seconds
+
 # when multiple valkey instances run on one host, they will start at this port number and count up
 # (e.g. 9000, 9001, 9002, etc)
 SERVER_PORT_RANGE_START = 9000

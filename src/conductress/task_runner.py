@@ -12,7 +12,7 @@ from typing import Optional, Protocol
 
 from conductress.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, get_servers
+from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, QUEUE_POLL_INTERVAL, get_servers
 from .file_protocol import FileProtocol
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
@@ -110,7 +110,7 @@ class TaskRunner:
 
             logger.debug("waiting for new jobs in queue")
             while not self.task:
-                time.sleep(4)
+                time.sleep(QUEUE_POLL_INTERVAL)
                 self.task = queue.get_next_task()
                 if not self.task:
                     self._notify_queue_empty()
