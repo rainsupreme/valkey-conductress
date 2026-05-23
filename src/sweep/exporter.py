@@ -101,10 +101,12 @@ def _build_annotations(state: SweepState, planner: SweepPlanner,
                     "workload": workload,
                     "type": "regression" if delta < 0 else "improvement",
                 }
-                if right.pr is not None:
-                    annotation["pr"] = right.pr
-                if right.pr_title is not None:
-                    annotation["pr_title"] = right.pr_title
+                pr = state.commit_prs.get(right.commit) or right.pr
+                pr_title = state.commit_titles.get(right.commit) or right.pr_title
+                if pr is not None:
+                    annotation["pr"] = pr
+                if pr_title is not None:
+                    annotation["pr_title"] = pr_title
                 # Check for manual note in point
                 annotations.append(annotation)
 

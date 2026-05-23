@@ -87,7 +87,7 @@ class TestParseMergeSubject:
     def test_standard_merge(self):
         pr, title = _parse_merge_subject("Merge pull request #1847 from user/branch-name")
         assert pr == 1847
-        assert title is None
+        assert title == "Merge pull request #1847 from user/branch-name"
 
     def test_squash_merge(self):
         pr, title = _parse_merge_subject("Optimize dict rehashing (#2103)")
@@ -97,7 +97,7 @@ class TestParseMergeSubject:
     def test_no_pr(self):
         pr, title = _parse_merge_subject("Regular commit message")
         assert pr is None
-        assert title is None
+        assert title == "Regular commit message"
 
     def test_squash_with_parens_in_title(self):
         pr, title = _parse_merge_subject("Fix bug (important) in module (#999)")

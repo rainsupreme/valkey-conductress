@@ -157,7 +157,7 @@ def _parse_merge_subject(subject: str) -> Tuple[Optional[int], Optional[str]]:
     # Pattern: "Merge pull request #NNNN from ..."
     match = re.match(r"Merge pull request #(\d+) from", subject)
     if match:
-        return int(match.group(1)), None
+        return int(match.group(1)), subject
 
     # Pattern: "Title (#NNNN)"
     match = re.search(r"\(#(\d+)\)$", subject)
@@ -165,4 +165,4 @@ def _parse_merge_subject(subject: str) -> Tuple[Optional[int], Optional[str]]:
         title = subject[:match.start()].strip()
         return int(match.group(1)), title
 
-    return None, None
+    return None, subject
