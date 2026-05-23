@@ -1,7 +1,6 @@
 """Represents a server running a Valkey instance."""
 
 import asyncio
-import hashlib
 import logging
 import subprocess
 import time
@@ -12,6 +11,7 @@ from typing import Optional
 
 import asyncssh
 
+from src.binary_manager import BinaryManager
 from src.cpu_allocator import AllocationTag, CpuAllocator
 from src.ssh_host import SshHost
 from src.utility import async_run
@@ -31,7 +31,6 @@ class Server:
 
     # These are remote paths - they exist on the valkey server
     path_root = Path("~")
-    remote_build_cache = path_root / "build_cache"
     server_logfile = path_root / "valkey-server.log"
     # profiling related paths
     flamegraph = path_root / "FlameGraph"
@@ -45,17 +44,14 @@ class Server:
 
     def __init__(self, ip: str, port: int = 6379, username="") -> None:
         self._host = SshHost(ip, username)
+        self._binary = BinaryManager(self._host)
         self.ip = ip
         self.port = port
         self.username = username
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
-        self.source: Optional[str] = None
-        self.specifier: Optional[str] = None
         self.args: Optional[list[str]] = None
-        self.hash: Optional[str] = None
-        self.make_args: str = config.DEFAULT_MAKE_ARGS
         self.threads: int = 1
 
         self.valkey_pid: int = -1  # -1 indicates server is not running
@@ -64,6 +60,39 @@ class Server:
 
         self.profiling_thread: Optional[Thread] = None
         self.perf_stat_thread: Optional[Thread] = None
+
+    # Properties delegating to BinaryManager (backward compat for code that reads these)
+    @property
+    def source(self) -> Optional[str]:
+        return self._binary.source
+
+    @source.setter
+    def source(self, value: Optional[str]) -> None:
+        self._binary.source = value
+
+    @property
+    def specifier(self) -> Optional[str]:
+        return self._binary.specifier
+
+    @specifier.setter
+    def specifier(self, value: Optional[str]) -> None:
+        self._binary.specifier = value
+
+    @property
+    def hash(self) -> Optional[str]:
+        return self._binary.hash
+
+    @hash.setter
+    def hash(self, value: Optional[str]) -> None:
+        self._binary.hash = value
+
+    @property
+    def make_args(self) -> str:
+        return self._binary.make_args
+
+    @make_args.setter
+    def make_args(self, value: str) -> None:
+        self._binary.make_args = value
 
     @classmethod
     async def with_build(
@@ -964,7 +993,7 @@ class Server:
             raise RuntimeError(f"Failed REPLICAOF {repr(primary_ip)} {repr(port)}: {repr(response)}")
 
     # =============================================================================
-    # BINARY MANAGEMENT METHODS
+    # BINARY MANAGEMENT METHODS (delegated to BinaryManager)
     # =============================================================================
 
     async def ensure_binary_cached(
@@ -973,130 +1002,19 @@ class Server:
         specifier: Optional[str] = None,
         make_args: Optional[str] = None,
     ) -> Path:
-        """Ensure that an arbitrary binary has been cached. This needs to be done before running multiple
-        instances on a single host."""
-        # don't break assumption that version running matches state
-        # also don't want to be running builds while benchmarks are running
+        """Ensure a binary is built and cached. Returns path to cached binary."""
         if self.valkey_pid != -1:
             raise RuntimeError("Cannot change binary while server is running")
-
-        if source:
-            self.source = source
-        if specifier:
-            self.specifier = specifier
-        if make_args is not None:
-            self.make_args = make_args
-
-        if self.source == config.MANUALLY_UPLOADED:
-            return await self.__ensure_binary_uploaded(self.specifier)
-        else:
-            if self.source not in config.REPO_NAMES:
-                raise ValueError(f"Unknown source: {self.source}")
-            return await self.__ensure_build_cached()
+        return await self._binary.ensure_binary_cached(source, specifier, make_args)
 
     def get_build_hash(self):
-        """
-        Get unique hash for current version of valkey running on the server.
-        Typically this is the commit hash of the source code used to build the server.
-        """
-        return self.hash
-
-    def __get_cached_build_path(self) -> Path:
-        if self.source is None or self.hash is None:
-            raise RuntimeError("source and hash must be set before accessing cached build path")
-        # Use actual make_args value - empty string is a valid override
-        make_args_hash = hashlib.md5(self.make_args.encode()).hexdigest()[:16]
-        return Server.remote_build_cache / self.source / self.hash / make_args_hash
-
-    def __get_source_binary_path(self) -> Path:
-        if self.source is None:
-            raise RuntimeError("source must be set before accessing source binary path")
-        return Server.path_root / self.source / "src"
-
-    async def __is_binary_cached(self) -> bool:
-        return await self.check_file_exists(self.__get_cached_build_path() / VALKEY_BINARY)
-
-    async def __normalize_specifier(self, specifier) -> str:
-        """Checks if specifier is a valid branch on origin. Fetches first."""
-        source_path = self.__get_source_binary_path()
-        await self.run_host_command(f"cd {source_path} && git fetch --quiet --prune")
-        try:
-            result, _ = await self.run_host_command(
-                f"cd {source_path} && git rev-parse --symbolic-full-name origin/{specifier} --"
-            )
-        except asyncssh.ProcessError:
-            print(f"Failed to resolve {specifier} in {self.source}, trying as-is")
-            result, _ = await self.run_host_command(
-                f"cd {source_path} && git rev-parse --symbolic-full-name {specifier} --"
-            )
-        result = result.strip()
-        if result == "":
-            raise ValueError(f"{specifier} is an invalid specifier in {self.source} (empty result)")
-        if result == "--":
-            return specifier
-        if result.startswith("refs/remotes/origin/"):
-            return f"origin/{specifier}"
-        return specifier
-
-    async def __ensure_build_cached(self) -> Path:
-        source_path: Path = self.__get_source_binary_path()
-        sync_target: str = await self.__normalize_specifier(self.specifier)
-        await self.run_host_command(f"cd {source_path} && git reset --hard {sync_target}")
-        self.hash = await self.__get_current_commit_hash()
-
-        cached_build_path = self.__get_cached_build_path()
-        cached_binary_path = cached_build_path / VALKEY_BINARY
-
-        if not await self.__is_binary_cached():
-            self.logger.info("building %s:%s...", self.source, self.specifier)
-
-            try:
-                # Use actual make_args value - empty string is a valid override
-                make_command = f"cd {source_path}; make distclean && make -j"
-                if self.make_args:
-                    make_command += f" {self.make_args}"
-                # Note: empty make_args means no additional flags (bare make -j)
-                await self.run_host_command(make_command)
-            except asyncssh.ProcessError as e:
-                self.logger.error("Build failed %d:\n%s", e.returncode, e.stderr)
-                raise e
-            build_binary = source_path / VALKEY_BINARY
-
-            await self.run_host_command(f"mkdir -p {cached_build_path}")
-            await self.run_host_command(f"cp {build_binary} {cached_binary_path}")
-
-        return cached_binary_path
-
-    async def __ensure_binary_uploaded(self, local_path) -> Path:
-        out, _ = await async_run(f"sha1sum {str(local_path)}")
-        if not out:
-            raise RuntimeError("Failed to run sha1sum on local binary")
-        self.hash = out.strip().split()[0]
-
-        cached_binary_path = self.__get_cached_build_path() / VALKEY_BINARY
-
-        if not self.__is_binary_cached():
-            self.logger.info("copying %s to server... (not cached)", local_path)
-
-            await self.run_host_command(f"mkdir -p {cached_binary_path.parent}")
-            await self.put_remote_file(local_path, cached_binary_path)
-
-        return cached_binary_path
-
-    async def __get_current_commit_hash(self) -> str:
-        source_path = self.__get_source_binary_path()
-        out, _ = await self.run_host_command(f"cd {source_path}; git rev-parse HEAD")
-        return out.strip()
+        """Get the commit hash of the current build."""
+        return self._binary.get_build_hash()
 
     @staticmethod
     async def delete_entire_build_cache(server_ips) -> None:
-        """Delete the entire build cache on all servers. This is a destructive operation."""
-
-        async def delete_host_cache(ip):
-            async with asyncssh.connect(ip, client_keys=[str(config.SSH_KEYFILE)]) as conn:
-                await conn.run(f"rm -rf {Server.remote_build_cache}", check=False)
-
-        await asyncio.gather(*(delete_host_cache(ip) for ip in server_ips))
+        """Delete the entire build cache on all servers."""
+        await BinaryManager.delete_entire_build_cache(server_ips)
 
     # =============================================================================
     # SSH AND FILE OPERATIONS (delegated to SshHost)

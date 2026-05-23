@@ -6,7 +6,6 @@ for specific metrics (throughput, memory, etc.).
 """
 
 import logging
-import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -71,14 +70,6 @@ class BaseSweepCoordinator(ABC):
         self.state.save(self.state_file)
         logger.info("Sweep build failure: %s", commit[:8])
 
-    def delete_cached_binary(self, commit: str) -> None:
-        """Delete the cached binary for a sweep task to save disk space."""
-        cache_base = Path.home() / "build_cache" / SWEEP_SOURCE
-        commit_dir = cache_base / commit
-        if commit_dir.exists():
-            shutil.rmtree(commit_dir)
-            logger.info("Deleted cached build: %s", commit_dir)
-
     # --- TaskSubscriber protocol ---
 
     def on_queue_empty(self) -> None:
@@ -93,7 +84,6 @@ class BaseSweepCoordinator(ABC):
         if result:
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
-            self.delete_cached_binary(task.sweep_commit)  # type: ignore[attr-defined]
         else:
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract result for sweep commit %s", commit[:8])
@@ -105,7 +95,6 @@ class BaseSweepCoordinator(ABC):
             return
         commit = getattr(task, "sweep_commit", "")
         self.record_build_failure(commit)
-        self.delete_cached_binary(commit)
         self.queue_next_if_needed()
 
     def queue_next_if_needed(self) -> bool:

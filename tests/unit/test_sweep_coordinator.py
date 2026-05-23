@@ -210,27 +210,6 @@ class TestSweepCoordinatorResults:
         loaded = SweepState.load(state_file)
         assert loaded.points["aaa"].status == PointStatus.BUILD_FAILED
 
-    @patch("src.sweep.coordinator.SWEEP_STATE_FILE")
-    def test_delete_cached_binary(self, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
-        state = SweepState(merge_commits=["abc123"], commit_dates={"abc123": "2024-01-01"})
-        state.save(state_file)
-
-        # Create a fake cache dir
-        cache_dir = tmp_dir / "build_cache" / "valkey" / "abc123"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "valkey-server").write_text("fake binary")
-
-        with (
-            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
-            patch("pathlib.Path.home", return_value=tmp_dir),
-        ):
-            coordinator = SweepCoordinator(tmp_dir / "repo")
-            coordinator.initialize()
-            coordinator.delete_cached_binary("abc123")
-
-        assert not cache_dir.exists()
-
 
 class TestTaskRunnerSweepIntegration:
     """Tests for TaskRunner with sweep mode."""
