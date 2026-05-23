@@ -122,6 +122,7 @@ class SweepCoordinator:
         """Populate landmarks from release branch points on unstable."""
         # Pre-fork baseline: unstable commit from the day of Redis 7.2.4 release
         PRE_FORK_LANDMARKS = [
+            Landmark(commit="2b8cde71bb553713cf93794a0fb30a1618c0c955", date="2023-08-16", label="Valkey created"),
             Landmark(commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b", date="2024-01-09", label="7.2.4"),
         ]
 
