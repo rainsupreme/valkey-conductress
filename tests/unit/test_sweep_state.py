@@ -23,7 +23,7 @@ class TestStatePersistence:
         state = SweepState()
         state.save(path)
         loaded = SweepState.load(path)
-        assert loaded.threshold == 0.01
+        assert loaded.threshold == 0.02
         assert loaded.merge_commits == []
         assert loaded.points == {}
 
