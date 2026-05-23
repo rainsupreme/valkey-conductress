@@ -499,7 +499,7 @@ class Server:
                 try:
                     count = int(count_str)
                     # Event name is second field, strip :u/:k suffix
-                    event = parts[1].rstrip(":u").rstrip(":k").rstrip(":")
+                    event = parts[1].removesuffix(":u").removesuffix(":k").removesuffix(":")
                     results[event] = count
                 except ValueError:
                     continue
