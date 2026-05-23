@@ -24,7 +24,8 @@ class ReplicationGroup:
         make_args: str = "",
     ) -> None:
         """Initialize a replication group with server configuration."""
-        assert len(server_infos) >= 1, "At least one server IP is required"
+        if len(server_infos) < 1:
+            raise ValueError("At least one server IP is required")
 
         self.server_infos = server_infos
         self.binary_source = binary_source
@@ -76,17 +77,20 @@ class ReplicationGroup:
             for server in self.servers:
                 replicas = await server.get_replicas()
                 unexpected_ips += [replica for replica in replicas if replica not in expected_servers]
-            assert not unexpected_ips, f"Unexpected replicas remain after cleanup: {unexpected_ips}"
+            if unexpected_ips:
+                raise RuntimeError(f"Unexpected replicas remain after cleanup: {unexpected_ips}")
 
     async def begin_replication(self):
         """Set up replication among the servers in the group."""
-        assert self.primary
+        if not self.primary:
+            raise RuntimeError("No primary server available for replication")
         print("setting up replication")
         await asyncio.gather(*[replica.replicate(self.primary.ip) for replica in self.replicas])
 
     async def wait_for_repl_sync(self):
         """Wait for all replicas to be in sync with the primary."""
-        assert self.primary
+        if not self.primary:
+            raise RuntimeError("No primary server available for replication sync")
         if not self.replicas:
             return
 

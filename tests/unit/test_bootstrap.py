@@ -221,7 +221,7 @@ class TestPathExists:
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n1\n0\n1\n")
         
-        with pytest.raises(AssertionError, match="Expected .* to be a file"):
+        with pytest.raises(RuntimeError, match="Expected .* to be a file"):
             await path_exists(host, "/some/dir", expected_type="file")
 
     @pytest.mark.asyncio
@@ -229,7 +229,7 @@ class TestPathExists:
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n0\n1\n1\n")
         
-        with pytest.raises(AssertionError, match="Expected .* to be a directory"):
+        with pytest.raises(RuntimeError, match="Expected .* to be a directory"):
             await path_exists(host, "/some/file", expected_type="directory")
 
     @pytest.mark.asyncio
@@ -237,5 +237,5 @@ class TestPathExists:
         host = MagicMock(spec=Host)
         host.run = AsyncMock(return_value="0\n0\n1\n1\n")
         
-        with pytest.raises(AssertionError, match="Expected .* to be a symlink"):
+        with pytest.raises(RuntimeError, match="Expected .* to be a symlink"):
             await path_exists(host, "/some/file", expected_type="symlink")

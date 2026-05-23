@@ -393,7 +393,8 @@ class Server:
         """Retrieve profile data from server and generate flamegraph report.
         Stops profiling first if needed"""
 
-        assert result_dir.exists(), f"Result directory {result_dir} must exist"
+        if not result_dir.exists():
+            raise FileNotFoundError(f"Result directory {result_dir} must exist")
 
         out_perf_path = Server.path_root / "out.perf"
         out_folded_path = Server.path_root / "out.folded"
@@ -468,7 +469,8 @@ class Server:
 
     async def perf_stat_report(self, result_dir: Path) -> dict:
         """Copy perf stat results to result directory and return parsed counters."""
-        assert result_dir.exists(), f"Result directory {result_dir} must exist"
+        if not result_dir.exists():
+            raise FileNotFoundError(f"Result directory {result_dir} must exist")
         perf_stat_path = Path(Server.perf_stats_path)
         local_path = result_dir / "perf_stat.txt"
         await self.get_remote_file(perf_stat_path, local_path)
@@ -744,7 +746,8 @@ class Server:
 
         # Background threads: remaining CPUs (bio, AOF rewrite, bgsave)
         bg_thread_start_cpu = self.threads
-        assert bg_thread_start_cpu < len(self.server_cpus), "Not enough CPUs allocated for background threads"
+        if bg_thread_start_cpu >= len(self.server_cpus):
+            raise RuntimeError("Not enough CPUs allocated for background threads")
         bg_cpu_list = ",".join(map(str, self.server_cpus[bg_thread_start_cpu:]))
         self.args += ["--bio-cpulist", bg_cpu_list]
         self.args += ["--aof-rewrite-cpulist", bg_cpu_list]
@@ -819,7 +822,8 @@ class Server:
             )
 
         name = name.strip().split()[-1]
-        assert name == VALKEY_BINARY
+        if name != VALKEY_BINARY:
+            raise RuntimeError(f"Process on port {self.port} is '{name}', expected '{VALKEY_BINARY}'")
 
         await self.run_host_command(f"kill -9 {self.valkey_pid}")
         self.valkey_pid = -1
@@ -929,7 +933,8 @@ class Server:
         replicas: list[str] = []
         for i in range(count):
             replica = info.get(f"slave{i}")
-            assert replica is not None, f"Replica {i} not found in replication info"
+            if replica is None:
+                raise RuntimeError(f"Replica {i} not found in replication info")
             ip = replica.split(",")[0].split("=")[1]
             replicas.append(ip)
         return replicas
@@ -954,7 +959,8 @@ class Server:
         instances on a single host."""
         # don't break assumption that version running matches state
         # also don't want to be running builds while benchmarks are running
-        assert self.valkey_pid == -1, "Cannot change binary while server is running"
+        if self.valkey_pid != -1:
+            raise RuntimeError("Cannot change binary while server is running")
 
         if source:
             self.source = source
@@ -966,7 +972,8 @@ class Server:
         if self.source == config.MANUALLY_UPLOADED:
             return await self.__ensure_binary_uploaded(self.specifier)
         else:
-            assert self.source in config.REPO_NAMES, f"Unknown source: {self.source}"
+            if self.source not in config.REPO_NAMES:
+                raise ValueError(f"Unknown source: {self.source}")
             return await self.__ensure_build_cached()
 
     def get_build_hash(self):
@@ -977,13 +984,15 @@ class Server:
         return self.hash
 
     def __get_cached_build_path(self) -> Path:
-        assert self.source is not None and self.hash is not None
+        if self.source is None or self.hash is None:
+            raise RuntimeError("source and hash must be set before accessing cached build path")
         # Use actual make_args value - empty string is a valid override
         make_args_hash = hashlib.md5(self.make_args.encode()).hexdigest()[:16]
         return Server.remote_build_cache / self.source / self.hash / make_args_hash
 
     def __get_source_binary_path(self) -> Path:
-        assert self.source is not None
+        if self.source is None:
+            raise RuntimeError("source must be set before accessing source binary path")
         return Server.path_root / self.source / "src"
 
     async def __is_binary_cached(self) -> bool:
@@ -1042,7 +1051,8 @@ class Server:
 
     async def __ensure_binary_uploaded(self, local_path) -> Path:
         out, _ = await async_run(f"sha1sum {str(local_path)}")
-        assert out is not None, "Failed to run sha1sum on local binary"
+        if not out:
+            raise RuntimeError("Failed to run sha1sum on local binary")
         self.hash = out.strip().split()[0]
 
         cached_binary_path = self.__get_cached_build_path() / VALKEY_BINARY
@@ -1106,7 +1116,8 @@ class Server:
         """Run a terminal command on the server and return its output."""
         self.logger.info("Host command: %s", command)
         await self.__ensure_ssh_connection()
-        assert self.ssh
+        if not self.ssh:
+            raise RuntimeError(f"SSH connection to {self.ip} not established")
         result: asyncssh.SSHCompletedProcess = await self.ssh.run(command, check=check)
         return self.__ensure_str(result.stdout), self.__ensure_str(result.stderr)
 

@@ -97,7 +97,8 @@ def _build_annotations(state: SweepState, planner: SweepPlanner,
 
         # Adjacent commits — this is a pinpointed change
         if right_idx - left_idx == 1:
-            assert left.value is not None and right.value is not None
+            if left.value is None or right.value is None:
+                continue
             delta = (right.value - left.value) / left.value
             noise_floor = max(left.cv or 0.0, right.cv or 0.0) / 100.0
             if abs(delta) >= max(state.threshold, noise_floor):

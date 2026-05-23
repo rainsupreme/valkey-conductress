@@ -94,7 +94,8 @@ class Host:
             raw = await self.run("cat /etc/os-release")
             lines = raw.splitlines()
             lines = [line for line in lines if line.startswith("NAME")]
-            assert len(lines) == 1
+            if len(lines) != 1:
+                raise RuntimeError(f"Expected exactly 1 NAME line in /etc/os-release, got {len(lines)}")
             self.distro = lines[0].split('"')[1]
         return self.distro
 
@@ -179,11 +180,14 @@ async def path_exists(host: Host, path: Union[str, Path], expected_type: Optiona
         return False
     if expected_type:
         if expected_type == "file":
-            assert result[1], f"Expected {path} to be a file. ({result})"
+            if not result[1]:
+                raise RuntimeError(f"Expected {path} to be a file. ({result})")
         elif expected_type == "directory":
-            assert result[2], f"Expected {path} to be a directory. ({result})"
+            if not result[2]:
+                raise RuntimeError(f"Expected {path} to be a directory. ({result})")
         elif expected_type == "symlink":
-            assert result[3], f"Expected {path} to be a symlink. ({result})"
+            if not result[3]:
+                raise RuntimeError(f"Expected {path} to be a symlink. ({result})")
         else:
             raise ValueError(f"Unknown expected_type: {expected_type}")
     return True
