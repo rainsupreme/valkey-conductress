@@ -53,6 +53,13 @@ def main() -> None:
         default=None,
         help="Git repo path to commit+push the exported file to",
     )
+    export_parser.add_argument(
+        "--metric",
+        type=str,
+        default=None,
+        choices=["throughput", "memory"],
+        help="Export only this metric (default: all available)",
+    )
     sweep_sub.add_parser("status", help="Show sweep progress summary")
 
     args, remaining = parser.parse_known_args()
@@ -158,58 +165,76 @@ def main() -> None:
     elif args.command == "sweep":
         from pathlib import Path
 
-        from src.sweep.coordinator import SWEEP_STATE_FILE
-        from src.sweep.exporter import export_series
+        from src.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
+        from src.sweep.memory_coordinator import MEMORY_STATE_FILE, MemorySweepCoordinator
         from src.sweep.planner import SweepState
 
         if args.sweep_command == "export":
-            state = SweepState.load(SWEEP_STATE_FILE)
-            points_count = sum(1 for p in state.points.values() if p.value is not None)
-            if points_count == 0:
-                print("No sweep results to export yet.")
-                sys.exit(1)
-
             platform = args.platform
-            output = Path(args.output) if args.output else Path(f"series-{platform}.json")
             platform_labels = {
                 "amd64": "amd64/epyc-9r14/zen4",
                 "arm64": "arm64/c7g.metal/graviton3",
                 "intel": "intel/sapphire-rapids/8488c",
             }
             platform_str = platform_labels.get(platform, platform)
+            repo_path = Path(args.repo) if args.repo else Path.home() / "valkey"
 
-            export_series(state, output, platform=platform_str)
-            print(f"Exported {points_count} points to {output}")
+            # Build list of coordinators to export
+            coordinators: list[BaseSweepCoordinator] = []
+            if not args.metric or args.metric == "throughput":
+                if SWEEP_STATE_FILE.exists():
+                    coordinators.append(SweepCoordinator(repo_path))
+            if not args.metric or args.metric == "memory":
+                if MEMORY_STATE_FILE.exists():
+                    coordinators.append(MemorySweepCoordinator(repo_path))
 
-            if args.push:
+            if not coordinators:
+                print("No sweep data to export.")
+                sys.exit(1)
+
+            exported_files = []
+            for coord in coordinators:
+                output = Path(args.output) if args.output else Path(f"series-{platform}-{coord.metric_id}.json")
+                count = coord.export(output, platform=platform_str)
+                if count > 0:
+                    print(f"Exported {count} {coord.metric_id} points to {output}")
+                    exported_files.append(output)
+
+            if args.push and exported_files:
                 import shutil
                 import subprocess
 
-                repo_path = Path(args.push)
-                dest = repo_path / "data" / output.name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(output, dest)
-                subprocess.run(["git", "-C", str(repo_path), "add", str(dest)], check=True)
+                repo_path_push = Path(args.push)
+                for output in exported_files:
+                    dest = repo_path_push / "data" / output.name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(output, dest)
+                    subprocess.run(
+                        ["git", "-C", str(repo_path_push), "add", str(dest)],
+                        check=True,
+                    )
                 result = subprocess.run(
-                    ["git", "-C", str(repo_path), "diff", "--cached", "--quiet"],
+                    ["git", "-C", str(repo_path_push), "diff", "--cached", "--quiet"],
                     capture_output=True,
                 )
-                if result.returncode != 0:  # there are staged changes
+                if result.returncode != 0:
+                    msg = ", ".join(f.name for f in exported_files)
                     subprocess.run(
                         [
                             "git",
                             "-C",
-                            str(repo_path),
+                            str(repo_path_push),
                             "commit",
                             "-m",
-                            f"Update {output.name}: {points_count} points",
+                            f"Update {msg}",
                         ],
                         check=True,
                     )
                     subprocess.run(
-                        ["git", "-C", str(repo_path), "push"],
+                        ["git", "-C", str(repo_path_push), "push"],
                         check=True,
                     )
+                    print(f"Pushed to {repo_path_push}")
                     print(f"Pushed to {repo_path}")
                 else:
                     print("No changes to push (data unchanged)")

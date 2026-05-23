@@ -24,6 +24,9 @@ MEMORY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 class MemorySweepCoordinator(BaseSweepCoordinator):
     """Memory efficiency sweep: tracks bytes/item overhead across history."""
 
+    metric_id = "memory"
+    metric_unit = "bytes/item"
+
     def __init__(self, repo_path: Path):
         super().__init__(repo_path, MEMORY_STATE_FILE)
 
