@@ -10,7 +10,7 @@ from src.sweep.planner import PointStatus, SweepPlanner, SweepState
 
 def export_series(state: SweepState, output_path: Path,
                   platform: str = "arm64/c7g.metal/graviton3",
-                  workload: str = "GET_16B_t1_p1") -> None:
+                  workload: str = "") -> None:
     """Export sweep state to dashboard-ready series.json.
 
     Args:
@@ -19,6 +19,12 @@ def export_series(state: SweepState, output_path: Path,
         platform: Platform identifier string.
         workload: Workload identifier string.
     """
+    if not workload:
+        from src.sweep.coordinator import (
+            SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE,
+        )
+        workload = f"{SWEEP_TEST.upper()}_{SWEEP_VAL_SIZE}B_t{SWEEP_IO_THREADS}_p{SWEEP_PIPELINING}"
+
     planner = SweepPlanner(state)
     commit_index = planner._commit_index
 
