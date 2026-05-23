@@ -136,7 +136,7 @@ class TestMemTaskRunner:
 
     def test_init_invalid_test(self):
         """Test initialization with invalid test type."""
-        with pytest.raises(AssertionError, match="Test invalid is not supported"):
+        with pytest.raises(ValueError, match="Test invalid is not supported"):
             MemTaskRunner(
                 task_name="test_task",
                 server_ip="127.0.0.1",
@@ -235,7 +235,7 @@ class TestMemTaskRunner:
 
         with patch("src.tasks.task_mem_efficiency.logger") as mock_logger:
             semaphore = asyncio.Semaphore(1)
-            with pytest.raises(AssertionError):  # Should fail assertion since expire_count != count
+            with pytest.raises(RuntimeError):  # Should fail since expire_count != count
                 await runner.test_single_size_overhead(64, 6379, semaphore)
 
             mock_logger.error.assert_called_once_with(
@@ -341,7 +341,7 @@ class TestMemTaskRunner:
         runner.cached_binary_path = Path("/mock/binary")
 
         semaphore = asyncio.Semaphore(1)
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError):
             await runner.test_single_size_overhead(64, 6379, semaphore)
 
     @patch("src.tasks.task_mem_efficiency.Server")
@@ -366,7 +366,7 @@ class TestMemTaskRunner:
         runner.cached_binary_path = Path("/mock/binary")
 
         semaphore = asyncio.Semaphore(1)
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError):
             await runner.test_single_size_overhead(64, 6379, semaphore)
 
     def test_status_initialization(self, runner):

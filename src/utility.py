@@ -208,8 +208,8 @@ class RealtimeCommand:
         output_dest = subprocess.DEVNULL if ignore_output else subprocess.PIPE
         self.p = subprocess.Popen(command_list, stdout=output_dest, stderr=output_dest)
         if not ignore_output:
-            assert self.p.stdout is not None
-            assert self.p.stderr is not None
+            if self.p.stdout is None or self.p.stderr is None:
+                raise RuntimeError("subprocess PIPE streams not available")
             os.set_blocking(self.p.stdout.fileno(), False)
             os.set_blocking(self.p.stderr.fileno(), False)
 
@@ -217,8 +217,8 @@ class RealtimeCommand:
         """Read output since last poll."""
         if self.p is None:
             raise RuntimeError("Command not started")
-        assert self.p.stdout is not None
-        assert self.p.stderr is not None
+        if self.p.stdout is None or self.p.stderr is None:
+            raise RuntimeError("subprocess PIPE streams not available")
         stdout = self.p.stdout.read()
         stderr = self.p.stderr.read()
         if stdout is not None:
@@ -275,7 +275,8 @@ async def get_host_proc_count(host_ip: str) -> int:
     conn = await asyncssh.connect(host_ip, client_keys=[str(SSH_KEYFILE)])
     result: asyncssh.SSHCompletedProcess = await conn.run("nproc", check=False)
     output = result.stdout
-    assert output
+    if not output:
+        raise RuntimeError(f"Failed to get processor count from {host_ip}")
     if isinstance(output, bytes):
         return int(output.decode())
     else:

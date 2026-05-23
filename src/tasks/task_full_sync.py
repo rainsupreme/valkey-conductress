@@ -77,7 +77,8 @@ class SyncTaskRunner(BaseTaskRunner):
         self.note = note
         self.make_args = make_args
 
-        assert len(self.server_ips) >= 2, "At least two server IPs are required"
+        if len(self.server_ips) < 2:
+            raise ValueError("At least two server IPs are required")
 
         self.title = (
             f"replication test, {binary_source}:{specifier}, "
@@ -109,7 +110,8 @@ class SyncTaskRunner(BaseTaskRunner):
         self.file_protocol.write_status(self.status)
 
         self.logger.info("loading data onto primary")
-        assert self.replication_group.primary is not None
+        if self.replication_group.primary is None:
+            raise RuntimeError("No primary server in replication group")
         await self.replication_group.primary.run_valkey_command_over_keyspace(
             self.valcount, f"-d {self.valsize} -t set"
         )
@@ -180,7 +182,8 @@ class SyncTaskRunner(BaseTaskRunner):
     def __profiling_reports(self):
         """This takes some time, so we have all hosts perform the task in parallel."""
         self.logger.info("generating flamegraphs")
-        assert self.replication_group is not None
+        if self.replication_group is None:
+            raise RuntimeError("Replication group not initialized")
         tasks = [
             (self.replication_group.primary, "primary"),
             *[(replica, f"replica{i}") for i, replica in enumerate(self.replication_group.replicas)],

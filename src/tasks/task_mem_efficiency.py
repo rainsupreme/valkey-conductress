@@ -85,7 +85,8 @@ class MemTaskRunner(BaseTaskRunner):
 
         self.title = f"{test} memory efficiency, {source}:{specifier}, has_expire={has_expire}"
 
-        assert test in self.tests, f"Test {test} is not supported. Supported tests: {self.tests}"
+        if test not in self.tests:
+            raise ValueError(f"Test {test} is not supported. Supported tests: {self.tests}")
 
         # settings
         self.server_ip = server_ip
@@ -193,9 +194,8 @@ class MemTaskRunner(BaseTaskRunner):
     async def test_single_size_overhead(self, val_size: int, port: int, semaphore) -> dict[str, Any]:
         """Test memory efficiency for a single item size."""
         async with semaphore:
-            assert (
-                self.cached_binary_path is not None
-            ), "cached_binary_path must be set before calling test_single_size_overhead"
+            if self.cached_binary_path is None:
+                raise RuntimeError("cached_binary_path must be set before calling test_single_size_overhead")
             valkey = await Server.with_path(self.server_ip, port, self.cached_binary_path, io_threads=1)
             self.commit_hash = valkey.get_build_hash()
 
@@ -219,19 +219,24 @@ class MemTaskRunner(BaseTaskRunner):
                 item_count = key_count
             else:
                 # SADD/ZADD create a single collection with N members
-                assert key_count == 1, f"Expected 1 collection key but found {key_count} on port {port}"
+                if key_count != 1:
+                    raise RuntimeError(f"Expected 1 collection key but found {key_count} on port {port}")
                 if self.test == "zadd":
                     cardinality_cmd, key_name = "ZCARD", "myzset"
                 else:
                     cardinality_cmd, key_name = "SCARD", "myset"
                 result_str = await valkey.run_valkey_command(f"{cardinality_cmd} {key_name}")
-                assert result_str is not None, f"{cardinality_cmd} returned None on port {port}"
+                if result_str is None:
+                    raise RuntimeError(f"{cardinality_cmd} returned None on port {port}")
                 item_count = int(result_str)
-            assert item_count == count, f"Expected {count} items but found {item_count} on port {port}"
+            if item_count != count:
+                raise RuntimeError(f"Expected {count} items but found {item_count} on port {port}")
             if self.has_expire:
-                assert expire_count == count
+                if expire_count != count:
+                    raise RuntimeError(f"Expected {count} expires but found {expire_count} on port {port}")
             else:
-                assert expire_count == 0
+                if expire_count != 0:
+                    raise RuntimeError(f"Expected 0 expires but found {expire_count} on port {port}")
 
             await valkey.stop()  # required cleanup, release CPU allocations, etc
 
