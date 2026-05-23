@@ -177,7 +177,7 @@ def main() -> None:
                 "intel": "intel/sapphire-rapids/8488c",
             }
             platform_str = platform_labels.get(platform, platform)
-            repo_path = Path(args.repo) if args.repo else Path.home() / "valkey"
+            repo_path = Path(args.repo) if getattr(args, "repo", None) else Path.home() / "valkey"
 
             # Build list of coordinators to export
             coordinators: list[BaseSweepCoordinator] = []
