@@ -89,7 +89,8 @@ def _build_annotations(state: SweepState, planner: SweepPlanner,
         if right_idx - left_idx == 1:
             assert left.rps is not None and right.rps is not None
             delta = (right.rps - left.rps) / left.rps
-            if abs(delta) >= state.threshold:
+            noise_floor = max(left.cv or 0.0, right.cv or 0.0) / 100.0
+            if abs(delta) >= max(state.threshold, noise_floor):
                 annotation: dict[str, Any] = {
                     "commit": right.commit,
                     "delta": round(delta, 4),
