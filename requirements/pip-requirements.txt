@@ -1,5 +1,4 @@
 asyncssh>=2.14.0,<3.0
-attrs>=23.0,<25.0
 plotext>=5.2,<6.0
 scipy>=1.11,<2.0
 textual>=0.80,<1.0

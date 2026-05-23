@@ -166,9 +166,9 @@ class TestServerCpuAllocation:
     def test_get_num_cpus_calculation(self):
         """Test CPU count calculation for io-threads."""
         # io-threads + 2 for background threads
-        assert Server.getNumCPUs(1) == 3
-        assert Server.getNumCPUs(4) == 6
-        assert Server.getNumCPUs(8) == 10
+        assert Server.get_num_cpus(1) == 3
+        assert Server.get_num_cpus(4) == 6
+        assert Server.get_num_cpus(8) == 10
 
     @pytest.mark.asyncio
     async def test_multiple_servers_different_ports_same_host(self):

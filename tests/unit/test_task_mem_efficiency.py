@@ -157,7 +157,7 @@ class TestMemTaskRunner:
         # Ensure Server() instantiation returns mock_server
         mock_server_class.return_value = mock_server
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
-        mock_server_class.getNumCPUs = MagicMock(return_value=1)
+        mock_server_class.get_num_cpus = MagicMock(return_value=1)
 
         # Mock file protocol
         runner.file_protocol = MagicMock()
@@ -382,7 +382,7 @@ class TestMemTaskRunner:
         # Test with high CPU count
         mock_server.get_available_cpu_count.return_value = 20
         mock_server_class.return_value = mock_server
-        mock_server_class.getNumCPUs = MagicMock(return_value=1)
+        mock_server_class.get_num_cpus = MagicMock(return_value=1)
 
         runner.file_protocol = MagicMock()
         runner.test_single_size_overhead = AsyncMock(return_value={"val_size": 64, "per_item_overhead": 10.0})
@@ -433,7 +433,7 @@ class TestMemTaskRunner:
         mock_server_instance.kill_all_valkey_instances_on_host = AsyncMock()
         mock_server_instance.ensure_binary_cached = AsyncMock(return_value=Path("/mock/binary"))
         mock_server_class.return_value = mock_server_instance
-        mock_server_class.getNumCPUs = MagicMock(return_value=1)
+        mock_server_class.get_num_cpus = MagicMock(return_value=1)
 
         call_order = []
 

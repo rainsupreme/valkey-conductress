@@ -333,7 +333,7 @@ class Server:
         """
         net_numa = self._cpu_allocator.get_net_interface_numa(self.ip)
         available = self._cpu_allocator.get_available_count(self.ip, prefer_numa=net_numa)
-        needed = Server.getNumCPUs(self.threads)
+        needed = Server.get_num_cpus(self.threads)
 
         if available < needed:
             raise RuntimeError(
@@ -718,7 +718,7 @@ class Server:
         await asyncio.sleep(1)  # short delay to it doesn't get our new server (TODO verify this)
 
     @staticmethod
-    def getNumCPUs(io_threads: int) -> int:
+    def get_num_cpus(io_threads: int) -> int:
         """Get number of CPUs allocated for server with specified io-threads parameter"""
         return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
@@ -730,7 +730,7 @@ class Server:
         await self.__pre_start()
 
         # Allocate CPUs for this server
-        needed_cpus = Server.getNumCPUs(self.threads)
+        needed_cpus = Server.get_num_cpus(self.threads)
         self.server_cpus = await self._allocate_server_cpus(needed_cpus)
 
         self.args = []

@@ -124,7 +124,7 @@ class HumanTime(HumanNumber):
     threshold = 1
 
 
-def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "─") -> str:
+def __build_header(center: str) -> str:
     console_width = get_console_width()
 
     # Decorative elements
@@ -147,12 +147,12 @@ def __build_header(left_decor: str, center: str, right_decor: str, fill: str = "
 
 def print_inline_header(text: str):
     """Print decorative header with inline centered text"""
-    print(__build_header("⊹˚₊‧", text, "‧₊˚⊹", "─"))
+    print(__build_header(text))
 
 
 def print_pretty_divider():
     """Print a decorative header (no text)"""
-    print(__build_header("⊹˚₊‧", "•°•♥•°•", "‧₊˚⊹", "─"))
+    print(__build_header("•°•♥•°•"))
 
 
 def print_centered_text(text: str):
@@ -202,7 +202,7 @@ class RealtimeCommand:
         """Start the command in a subprocess."""
         if self.p is not None:
             raise RuntimeError("Command already running")
-        command_list = self.command.split()
+        command_list = shlex.split(self.command)
         if self.remote is not None:
             command_list = ["ssh", "-q", "-i", SSH_KEYFILE, self.remote] + command_list
         output_dest = subprocess.DEVNULL if ignore_output else subprocess.PIPE

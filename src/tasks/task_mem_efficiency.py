@@ -114,7 +114,7 @@ class MemTaskRunner(BaseTaskRunner):
         # Write initial status
         self.file_protocol.write_status(self.status)
 
-        num_servers: int = await Server(self.server_ip).get_available_cpu_count() // Server.getNumCPUs(1)
+        num_servers: int = await Server(self.server_ip).get_available_cpu_count() // Server.get_num_cpus(1)
         num_servers = MEM_TEST_MAX_CONCURRENT if num_servers > MEM_TEST_MAX_CONCURRENT else num_servers
 
         print("Ensuring binary is ready")
