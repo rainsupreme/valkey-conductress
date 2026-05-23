@@ -33,6 +33,7 @@ def main() -> None:
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
+    subparsers.add_parser("status-export", help="Export status to JSON for remote monitoring")
     sweep_parser = subparsers.add_parser("sweep", help="Sweep management (export, status)")
     sweep_sub = sweep_parser.add_subparsers(dest="sweep_command")
     export_parser = sweep_sub.add_parser("export", help="Export sweep results to dashboard JSON")
@@ -161,6 +162,12 @@ def main() -> None:
         from conductress.status import print_status
 
         sys.exit(print_status())
+
+    elif args.command == "status-export":
+        from conductress.status_export import export_status
+
+        path = export_status()
+        print(f"Exported to {path}")
 
     elif args.command == "sweep":
         from pathlib import Path
