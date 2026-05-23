@@ -3,6 +3,36 @@ name: Tests
 on: [push, pull_request]
 
 jobs:
+  dco:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check DCO signoff
+        run: |
+          base=${{ github.event.pull_request.base.sha }}
+          for sha in $(git rev-list $base..HEAD); do
+            if ! git log -1 --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+>'; then
+              echo "::error::Commit $sha missing Signed-off-by. Use 'git commit -s'."
+              exit 1
+            fi
+          done
+          echo "All commits have DCO signoff ✓"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'black==25.11.0' 'isort==5.13.2'
+      - run: black --check --target-version py312 src/ tests/
+      - run: isort --check-only --profile black src/ tests/
+
   test:
     strategy:
       matrix:
@@ -16,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements/pip-requirements.txt -r requirements/pip-requirements-dev.txt
       - name: Run unit tests
-        run: pytest tests/unit
+        run: pytest tests/unit --cov=src --cov-report=term-missing --cov-report=xml
         env:
           PYTHONPATH: ${{ github.workspace }}
       - name: Run integration tests
@@ -25,3 +55,9 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
       - name: Type checking
         run: mypy src/ --ignore-missing-imports
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml

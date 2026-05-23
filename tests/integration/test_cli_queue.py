@@ -47,10 +47,11 @@ def isolate_queue(queue_dir):
 @pytest.fixture(autouse=True)
 def patch_sources():
     """Patch REPO_NAMES and MANUALLY_UPLOADED for all tests in this module."""
-    with patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]), patch(
-        "src.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]
-    ), patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"), patch(
-        "src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"
+    with (
+        patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+        patch("src.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+        patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+        patch("src.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
     ):
         yield
 

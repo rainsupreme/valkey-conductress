@@ -75,8 +75,9 @@ class TestSweepCoordinatorInit:
             MergeCommit(hash="bbb222", date="2024-04-15", pr=200, pr_title="Second PR"),
         ]
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), patch(
-            "src.sweep.coordinator.get_release_branch_points", return_value=[]
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.sweep.coordinator.get_release_branch_points", return_value=[]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
@@ -95,9 +96,10 @@ class TestSweepCoordinatorInit:
         )
         state.save(state_file)
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), patch(
-            "src.sweep.coordinator.get_merge_commits"
-        ) as mock_git:
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.sweep.coordinator.get_merge_commits") as mock_git,
+        ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             # Should NOT call git since commits already populated
@@ -129,8 +131,9 @@ class TestSweepCoordinatorTaskGeneration:
         state.save(state_file)
         mock_head.return_value = "ccc"
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), patch(
-            "src.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("src.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
@@ -233,8 +236,9 @@ class TestSweepCoordinatorResults:
         cache_dir.mkdir(parents=True)
         (cache_dir / "valkey-server").write_text("fake binary")
 
-        with patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file), patch(
-            "pathlib.Path.home", return_value=tmp_dir
+        with (
+            patch("src.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("pathlib.Path.home", return_value=tmp_dir),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()

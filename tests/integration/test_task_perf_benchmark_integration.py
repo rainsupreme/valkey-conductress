@@ -20,9 +20,12 @@ class TestPerfTaskIntegration:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch(
-                "src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"
-            ), patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"):
+            with (
+                patch(
+                    "src.file_protocol.CONDUCTRESS_OUTPUT", tmp_path / "output.jsonl"
+                ),
+                patch("src.file_protocol.CONDUCTRESS_RESULTS", tmp_path / "results"),
+            ):
                 yield tmp_path
 
     @patch("src.config.REPO_NAMES", ["valkey"])
@@ -260,8 +263,9 @@ class TestPerfTaskIntegration:
     @pytest.mark.asyncio
     async def test_error_handling_integration(self, temp_dir):
         """Test PerfTaskRunner error handling with invalid configuration."""
-        with patch("src.config.REPO_NAMES", ["valkey"]), patch(
-            "src.task_queue.config.REPO_NAMES", ["valkey"]
+        with (
+            patch("src.config.REPO_NAMES", ["valkey"]),
+            patch("src.task_queue.config.REPO_NAMES", ["valkey"]),
         ):
             task_data = PerfTaskData(
                 source="valkey",
