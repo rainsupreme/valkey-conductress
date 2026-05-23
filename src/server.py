@@ -2,25 +2,22 @@
 
 import asyncio
 import logging
-import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
-from threading import Thread
 from typing import Optional
 
 import asyncssh
 
 from src.binary_manager import BinaryManager
 from src.cpu_allocator import AllocationTag, CpuAllocator
+from src.profiling_manager import ProfilingManager
 from src.ssh_host import SshHost
 from src.utility import async_run
 
 from . import config
 
 VALKEY_BINARY = "valkey-server"
-PERF_STATUS_FILE = "/tmp/profiling_running"
-PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 
 
 class Server:
@@ -32,11 +29,6 @@ class Server:
     # These are remote paths - they exist on the valkey server
     path_root = Path("~")
     server_logfile = path_root / "valkey-server.log"
-    # profiling related paths
-    flamegraph = path_root / "FlameGraph"
-    perf_data_path = path_root / "perf.data"
-    flamegraph_path = path_root / "flamegraph.svg"
-    perf_stats_path = path_root / "perf_stat_output"
 
     # =============================================================================
     # INITIALIZATION AND FACTORY METHODS
@@ -45,6 +37,7 @@ class Server:
     def __init__(self, ip: str, port: int = 6379, username="") -> None:
         self._host = SshHost(ip, username)
         self._binary = BinaryManager(self._host)
+        self._profiling = ProfilingManager(self._host)
         self.ip = ip
         self.port = port
         self.username = username
@@ -57,9 +50,6 @@ class Server:
         self.valkey_pid: int = -1  # -1 indicates server is not running
         self.server_cpus: list[int] = []  # CPUs allocated to this server
         self._allocation_tag: Optional[AllocationTag] = None  # Tag for CPU allocation
-
-        self.profiling_thread: Optional[Thread] = None
-        self.perf_stat_thread: Optional[Thread] = None
 
     # Properties delegating to BinaryManager (backward compat for code that reads these)
     @property
@@ -369,170 +359,54 @@ class Server:
             )
 
     # =============================================================================
-    # PROFILING METHODS
+    # PROFILING METHODS (delegated to ProfilingManager)
     # =============================================================================
 
     def profiling_start(self, sample_rate: int) -> None:
-        """Start profiling the server using perf."""
-        if self.is_profiling():
-            raise RuntimeError("Profiling already started")
-
-        self.profiling_thread = Thread(target=self.__profiling_run_sync, args=(sample_rate,))
-        self.profiling_thread.start()
-
-    def __profiling_run_sync(self, sample_rate: int) -> None:
-        """Profile performance using perf for specified duration. Leaves data file on server."""
-        command = f"touch {PERF_STATUS_FILE}"
-        if self.ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(command, shell=True, check=True)
-        else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
-
-        perf_command = (
-            f"sudo perf record -F {sample_rate} -a -g -o {Server.perf_data_path} "
-            f"-- sh -c 'while [ -f {PERF_STATUS_FILE} ]; do sleep 1; done'"
-        )
-        if self.ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(perf_command, shell=True, check=True)
-        else:
-            subprocess.run(
-                ["ssh", "-i", str(config.SSH_KEYFILE), self.ip, perf_command],
-                check=True,
-            )
+        """Start profiling the server using perf record."""
+        self._profiling.profiling_start(sample_rate)
 
     def is_profiling(self) -> bool:
         """Check if profiling is currently running."""
-        if self.profiling_thread and self.profiling_thread.is_alive():
-            return True
-        return False
+        return self._profiling.is_profiling()
 
     async def profiling_stop(self) -> None:
-        """Signals profiling to stop. Use profiling_wait() to ensure that it actually finishes."""
-        if self.profiling_thread is None:
-            return
-        await self.run_host_command(f"rm -f {PERF_STATUS_FILE}")
+        """Signal profiling to stop."""
+        await self._profiling.profiling_stop()
 
     def profiling_wait(self) -> None:
-        """Block until profiling finishes. Call profiling_stop() first or you'll wait forever"""
-        if self.profiling_thread is None:
-            return
-        self.profiling_thread.join()
-        self.profiling_thread = None
+        """Block until profiling finishes."""
+        self._profiling.profiling_wait()
 
     async def profiling_report(self, result_dir: Path) -> None:
-        """Retrieve profile data from server and generate flamegraph report.
-        Stops profiling first if needed"""
-
-        if not result_dir.exists():
-            raise FileNotFoundError(f"Result directory {result_dir} must exist")
-
-        out_perf_path = Server.path_root / "out.perf"
-        out_folded_path = Server.path_root / "out.folded"
-
-        if self.is_profiling():
-            await self.profiling_stop()
-        self.profiling_wait()
-
-        await self.run_host_command(
-            f"sudo chmod a+r {Server.perf_data_path}",
-        )
-        await self.run_host_command(f"perf script -i {Server.perf_data_path} > {out_perf_path}")
-        print("collapsing stacks")
-        await self.run_host_command(
-            f"{Server.flamegraph/'stackcollapse-perf.pl'} " f"{out_perf_path} > {out_folded_path}"
-        )
-        await self.run_host_command(f"{Server.flamegraph/'flamegraph.pl'} {out_folded_path} > {Server.flamegraph_path}")
-        await self.run_host_command(f"rm -f {out_perf_path} {out_folded_path}")
-
-        print("copying perf data from server")
-        await self.get_remote_file(Server.perf_data_path, result_dir / "perf.data")
-        await self.get_remote_file(Server.flamegraph_path, result_dir / "flamegraph.svg")
-
-    async def __data_collection_cleanup(self):
-        command = f"rm -f {Server.perf_data_path} {Server.flamegraph_path} {Server.perf_stats_path}"
-        await self.run_host_command(command)
+        """Generate flamegraph and copy results to result_dir."""
+        await self._profiling.profiling_report(result_dir)
 
     # =============================================================================
-    # PERF STAT METHODS
+    # PERF STAT METHODS (delegated to ProfilingManager)
     # =============================================================================
 
     async def perf_stat_start(self) -> None:
-        """Start perf stat collection for specified duration."""
-        if self.perf_stat_thread and self.perf_stat_thread.is_alive():
-            raise RuntimeError("Perf stat already running")
-
-        await self.run_host_command(f"touch {PERF_STAT_STATUS_FILE}")
-        self.perf_stat_thread = Thread(target=self.__perf_stat_run_sync)
-        self.perf_stat_thread.start()
-
-    def __perf_stat_run_sync(self) -> None:
-        """Run perf stat synchronously in thread."""
-        events = ",".join(
-            [
-                "L1-icache-load-misses",
-                "L1-icache-loads",
-                "L1-dcache-load-misses",
-                "L1-dcache-loads",
-                "instructions",
-                "cycles",
-                "branch-misses",
-                "branches",
-                "stalled-cycles-frontend",
-                "stalled-cycles-backend",
-            ]
-        )
-        command = (
-            f"perf stat -e {events} -p {self.valkey_pid} -o {Server.perf_stats_path} "
-            f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
-        )
-        if self.ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(command, shell=True, check=True)
-        else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), self.ip, command], check=True)
+        """Start perf stat collection."""
+        self._profiling.target_pid = self.valkey_pid
+        await self._profiling.perf_stat_start()
 
     async def perf_stat_stop(self) -> None:
-        """Signals perf stat to stop. Use perf_stat_wait() to ensure that it actually finishes."""
-        if self.perf_stat_thread is None:
-            return
-        await self.run_host_command(f"rm -f {PERF_STAT_STATUS_FILE}")
+        """Signal perf stat to stop."""
+        await self._profiling.perf_stat_stop()
 
     def perf_stat_wait(self) -> None:
-        """Wait for perf stat to complete."""
-        if self.perf_stat_thread:
-            self.perf_stat_thread.join()
-            self.perf_stat_thread = None
+        """Block until perf stat completes."""
+        self._profiling.perf_stat_wait()
 
     async def perf_stat_report(self, result_dir: Path) -> dict:
-        """Copy perf stat results to result directory and return parsed counters."""
-        if not result_dir.exists():
-            raise FileNotFoundError(f"Result directory {result_dir} must exist")
-        perf_stat_path = Path(Server.perf_stats_path)
-        local_path = result_dir / "perf_stat.txt"
-        await self.get_remote_file(perf_stat_path, local_path)
-        return self.parse_perf_stat(local_path)
+        """Copy perf stat results and return parsed counters."""
+        return await self._profiling.perf_stat_report(result_dir)
 
     @staticmethod
     def parse_perf_stat(path: Path) -> dict:
         """Parse perf stat output file into a dict of event_name -> count."""
-        results: dict[str, int] = {}
-        if not path.exists():
-            return results
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "seconds time elapsed" in line:
-                continue
-            # Format: "  1,234,567  event-name:u  ..."
-            parts = line.split()
-            if len(parts) >= 2:
-                count_str = parts[0].replace(",", "")
-                try:
-                    count = int(count_str)
-                    # Event name is second field, strip :u/:k suffix
-                    event = parts[1].removesuffix(":u").removesuffix(":k").removesuffix(":")
-                    results[event] = count
-                except ValueError:
-                    continue
-        return results
+        return ProfilingManager.parse_perf_stat(path)
 
     # =============================================================================
     # CPU CONSISTENCY TUNING METHODS
@@ -887,7 +761,7 @@ class Server:
             check=False,
         )
         # clean up any files created by profiling or other metric collection
-        await self.__data_collection_cleanup()
+        await self._profiling.cleanup()
 
     async def _log_server_crash(self) -> None:
         """Read and log the server crash dump from the logfile."""

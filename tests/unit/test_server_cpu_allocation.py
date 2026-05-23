@@ -99,6 +99,8 @@ class TestServerCpuAllocation:
                 ("", ""),
             ]
         )
+        # Also mock the underlying host (profiling cleanup calls it directly)
+        server._host.run_host_command = AsyncMock(return_value=("", ""))
 
         await server.stop()
 
