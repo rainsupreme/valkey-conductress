@@ -130,13 +130,20 @@ class BaseSweepCoordinator(ABC):
         """Display unit (e.g. 'ops/sec', 'bytes/item')."""
         ...
 
+    @property
+    def lower_is_better(self) -> bool:
+        """Whether lower values are better (e.g. memory overhead). Default: False (higher is better)."""
+        return False
+
     # --- Export ---
 
     def export(self, output_path: Path, platform: str) -> int:
         """Export this coordinator's data to a series JSON file. Returns point count."""
         from conductress.sweep.exporter import export_series
 
-        export_series(self.state, output_path, platform=platform, workload=self.metric_id)
+        export_series(
+            self.state, output_path, platform=platform, workload=self.metric_id, lower_is_better=self.lower_is_better
+        )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
     # --- Abstract methods (subclass defines) ---

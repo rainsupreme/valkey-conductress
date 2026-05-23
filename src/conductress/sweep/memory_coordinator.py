@@ -26,6 +26,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     metric_id = "memory"
     metric_unit = "bytes/item"
+    lower_is_better = True
 
     def __init__(self, repo_path: Path):
         super().__init__(repo_path, MEMORY_STATE_FILE)

@@ -13,6 +13,7 @@ def export_series(
     output_path: Path,
     platform: str = "arm64/c7g.metal/graviton3",
     workload: str = "",
+    lower_is_better: bool = False,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -66,7 +67,7 @@ def export_series(
     ]
 
     # Build annotations from segments that have been bisected down to 1 commit
-    annotations = _build_annotations(state, planner, workload)
+    annotations = _build_annotations(state, planner, workload, lower_is_better)
 
     series: dict[str, Any] = {
         "metadata": {
@@ -87,7 +88,9 @@ def export_series(
     output_path.write_text(json.dumps(series, indent=2))
 
 
-def _build_annotations(state: SweepState, planner: SweepPlanner, workload: str) -> list[dict[str, Any]]:
+def _build_annotations(
+    state: SweepState, planner: SweepPlanner, workload: str, lower_is_better: bool = False
+) -> list[dict[str, Any]]:
     """Build annotations for commits where a change was pinpointed."""
     annotations: list[dict[str, Any]] = []
 
@@ -112,7 +115,7 @@ def _build_annotations(state: SweepState, planner: SweepPlanner, workload: str) 
                     "commit": right.commit,
                     "delta": round(delta, 4),
                     "workload": workload,
-                    "type": "regression" if delta < 0 else "improvement",
+                    "type": "regression" if (delta > 0 if lower_is_better else delta < 0) else "improvement",
                 }
                 pr = state.commit_prs.get(right.commit) or right.pr
                 pr_title = state.commit_titles.get(right.commit) or right.pr_title
