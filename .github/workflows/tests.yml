@@ -47,7 +47,7 @@ jobs:
       - name: Install package and dependencies
         run: pip install -e . -r requirements/pip-requirements-dev.txt
       - name: Run unit tests
-        run: pytest tests/unit --cov=conductress --cov-report=term-missing --cov-report=xml
+        run: pytest tests/unit --cov=conductress --cov-report=term-missing --cov-report=xml --cov-fail-under=58
       - name: Run integration tests
         run: pytest tests/integration -m "not requires_server"
       - name: Type checking
