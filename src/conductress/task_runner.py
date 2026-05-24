@@ -57,7 +57,7 @@ class TaskRunner:
             self._subscribers.append(mem_coordinator)
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
-        """Run a task"""
+        """Run a task, ensuring CPU allocations are released on failure."""
         servers = get_servers()
         server_count = task_data.replicas + 1 if task_data.replicas > 0 else 1
         if len(servers) < server_count:
@@ -69,6 +69,13 @@ class TaskRunner:
             task_runner.file_protocol.mark_completed_and_cleanup()
         except Exception:
             task_runner.file_protocol.cleanup()
+            # Release any leaked CPU allocations (server may have started but not stopped)
+            try:
+                await asyncio.gather(
+                    *[Server(s.ip).kill_all_valkey_instances_on_host() for s in servers[:server_count]]
+                )
+            except Exception as cleanup_err:
+                logger.warning("Failed to release CPU allocations: %s", cleanup_err)
             raise
 
     async def run(self):
