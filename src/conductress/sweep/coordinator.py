@@ -137,6 +137,12 @@ class BaseSweepCoordinator(ABC):
 
     @property
     @abstractmethod
+    def workload_id(self) -> str:
+        """Workload identifier for file naming (e.g. 'get16b-t7-p10')."""
+        ...
+
+    @property
+    @abstractmethod
     def metric_unit(self) -> str:
         """Display unit (e.g. 'ops/sec', 'bytes/item')."""
         ...
@@ -153,7 +159,7 @@ class BaseSweepCoordinator(ABC):
         from conductress.sweep.exporter import export_series
 
         export_series(
-            self.state, output_path, platform=platform, workload=self.metric_id, lower_is_better=self.lower_is_better
+            self.state, output_path, platform=platform, workload=self.workload_id, lower_is_better=self.lower_is_better
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
@@ -290,6 +296,7 @@ class SweepCoordinator(BaseSweepCoordinator):
 
     metric_id = "throughput"
     metric_unit = "ops/sec"
+    workload_id = f"{SWEEP_TEST}{SWEEP_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
 
     def __init__(self, repo_path: Path):
         super().__init__(repo_path, SWEEP_STATE_FILE)

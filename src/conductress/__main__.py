@@ -201,7 +201,11 @@ def main() -> None:
 
             exported_files = []
             for coord in coordinators:
-                output = Path(args.output) if args.output else Path(f"series-{platform}-{coord.metric_id}.json")
+                output = (
+                    Path(args.output)
+                    if args.output
+                    else Path(f"series-{platform}-{coord.workload_id}-{coord.metric_id}.json")
+                )
                 count = coord.export(output, platform=platform_str)
                 if count > 0:
                     print(f"Exported {count} {coord.metric_id} points to {output}")
