@@ -124,22 +124,34 @@ class ProfilingManager:
         self._perf_stat_thread = Thread(target=self._perf_stat_run_sync)
         self._perf_stat_thread.start()
 
+    PERF_EVENTS_COMMON = [
+        "instructions",
+        "cycles",
+        "L1-icache-load-misses",
+        "L1-dcache-load-misses",
+        "branch-misses",
+        "branches",
+        "stalled-cycles-frontend",
+        "stalled-cycles-backend",
+    ]
+
+    PERF_EVENTS_X86 = PERF_EVENTS_COMMON + [
+        "LLC-load-misses",
+        "LLC-loads",
+    ]
+
+    def _get_perf_events(self) -> list[str]:
+        """Return platform-appropriate perf events list."""
+        import platform as _platform
+
+        arch = _platform.machine()
+        if arch in ("x86_64", "i686"):
+            return self.PERF_EVENTS_X86
+        return self.PERF_EVENTS_COMMON
+
     def _perf_stat_run_sync(self) -> None:
         """Run perf stat synchronously in a thread."""
-        events = ",".join(
-            [
-                "L1-icache-load-misses",
-                "L1-icache-loads",
-                "L1-dcache-load-misses",
-                "L1-dcache-loads",
-                "instructions",
-                "cycles",
-                "branch-misses",
-                "branches",
-                "stalled-cycles-frontend",
-                "stalled-cycles-backend",
-            ]
-        )
+        events = ",".join(self._get_perf_events())
         ip = self._host.ip
         command = (
             f"perf stat -e {events} -p {self._target_pid} -o {PERF_STATS_PATH} "
