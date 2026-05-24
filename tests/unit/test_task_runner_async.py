@@ -166,3 +166,38 @@ class TestTaskRunnerLoop:
                 await runner.run()
 
             assert (tmp_path / "failed.jsonl").exists()
+
+    @pytest.mark.asyncio
+    async def test_task_failure_releases_cpu_allocations(self, mock_servers, mock_queue, mock_cleanup, tmp_path):
+        """When a task fails, kill_all_valkey_instances_on_host is called to release CPU allocations."""
+        with (
+            patch("conductress.task_runner.CONDUCTRESS_FAILED_LOG", tmp_path / "failed.jsonl"),
+            patch("conductress.task_runner.CONDUCTRESS_FAILED_DIR", tmp_path / "failed"),
+            patch("conductress.task_runner.Server") as MockServer,
+        ):
+            mock_server_instance = MagicMock()
+            mock_server_instance.kill_all_valkey_instances_on_host = AsyncMock()
+            MockServer.return_value = mock_server_instance
+
+            runner = TaskRunner()
+
+            task = MagicMock()
+            task.replicas = 0
+            task.task_id = "2026.01.01_00.00.00.000000"
+            task.note = "test"
+            task.source = "valkey"
+            task.specifier = "main"
+
+            # Task runner raises during run()
+            mock_task_runner = MagicMock()
+            mock_task_runner.run = AsyncMock(side_effect=RuntimeError("server crashed"))
+            mock_task_runner.file_protocol = MagicMock()
+            task.prepare_task_runner.return_value = mock_task_runner
+
+            mock_queue.get_next_task.side_effect = [task, _ExitLoop()]
+
+            with pytest.raises(_ExitLoop):
+                await runner.run()
+
+            # Verify kill_all was called to release leaked allocations
+            mock_server_instance.kill_all_valkey_instances_on_host.assert_called()
