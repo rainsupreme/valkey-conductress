@@ -187,3 +187,14 @@ def _parse_merge_subject(subject: str) -> Tuple[Optional[int], Optional[str]]:
         return int(match.group(1)), title
 
     return None, subject
+
+
+def fetch_ref(repo_path: Path, remote: str = "origin", ref: str = "unstable") -> None:
+    """Fetch a single ref from the remote. Raises on failure."""
+    subprocess.run(
+        ["git", "fetch", remote, ref, "--quiet"],
+        cwd=repo_path,
+        capture_output=True,
+        timeout=60,
+        check=True,
+    )
