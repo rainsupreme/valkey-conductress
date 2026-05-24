@@ -346,7 +346,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
             line, _ = command.poll_output()
 
-    async def __record_result(self, server, per_run_rps: Optional[list[float]] = None):
+    async def __record_result(
+        self, server, per_run_rps: Optional[list[float]] = None, perf_counters: Optional[dict] = None
+    ):
         completion_time = datetime.datetime.now()
 
         if len(self.rps_data) == 0 and not per_run_rps:
@@ -377,6 +379,9 @@ class PerfTaskRunner(BaseTaskRunner):
                 "mean_rps": mean_rps,
                 "ci_95": ci_95,
             }
+            if perf_counters:
+                detailed_data["perf_counters"] = perf_counters
+                detailed_data["perf_duration_seconds"] = float(self.duration)
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -408,6 +413,9 @@ class PerfTaskRunner(BaseTaskRunner):
                 "lscpu": lscpu_output,
                 "server_cpus": server.server_cpus,
             }
+            if perf_counters:
+                detailed_data["perf_counters"] = perf_counters
+                detailed_data["perf_duration_seconds"] = float(self.duration)
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -461,6 +469,7 @@ class PerfTaskRunner(BaseTaskRunner):
         client = None
         server = None
         per_run_rps: list[float] = []
+        perf_counters: Optional[dict] = None
 
         try:
             for rep in range(effective_reps):
@@ -512,7 +521,9 @@ class PerfTaskRunner(BaseTaskRunner):
                 self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps)
 
                 # Collect profiling reports
-                await self._collect_profiling_reports(server)
+                rep_counters = await self._collect_profiling_reports(server)
+                if rep_counters:
+                    perf_counters = rep_counters  # Keep last rep's counters
 
                 # Adaptive early exit
                 if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
@@ -528,9 +539,9 @@ class PerfTaskRunner(BaseTaskRunner):
             if server is None:
                 raise RuntimeError("No server available for recording results")
             if effective_reps > 1:
-                await self.__record_result(server, per_run_rps=per_run_rps)
+                await self.__record_result(server, per_run_rps=per_run_rps, perf_counters=perf_counters)
             else:
-                await self.__record_result(server)
+                await self.__record_result(server, perf_counters=perf_counters)
 
             # Write final status
             self.status.state = "completed"
@@ -652,8 +663,8 @@ class PerfTaskRunner(BaseTaskRunner):
             raise RuntimeError(f"No results recorded for repetition {rep + 1}")
         return sum(self.rps_data) / len(self.rps_data)
 
-    async def _collect_profiling_reports(self, server: "Server") -> None:
-        """Collect profiling and perf stat reports if enabled."""
+    async def _collect_profiling_reports(self, server: "Server") -> Optional[dict]:
+        """Collect profiling and perf stat reports if enabled. Returns perf counters dict or None."""
         if self.profiling:
             server.profiling_wait()
             result_dir = self.file_protocol.get_result_dir()
@@ -661,7 +672,8 @@ class PerfTaskRunner(BaseTaskRunner):
         if self.perf_stat_enabled:
             server.perf_stat_wait()
             result_dir = self.file_protocol.get_result_dir()
-            await server.perf_stat_report(result_dir)
+            return await server.perf_stat_report(result_dir)
+        return None
 
     def _is_local_benchmark(self, target_ip: str) -> bool:
         """Check if benchmark is running locally (server and client on same host)."""

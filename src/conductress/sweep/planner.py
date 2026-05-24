@@ -44,6 +44,9 @@ class BenchmarkPoint:
     reps: int = 3
     pr: Optional[int] = None
     pr_title: Optional[str] = None
+    perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters
+    perf_duration_seconds: Optional[float] = None  # perf stat measurement window
+    perf_rps: Optional[float] = None  # throughput during perf stat collection
     status: PointStatus = PointStatus.PENDING
 
     @property
@@ -140,6 +143,9 @@ class SweepState:
                     "reps": p.reps,
                     "pr": p.pr,
                     "pr_title": p.pr_title,
+                    "perf_counters": p.perf_counters,
+                    "perf_duration_seconds": p.perf_duration_seconds,
+                    "perf_rps": p.perf_rps,
                     "status": p.status.name,
                 }
                 for commit, p in self.points.items()
@@ -184,6 +190,9 @@ class SweepState:
                 reps=p_data.get("reps", 3),
                 pr=p_data.get("pr"),
                 pr_title=p_data.get("pr_title"),
+                perf_counters=p_data.get("perf_counters"),
+                perf_duration_seconds=p_data.get("perf_duration_seconds"),
+                perf_rps=p_data.get("perf_rps"),
                 status=PointStatus[p_data.get("status", "PENDING")],
             )
 

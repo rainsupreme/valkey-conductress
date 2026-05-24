@@ -8,6 +8,7 @@ for specific metrics (throughput, memory, etc.).
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
+from statistics import stdev
 from typing import Optional
 
 from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
@@ -64,6 +65,18 @@ class BaseSweepCoordinator(ABC):
         self.state.save(self.state_file)
         logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
 
+    def record_perf_counters(self, commit: str, counters: dict[str, int], duration: float, rps: float) -> None:
+        """Record perf stat counters for a commit and persist state."""
+        point = self.state.points.get(commit)
+        if point is None:
+            logger.warning("Cannot record perf counters: commit %s not in state", commit[:8])
+            return
+        point.perf_counters = counters
+        point.perf_duration_seconds = duration
+        point.perf_rps = rps
+        self.state.save(self.state_file)
+        logger.info("Perf counters recorded: %s (%d events)", commit[:8], len(counters))
+
     def record_build_failure(self, commit: str) -> None:
         """Record a build failure and persist state."""
         self.planner.record_build_failure(commit)
@@ -84,6 +97,11 @@ class BaseSweepCoordinator(ABC):
         if result:
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
+            # Extract perf counters if available
+            perf_data = self._extract_perf_counters(task)  # pylint: disable=assignment-from-none
+            if perf_data:
+                counters, duration, rps = perf_data
+                self.record_perf_counters(task.sweep_commit, counters, duration, rps)  # type: ignore[attr-defined]
         else:
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract result for sweep commit %s", commit[:8])
@@ -150,6 +168,14 @@ class BaseSweepCoordinator(ABC):
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract (value, cv, reps) from a completed task. Returns None on failure."""
         ...
+
+    def _extract_perf_counters(self, task: BaseTaskData) -> Optional[tuple[dict[str, int], float, float]]:
+        """Extract (counters, duration_seconds, rps) from a completed task.
+
+        Returns None if perf stat data is not available. Subclasses override
+        to provide extraction logic.
+        """
+        return None
 
     @abstractmethod
     def _is_my_task(self, task: BaseTaskData) -> bool:
@@ -256,7 +282,7 @@ class SweepCoordinator(BaseSweepCoordinator):
             warmup=SWEEP_WARMUP,
             duration=SWEEP_DURATION,
             profiling_sample_rate=0,
-            perf_stat_enabled=False,
+            perf_stat_enabled=True,
             has_expire=False,
             preload_keys=True,
             key_size=0,
@@ -265,9 +291,9 @@ class SweepCoordinator(BaseSweepCoordinator):
             target_cv=SWEEP_TARGET_CV,
         )
 
-    def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
+    def _find_task_entry(self, task: BaseTaskData) -> Optional[dict]:
+        """Find the output.jsonl entry for a completed task. Returns parsed dict or None."""
         import json as _json
-        from statistics import stdev
 
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
@@ -277,14 +303,33 @@ class SweepCoordinator(BaseSweepCoordinator):
             try:
                 entry = _json.loads(line)
                 if entry.get("task_id") == task.task_id:
-                    rps = entry.get("score")
-                    per_run = entry.get("data", {}).get("per_run_rps", [])
-                    cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
-                    reps = len(per_run) if per_run else 3
-                    return (rps, cv, reps) if rps else None
+                    return entry
             except (ValueError, KeyError, TypeError):
                 continue
         return None
+
+    def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
+        entry = self._find_task_entry(task)
+        if not entry:
+            return None
+        rps = entry.get("score")
+        per_run = entry.get("data", {}).get("per_run_rps", [])
+        cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
+        reps = len(per_run) if per_run else 3
+        return (rps, cv, reps) if rps else None
+
+    def _extract_perf_counters(self, task: BaseTaskData) -> Optional[tuple[dict[str, int], float, float]]:
+        """Extract perf stat counters from the task's output."""
+        entry = self._find_task_entry(task)
+        if not entry:
+            return None
+        data = entry.get("data", {})
+        counters = data.get("perf_counters")
+        if not counters:
+            return None
+        duration = data.get("perf_duration_seconds", 0.0)
+        rps = entry.get("score", 0.0)
+        return (counters, duration, rps)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
         return isinstance(task, PerfTaskData) and bool(task.sweep_commit)
