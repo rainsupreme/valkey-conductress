@@ -6,13 +6,14 @@ for specific metrics (throughput, memory, etc.).
 """
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from statistics import stdev
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
-from conductress.sweep.git_ops import get_head, get_merge_commits, get_release_branch_points
+from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT, SWEEP_FETCH_INTERVAL
+from conductress.sweep.git_ops import fetch_ref, get_head, get_merge_commits, get_release_branch_points
 from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
 from conductress.task_queue import BaseTaskData, TaskQueue
 from conductress.tasks.task_perf_benchmark import PerfTaskData
@@ -38,20 +39,12 @@ class BaseSweepCoordinator(ABC):
         self.state_file = state_file
         self.state = SweepState.load(state_file)
         self.planner = SweepPlanner(self.state)
+        self._last_fetch_time: float = 0.0
 
     def initialize(self) -> None:
-        """Initialize or update the merge commit list from git history."""
+        """Initialize the merge commit list from git history, fetching first."""
         if not self.state.merge_commits:
-            logger.info("Initializing sweep: enumerating merge commits...")
-            self._populate_commits()
-            self._populate_landmarks()
-            self.state.save(self.state_file)
-            self.planner = SweepPlanner(self.state)
-            logger.info(
-                "Sweep initialized: %d merge commits, %d landmarks",
-                len(self.state.merge_commits),
-                len(self.state.landmarks),
-            )
+            self._fetch_and_refresh()
 
     def record_result(self, commit: str, value: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
@@ -193,12 +186,47 @@ class BaseSweepCoordinator(ABC):
 
     def _get_next_task(self) -> Optional[SweepTask]:
         """Get the next sweep task from the planner."""
+        if time.time() - self._last_fetch_time >= SWEEP_FETCH_INTERVAL:
+            self._fetch_and_refresh()
         try:
             current_head = get_head(self.repo_path, ref=SWEEP_REF)
         except Exception as e:
             logger.warning("Failed to get HEAD: %s", e)
             current_head = None
         return self.planner.get_next_task(current_head)
+
+    def _fetch_and_refresh(self) -> None:
+        """Fetch origin and refresh commits if HEAD moved or state is empty."""
+        try:
+            old_head = get_head(self.repo_path, ref=SWEEP_REF)
+        except Exception:
+            old_head = None
+        try:
+            fetch_ref(self.repo_path)
+        except Exception as e:
+            logger.warning("Sweep fetch failed: %s", e)
+            if self.state.merge_commits:
+                return  # Non-fatal if we already have commits
+        self._last_fetch_time = time.time()
+        try:
+            new_head: Optional[str] = get_head(self.repo_path, ref=SWEEP_REF)
+        except Exception:
+            new_head = None
+        if new_head != old_head or not self.state.merge_commits:
+            old_count = len(self.state.merge_commits)
+            self._refresh_commits()
+            logger.info(
+                "Sweep commits updated: %d new (%d total)",
+                len(self.state.merge_commits) - old_count,
+                len(self.state.merge_commits),
+            )
+
+    def _refresh_commits(self) -> None:
+        """Re-enumerate commits and landmarks from git history, persist and rebuild planner."""
+        self._populate_commits()
+        self._populate_landmarks()
+        self.state.save(self.state_file)
+        self.planner = SweepPlanner(self.state)
 
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history (Valkey-era only)."""

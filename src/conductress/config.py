@@ -65,6 +65,10 @@ TUI_REFRESH_INTERVAL = 15
 # Task runner polls the queue at this interval when idle (seconds)
 QUEUE_POLL_INTERVAL = 4
 
+# How often sweep fetches new commits from origin (seconds).
+# Runs between jobs, not during benchmarks.
+SWEEP_FETCH_INTERVAL = 3600
+
 # Benchmark metric collection interval (seconds). valkey-benchmark outputs ~4/sec.
 BENCHMARK_UPDATE_INTERVAL = 0.1
 
