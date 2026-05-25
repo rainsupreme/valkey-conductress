@@ -125,6 +125,36 @@ class BaseSweepCoordinator(ABC):
         logger.info(f"[sweep] Queued: {sweep_task.commit[:8]} - {sweep_task.reason}")
         return True
 
+    def get_urgency_score(self) -> float:
+        """Return priority score based on expected information gain.
+
+        Higher score = more information to be gained from running this sweeper next.
+        Score is gap_magnitude_pct * log2(gap_width), so a new series with no data
+        gets infinity (top priority), and a well-covered series with small deltas
+        gets a low score.
+        """
+        import math
+
+        # Brand new series with <2 points = top priority
+        completed = sum(1 for p in self.state.points.values() if p.value is not None)
+        if completed < 2:
+            return float("inf")
+
+        # Check what the planner would do next
+        task = self.planner.get_next_task(current_head=None)
+        if task is None:
+            return 0.0
+
+        # For bisection tasks, score based on the largest unresolved segment
+        segments = self.planner.get_unresolved_segments()
+        if segments:
+            best = max(segments, key=lambda s: s.abs_delta * s.commit_count)
+            return best.abs_delta * 100 * math.log2(max(best.commit_count, 2))
+
+        # For backfill/landmark tasks, use gap width only (no magnitude known yet)
+        # Lower priority than bisection but still useful
+        return math.log2(max(len(self.state.merge_commits) // max(completed, 1), 2))
+
     # --- Abstract methods (subclass defines) ---
 
     # --- Abstract properties (subclass defines) ---
