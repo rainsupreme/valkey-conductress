@@ -180,7 +180,7 @@ class ProfilingManager:
         events = self._build_perf_event_string()
         ip = self._host.ip
         command = (
-            f"perf stat -e {events} -p {self._target_pid} -o {PERF_STATS_PATH} "
+            f'perf stat -e "{events}" -p {self._target_pid} -o {PERF_STATS_PATH} '
             f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
         )
         if ip in ["127.0.0.1", "localhost"]:
