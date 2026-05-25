@@ -60,8 +60,8 @@ class TestMemoryWorkload:
 
 
 class TestCoordinatorInit:
-    def test_metric_id_includes_label(self, coordinator):
-        assert coordinator.metric_id == "memory-set-64b"
+    def test_metric_id_is_memory(self, coordinator):
+        assert coordinator.metric_id == "memory"
 
     def test_workload_id_includes_label(self, coordinator):
         assert coordinator.workload_id == "memory-set-64b"
@@ -254,3 +254,40 @@ class TestOnTaskCompleted:
 
         coordinator.on_task_completed(task)
         assert "aaa" not in coordinator.state.points
+
+
+class TestNamingConventions:
+    """Ensure filenames and IDs are correct and distinguishable across workloads."""
+
+    def test_workload_ids_are_unique(self, monkeypatch):
+        import conductress.config as config
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey"])
+        coordinators = create_memory_coordinators(Path("/tmp"))
+        ids = [c.workload_id for c in coordinators]
+        assert len(ids) == len(set(ids)), f"Duplicate workload_ids: {ids}"
+
+    def test_metric_id_is_just_memory(self, monkeypatch):
+        import conductress.config as config
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey"])
+        for coord in create_memory_coordinators(Path("/tmp")):
+            assert coord.metric_id == "memory", f"{coord._workload.label} has metric_id={coord.metric_id}"
+
+    def test_filename_not_doubled(self, monkeypatch):
+        """Regression: metric_id was previously f'memory-{label}', causing doubled filenames."""
+        import conductress.config as config
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey"])
+        for coord in create_memory_coordinators(Path("/tmp")):
+            filename = f"series-amd64-{coord.workload_id}-{coord.metric_id}.json"
+            # Should NOT contain the label twice
+            assert filename.count(coord._workload.label) == 1, f"Doubled label in: {filename}"
+
+    def test_state_files_are_unique(self, monkeypatch):
+        import conductress.config as config
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey"])
+        coordinators = create_memory_coordinators(Path("/tmp"))
+        files = [str(c.state_file) for c in coordinators]
+        assert len(files) == len(set(files)), f"Duplicate state files: {files}"
