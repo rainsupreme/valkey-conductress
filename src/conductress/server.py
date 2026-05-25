@@ -105,10 +105,10 @@ class Server:
         return server
 
     @classmethod
-    async def with_path(cls, ip: str, port: int, binary_path: Path, io_threads: int):
+    async def with_path(cls, ip: str, port: int, binary_path: Path, io_threads: int, env_prefix: str = ""):
         """Create a server instance running the specified binary"""
         server = cls(ip, port)
-        await server.start(binary_path, io_threads)
+        await server.start(binary_path, io_threads, env_prefix=env_prefix)
         return server
 
     # =============================================================================
@@ -452,8 +452,15 @@ class Server:
         """Get number of CPUs allocated for server with specified io-threads parameter"""
         return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
-    async def start(self, cached_binary_path: Path, io_threads: int) -> None:
-        """Ensure specified build is running on the server."""
+    async def start(self, cached_binary_path: Path, io_threads: int, env_prefix: str = "") -> None:
+        """Ensure specified build is running on the server.
+
+        Args:
+            cached_binary_path: Path to the built valkey-server binary.
+            io_threads: Number of I/O threads to configure.
+            env_prefix: Optional environment variable prefix for the command
+                        (e.g. 'JE_MALLOC_CONF="prof:true"' for jemalloc profiling).
+        """
         if io_threads < 1:
             io_threads = 1
         self.threads = io_threads
@@ -492,6 +499,10 @@ class Server:
             numa_node = self._cpu_allocator.get_net_interface_numa(self.ip)
             command = f"numactl --membind={numa_node} {command}"
             logging.info("Binding memory to NUMA node %d", numa_node)
+
+        # Prepend environment variables if specified (e.g. jemalloc profiling)
+        if env_prefix:
+            command = f"{env_prefix} {command}"
 
         out, err = await self.run_host_command(command)
 

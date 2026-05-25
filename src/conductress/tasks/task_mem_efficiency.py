@@ -21,6 +21,7 @@ from conductress.config import (
     ServerInfo,
 )
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.heap_profiler import JEMALLOC_PROF_ENV, cleanup_heap_dumps, collect_heap_profile
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.utility import HumanByte, port_generator, print_pretty_header
@@ -36,6 +37,7 @@ class MemTaskData(BaseTaskData):
     val_sizes: list[int]
     has_expire: bool
     sweep_commit: str = ""  # non-empty marks this as a sweep task
+    enable_profiling: bool = False  # enable jemalloc heap profiling for per-struct breakdown
 
     def short_description(self) -> str:
         description = self.type
@@ -59,6 +61,7 @@ class MemTaskData(BaseTaskData):
             self.has_expire,
             self.make_args,
             self.note,
+            self.enable_profiling,
         )
 
 
@@ -78,6 +81,7 @@ class MemTaskRunner(BaseTaskRunner):
         has_expire: bool,
         make_args: str,
         note: str,
+        enable_profiling: bool = False,
     ):
         super().__init__(task_name)
 
@@ -97,6 +101,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.has_expire = has_expire
         self.note = note
         self.make_args = make_args
+        self.enable_profiling = enable_profiling
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -201,7 +206,17 @@ class MemTaskRunner(BaseTaskRunner):
         async with semaphore:
             if self.cached_binary_path is None:
                 raise RuntimeError("cached_binary_path must be set before calling test_single_size_overhead")
-            valkey = await Server.with_path(self.server_ip, port, self.cached_binary_path, io_threads=1)
+
+            # Set up profiling env if enabled
+            env_prefix = ""
+            if self.enable_profiling:
+                ssh_host = Server(self.server_ip)
+                await cleanup_heap_dumps(ssh_host)
+                env_prefix = JEMALLOC_PROF_ENV
+
+            valkey = await Server.with_path(
+                self.server_ip, port, self.cached_binary_path, io_threads=1, env_prefix=env_prefix
+            )
             self.commit_hash = valkey.get_build_hash()
 
             before_memory: dict[str, str] = await valkey.info("memory")
@@ -245,6 +260,14 @@ class MemTaskRunner(BaseTaskRunner):
 
             await valkey.stop()  # required cleanup, release CPU allocations, etc
 
+            # Collect heap profile if profiling is enabled (dump created on shutdown by prof_final)
+            breakdown: Optional[dict[str, float]] = None
+            if self.enable_profiling:
+                breakdown = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
+                if breakdown:
+                    self.logger.info("Memory breakdown collected: %s", breakdown)
+                await cleanup_heap_dumps(valkey)
+
             # Calculate per-item user data size based on test type
             if self.test == "set":
                 # SET: each key is "key:__rand_int__" (16B) with a value of val_size
@@ -270,6 +293,7 @@ class MemTaskRunner(BaseTaskRunner):
                 "val_size": val_size,
                 "per_key_size": per_key,
                 "per_item_overhead": per_item_overhead,
+                "breakdown": breakdown,
             }
             return result
 
