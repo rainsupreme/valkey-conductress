@@ -140,6 +140,23 @@ class ProfilingManager:
         "LLC-loads",
     ]
 
+    # TMA Level 1 events (Intel only) — must be collected as a group with slots
+    PERF_EVENTS_TMA_GROUP = [
+        "slots",
+        "topdown-retiring",
+        "topdown-fe-bound",
+        "topdown-be-bound",
+        "topdown-bad-spec",
+    ]
+
+    def _has_tma_support(self) -> bool:
+        """Check if Intel TMA topdown events are available."""
+        try:
+            result = subprocess.run(["perf", "list"], capture_output=True, text=True, timeout=5)
+            return "topdown-retiring" in result.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
     def _get_perf_events(self) -> list[str]:
         """Return platform-appropriate perf events list."""
         import platform as _platform
@@ -149,9 +166,18 @@ class ProfilingManager:
             return self.PERF_EVENTS_X86
         return self.PERF_EVENTS_COMMON
 
+    def _build_perf_event_string(self) -> str:
+        """Build the -e argument string, handling TMA event groups."""
+        events = self._get_perf_events()
+        base = ",".join(events)
+        if self._has_tma_support():
+            tma_group = "{" + ",".join(self.PERF_EVENTS_TMA_GROUP) + "}"
+            return f"{tma_group},{base}"
+        return base
+
     def _perf_stat_run_sync(self) -> None:
         """Run perf stat synchronously in a thread."""
-        events = ",".join(self._get_perf_events())
+        events = self._build_perf_event_string()
         ip = self._host.ip
         command = (
             f"perf stat -e {events} -p {self._target_pid} -o {PERF_STATS_PATH} "
