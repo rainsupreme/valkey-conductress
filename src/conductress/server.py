@@ -564,7 +564,13 @@ class Server:
         if name != VALKEY_BINARY:
             raise RuntimeError(f"Process on port {self.port} is '{name}', expected '{VALKEY_BINARY}'")
 
-        await self.run_host_command(f"kill -9 {self.valkey_pid}")
+        cli_path = str(config.PROJECT_ROOT / config.VALKEY_CLI)
+        await self.run_host_command(
+            f"{cli_path} -p {self.port} SHUTDOWN NOSAVE 2>/dev/null; "
+            f"for i in 1 2 3 4 5; do kill -0 {self.valkey_pid} 2>/dev/null || break; sleep 1; done; "
+            f"kill -9 {self.valkey_pid} 2>/dev/null || true",
+            check=False,
+        )
         self.valkey_pid = -1
 
         # clean up any rdb files from replication or snapshotting
