@@ -49,13 +49,13 @@ class TaskRunner:
             coordinator.initialize()
             self._subscribers.append(coordinator)
         if memory_sweep:
-            from conductress.sweep.memory_coordinator import MemorySweepCoordinator
+            from conductress.sweep.memory_coordinator import create_memory_coordinators
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
-            mem_coordinator = MemorySweepCoordinator(repo_path)
-            mem_coordinator.initialize()
-            self._subscribers.append(mem_coordinator)
+            for mem_coordinator in create_memory_coordinators(repo_path):
+                mem_coordinator.initialize()
+                self._subscribers.append(mem_coordinator)
         if publish_target:
             from conductress.publisher import DashboardPublisher
             from conductress.sweep.coordinator import BaseSweepCoordinator

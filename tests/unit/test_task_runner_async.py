@@ -57,18 +57,22 @@ class TestTaskRunnerInit:
             assert len(runner._subscribers) == 1
 
     def test_memory_sweep_registers_subscriber(self):
-        with patch("conductress.sweep.memory_coordinator.MemorySweepCoordinator") as MockCoord:
-            MockCoord.return_value.initialize = MagicMock()
+        with patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory:
+            mock_coord = MagicMock()
+            mock_coord.initialize = MagicMock()
+            mock_factory.return_value = [mock_coord]
             runner = TaskRunner(memory_sweep=True)
             assert len(runner._subscribers) == 1
 
     def test_both_sweeps_register_two_subscribers(self):
         with (
             patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
-            patch("conductress.sweep.memory_coordinator.MemorySweepCoordinator") as MockMemCoord,
+            patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory,
         ):
             MockCoord.return_value.initialize = MagicMock()
-            MockMemCoord.return_value.initialize = MagicMock()
+            mock_mem = MagicMock()
+            mock_mem.initialize = MagicMock()
+            mock_factory.return_value = [mock_mem]
             runner = TaskRunner(sweep=True, memory_sweep=True)
             assert len(runner._subscribers) == 2
 
