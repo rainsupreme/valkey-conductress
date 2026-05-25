@@ -29,7 +29,7 @@ RECENT_RESULTS_COUNT = 5
 DEFAULT_TASK_DURATION = 150  # 2.5 min (build + benchmark on AMD)
 
 
-def export_status() -> Path:
+def export_status(publish_target: str = "") -> Path:
     """Export current runner status to status.json. Returns the output path."""
     status: dict[str, Any] = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -48,7 +48,37 @@ def export_status() -> Path:
 
     STATUS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     STATUS_EXPORT_FILE.write_text(json.dumps(status, indent=2))
+
+    if publish_target:
+        _publish_status(publish_target)
+
     return STATUS_EXPORT_FILE
+
+
+def _publish_status(target: str) -> None:
+    """Rsync status.json to the dashboard data server."""
+    import subprocess
+
+    from conductress.publisher import detect_platform
+
+    platform_id, _ = detect_platform()
+    # Map platform to status filename expected by dashboard
+    name_map = {"arm64": "arm", "amd64": "x86", "intel": "intel"}
+    filename = name_map.get(platform_id, platform_id)
+
+    ssh_key = Path.home() / "conductress" / "server-keyfile.pem"
+    if not ssh_key.exists():
+        ssh_key = Path.home() / ".ssh" / "openssh-ec2-pair.pem"
+    ssh_cmd = f"ssh -i {ssh_key} -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+    dest = f"{target}/status/{filename}.json"
+    result = subprocess.run(
+        ["rsync", "-az", "-e", ssh_cmd, str(STATUS_EXPORT_FILE), dest],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        logger.warning("Status publish failed: %s", result.stderr.strip())
 
 
 def _get_hostname() -> str:
