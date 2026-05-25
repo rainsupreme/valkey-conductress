@@ -1,43 +1,70 @@
-"""Memory sweep coordinator: tracks per-item memory overhead across Valkey history."""
+"""Memory sweep coordinator: tracks per-item memory overhead across Valkey history.
+
+Supports multiple workloads (set, zadd, sadd, set+expire) via MemoryWorkload config.
+Each workload gets its own state file and sweep planner instance.
+"""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
 from conductress.heap_profiler import JEMALLOC_PROF_MAKE_ARGS
-from conductress.sweep.coordinator import (
-    SWEEP_IO_THREADS,
-    SWEEP_PIPELINING,
-    SWEEP_SOURCE,
-    SWEEP_TEST,
-    SWEEP_VAL_SIZE,
-    BaseSweepCoordinator,
-)
-from conductress.sweep.planner import SweepState, SweepTask
+from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
+from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_mem_efficiency import MemTaskData
 
 logger = logging.getLogger(__name__)
 
 MEMORY_STATE_DIR = PROJECT_ROOT / "sweep_data"
-MEMORY_STATE_FILE = MEMORY_STATE_DIR / "memory_state.json"
 
-# Memory sweep parameters
-MEMORY_TEST = "set"  # SET key value — most common pattern
-MEMORY_VAL_SIZE = 64  # bytes
+
+@dataclass(frozen=True)
+class MemoryWorkload:
+    """Configuration for a single memory sweep workload."""
+
+    test: str  # valkey-benchmark test type: "set", "zadd", "sadd"
+    val_size: int  # value/member size in bytes
+    has_expire: bool  # whether to apply EXPIRE after populating
+    label: str  # unique identifier used in state filename and dashboard
+
+    @property
+    def state_file(self) -> Path:
+        return MEMORY_STATE_DIR / f"memory_state_{self.label}.json"
+
+
+# All memory workloads to sweep. Add new entries here to extend coverage.
+MEMORY_WORKLOADS: list[MemoryWorkload] = [
+    MemoryWorkload(test="set", val_size=64, has_expire=False, label="set-64b"),
+    MemoryWorkload(test="zadd", val_size=64, has_expire=False, label="zadd-64b"),
+    MemoryWorkload(test="sadd", val_size=64, has_expire=False, label="sadd-64b"),
+    MemoryWorkload(test="set", val_size=64, has_expire=True, label="set-64b-expire"),
+]
 
 
 class MemorySweepCoordinator(BaseSweepCoordinator):
-    """Memory efficiency sweep: tracks bytes/item overhead across history."""
+    """Memory efficiency sweep: tracks bytes/item overhead across history.
 
-    metric_id = "memory"
+    Each instance handles one workload (e.g., set-64b, zadd-64b).
+    Multiple instances coexist as subscribers on the same TaskRunner.
+    """
+
     metric_unit = "bytes/item"
     lower_is_better = True
-    workload_id = f"{SWEEP_TEST}{SWEEP_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
 
-    def __init__(self, repo_path: Path):
-        super().__init__(repo_path, MEMORY_STATE_FILE)
+    def __init__(self, repo_path: Path, workload: MemoryWorkload):
+        self._workload = workload
+        super().__init__(repo_path, workload.state_file)
+
+    @property
+    def metric_id(self) -> str:  # type: ignore[override]
+        return f"memory-{self._workload.label}"
+
+    @property
+    def workload_id(self) -> str:  # type: ignore[override]
+        return f"memory-{self._workload.label}"
 
     def _create_task(self, sweep_task: SweepTask) -> MemTaskData:
         return MemTaskData(
@@ -45,13 +72,19 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             specifier=sweep_task.commit,
             make_args=JEMALLOC_PROF_MAKE_ARGS,
             replicas=0,
-            note=f"[memory-sweep] {sweep_task.reason}",
+            note=f"[memory-sweep:{self._workload.label}] {sweep_task.reason}",
             requirements={},
-            type=MEMORY_TEST,
-            val_sizes=[MEMORY_VAL_SIZE],
-            has_expire=False,
+            type=self._workload.test,
+            val_sizes=[self._workload.val_size],
+            has_expire=self._workload.has_expire,
             enable_profiling=True,
         )
+
+    def _is_my_task(self, task: BaseTaskData) -> bool:
+        """Match only tasks created by THIS workload coordinator."""
+        if not isinstance(task, MemTaskData) or not task.sweep_commit:
+            return False
+        return task.type == self._workload.test and task.has_expire == self._workload.has_expire
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract bytes_per_item from output. CV=0 (memory is deterministic)."""
@@ -67,7 +100,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
                 if entry.get("task_id") == task.task_id:
                     score = entry.get("score")
                     if score and score > 0:
-                        return (score, 0.0, 1)  # (bytes_per_item, cv=0, reps=1)
+                        return (score, 0.0, 1)
             except (ValueError, KeyError, TypeError):
                 continue
         return None
@@ -102,16 +135,17 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
 
-            # Attach breakdown to the point (separate extraction, no shared mutable state)
             breakdown = self._extract_breakdown(task)
             if breakdown and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
                 self.state.points[task.sweep_commit].breakdown = breakdown  # type: ignore[attr-defined]
                 self.state.save(self.state_file)
-                logger.info("Recorded memory breakdown for %s", task.sweep_commit[:8])  # type: ignore[attr-defined]
+                logger.info("Recorded breakdown for %s [%s]", task.sweep_commit[:8], self._workload.label)  # type: ignore[attr-defined]
         else:
             commit = getattr(task, "sweep_commit", "?")
-            logger.warning("Could not extract result for sweep commit %s", commit[:8])
+            logger.warning("Could not extract result for %s [%s]", commit[:8], self._workload.label)
         self.queue_next_if_needed()
 
-    def _is_my_task(self, task: BaseTaskData) -> bool:
-        return isinstance(task, MemTaskData) and bool(task.sweep_commit)
+
+def create_memory_coordinators(repo_path: Path) -> list[MemorySweepCoordinator]:
+    """Factory: create one coordinator per configured workload."""
+    return [MemorySweepCoordinator(repo_path, wl) for wl in MEMORY_WORKLOADS]
