@@ -124,8 +124,22 @@ class TaskRunner:
                     self.task = queue.get_next_task()
 
     def _notify_queue_empty(self) -> None:
+        """Pick the highest-urgency sweeper and let it queue a task."""
+        if not self._subscribers:
+            return
+        # Score each subscriber that supports urgency scoring
+        candidates = []
         for sub in self._subscribers:
+            score = getattr(sub, "get_urgency_score", lambda: 0.0)()
+            candidates.append((score, sub))
+        # Sort by urgency (highest first) and let the winner queue
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _score, sub in candidates:
             sub.on_queue_empty()
+            # Check if it actually queued something
+            queue = TaskQueue()
+            if queue.get_all_tasks():
+                return
 
     def _record_failure(self, task: BaseTaskData, exc: Exception) -> None:
         """Log a task failure to failed_tasks.jsonl and move task file to failed/."""
