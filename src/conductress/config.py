@@ -23,6 +23,9 @@ DEFAULT_REPETITIONS = 5
 DEFAULT_VAL_SIZE = 512  # bytes
 DEFAULT_KEY_SIZE = 0  # 0 = standard keys
 
+# Dashboard data server (rsync target for --publish)
+PUBLISH_TARGET = "ec2-user@data.conductress.rainsupreme.net:/var/www/data"
+
 
 class Features(Enum):
     PIN_VALKEY_THREADS = "pin_valkey_threads"

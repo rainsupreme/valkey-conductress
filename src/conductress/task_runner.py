@@ -36,6 +36,7 @@ class TaskRunner:
         sweep: bool = False,
         memory_sweep: bool = False,
         repo_path: Optional[Path] = None,
+        publish_target: Optional[str] = None,
     ) -> None:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
@@ -55,6 +56,13 @@ class TaskRunner:
             mem_coordinator = MemorySweepCoordinator(repo_path)
             mem_coordinator.initialize()
             self._subscribers.append(mem_coordinator)
+        if publish_target:
+            from conductress.publisher import DashboardPublisher
+            from conductress.sweep.coordinator import BaseSweepCoordinator
+
+            coordinators = [s for s in self._subscribers if isinstance(s, BaseSweepCoordinator)]
+            publisher = DashboardPublisher(publish_target, coordinators)
+            self._subscribers.append(publisher)
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task, ensuring CPU allocations are released on failure."""

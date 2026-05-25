@@ -57,6 +57,7 @@ except ImportError:
     except ImportError:
         logger.error("asyncssh is not available even after installation. Try again - python may need to be restarted.")
         sys.exit(1)
+from conductress.config import PUBLISH_TARGET
 from conductress.utility import async_run
 
 
@@ -333,7 +334,7 @@ After=network.target
 Type=simple
 User={user}
 WorkingDirectory={workdir}
-ExecStart=/usr/bin/python3 -m conductress run --sweep --memory-sweep
+ExecStart=/usr/bin/python3 -m conductress run --sweep --memory-sweep{publish_arg}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -353,7 +354,7 @@ Description=Conductress status export
 Type=oneshot
 User={user}
 WorkingDirectory={workdir}
-ExecStart=/usr/bin/python3 -m conductress status-export
+ExecStart=/usr/bin/python3 -m conductress status-export{publish_arg}
 """
 
 SYSTEMD_STATUS_TIMER_TEMPLATE = """\
@@ -383,7 +384,9 @@ async def install_systemd_service(host: Host) -> None:
 
     workdir = host.get_home_path() / "conductress"
     user = host.username or "ec2-user"
-    service_content = SYSTEMD_SERVICE_TEMPLATE.format(user=user, workdir=workdir)
+    service_content = SYSTEMD_SERVICE_TEMPLATE.format(
+        user=user, workdir=workdir, publish_arg=f" --publish {PUBLISH_TARGET}"
+    )
     service_path = "/etc/systemd/system/conductress.service"
 
     # Check if service file already exists with correct content
@@ -416,7 +419,9 @@ async def install_status_timer(host: Host) -> None:
     workdir = host.get_home_path() / "conductress"
     user = host.username or "ec2-user"
 
-    service_content = SYSTEMD_STATUS_SERVICE_TEMPLATE.format(user=user, workdir=workdir)
+    service_content = SYSTEMD_STATUS_SERVICE_TEMPLATE.format(
+        user=user, workdir=workdir, publish_arg=f" --publish {PUBLISH_TARGET}"
+    )
     timer_content = SYSTEMD_STATUS_TIMER_TEMPLATE
 
     service_path = "/etc/systemd/system/conductress-status.service"

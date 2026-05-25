@@ -29,11 +29,23 @@ def main() -> None:
         default=None,
         help="Path to valkey git repo for sweep (default: ~/valkey)",
     )
+    run_parser.add_argument(
+        "--publish",
+        type=str,
+        default=None,
+        help="Publish dashboard data to this rsync target after each task (e.g. user@host:/path)",
+    )
     subparsers.add_parser("setup", help="Run setup/bootstrap")
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
-    subparsers.add_parser("status-export", help="Export status to JSON for remote monitoring")
+    status_export_parser = subparsers.add_parser("status-export", help="Export status to JSON for remote monitoring")
+    status_export_parser.add_argument(
+        "--publish",
+        type=str,
+        default=None,
+        help="Publish status to this rsync target (e.g. user@host:/path)",
+    )
     sweep_parser = subparsers.add_parser("sweep", help="Sweep management (export, status)")
     sweep_sub = sweep_parser.add_subparsers(dest="sweep_command")
     export_parser = sweep_sub.add_parser("export", help="Export sweep results to dashboard JSON")
@@ -96,7 +108,9 @@ def main() -> None:
 
         crash_file = PROJECT_ROOT / "last_crash.json"
         repo_path = Path(args.repo) if args.repo else None
-        runner = TaskRunner(sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path)
+        runner = TaskRunner(
+            sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path, publish_target=args.publish
+        )
         if args.sweep:
             print("Sweep mode enabled — will auto-generate tasks when queue is empty")
         try:
@@ -166,7 +180,7 @@ def main() -> None:
     elif args.command == "status-export":
         from conductress.status_export import export_status
 
-        path = export_status()
+        path = export_status(publish_target=args.publish or "")
         print(f"Exported to {path}")
 
     elif args.command == "sweep":
