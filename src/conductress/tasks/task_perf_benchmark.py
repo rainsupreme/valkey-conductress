@@ -523,7 +523,12 @@ class PerfTaskRunner(BaseTaskRunner):
                 # Collect profiling reports
                 rep_counters = await self._collect_profiling_reports(server)
                 if rep_counters:
-                    perf_counters = rep_counters  # Keep last rep's counters
+                    # Sum raw counters across all reps for better statistical robustness
+                    if perf_counters is None:
+                        perf_counters = rep_counters
+                    else:
+                        for k, v in rep_counters.items():
+                            perf_counters[k] = perf_counters.get(k, 0) + v
 
                 # Adaptive early exit
                 if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
