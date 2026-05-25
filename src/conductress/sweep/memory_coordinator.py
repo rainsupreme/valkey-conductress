@@ -60,7 +60,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     @property
     def metric_id(self) -> str:  # type: ignore[override]
-        return f"memory-{self._workload.label}"
+        return "memory"
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
