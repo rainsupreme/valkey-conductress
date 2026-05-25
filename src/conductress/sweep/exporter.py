@@ -67,6 +67,34 @@ PERF_METRICS: dict[str, dict[str, Any]] = {
             else None
         ),
     },
+    "tma-retiring-pct": {
+        "label": "Retiring %",
+        "unit": "%",
+        "compute": lambda c, **_: (
+            c["topdown-retiring"] / c["slots"] * 100 if c.get("slots") and c.get("topdown-retiring") else None
+        ),
+    },
+    "tma-fe-bound-pct": {
+        "label": "Frontend Bound %",
+        "unit": "%",
+        "compute": lambda c, **_: (
+            c["topdown-fe-bound"] / c["slots"] * 100 if c.get("slots") and c.get("topdown-fe-bound") else None
+        ),
+    },
+    "tma-be-bound-pct": {
+        "label": "Backend Bound %",
+        "unit": "%",
+        "compute": lambda c, **_: (
+            c["topdown-be-bound"] / c["slots"] * 100 if c.get("slots") and c.get("topdown-be-bound") else None
+        ),
+    },
+    "tma-bad-spec-pct": {
+        "label": "Bad Speculation %",
+        "unit": "%",
+        "compute": lambda c, **_: (
+            c["topdown-bad-spec"] / c["slots"] * 100 if c.get("slots") and c.get("topdown-bad-spec") else None
+        ),
+    },
 }
 
 PERF_GROUPS = [
@@ -91,6 +119,18 @@ PERF_GROUPS = [
         "series": ["frontend-stall-pct", "backend-stall-pct"],
         "y_axes": [
             {"id": "left", "label": "% of cycles stalled", "series": ["frontend-stall-pct", "backend-stall-pct"]}
+        ],
+    },
+    {
+        "id": "tma",
+        "title": "Pipeline Breakdown (TMA)",
+        "series": ["tma-retiring-pct", "tma-fe-bound-pct", "tma-be-bound-pct", "tma-bad-spec-pct"],
+        "y_axes": [
+            {
+                "id": "left",
+                "label": "% of pipeline slots",
+                "series": ["tma-retiring-pct", "tma-fe-bound-pct", "tma-be-bound-pct", "tma-bad-spec-pct"],
+            }
         ],
     },
     {
