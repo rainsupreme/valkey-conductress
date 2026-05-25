@@ -47,6 +47,7 @@ class BenchmarkPoint:
     perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters
     perf_duration_seconds: Optional[float] = None  # perf stat measurement window
     perf_rps: Optional[float] = None  # throughput during perf stat collection
+    breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
     status: PointStatus = PointStatus.PENDING
 
     @property

@@ -167,6 +167,7 @@ def export_series(
 
     # Build ordered points list
     points: list[dict[str, Any]] = []
+    has_breakdown = False
     for point in planner._get_ordered_completed_points():
         entry: dict[str, Any] = {
             "commit": point.commit,
@@ -186,6 +187,9 @@ def export_series(
             entry["pr"] = pr
         if pr_title is not None:
             entry["pr_title"] = pr_title
+        if point.breakdown:
+            entry["breakdown"] = point.breakdown
+            has_breakdown = True
         points.append(entry)
 
     # Build landmarks list
@@ -217,6 +221,12 @@ def export_series(
         "landmarks": landmarks,
         "annotations": annotations,
     }
+
+    # Add category metadata if any points have breakdown data
+    if has_breakdown:
+        from conductress.heap_profiler import CATEGORY_NAMES
+
+        series["metadata"]["categories"] = CATEGORY_NAMES
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))
