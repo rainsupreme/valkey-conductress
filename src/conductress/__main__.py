@@ -75,6 +75,14 @@ def main() -> None:
     )
     sweep_sub.add_parser("status", help="Show sweep progress summary")
 
+    # Sweep control commands
+    focus_parser = sweep_sub.add_parser("focus", help="Focus on a single workload (others paused)")
+    focus_parser.add_argument("workload", help="Workload ID to focus on (e.g. memory-set-64b, throughput)")
+    pause_parser = sweep_sub.add_parser("pause", help="Pause specific sweeps")
+    pause_parser.add_argument("workloads", nargs="+", help="Workload IDs to pause")
+    sweep_sub.add_parser("resume", help="Resume all sweeps (remove focus/pause)")
+    sweep_sub.add_parser("list", help="List all workload IDs and current scheduling config")
+
     args, remaining = parser.parse_known_args()
 
     # Configure logging for all subcommands
@@ -281,6 +289,38 @@ def main() -> None:
             if segments:
                 top = segments[0]
                 print(f"Largest gap: {top.abs_delta*100:.1f}% ({top.commit_count} commits)")
+
+        elif args.sweep_command == "focus":
+            from conductress.sweep_config import focus, load_sweep_config
+
+            focus(args.workload)
+            print(f"Sweep focused on: {args.workload}")
+            print("Only this workload will queue new tasks. Use 'conductress sweep resume' to restore.")
+
+        elif args.sweep_command == "pause":
+            from conductress.sweep_config import pause
+
+            pause(args.workloads)
+            print(f"Paused: {', '.join(args.workloads)}")
+            print("These sweeps won't queue. Use 'conductress sweep resume' to restore.")
+
+        elif args.sweep_command == "resume":
+            from conductress.sweep_config import resume
+
+            resume()
+            print("All sweeps resumed (normal scheduling).")
+
+        elif args.sweep_command == "list":
+            from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
+            from conductress.sweep_config import load_sweep_config
+
+            cfg = load_sweep_config()
+            workloads = ["throughput"] + [f"memory-{wl.label}" for wl in MEMORY_WORKLOADS]
+            print(f"Mode: {cfg.mode}" + (f" (target: {cfg.target})" if cfg.target else ""))
+            print(f"\nWorkload IDs:")
+            for wid in workloads:
+                status = "✓" if cfg.is_allowed(wid) else "✗ paused"
+                print(f"  {wid:<30} {status}")
 
         else:
             sweep_parser.print_usage()
