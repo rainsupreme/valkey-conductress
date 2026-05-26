@@ -147,6 +147,7 @@ class SweepState:
                     "perf_counters": p.perf_counters,
                     "perf_duration_seconds": p.perf_duration_seconds,
                     "perf_rps": p.perf_rps,
+                    "breakdown": p.breakdown,
                     "status": p.status.name,
                 }
                 for commit, p in self.points.items()
@@ -194,6 +195,7 @@ class SweepState:
                 perf_counters=p_data.get("perf_counters"),
                 perf_duration_seconds=p_data.get("perf_duration_seconds"),
                 perf_rps=p_data.get("perf_rps"),
+                breakdown=p_data.get("breakdown"),
                 status=PointStatus[p_data.get("status", "PENDING")],
             )
 
