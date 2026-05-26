@@ -370,3 +370,89 @@ class TestEdgeCases:
         # Should not hang or be unreasonably slow
         task = planner.get_next_task()
         assert task is not None
+
+
+class TestBreakdownSerialization:
+    """Regression test: breakdown field must survive save/load round-trip."""
+
+    def test_breakdown_persists_through_save_load(self, tmp_path):
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+
+        state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2024-01-01"})
+        state.points["aaa"] = BenchmarkPoint(
+            commit="aaa",
+            date="2024-01-01",
+            value=50.0,
+            cv=0.0,
+            reps=1,
+            status=PointStatus.COMPLETED,
+            breakdown={"embedded_obj": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1},
+        )
+
+        state_file = tmp_path / "state.json"
+        state.save(state_file)
+
+        loaded = SweepState.load(state_file)
+        assert loaded.points["aaa"].breakdown == {"embedded_obj": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1}
+
+    def test_none_breakdown_survives_round_trip(self, tmp_path):
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+
+        state = SweepState(merge_commits=["bbb"], commit_dates={"bbb": "2024-02-01"})
+        state.points["bbb"] = BenchmarkPoint(
+            commit="bbb",
+            date="2024-02-01",
+            value=30.0,
+            cv=0.0,
+            reps=1,
+            status=PointStatus.COMPLETED,
+        )
+
+        state_file = tmp_path / "state.json"
+        state.save(state_file)
+
+        loaded = SweepState.load(state_file)
+        assert loaded.points["bbb"].breakdown is None
+
+    def test_all_dataclass_fields_survive_round_trip(self, tmp_path):
+        """Generic test: every BenchmarkPoint field must be serialized.
+
+        If you add a field to BenchmarkPoint and this test fails,
+        you need to add it to SweepState.save() and .load().
+        """
+        from dataclasses import fields
+
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+
+        # Create a point with ALL fields set to non-default values
+        all_fields_point = BenchmarkPoint(
+            commit="test123",
+            date="2024-06-15",
+            value=42.5,
+            cv=1.23,
+            reps=5,
+            pr=999,
+            pr_title="Test PR title",
+            perf_counters={"cycles": 1000, "instructions": 2000},
+            perf_duration_seconds=30.0,
+            perf_rps=1500000.0,
+            breakdown={"embedded_obj": 30.0, "sds": 10.0},
+            status=PointStatus.COMPLETED,
+        )
+
+        state = SweepState(merge_commits=["test123"], commit_dates={"test123": "2024-06-15"})
+        state.points["test123"] = all_fields_point
+
+        state_file = tmp_path / "state.json"
+        state.save(state_file)
+        loaded = SweepState.load(state_file)
+        loaded_point = loaded.points["test123"]
+
+        # Check every field
+        for field in fields(BenchmarkPoint):
+            original = getattr(all_fields_point, field.name)
+            restored = getattr(loaded_point, field.name)
+            assert restored == original, (
+                f"Field '{field.name}' not preserved: saved={original!r}, loaded={restored!r}. "
+                f"Did you forget to add it to SweepState.save() and .load()?"
+            )
