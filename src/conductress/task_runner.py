@@ -135,9 +135,18 @@ class TaskRunner:
         """Pick the highest-urgency sweeper and let it queue a task."""
         if not self._subscribers:
             return
+
+        from conductress.sweep_config import load_sweep_config
+
+        config = load_sweep_config()
+
         # Score each subscriber that supports urgency scoring
         candidates = []
         for sub in self._subscribers:
+            # Check if this sweep is allowed by the runtime config
+            wid = getattr(sub, "workload_id", None)
+            if wid and not config.is_allowed(wid):
+                continue
             score = getattr(sub, "get_urgency_score", lambda: 0.0)()
             candidates.append((score, sub))
         # Sort by urgency (highest first) and let the winner queue
