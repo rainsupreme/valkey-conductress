@@ -224,16 +224,12 @@ class TestTaskRunnerSweepIntegration:
     @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
     @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
     @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
-    def test_task_runner_sweep_mode_creates_sweep_coordinator(
-        self, mock_state, mock_tags, mock_commits, mock_init, tmp_dir
-    ):
+    def test_task_runner_sweep_mode_creates_sweep_coordinator(self, mock_tags, mock_commits, mock_init, tmp_dir):
         from conductress.task_runner import TaskRunner
 
-        state_file = tmp_dir / "state.json"
-        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
-            runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        assert len(runner._subscribers) == 2
+        runner = TaskRunner(sweep=True, repo_path=tmp_dir)
+        # throughput + latency + 4 memory = 6
+        assert len(runner._subscribers) == 6
 
 
 class TestUrgencyScore:

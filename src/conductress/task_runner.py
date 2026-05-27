@@ -56,7 +56,15 @@ class TaskRunner:
             latency_coordinator = LatencySweepCoordinator(repo_path, SWEEP_STATE_FILE)
             latency_coordinator.initialize()
             self._subscribers.append(latency_coordinator)
-        if memory_sweep:
+
+            # Memory sweep runs alongside throughput
+            from conductress.sweep.memory_coordinator import create_memory_coordinators
+
+            for mem_coordinator in create_memory_coordinators(repo_path):
+                mem_coordinator.initialize()
+                self._subscribers.append(mem_coordinator)
+        if memory_sweep and not sweep:
+            # Standalone memory sweep (backward compat, rarely used)
             from conductress.sweep.memory_coordinator import create_memory_coordinators
 
             if repo_path is None:
