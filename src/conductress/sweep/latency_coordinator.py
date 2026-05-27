@@ -13,10 +13,10 @@ from typing import Optional
 from conductress.config import (
     CONDUCTRESS_RESULTS,
     LATENCY_DETECTION_THRESHOLD,
-    LATENCY_IO_THREADS,
     LATENCY_LOAD_FRACTION,
     LATENCY_MAKE_ARGS,
     LATENCY_STATE_FILE,
+    SWEEP_IO_THREADS,
     SWEEP_SOURCE,
     SWEEP_STATE_DIR,
 )
@@ -52,7 +52,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return f"get{LATENCY_VAL_SIZE}b-t{LATENCY_IO_THREADS}-p{LATENCY_PIPELINE}"
+        return f"get{LATENCY_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{LATENCY_PIPELINE}"
 
     @property
     def throughput_state(self) -> SweepState:
@@ -142,7 +142,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
             requirements={},
             target_rps=target_rps,
             load_fraction=LATENCY_LOAD_FRACTION,
-            io_threads=LATENCY_IO_THREADS,
+            io_threads=SWEEP_IO_THREADS,
         )
 
     def _is_my_task(self, task: BaseTaskData) -> bool:

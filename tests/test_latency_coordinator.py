@@ -339,3 +339,38 @@ class TestGetNextTaskDependency:
             submitted_task = mock_queue.submit_task.call_args[0][0]
             assert isinstance(submitted_task, LatencyTaskData)
             assert submitted_task.target_rps > 0
+
+
+class TestLatencyTaskSerialization:
+    """Regression test: sweep_commit must survive queue save/load roundtrip."""
+
+    def test_sweep_commit_persists_through_queue(self, tmp_path, monkeypatch):
+        """Without sweep_commit as a dataclass field, it was lost during serialization."""
+        from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
+        from conductress.task_queue import BaseTaskData, TaskQueue
+
+        monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+        monkeypatch.setattr("conductress.task_queue.config.CONDUCTRESS_QUEUE", tmp_path)
+
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123def456",
+            make_args=LATENCY_MAKE_ARGS,
+            replicas=0,
+            note="test",
+            requirements={},
+            target_rps=1500000,
+            io_threads=SWEEP_IO_THREADS,
+            sweep_commit="abc123def456",
+        )
+
+        # Save to queue
+        queue = TaskQueue(queue_dir=tmp_path)
+        queue.submit_task(task)
+
+        # Load back
+        loaded = queue.get_next_task()
+        assert loaded is not None
+        assert isinstance(loaded, LatencyTaskData)
+        assert loaded.sweep_commit == "abc123def456"
+        assert loaded.target_rps == 1500000
