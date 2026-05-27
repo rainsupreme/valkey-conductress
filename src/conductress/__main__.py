@@ -24,6 +24,11 @@ def main() -> None:
         help="Enable memory sweep: track per-item memory overhead across history",
     )
     run_parser.add_argument(
+        "--latency-sweep",
+        action="store_true",
+        help="Enable latency sweep: measure p99 latency at 70%% of max throughput across history",
+    )
+    run_parser.add_argument(
         "--repo",
         type=str,
         default=None,
@@ -117,7 +122,11 @@ def main() -> None:
         crash_file = PROJECT_ROOT / "last_crash.json"
         repo_path = Path(args.repo) if args.repo else None
         runner = TaskRunner(
-            sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path, publish_target=args.publish
+            sweep=args.sweep,
+            memory_sweep=args.memory_sweep,
+            latency_sweep=args.latency_sweep,
+            repo_path=repo_path,
+            publish_target=args.publish,
         )
         if args.sweep:
             print("Sweep mode enabled — will auto-generate tasks when queue is empty")
