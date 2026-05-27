@@ -119,8 +119,8 @@ class TestUrgencyScore:
         """New series with <2 latency points gets infinity."""
         assert coordinator.get_urgency_score() == float("inf")
 
-    def test_dampened_after_initial_points(self, coordinator):
-        """After 2+ points, urgency is dampened by 0.5x."""
+    def test_urgency_after_initial_points(self, coordinator):
+        """After 2+ points, urgency equals base bisection score."""
         from conductress.sweep.planner import PointStatus, SweepPlanner
 
         coordinator.state.points["aaa"] = BenchmarkPoint(
