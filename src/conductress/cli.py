@@ -153,6 +153,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser = queue_sub.add_parser("add", help="Add performance benchmark tasks to the queue")
     _add_perf_args(add_parser)
 
+    # queue add-latency
+    lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
+    lat_parser.add_argument("source", help="Source repo name (e.g. 'valkey')")
+    lat_parser.add_argument("specifier", help="Commit hash or branch to test")
+    lat_parser.add_argument("target_rps", type=int, help="Target requests/sec (use 70%% of max throughput)")
+    lat_parser.add_argument("--note", default="", help="Optional note for the task")
+
     # queue remove
     remove_parser = queue_sub.add_parser("remove", help="Remove a task from the queue")
     remove_parser.add_argument("task_id", help="Task ID to remove (from 'queue list' output)")
@@ -256,6 +263,33 @@ def handle_queue_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_latency(args: argparse.Namespace) -> int:
+    """Handle 'queue add-latency': submit a latency measurement task."""
+    from conductress.config import LATENCY_IO_THREADS, LATENCY_MAKE_ARGS
+    from conductress.tasks.task_latency import LatencyTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    task = LatencyTaskData(
+        source=args.source,
+        specifier=args.specifier,
+        make_args=LATENCY_MAKE_ARGS,
+        replicas=0,
+        note=args.note or f"manual latency @ {args.target_rps} rps",
+        requirements={},
+        target_rps=args.target_rps,
+        io_threads=LATENCY_IO_THREADS,
+    )
+
+    queue = TaskQueue()
+    queue.submit_task(task)
+    print(f"Queued latency task: {args.specifier[:8]} @ {args.target_rps} rps (id: {task.task_id})")
+    return 0
+
+
 def handle_queue_list(args: argparse.Namespace) -> int:
     """Handle 'queue list': show all pending tasks."""
     queue = TaskQueue()
@@ -317,6 +351,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return handle_queue_list(args)
         elif args.queue_command == "add":
             return handle_queue_add(args)
+        elif args.queue_command == "add-latency":
+            return handle_queue_add_latency(args)
         elif args.queue_command == "remove":
             return handle_queue_remove(args)
         elif args.queue_command == "clear":
