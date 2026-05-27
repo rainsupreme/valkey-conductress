@@ -117,7 +117,10 @@ def main() -> None:
         crash_file = PROJECT_ROOT / "last_crash.json"
         repo_path = Path(args.repo) if args.repo else None
         runner = TaskRunner(
-            sweep=args.sweep, memory_sweep=args.memory_sweep, repo_path=repo_path, publish_target=args.publish
+            sweep=args.sweep,
+            memory_sweep=args.memory_sweep,
+            repo_path=repo_path,
+            publish_target=args.publish,
         )
         if args.sweep:
             print("Sweep mode enabled — will auto-generate tasks when queue is empty")

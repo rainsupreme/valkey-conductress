@@ -41,6 +41,7 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
+            from conductress.config import SWEEP_STATE_FILE
             from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
@@ -48,7 +49,22 @@ class TaskRunner:
             coordinator = SweepCoordinator(repo_path)
             coordinator.initialize()
             self._subscribers.append(coordinator)
-        if memory_sweep:
+
+            # Latency sweep runs alongside throughput (uses its data)
+            from conductress.sweep.latency_coordinator import LatencySweepCoordinator
+
+            latency_coordinator = LatencySweepCoordinator(repo_path, SWEEP_STATE_FILE)
+            latency_coordinator.initialize()
+            self._subscribers.append(latency_coordinator)
+
+            # Memory sweep runs alongside throughput
+            from conductress.sweep.memory_coordinator import create_memory_coordinators
+
+            for mem_coordinator in create_memory_coordinators(repo_path):
+                mem_coordinator.initialize()
+                self._subscribers.append(mem_coordinator)
+        if memory_sweep and not sweep:
+            # Standalone memory sweep (backward compat, rarely used)
             from conductress.sweep.memory_coordinator import create_memory_coordinators
 
             if repo_path is None:

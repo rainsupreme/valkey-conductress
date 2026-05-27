@@ -6,6 +6,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+# TODO fix paths for remote hosts?
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 16  # 75 connections per thread
@@ -72,6 +75,45 @@ QUEUE_POLL_INTERVAL = 4
 # Runs between jobs, not during benchmarks.
 SWEEP_FETCH_INTERVAL = 3600
 
+# =============================================================================
+# Sweep configuration: throughput
+# =============================================================================
+SWEEP_SOURCE = "valkey"
+SWEEP_REF = "origin/unstable"
+SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
+SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
+SWEEP_TEST = "get"
+SWEEP_VAL_SIZE = 16
+SWEEP_IO_THREADS = 7
+SWEEP_PIPELINING = 10
+SWEEP_WARMUP = 5
+SWEEP_DURATION = 30
+SWEEP_REPETITIONS = 3
+SWEEP_MAX_REPS = 7
+SWEEP_TARGET_CV = 0.5
+SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+
+# =============================================================================
+# Sweep configuration: latency
+# =============================================================================
+LATENCY_STATE_FILE = SWEEP_STATE_DIR / "latency_state.json"
+LATENCY_LOAD_FRACTION = 0.70
+LATENCY_IO_THREADS = 9
+LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
+LATENCY_THREADS = 4
+LATENCY_CLIENTS = 50  # 200 total connections
+LATENCY_PIPELINE = 10
+LATENCY_DURATION = 60
+LATENCY_KEYSPACE = 1_000_000
+LATENCY_VAL_SIZE = 16
+LATENCY_REPS = 3
+
+# =============================================================================
+# Sweep configuration: memory
+# =============================================================================
+MEMORY_STATE_DIR = SWEEP_STATE_DIR
+
 # Benchmark metric collection interval (seconds). valkey-benchmark outputs ~4/sec.
 BENCHMARK_UPDATE_INTERVAL = 0.1
 
@@ -92,8 +134,6 @@ THREAD_PIN_SETTLE_DELAY = 0.1  # seconds
 # (e.g. 9000, 9001, 9002, etc)
 SERVER_PORT_RANGE_START = 9000
 
-# TODO fix paths for remote hosts?
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONDUCTRESS_LOG = PROJECT_ROOT / "log.txt"
 
 VALKEY_CLI = "valkey-cli"

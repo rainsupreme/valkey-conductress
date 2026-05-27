@@ -51,30 +51,28 @@ class TestTaskRunnerInit:
         assert len(runner._subscribers) == 0
 
     def test_sweep_registers_subscriber(self):
-        with patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord:
+        with (
+            patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
+            patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
+            patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory,
+        ):
             MockCoord.return_value.initialize = MagicMock()
+            MockLatency.return_value.initialize = MagicMock()
+            mock_mem = MagicMock()
+            mock_mem.initialize = MagicMock()
+            mock_factory.return_value = [mock_mem]
             runner = TaskRunner(sweep=True)
-            assert len(runner._subscribers) == 1
+            # throughput + latency + 1 memory = 3
+            assert len(runner._subscribers) == 3
 
-    def test_memory_sweep_registers_subscriber(self):
+    def test_memory_sweep_standalone(self):
+        """--memory-sweep without --sweep still works (backward compat)."""
         with patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory:
             mock_coord = MagicMock()
             mock_coord.initialize = MagicMock()
             mock_factory.return_value = [mock_coord]
-            runner = TaskRunner(memory_sweep=True)
+            runner = TaskRunner(sweep=False, memory_sweep=True)
             assert len(runner._subscribers) == 1
-
-    def test_both_sweeps_register_two_subscribers(self):
-        with (
-            patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
-            patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory,
-        ):
-            MockCoord.return_value.initialize = MagicMock()
-            mock_mem = MagicMock()
-            mock_mem.initialize = MagicMock()
-            mock_factory.return_value = [mock_mem]
-            runner = TaskRunner(sweep=True, memory_sweep=True)
-            assert len(runner._subscribers) == 2
 
 
 class TestTaskRunnerLoop:
