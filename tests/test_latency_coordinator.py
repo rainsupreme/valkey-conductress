@@ -346,7 +346,7 @@ class TestLatencyTaskSerialization:
 
     def test_sweep_commit_persists_through_queue(self, tmp_path, monkeypatch):
         """Without sweep_commit as a dataclass field, it was lost during serialization."""
-        from conductress.config import LATENCY_IO_THREADS, LATENCY_MAKE_ARGS
+        from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
         from conductress.task_queue import BaseTaskData, TaskQueue
 
         monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
@@ -360,7 +360,7 @@ class TestLatencyTaskSerialization:
             note="test",
             requirements={},
             target_rps=1500000,
-            io_threads=LATENCY_IO_THREADS,
+            io_threads=SWEEP_IO_THREADS,
             sweep_commit="abc123def456",
         )
 

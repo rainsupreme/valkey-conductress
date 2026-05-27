@@ -265,7 +265,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
 
 def handle_queue_add_latency(args: argparse.Namespace) -> int:
     """Handle 'queue add-latency': submit a latency measurement task."""
-    from conductress.config import LATENCY_IO_THREADS, LATENCY_MAKE_ARGS
+    from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
     from conductress.tasks.task_latency import LatencyTaskData
 
     if not validate_source(args.source):
@@ -281,7 +281,7 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
         note=args.note or f"manual latency @ {args.target_rps} rps",
         requirements={},
         target_rps=args.target_rps,
-        io_threads=LATENCY_IO_THREADS,
+        io_threads=SWEEP_IO_THREADS,
     )
 
     queue = TaskQueue()
