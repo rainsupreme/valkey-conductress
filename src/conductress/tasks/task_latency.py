@@ -118,7 +118,7 @@ class LatencyTaskRunner(BaseTaskRunner):
 
                 # Populate keys using memtier (also serves as warmup)
                 populate_cmd = (
-                    f"~/memtier_benchmark/memtier_benchmark "
+                    f"~/conductress/memtier_benchmark "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio 1:0 --key-pattern P:P "
@@ -132,7 +132,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                 # Run latency measurement
                 hdr_prefix = "/tmp/latency-hdr"
                 measure_cmd = (
-                    f"~/memtier_benchmark/memtier_benchmark "
+                    f"~/conductress/memtier_benchmark "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio 0:1 --key-pattern R:R "

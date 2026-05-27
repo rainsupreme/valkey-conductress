@@ -414,6 +414,31 @@ class TestBreakdownSerialization:
         loaded = SweepState.load(state_file)
         assert loaded.points["bbb"].breakdown is None
 
+
+class TestLatencyDataSerialization:
+    """Regression test: latency_data field must survive save/load round-trip."""
+
+    def test_latency_data_persists_through_save_load(self, tmp_path):
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+
+        latency = {"p50_us": 471, "p99_us": 892, "p99_9_us": 2100, "histogram": [[0.5, 471], [0.99, 892]]}
+        state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2026-01-01"})
+        state.points["aaa"] = BenchmarkPoint(
+            commit="aaa",
+            date="2026-01-01",
+            value=892.0,
+            cv=0,
+            reps=3,
+            status=PointStatus.COMPLETED,
+            latency_data=latency,
+        )
+
+        state_file = tmp_path / "state.json"
+        state.save(state_file)
+
+        loaded = SweepState.load(state_file)
+        assert loaded.points["aaa"].latency_data == latency
+
     def test_all_dataclass_fields_survive_round_trip(self, tmp_path):
         """Generic test: every BenchmarkPoint field must be serialized.
 
