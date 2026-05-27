@@ -4,6 +4,7 @@ Depends on throughput sweep data -- only queues tasks for commits that have
 a completed throughput measurement. Bisects on p99 latency with 10% threshold.
 """
 
+import json
 import logging
 import math
 from pathlib import Path
@@ -147,15 +148,13 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract p99 latency as the primary metric for bisection."""
-        import json as _json
-
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
             return None
 
         for line in reversed(output_file.read_text().strip().splitlines()):
             try:
-                entry = _json.loads(line)
+                entry = json.loads(line)
                 if entry.get("task_id") == task.task_id:
                     score = entry.get("score")  # p99_us
                     data = entry.get("data", {})

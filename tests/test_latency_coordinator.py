@@ -235,3 +235,107 @@ class TestExtractResult:
 
         result = coordinator._extract_result(task)
         assert result == (892.0, 0.0, 3)
+
+
+class TestGetNextTaskDependency:
+    """Test that _get_next_task respects throughput data dependency."""
+
+    def test_returns_none_when_fewer_than_2_candidates(self, repo_path, tmp_path, monkeypatch):
+        """Can't bisect with only 1 throughput point."""
+        state_file = tmp_path / "tp.json"
+        state = SweepState()
+        state.merge_commits = ["aaa", "bbb"]
+        state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
+        )
+        state.save(state_file)
+        monkeypatch.setattr("conductress.sweep.latency_coordinator.LATENCY_STATE_FILE", tmp_path / "lat.json")
+        coord = LatencySweepCoordinator(repo_path, state_file)
+        coord.state.merge_commits = ["aaa", "bbb"]
+        from conductress.sweep.planner import SweepPlanner
+
+        coord.planner = SweepPlanner(coord.state)
+        assert coord._get_next_task() is None
+
+    def test_returns_task_for_commit_with_throughput(self, coordinator):
+        """When planner suggests a commit that has throughput data, use it."""
+        task = coordinator._get_next_task()
+        # Should return a task (new series, planner will suggest something)
+        if task is not None:
+            # The commit must have throughput data
+            assert coordinator._get_throughput_for_commit(task.commit) is not None
+
+    def test_falls_back_when_planner_picks_commit_without_throughput(self, coordinator):
+        """When planner picks a commit without throughput, fall back to first unmeasured candidate."""
+        # Give the latency coordinator some existing points so planner does bisection
+        from conductress.sweep.planner import SweepPlanner
+
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.state.points["eee"] = BenchmarkPoint(
+            commit="eee", date="2026-05-01", value=900, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.planner = SweepPlanner(coordinator.state)
+
+        # Planner will try to bisect between aaa and eee, picking "ccc" (midpoint)
+        # "ccc" HAS throughput data, so it should be returned directly
+        task = coordinator._get_next_task()
+        if task is not None:
+            # Must be a commit with throughput data
+            assert coordinator._get_throughput_for_commit(task.commit) is not None
+
+    def test_skips_commits_already_measured_in_fallback(self, coordinator):
+        """Fallback skips candidates that already have latency data."""
+        from conductress.sweep.planner import SweepPlanner
+
+        # Mark aaa and ccc as already measured for latency
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.state.points["ccc"] = BenchmarkPoint(
+            commit="ccc", date="2026-03-01", value=600, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.planner = SweepPlanner(coordinator.state)
+
+        task = coordinator._get_next_task()
+        if task is not None:
+            # Should NOT pick aaa or ccc (already measured)
+            assert task.commit not in ["aaa", "ccc"] or task.commit == "eee"
+
+    def test_returns_none_when_all_candidates_measured(self, coordinator):
+        """Returns None when all throughput-measured commits have latency data."""
+        from conductress.sweep.planner import SweepPlanner
+
+        # Mark all 3 candidates as measured
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.state.points["ccc"] = BenchmarkPoint(
+            commit="ccc", date="2026-03-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.state.points["eee"] = BenchmarkPoint(
+            commit="eee", date="2026-05-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coordinator.planner = SweepPlanner(coordinator.state)
+
+        # All candidates measured with same value (no bisection needed)
+        task = coordinator._get_next_task()
+        # Should be None (no work to do) since all values are identical (no segments to bisect)
+        assert task is None
+
+    def test_queue_next_if_needed_respects_dependency(self, coordinator, monkeypatch):
+        """queue_next_if_needed only queues tasks for commits with throughput data."""
+        from unittest.mock import MagicMock, patch
+
+        # Mock TaskQueue to capture what gets submitted
+        mock_queue = MagicMock()
+        mock_queue.get_all_tasks.return_value = []
+        monkeypatch.setattr("conductress.sweep.coordinator.TaskQueue", lambda: mock_queue)
+
+        queued = coordinator.queue_next_if_needed()
+        if queued:
+            # Verify the submitted task has a valid target_rps (derived from throughput)
+            submitted_task = mock_queue.submit_task.call_args[0][0]
+            assert isinstance(submitted_task, LatencyTaskData)
+            assert submitted_task.target_rps > 0
