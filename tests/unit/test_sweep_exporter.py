@@ -127,7 +127,8 @@ class TestExporter:
         assert len(annotations) >= 1
         regression = next((a for a in annotations if a["commit"] == "b"), None)
         assert regression is not None
-        assert regression["type"] == "regression"
+        assert regression["type"] == "decrease"
+        assert regression["good"] is False
         assert regression["delta"] < 0
         assert regression["pr"] == 1847
 
