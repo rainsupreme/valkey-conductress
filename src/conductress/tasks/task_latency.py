@@ -18,6 +18,7 @@ from conductress.config import (
     LATENCY_VAL_SIZE,
     ServerInfo,
 )
+from conductress.file_protocol import BenchmarkStatus
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -93,6 +94,10 @@ class LatencyTaskRunner(BaseTaskRunner):
         if rate_per_conn <= 0:
             raise ValueError(f"target_rps {self.target_rps} too low for {total_conns} connections")
 
+        # Steps: populate + measure per rep (2 steps each) = 2 * reps
+        self.status = BenchmarkStatus(steps_total=self.repetitions * 2, task_type="latency")
+        self.file_protocol.write_status(self.status)
+
         replication_group = ReplicationGroup(
             self.server_infos, self.source, self.specifier, self.io_threads, self.make_args
         )
@@ -129,6 +134,8 @@ class LatencyTaskRunner(BaseTaskRunner):
                     f"--hide-histogram"
                 )
                 await server.run_host_command(populate_cmd)
+                self.status.steps_completed = rep * 2 + 1
+                self.file_protocol.write_status(self.status)
 
                 # Run latency measurement
                 hdr_prefix = "/tmp/latency-hdr"
@@ -147,6 +154,8 @@ class LatencyTaskRunner(BaseTaskRunner):
                     f"--hide-histogram"
                 )
                 stdout, _ = await server.run_host_command(measure_cmd)
+                self.status.steps_completed = rep * 2 + 2
+                self.file_protocol.write_status(self.status)
 
                 # Parse results
                 percentiles = self._parse_memtier_output(stdout)
