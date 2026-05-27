@@ -233,7 +233,7 @@ class TestTaskRunnerSweepIntegration:
         state_file = tmp_dir / "state.json"
         with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
             runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        assert len(runner._subscribers) == 1
+        assert len(runner._subscribers) == 2
 
 
 class TestUrgencyScore:

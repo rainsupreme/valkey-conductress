@@ -35,20 +35,26 @@ class TaskRunner:
         self,
         sweep: bool = False,
         memory_sweep: bool = False,
-        latency_sweep: bool = False,
         repo_path: Optional[Path] = None,
         publish_target: Optional[str] = None,
     ) -> None:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from conductress.sweep.coordinator import SweepCoordinator
+            from conductress.sweep.coordinator import SWEEP_STATE_FILE, SweepCoordinator
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
             coordinator = SweepCoordinator(repo_path)
             coordinator.initialize()
             self._subscribers.append(coordinator)
+
+            # Latency sweep runs alongside throughput (uses its data)
+            from conductress.sweep.latency_coordinator import LatencySweepCoordinator
+
+            latency_coordinator = LatencySweepCoordinator(repo_path, SWEEP_STATE_FILE)
+            latency_coordinator.initialize()
+            self._subscribers.append(latency_coordinator)
         if memory_sweep:
             from conductress.sweep.memory_coordinator import create_memory_coordinators
 
@@ -57,15 +63,6 @@ class TaskRunner:
             for mem_coordinator in create_memory_coordinators(repo_path):
                 mem_coordinator.initialize()
                 self._subscribers.append(mem_coordinator)
-        if latency_sweep:
-            from conductress.sweep.coordinator import SWEEP_STATE_FILE
-            from conductress.sweep.latency_coordinator import LatencySweepCoordinator
-
-            if repo_path is None:
-                repo_path = Path.home() / "valkey"
-            latency_coordinator = LatencySweepCoordinator(repo_path, SWEEP_STATE_FILE)
-            latency_coordinator.initialize()
-            self._subscribers.append(latency_coordinator)
         if publish_target:
             from conductress.publisher import DashboardPublisher
             from conductress.sweep.coordinator import BaseSweepCoordinator

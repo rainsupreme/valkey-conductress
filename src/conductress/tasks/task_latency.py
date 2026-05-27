@@ -22,7 +22,6 @@ LATENCY_DURATION = 60
 LATENCY_KEYSPACE = 1_000_000
 LATENCY_VAL_SIZE = 16
 LATENCY_REPS = 3
-LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 # Percentile points to extract from HDR histogram
 HISTOGRAM_PERCENTILES = [0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.995, 0.999, 1.0]
@@ -117,7 +116,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                 # Populate keys using memtier (also serves as warmup)
                 populate_cmd = (
                     f"~/memtier_benchmark/memtier_benchmark "
-                    f"--server 127.0.0.1 --port {server.port} --protocol redis "
+                    f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio 1:0 --key-pattern P:P "
                     f"--key-minimum 1 --key-maximum {LATENCY_KEYSPACE} "
@@ -131,7 +130,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                 hdr_prefix = "/tmp/latency-hdr"
                 measure_cmd = (
                     f"~/memtier_benchmark/memtier_benchmark "
-                    f"--server 127.0.0.1 --port {server.port} --protocol redis "
+                    f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio 0:1 --key-pattern R:R "
                     f"--key-minimum 1 --key-maximum {LATENCY_KEYSPACE} "
