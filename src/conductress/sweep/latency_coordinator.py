@@ -81,9 +81,10 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         return None
 
     def get_urgency_score(self) -> float:
-        """Priority score, dampened by 0.5x relative to throughput.
+        """Priority score, equal to throughput/memory.
 
         Returns 0 if no throughput data exists (can't run without it).
+        Latency is naturally throttled by its throughput dependency.
         """
         self._refresh_throughput_state()
         candidates = self._get_candidate_commits()
@@ -94,9 +95,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         if completed < 2:
             return float("inf")  # New series, top priority
 
-        # Normal bisection urgency, dampened
-        base = super().get_urgency_score()
-        return base * 0.5
+        return super().get_urgency_score()
 
     def _get_next_task(self) -> Optional[SweepTask]:
         """Override to select from throughput-measured commits only."""
