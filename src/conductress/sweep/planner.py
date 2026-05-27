@@ -232,13 +232,13 @@ class SweepPlanner:
         if task:
             return task
 
-        # Priority 2: Bisection — narrow the largest unresolved segment
-        task = self._check_bisection()
+        # Priority 2: Landmarks — benchmark release commits (skeleton for bisection)
+        task = self._check_landmarks()
         if task:
             return task
 
-        # Priority 3: Landmarks — benchmark release commits
-        task = self._check_landmarks()
+        # Priority 3: Bisection — narrow the largest unresolved segment
+        task = self._check_bisection()
         if task:
             return task
 

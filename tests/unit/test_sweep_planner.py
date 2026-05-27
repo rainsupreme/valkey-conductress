@@ -233,7 +233,8 @@ class TestSweepPlannerPriority:
         assert task.priority == TaskPriority.NIGHTLY
         assert task.commit == "d"
 
-    def test_bisection_beats_landmark(self):
+    def test_landmark_beats_bisection(self):
+        """Landmarks should be tested before bisection to establish the skeleton."""
         landmarks = [Landmark(commit="d", date="2024-04-01", label="8.0.0")]
         state = make_state(
             ["a", "b", "c", "d", "e"],
@@ -243,7 +244,8 @@ class TestSweepPlannerPriority:
         planner = SweepPlanner(state)
         task = planner.get_next_task()
         assert task is not None
-        assert task.priority == TaskPriority.BISECTION
+        assert task.priority == TaskPriority.LANDMARK
+        assert task.commit == "d"
 
     def test_landmark_beats_backfill(self):
         landmarks = [Landmark(commit="c", date="2024-03-01", label="7.2.5")]
