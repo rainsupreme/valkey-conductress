@@ -379,6 +379,108 @@ def export_perf_metrics(
     return exported
 
 
+def export_latency(
+    state: SweepState,
+    output_path: Path,
+    platform: str,
+    workload: str,
+    load_fraction: float = 0.70,
+    tool_version: str = "d52544b1",
+) -> int:
+    """Export latency sweep data to a dashboard-ready series file.
+
+    Reads extended latency data (all percentiles + histogram) from output.jsonl
+    since the state only stores p99 as the primary value.
+
+    Returns the number of exported points.
+    """
+    import json as _json
+
+    from conductress.config import CONDUCTRESS_RESULTS
+
+    planner = SweepPlanner(state)
+    commit_index = planner._commit_index
+    completed = planner._get_ordered_completed_points()
+
+    if not completed:
+        return 0
+
+    # Build a lookup of task results from output.jsonl for latency data
+    latency_data: dict[str, dict] = {}
+    output_file = CONDUCTRESS_RESULTS / "output.jsonl"
+    if output_file.exists():
+        for line in output_file.read_text().strip().splitlines():
+            try:
+                raw_entry = _json.loads(line)
+                data = raw_entry.get("data", {})
+                if "p50_us" in data and "target_rps" in data:
+                    latency_data[raw_entry["task_id"]] = data
+            except (ValueError, KeyError):
+                continue
+
+    # Build points
+    points: list[dict[str, Any]] = []
+    for point in completed:
+        entry: dict[str, Any] = {
+            "commit": point.commit,
+            "commit_index": commit_index.get(point.commit, 0),
+            "date": point.date,
+            "p99_us": point.value,  # primary metric stored in state
+        }
+        pr = state.commit_prs.get(point.commit) or point.pr
+        pr_title = state.commit_titles.get(point.commit) or point.pr_title
+        if pr is not None:
+            entry["pr"] = pr
+        if pr_title is not None:
+            entry["pr_title"] = pr_title
+        points.append(entry)
+
+    # Enrich points with full latency data from output.jsonl
+    # Match by finding entries whose target_rps and p99 are close to state value
+    # (Simple approach: iterate output entries and match by commit via task notes)
+    # For now, export what we have -- p99 is always available from state
+    # Full enrichment (p50, p99.9, histogram) requires task_id->commit mapping
+    # which we'll add when the coordinator stores it in state
+
+    # Build landmarks
+    landmarks = [
+        {
+            "commit": lm.commit,
+            "date": lm.date,
+            "label": lm.label,
+            "type": "release",
+            "commit_index": commit_index.get(lm.commit, 0),
+        }
+        for lm in state.landmarks
+    ]
+
+    # Build annotations (same logic as throughput but with lower_is_better=True)
+    annotations = _build_annotations(state, planner, workload, lower_is_better=True)
+
+    series: dict[str, Any] = {
+        "metadata": {
+            "repo": "valkey-io/valkey",
+            "branch": "unstable",
+            "platform": platform,
+            "workload": workload,
+            "metric": "latency",
+            "unit": "µs",
+            "load_fraction": load_fraction,
+            "tool": "memtier_benchmark",
+            "tool_version": tool_version,
+            "generated": datetime.now(timezone.utc).isoformat(),
+            "total_commits": len(state.merge_commits),
+        },
+        "points": points,
+        "landmarks": landmarks,
+        "annotations": annotations,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(series, indent=2))
+    return len(points)
+
+
 def export_manifest(output_dir: Path, platforms: list[str], workloads: list[str]) -> None:
     """Write the manifest.json grouping file for the dashboard."""
     manifest: dict[str, Any] = {

@@ -181,3 +181,15 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract latency result for %s", commit[:8])
         self.queue_next_if_needed()
+
+    def export(self, output_path: Path, platform: str) -> int:
+        """Export latency data to a series JSON file. Returns point count."""
+        from conductress.sweep.exporter import export_latency
+
+        return export_latency(
+            self.state,
+            output_path,
+            platform=platform,
+            workload=self.workload_id,
+            load_fraction=LATENCY_LOAD_FRACTION,
+        )
