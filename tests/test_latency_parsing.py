@@ -233,5 +233,5 @@ class TestLatencyExport:
         data = json.loads(output_file.read_text())
         # 40% increase in latency (lower is better) = regression
         assert len(data["annotations"]) == 1
-        assert data["annotations"][0]["type"] == "regression"
+        assert data["annotations"][0]["type"] == "increase"
         assert data["annotations"][0]["commit"] == "bbb"

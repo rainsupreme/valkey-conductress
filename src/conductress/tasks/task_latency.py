@@ -232,9 +232,17 @@ class LatencyTaskRunner(BaseTaskRunner):
 
     def _write_result(self, result: dict) -> None:
         """Write result to output.jsonl."""
+        from datetime import datetime
+
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         entry = {
             "task_id": self.task_name,
+            "method": "latency",
+            "source": self.source,
+            "specifier": self.specifier,
+            "commit_hash": self.specifier[:8],
+            "note": f"latency @ {self.target_rps} rps ({self.load_fraction:.0%})",
+            "end_time": datetime.now().strftime("%Y.%m.%d_%H.%M.%S.%f"),
             "score": result["p99_us"],  # p99 is the primary bisection metric
             "data": {
                 "actual_rps": result["actual_rps"],

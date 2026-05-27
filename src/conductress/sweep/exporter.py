@@ -259,7 +259,8 @@ def _build_annotations(
                     "commit": right.commit,
                     "delta": round(delta, 4),
                     "workload": workload,
-                    "type": "regression" if (delta > 0 if lower_is_better else delta < 0) else "improvement",
+                    "type": "increase" if delta > 0 else "decrease",
+                    "good": (delta < 0) if lower_is_better else (delta > 0),
                 }
                 pr = state.commit_prs.get(right.commit) or right.pr
                 pr_title = state.commit_titles.get(right.commit) or right.pr_title
