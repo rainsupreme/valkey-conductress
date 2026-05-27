@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from conductress.config import CONDUCTRESS_RESULTS
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 
 # =============================================================================
@@ -394,9 +395,6 @@ def export_latency(
 
     Returns the number of exported points.
     """
-    import json as _json
-
-    from conductress.config import CONDUCTRESS_RESULTS
 
     planner = SweepPlanner(state)
     commit_index = planner._commit_index
@@ -411,7 +409,7 @@ def export_latency(
     if output_file.exists():
         for line in output_file.read_text().strip().splitlines():
             try:
-                raw_entry = _json.loads(line)
+                raw_entry = json.loads(line)
                 data = raw_entry.get("data", {})
                 if "p50_us" in data and "target_rps" in data:
                     latency_data[raw_entry["task_id"]] = data

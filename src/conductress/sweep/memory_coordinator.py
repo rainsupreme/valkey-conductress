@@ -4,6 +4,7 @@ Supports multiple workloads (set, zadd, sadd, set+expire) via MemoryWorkload con
 Each workload gets its own state file and sweep planner instance.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,7 +89,6 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract bytes_per_item from output. CV=0 (memory is deterministic)."""
-        import json as _json
 
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
@@ -96,7 +96,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
         for line in reversed(output_file.read_text().strip().splitlines()):
             try:
-                entry = _json.loads(line)
+                entry = json.loads(line)
                 if entry.get("task_id") == task.task_id:
                     score = entry.get("score")
                     if score and score > 0:
@@ -107,7 +107,6 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     def _extract_breakdown(self, task: BaseTaskData) -> Optional[dict[str, float]]:
         """Extract per-category breakdown from the task output."""
-        import json as _json
 
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
@@ -115,7 +114,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
         for line in reversed(output_file.read_text().strip().splitlines()):
             try:
-                entry = _json.loads(line)
+                entry = json.loads(line)
                 if entry.get("task_id") == task.task_id:
                     data = entry.get("data", {})
                     results = data.get("results", [])

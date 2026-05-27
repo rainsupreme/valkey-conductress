@@ -5,6 +5,7 @@ and the pub/sub protocol. Subclasses define task creation and result extraction
 for specific metrics (throughput, memory, etc.).
 """
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -365,7 +366,6 @@ class SweepCoordinator(BaseSweepCoordinator):
 
     def _find_task_entry(self, task: BaseTaskData) -> Optional[dict]:
         """Find the output.jsonl entry for a completed task. Returns parsed dict or None."""
-        import json as _json
 
         output_file = CONDUCTRESS_RESULTS / "output.jsonl"
         if not output_file.exists():
@@ -373,7 +373,7 @@ class SweepCoordinator(BaseSweepCoordinator):
 
         for line in reversed(output_file.read_text().strip().splitlines()):
             try:
-                entry = _json.loads(line)
+                entry = json.loads(line)
                 if entry.get("task_id") == task.task_id:
                     return entry
             except (ValueError, KeyError, TypeError):
