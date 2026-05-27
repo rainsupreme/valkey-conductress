@@ -7,7 +7,17 @@ from pathlib import Path
 from statistics import median
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, ServerInfo
+from conductress.config import (
+    CONDUCTRESS_RESULTS,
+    LATENCY_CLIENTS,
+    LATENCY_DURATION,
+    LATENCY_KEYSPACE,
+    LATENCY_PIPELINE,
+    LATENCY_REPS,
+    LATENCY_THREADS,
+    LATENCY_VAL_SIZE,
+    ServerInfo,
+)
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -15,13 +25,6 @@ from conductress.task_queue import BaseTaskData, BaseTaskRunner
 logger = logging.getLogger(__name__)
 
 # Latency test configuration (same across all platforms)
-LATENCY_THREADS = 4
-LATENCY_CLIENTS = 50  # 200 total connections
-LATENCY_PIPELINE = 10
-LATENCY_DURATION = 60
-LATENCY_KEYSPACE = 1_000_000
-LATENCY_VAL_SIZE = 16
-LATENCY_REPS = 3
 
 # Percentile points to extract from HDR histogram
 HISTOGRAM_PERCENTILES = [0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.995, 0.999, 1.0]

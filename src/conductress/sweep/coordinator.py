@@ -13,7 +13,25 @@ from pathlib import Path
 from statistics import stdev
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT, SWEEP_FETCH_INTERVAL
+from conductress.config import (
+    CONDUCTRESS_RESULTS,
+    PROJECT_ROOT,
+    SWEEP_DURATION,
+    SWEEP_FETCH_INTERVAL,
+    SWEEP_IO_THREADS,
+    SWEEP_MAKE_ARGS,
+    SWEEP_MAX_REPS,
+    SWEEP_PIPELINING,
+    SWEEP_REF,
+    SWEEP_REPETITIONS,
+    SWEEP_SOURCE,
+    SWEEP_STATE_DIR,
+    SWEEP_STATE_FILE,
+    SWEEP_TARGET_CV,
+    SWEEP_TEST,
+    SWEEP_VAL_SIZE,
+    SWEEP_WARMUP,
+)
 from conductress.sweep.git_ops import fetch_ref, get_head, get_merge_commits, get_release_branch_points
 from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
 from conductress.task_queue import BaseTaskData, TaskQueue
@@ -22,8 +40,6 @@ from conductress.tasks.task_perf_benchmark import PerfTaskData
 logger = logging.getLogger(__name__)
 
 # Git configuration (shared across all sweep types)
-SWEEP_SOURCE = "valkey"
-SWEEP_REF = "origin/unstable"
 
 
 class BaseSweepCoordinator(ABC):
@@ -306,20 +322,6 @@ class BaseSweepCoordinator(ABC):
 # =============================================================================
 # Concrete implementation: throughput sweep
 # =============================================================================
-
-SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
-SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
-
-SWEEP_TEST = "get"
-SWEEP_VAL_SIZE = 16
-SWEEP_IO_THREADS = 7
-SWEEP_PIPELINING = 10
-SWEEP_WARMUP = 5
-SWEEP_DURATION = 30
-SWEEP_REPETITIONS = 3
-SWEEP_MAX_REPS = 7
-SWEEP_TARGET_CV = 0.5
-SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 
 class SweepCoordinator(BaseSweepCoordinator):

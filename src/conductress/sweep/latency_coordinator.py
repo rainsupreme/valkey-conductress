@@ -10,20 +10,22 @@ import math
 from pathlib import Path
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
-from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
+from conductress.config import (
+    CONDUCTRESS_RESULTS,
+    LATENCY_DETECTION_THRESHOLD,
+    LATENCY_IO_THREADS,
+    LATENCY_LOAD_FRACTION,
+    LATENCY_MAKE_ARGS,
+    LATENCY_STATE_FILE,
+    SWEEP_SOURCE,
+    SWEEP_STATE_DIR,
+)
+from conductress.sweep.coordinator import BaseSweepCoordinator
 from conductress.sweep.planner import SweepState, SweepTask, TaskPriority
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_latency import LATENCY_PIPELINE, LATENCY_REPS, LATENCY_VAL_SIZE, LatencyTaskData
 
 logger = logging.getLogger(__name__)
-
-LATENCY_STATE_DIR = PROJECT_ROOT / "sweep_data"
-LATENCY_STATE_FILE = LATENCY_STATE_DIR / "latency_state.json"
-LATENCY_LOAD_FRACTION = 0.70
-LATENCY_IO_THREADS = 9  # matches throughput sweep server config
-LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
-LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
 
 
 class LatencySweepCoordinator(BaseSweepCoordinator):

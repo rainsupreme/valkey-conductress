@@ -41,7 +41,8 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from conductress.sweep.coordinator import SWEEP_STATE_FILE, SweepCoordinator
+            from conductress.config import SWEEP_STATE_FILE
+            from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"

@@ -159,7 +159,7 @@ def export_series(
         workload: Workload identifier string.
     """
     if not workload:
-        from conductress.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
+        from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
 
         workload = f"{SWEEP_TEST.upper()}_{SWEEP_VAL_SIZE}B_t{SWEEP_IO_THREADS}_p{SWEEP_PIPELINING}"
 
@@ -307,7 +307,7 @@ def export_perf_metrics(
     Returns a dict of metric_id -> point_count for metrics that had data.
     """
     if not workload:
-        from conductress.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
+        from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
 
         workload = f"{SWEEP_TEST.lower()}{SWEEP_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
 

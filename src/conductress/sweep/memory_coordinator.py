@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, PROJECT_ROOT
+from conductress.config import CONDUCTRESS_RESULTS, MEMORY_STATE_DIR, PROJECT_ROOT
 from conductress.heap_profiler import JEMALLOC_PROF_MAKE_ARGS
 from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
@@ -18,8 +18,6 @@ from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_mem_efficiency import MemTaskData
 
 logger = logging.getLogger(__name__)
-
-MEMORY_STATE_DIR = PROJECT_ROOT / "sweep_data"
 
 
 @dataclass(frozen=True)
