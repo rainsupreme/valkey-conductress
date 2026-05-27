@@ -98,7 +98,6 @@ SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 # =============================================================================
 LATENCY_STATE_FILE = SWEEP_STATE_DIR / "latency_state.json"
 LATENCY_LOAD_FRACTION = 0.70
-LATENCY_IO_THREADS = 9
 LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
 LATENCY_THREADS = 4
