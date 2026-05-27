@@ -108,6 +108,7 @@ LATENCY_DURATION = 60
 LATENCY_KEYSPACE = 1_000_000
 LATENCY_VAL_SIZE = 16
 LATENCY_REPS = 3
+MEMTIER_COMMIT = "d52544b1"  # pinned version for reproducible latency measurements
 
 # =============================================================================
 # Sweep configuration: memory

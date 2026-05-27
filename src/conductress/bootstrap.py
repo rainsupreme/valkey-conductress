@@ -371,6 +371,23 @@ WantedBy=timers.target
 """
 
 
+async def ensure_memtier(host: Host) -> None:
+    """Ensure memtier_benchmark is installed at the pinned commit."""
+    memtier_dir = host.get_home_path() / "memtier_benchmark"
+    if not await path_exists(host, memtier_dir, expected_type="directory"):
+        host.log_info_msg("Installing memtier_benchmark...")
+        await host.run(f'git clone https://github.com/Redis/memtier_benchmark.git "{memtier_dir}"')
+
+    # Ensure correct commit
+    host.log_info_msg(f"Pinning memtier_benchmark to {config.MEMTIER_COMMIT}...")
+    await host.run(f"cd {memtier_dir} && git fetch && git checkout {config.MEMTIER_COMMIT}")
+
+    # Build if binary doesn't exist or commit changed
+    if not await path_exists(host, memtier_dir / "memtier_benchmark"):
+        host.log_info_msg("Building memtier_benchmark...")
+        await host.run(f"cd {memtier_dir} && autoreconf -ivf && ./configure && make -j$(nproc)")
+
+
 async def install_systemd_service(host: Host) -> None:
     """Install and enable the conductress systemd service.
 
@@ -459,6 +476,7 @@ async def update_host(server_info: config.ServerInfo):
     await ensure_file_descriptor_limits(host)
     await ensure_conductress(host, pull=(server_info != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
+    await ensure_memtier(host)
 
     # Clean up deprecated/legacy files from older versions
     await cleanup_legacy_build_cache(host)
