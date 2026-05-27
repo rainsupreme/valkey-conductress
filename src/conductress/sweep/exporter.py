@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from conductress.config import CONDUCTRESS_RESULTS
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 
 # =============================================================================
@@ -403,19 +402,6 @@ def export_latency(
     if not completed:
         return 0
 
-    # Build a lookup of task results from output.jsonl for latency data
-    latency_data: dict[str, dict] = {}
-    output_file = CONDUCTRESS_RESULTS / "output.jsonl"
-    if output_file.exists():
-        for line in output_file.read_text().strip().splitlines():
-            try:
-                raw_entry = json.loads(line)
-                data = raw_entry.get("data", {})
-                if "p50_us" in data and "target_rps" in data:
-                    latency_data[raw_entry["task_id"]] = data
-            except (ValueError, KeyError):
-                continue
-
     # Build points
     points: list[dict[str, Any]] = []
     for point in completed:
@@ -425,6 +411,14 @@ def export_latency(
             "date": point.date,
             "p99_us": point.value,  # primary metric stored in state
         }
+        # Include full latency data if available
+        if point.latency_data:
+            entry["p50_us"] = point.latency_data.get("p50_us")
+            entry["p99_9_us"] = point.latency_data.get("p99_9_us")
+            entry["p100_us"] = point.latency_data.get("p100_us")
+            entry["target_rps"] = point.latency_data.get("target_rps")
+            entry["actual_rps"] = point.latency_data.get("actual_rps")
+            entry["histogram"] = point.latency_data.get("histogram")
         pr = state.commit_prs.get(point.commit) or point.pr
         pr_title = state.commit_titles.get(point.commit) or point.pr_title
         if pr is not None:
@@ -432,13 +426,6 @@ def export_latency(
         if pr_title is not None:
             entry["pr_title"] = pr_title
         points.append(entry)
-
-    # Enrich points with full latency data from output.jsonl
-    # Match by finding entries whose target_rps and p99 are close to state value
-    # (Simple approach: iterate output entries and match by commit via task notes)
-    # For now, export what we have -- p99 is always available from state
-    # Full enrichment (p50, p99.9, histogram) requires task_id->commit mapping
-    # which we'll add when the coordinator stores it in state
 
     # Build landmarks
     landmarks = [

@@ -48,6 +48,7 @@ class BenchmarkPoint:
     perf_duration_seconds: Optional[float] = None  # perf stat measurement window
     perf_rps: Optional[float] = None  # throughput during perf stat collection
     breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
+    latency_data: Optional[dict] = None  # full latency results (p50, p99.9, histogram, rps)
     status: PointStatus = PointStatus.PENDING
 
     @property
@@ -148,6 +149,7 @@ class SweepState:
                     "perf_duration_seconds": p.perf_duration_seconds,
                     "perf_rps": p.perf_rps,
                     "breakdown": p.breakdown,
+                    "latency_data": p.latency_data,
                     "status": p.status.name,
                 }
                 for commit, p in self.points.items()
@@ -196,6 +198,7 @@ class SweepState:
                 perf_duration_seconds=p_data.get("perf_duration_seconds"),
                 perf_rps=p_data.get("perf_rps"),
                 breakdown=p_data.get("breakdown"),
+                latency_data=p_data.get("latency_data"),
                 status=PointStatus[p_data.get("status", "PENDING")],
             )
 

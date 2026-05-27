@@ -301,7 +301,7 @@ async def ensure_conductress(host: Host, pull=False):
         await ensure_git_repo_cloned(host, "https://github.com/valkey-io/valkey.git", valkey_path)
 
         await host.run(
-            f"cd {valkey_path} && git fetch && git reset --hard origin/unstable && make distclean && make -j"
+            f"cd {valkey_path} && git fetch && git checkout {config.VALKEY_BENCHMARK_COMMIT} && make distclean && make -j"
         )
 
         await asyncio.gather(
@@ -372,20 +372,28 @@ WantedBy=timers.target
 
 
 async def ensure_memtier(host: Host) -> None:
-    """Ensure memtier_benchmark is installed at the pinned commit."""
-    memtier_dir = host.get_home_path() / "memtier_benchmark"
-    if not await path_exists(host, memtier_dir, expected_type="directory"):
-        host.log_info_msg("Installing memtier_benchmark...")
-        await host.run(f'git clone https://github.com/Redis/memtier_benchmark.git "{memtier_dir}"')
+    """Ensure memtier_benchmark is installed at the pinned commit.
 
-    # Ensure correct commit
-    host.log_info_msg(f"Pinning memtier_benchmark to {config.MEMTIER_COMMIT}...")
-    await host.run(f"cd {memtier_dir} && git fetch && git checkout {config.MEMTIER_COMMIT}")
+    Skips entirely if the binary already exists (user-provided or previously built).
+    Installs to ~/conductress/memtier_benchmark alongside valkey-benchmark.
+    """
+    conductress_dir = host.get_home_path() / "conductress"
+    binary_path = conductress_dir / "memtier_benchmark"
 
-    # Build if binary doesn't exist or commit changed
-    if not await path_exists(host, memtier_dir / "memtier_benchmark"):
-        host.log_info_msg("Building memtier_benchmark...")
-        await host.run(f"cd {memtier_dir} && autoreconf -ivf && ./configure && make -j$(nproc)")
+    if await path_exists(host, binary_path):
+        host.log_info_msg("memtier_benchmark already exists, skipping install")
+        return
+
+    # Build in a temp location, copy binary to conductress dir
+    build_dir = host.get_home_path() / "memtier_benchmark_build"
+    if not await path_exists(host, build_dir, expected_type="directory"):
+        host.log_info_msg("Cloning memtier_benchmark...")
+        await host.run(f'git clone https://github.com/Redis/memtier_benchmark.git "{build_dir}"')
+
+    host.log_info_msg(f"Building memtier_benchmark at {config.MEMTIER_COMMIT}...")
+    await host.run(f"cd {build_dir} && git fetch && git checkout {config.MEMTIER_COMMIT}")
+    await host.run(f"cd {build_dir} && autoreconf -ivf && ./configure && make -j$(nproc)")
+    await host.run(f"cp {build_dir}/memtier_benchmark {binary_path}")
 
 
 async def install_systemd_service(host: Host) -> None:

@@ -170,7 +170,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         return None
 
     def on_task_completed(self, task: BaseTaskData) -> None:
-        """Override to handle latency task completion."""
+        """Override to store full latency data (all percentiles + histogram) on the point."""
         if not self._is_my_task(task):
             return
 
@@ -178,10 +178,31 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         if result:
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
+
+            # Store full latency data for export (p50, p99.9, histogram, rps)
+            latency_data = self._extract_full_data(task)
+            if latency_data and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
+                self.state.points[task.sweep_commit].latency_data = latency_data  # type: ignore[attr-defined]
+                self.state.save(self.state_file)
         else:
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract latency result for %s", commit[:8])
         self.queue_next_if_needed()
+
+    def _extract_full_data(self, task: BaseTaskData) -> Optional[dict]:
+        """Extract full latency data (all percentiles + histogram) from output.jsonl."""
+        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
+        if not output_file.exists():
+            return None
+
+        for line in reversed(output_file.read_text().strip().splitlines()):
+            try:
+                entry = json.loads(line)
+                if entry.get("task_id") == task.task_id:
+                    return entry.get("data")
+            except (ValueError, KeyError, TypeError):
+                continue
+        return None
 
     def export(self, output_path: Path, platform: str) -> int:
         """Export latency data to a series JSON file. Returns point count."""
