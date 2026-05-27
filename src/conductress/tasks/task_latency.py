@@ -38,6 +38,7 @@ class LatencyTaskData(BaseTaskData):
     load_fraction: float = 0.70
     io_threads: int = 9
     repetitions: int = LATENCY_REPS
+    sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
         super().__post_init__()
