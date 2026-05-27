@@ -324,6 +324,49 @@ class TestGetNextTaskDependency:
         # Should be None (no work to do) since all values are identical (no segments to bisect)
         assert task is None
 
+    def test_landmarks_prioritized_over_backfill(self, repo_path, tmp_path, monkeypatch):
+        """When planner picks a commit without throughput, unmeasured landmarks get priority."""
+        from conductress.sweep.planner import Landmark, SweepPlanner, TaskPriority
+
+        # Throughput state: aaa and eee measured, but NOT ddd (a landmark)
+        tp_state = SweepState()
+        tp_state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
+        tp_state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
+        )
+        tp_state.points["ccc"] = BenchmarkPoint(
+            commit="ccc", date="2026-03-01", value=2100000, cv=0.4, reps=3, status=PointStatus.COMPLETED
+        )
+        tp_state.points["eee"] = BenchmarkPoint(
+            commit="eee", date="2026-05-01", value=1800000, cv=0.6, reps=3, status=PointStatus.COMPLETED
+        )
+        state_file = tmp_path / "tp2.json"
+        tp_state.save(state_file)
+        monkeypatch.setattr("conductress.sweep.latency_coordinator.LATENCY_STATE_FILE", tmp_path / "lat2.json")
+
+        coord = LatencySweepCoordinator(repo_path, state_file)
+        coord.state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
+        coord.state.commit_dates = {"ccc": "2026-03-01", "eee": "2026-05-01"}
+        # Add a landmark at "eee" (has throughput) and "bbb" (no throughput)
+        coord.state.landmarks = [
+            Landmark(commit="bbb", date="2026-02-01", label="8.0"),
+            Landmark(commit="eee", date="2026-05-01", label="9.0"),
+        ]
+        # Mark aaa and ccc as already measured for latency
+        coord.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coord.state.points["ccc"] = BenchmarkPoint(
+            commit="ccc", date="2026-03-01", value=600, cv=0, reps=3, status=PointStatus.COMPLETED
+        )
+        coord.planner = SweepPlanner(coord.state)
+
+        task = coord._get_next_task()
+        # Should pick landmark "eee" (has throughput), NOT backfill to random candidate
+        assert task is not None
+        assert task.commit == "eee"
+        assert task.priority == TaskPriority.LANDMARK
+
     def test_queue_next_if_needed_respects_dependency(self, coordinator, monkeypatch):
         """queue_next_if_needed only queues tasks for commits with throughput data."""
         from unittest.mock import MagicMock, patch

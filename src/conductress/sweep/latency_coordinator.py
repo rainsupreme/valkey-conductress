@@ -21,7 +21,7 @@ from conductress.config import (
     SWEEP_STATE_DIR,
 )
 from conductress.sweep.coordinator import BaseSweepCoordinator
-from conductress.sweep.planner import SweepState, SweepTask, TaskPriority
+from conductress.sweep.planner import SweepState, SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_latency import LATENCY_PIPELINE, LATENCY_REPS, LATENCY_VAL_SIZE, LatencyTaskData
 
@@ -98,32 +98,33 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         return super().get_urgency_score()
 
     def _get_next_task(self) -> Optional[SweepTask]:
-        """Override to select from throughput-measured commits only."""
+        """Select next commit using bisection over the throughput-measured subset.
+
+        Builds a projected planner whose universe is only commits with throughput
+        data. The standard planner logic (landmarks → bisection → backfill) then
+        operates on this subset, guaranteeing every pick is runnable.
+        """
         candidates = self._get_candidate_commits()
         if len(candidates) < 2:
             return None
 
-        # Find the largest gap between adjacent measured commits that don't have latency data
-        # or use the planner's normal bisection on the candidate subset
-        task = self.planner.get_next_task(current_head=None)
-        if task is None:
-            return None
+        # Build projected state: only candidate commits, with their latency results
+        candidate_set = set(candidates)
+        projected = SweepState()
+        projected.merge_commits = candidates
+        projected.commit_dates = {c: self.state.commit_dates.get(c, "") for c in candidates}
+        projected.landmarks = [lm for lm in self.state.landmarks if lm.commit in candidate_set]
+        projected.threshold = self.state.threshold
 
-        # Verify the task's commit has throughput data
-        if self._get_throughput_for_commit(task.commit) is None:
-            # Skip commits without throughput -- find next candidate
-            for commit in candidates:
-                if commit not in self.state.points:
-                    date = self.throughput_state.commit_dates.get(commit, "")
-                    return SweepTask(
-                        commit=commit,
-                        date=date,
-                        priority=TaskPriority.BACKFILL,
-                        reason="backfill (has throughput data)",
-                    )
-            return None
+        # Copy latency points that are in the candidate set
+        for commit, point in self.state.points.items():
+            if commit in candidate_set:
+                projected.points[commit] = point
 
-        return task
+        from conductress.sweep.planner import SweepPlanner
+
+        projected_planner = SweepPlanner(projected)
+        return projected_planner.get_next_task(current_head=None)
 
     def _create_task(self, sweep_task: SweepTask) -> LatencyTaskData:
         throughput_rps = self._get_throughput_for_commit(sweep_task.commit)
