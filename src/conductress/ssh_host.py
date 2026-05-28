@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 class SshHost:
     """Manages SSH connections and remote command execution on a single host."""
 
+    # Class-level connection pool: reuse one SSH connection per (ip, username) pair.
+    # Eliminates connection leaks from throwaway SshHost/Server instances.
+    _pool: dict[tuple[str, str], asyncssh.SSHClientConnection] = {}
+
     def __init__(self, ip: str, username: str = "") -> None:
         self.ip = ip
         self.username = username
@@ -26,8 +30,16 @@ class SshHost:
         self._logger = logging.getLogger(f"{self.__class__.__name__}.{ip}")
 
     async def ensure_ssh_connection(self) -> None:
-        """Establish SSH connection if not already connected."""
-        if not self.ssh:
+        """Establish or reuse a pooled SSH connection."""
+        pool_key = (self.ip, self.username)
+
+        # Reuse from pool if alive
+        if not self.ssh or self.ssh.is_closed():
+            pooled = self._pool.get(pool_key)
+            if pooled and not pooled.is_closed():
+                self.ssh = pooled
+                return
+            # Open new connection
             if self.ip in ["127.0.0.1", "localhost"]:
                 self.ssh = await asyncssh.connect(self.ip, known_hosts=None, client_keys=[str(config.SSH_KEYFILE)])
             elif self.username:
@@ -38,6 +50,7 @@ class SshHost:
                 )
             else:
                 self.ssh = await asyncssh.connect(self.ip, client_keys=[str(config.SSH_KEYFILE)])
+            self._pool[pool_key] = self.ssh
 
     async def run_host_command(self, command: str, check: bool = True) -> tuple[str, str]:
         """Run a terminal command on the host and return (stdout, stderr)."""

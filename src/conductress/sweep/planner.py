@@ -406,16 +406,20 @@ class SweepPlanner:
 
         # Also check edges: before first point and after last point
         if completed:
-            first_idx = self._commit_index.get(completed[0].commit, 0)
-            last_idx = self._commit_index.get(completed[-1].commit, 0)
-            if first_idx > largest_gap:
-                largest_gap = first_idx
+            first_commit = completed[0].commit
+            last_commit = completed[-1].commit
+            # Count edge commits excluding BUILD_FAILED (consistent with _commits_between)
+            first_idx = self._commit_index.get(first_commit, 0)
+            edge_before = self._count_unattempted_in_range(0, first_idx)
+            if edge_before > largest_gap:
+                largest_gap = edge_before
                 best_left = None
-                best_right = completed[0].commit
-            remaining = len(self.state.merge_commits) - 1 - last_idx
-            if remaining > largest_gap:
-                largest_gap = remaining
-                best_left = completed[-1].commit
+                best_right = first_commit
+            last_idx = self._commit_index.get(last_commit, 0)
+            edge_after = self._count_unattempted_in_range(last_idx + 1, len(self.state.merge_commits))
+            if edge_after > largest_gap:
+                largest_gap = edge_after
+                best_left = last_commit
                 best_right = None
 
         if largest_gap == 0:
@@ -482,6 +486,15 @@ class SweepPlanner:
             commit = self.state.merge_commits[i]
             point = self.state.points.get(commit)
             if point is None or point.status != PointStatus.BUILD_FAILED:
+                count += 1
+        return count
+
+    def _count_unattempted_in_range(self, start_idx: int, end_idx: int) -> int:
+        """Count commits in [start_idx, end_idx) that have not been attempted (point is None)."""
+        count = 0
+        for i in range(start_idx, end_idx):
+            commit = self.state.merge_commits[i]
+            if self.state.points.get(commit) is None:
                 count += 1
         return count
 
