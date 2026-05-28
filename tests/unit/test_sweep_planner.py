@@ -483,3 +483,27 @@ class TestLatencyDataSerialization:
                 f"Field '{field.name}' not preserved: saved={original!r}, loaded={restored!r}. "
                 f"Did you forget to add it to SweepState.save() and .load()?"
             )
+
+    def test_backfill_edge_skips_build_failed(self):
+        """Backfill edge calculation must not count BUILD_FAILED commits.
+
+        Regression test: when leading edge commits are all BUILD_FAILED,
+        the edge incorrectly won the "largest gap" comparison over internal
+        gaps that had valid candidates, causing backfill to return None
+        (starvation).
+        """
+        # 20 commits: first 6 are BUILD_FAILED, then completed at c06 and c15,
+        # with valid unattempted commits between c06 and c15.
+        commits = [f"c{i:02d}" for i in range(20)]
+        state = make_state(commits, points={"c06": 100000, "c15": 95000})
+        # Mark leading edge as all BUILD_FAILED
+        for i in range(6):
+            state.points[f"c{i:02d}"] = BenchmarkPoint(commit=f"c{i:02d}", date="", status=PointStatus.BUILD_FAILED)
+        planner = SweepPlanner(state)
+        task = planner.get_next_task()
+        # Should find a backfill task in the internal gap (c06..c15) or trailing edge,
+        # NOT return None due to the BUILD_FAILED leading edge
+        assert task is not None
+        idx = commits.index(task.commit)
+        # Must be in the valid range (between c06 and c15, or after c15)
+        assert idx > 6
