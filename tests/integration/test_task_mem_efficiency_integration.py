@@ -42,6 +42,8 @@ class TestMemTaskIntegration:
             type="set",
             val_sizes=[32, 64],
             has_expire=False,
+            key_size=16,
+            user_data_bytes=80,
         )
 
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
@@ -94,6 +96,8 @@ class TestMemTaskIntegration:
             type="set",
             val_sizes=[32],
             has_expire=True,
+            key_size=16,
+            user_data_bytes=48,
         )
 
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
@@ -132,6 +136,8 @@ class TestMemTaskIntegration:
             type="set",
             val_sizes=[16, 32, 64, 128],
             has_expire=False,
+            key_size=16,
+            user_data_bytes=80,
         )
 
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
@@ -172,6 +178,8 @@ class TestMemTaskIntegration:
                 type="set",
                 val_sizes=[32],
                 has_expire=False,
+                key_size=16,
+                user_data_bytes=48,
             )
 
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
@@ -212,6 +220,8 @@ class TestMemTaskIntegration:
             type="zadd",
             val_sizes=[64, 128, 256],
             has_expire=True,
+            key_size=0,
+            user_data_bytes=72,
         )
 
         # Test round-trip serialization
@@ -252,6 +262,8 @@ class TestMemTaskIntegration:
             type="set",
             val_sizes=[32],
             has_expire=False,
+            key_size=16,
+            user_data_bytes=48,
         )
 
         server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
