@@ -24,10 +24,14 @@ logger = logging.getLogger(__name__)
 class MemoryWorkload:
     """Configuration for a single memory sweep workload."""
 
-    test: str  # valkey-benchmark test type: "set", "zadd", "sadd"
-    val_size: int  # value/member size in bytes
-    has_expire: bool  # whether to apply EXPIRE after populating
-    label: str  # unique identifier used in state filename and dashboard
+    command: str  # valkey command: "set", "zadd", "sadd", "hset"
+    key_size: int  # key size in bytes (SET) or 0 (single-key commands)
+    value_size: int  # value/member size in bytes
+    field_size: int = 0  # field name size (HSET only)
+    has_expire: bool = False  # whether to apply EXPIRE after populating
+    label: str = ""  # unique identifier used in state filename and dashboard
+    item_count: int = 5_000_000
+    user_data_bytes: int = 0  # per-item user data for dashboard baseline
 
     @property
     def state_file(self) -> Path:
@@ -36,10 +40,15 @@ class MemoryWorkload:
 
 # All memory workloads to sweep. Add new entries here to extend coverage.
 MEMORY_WORKLOADS: list[MemoryWorkload] = [
-    MemoryWorkload(test="set", val_size=64, has_expire=False, label="set-64b"),
-    MemoryWorkload(test="zadd", val_size=64, has_expire=False, label="zadd-64b"),
-    MemoryWorkload(test="sadd", val_size=64, has_expire=False, label="sadd-64b"),
-    MemoryWorkload(test="set", val_size=64, has_expire=True, label="set-64b-expire"),
+    MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80),
+    MemoryWorkload(
+        command="set", key_size=16, value_size=64, has_expire=True, label="set-v64-expire", user_data_bytes=80
+    ),
+    MemoryWorkload(command="zadd", key_size=0, value_size=20, label="zadd-m20", user_data_bytes=28),
+    MemoryWorkload(command="zadd", key_size=0, value_size=64, label="zadd-m64", user_data_bytes=72),
+    MemoryWorkload(command="sadd", key_size=0, value_size=20, label="sadd-m20", user_data_bytes=20),
+    MemoryWorkload(command="sadd", key_size=0, value_size=64, label="sadd-m64", user_data_bytes=64),
+    MemoryWorkload(command="hset", key_size=0, value_size=64, field_size=64, label="hset-f64-v64", user_data_bytes=128),
 ]
 
 
@@ -73,17 +82,20 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             replicas=0,
             note=f"[memory-sweep:{self._workload.label}] {sweep_task.reason}",
             requirements={},
-            type=self._workload.test,
-            val_sizes=[self._workload.val_size],
+            type=self._workload.command,
+            val_sizes=[self._workload.value_size],
             has_expire=self._workload.has_expire,
             enable_profiling=True,
+            key_size=self._workload.key_size,
+            field_size=self._workload.field_size,
+            user_data_bytes=self._workload.user_data_bytes,
         )
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
         """Match only tasks created by THIS workload coordinator."""
         if not isinstance(task, MemTaskData) or not task.sweep_commit:
             return False
-        return task.type == self._workload.test and task.has_expire == self._workload.has_expire
+        return task.type == self._workload.command and task.has_expire == self._workload.has_expire
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract bytes_per_item from output. CV=0 (memory is deterministic)."""

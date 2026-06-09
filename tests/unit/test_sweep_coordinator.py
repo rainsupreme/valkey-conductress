@@ -229,7 +229,7 @@ class TestTaskRunnerSweepIntegration:
 
         runner = TaskRunner(sweep=True, repo_path=tmp_dir)
         # throughput + latency + 4 memory = 6
-        assert len(runner._subscribers) == 6
+        assert len(runner._subscribers) == 9
 
 
 class TestUrgencyScore:

@@ -11,18 +11,11 @@ from typing import Any, Optional
 
 import plotext as plt
 
-from conductress.config import (
-    MEM_TEST_EXPIRE_SECONDS,
-    MEM_TEST_ITEM_COUNT,
-    MEM_TEST_KEY_SIZE,
-    MEM_TEST_MAX_CONCURRENT,
-    MEM_TEST_MEMBER_SIZE,
-    MEM_TEST_SCORE_SIZE,
-    ServerInfo,
-)
+from conductress.config import MEM_TEST_ITEM_COUNT, MEM_TEST_KEY_SIZE, MEM_TEST_MAX_CONCURRENT, ServerInfo
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
 from conductress.heap_profiler import JEMALLOC_PROF_ENV, cleanup_heap_dumps, collect_heap_profile
 from conductress.server import Server
+from conductress.sweep.populator import populate
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.utility import HumanByte, port_generator, print_pretty_header
 
@@ -38,6 +31,9 @@ class MemTaskData(BaseTaskData):
     has_expire: bool
     sweep_commit: str = ""  # non-empty marks this as a sweep task
     enable_profiling: bool = False  # enable jemalloc heap profiling for per-struct breakdown
+    key_size: int = 0  # key size in bytes (SET) or 0 (single-key commands); set by coordinator
+    field_size: int = 0  # field name size (HSET only)
+    user_data_bytes: int = 0  # per-item user data for overhead calculation
 
     def short_description(self) -> str:
         description = self.type
@@ -62,13 +58,16 @@ class MemTaskData(BaseTaskData):
             self.make_args,
             self.note,
             self.enable_profiling,
+            self.key_size,
+            self.field_size,
+            self.user_data_bytes,
         )
 
 
 class MemTaskRunner(BaseTaskRunner):
     """Tests memory efficiency of the specified type. Result is bytes of overhead per item."""
 
-    tests = ["set", "sadd", "zadd"]  # TODO hset? others?
+    tests = ["set", "sadd", "zadd", "hset"]
 
     def __init__(
         self,
@@ -82,6 +81,9 @@ class MemTaskRunner(BaseTaskRunner):
         make_args: str,
         note: str,
         enable_profiling: bool = False,
+        key_size: int = 0,
+        field_size: int = 0,
+        user_data_bytes: int = 0,
     ):
         super().__init__(task_name)
 
@@ -102,6 +104,9 @@ class MemTaskRunner(BaseTaskRunner):
         self.note = note
         self.make_args = make_args
         self.enable_profiling = enable_profiling
+        self.key_size = key_size
+        self.field_size = field_size
+        self.user_data_bytes = user_data_bytes
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -222,14 +227,19 @@ class MemTaskRunner(BaseTaskRunner):
             before_memory: dict[str, str] = await valkey.info("memory")
 
             count = MEM_TEST_ITEM_COUNT
-            await valkey.run_valkey_command_over_keyspace(count, f"-d {val_size} -t {self.test}")
-            if self.has_expire:
-                if self.test != "set":
-                    logger.error("Expiration is only supported for sets, skipping expiration test.")
-                else:
-                    await valkey.run_valkey_command_over_keyspace(
-                        count, f"EXPIRE key:__rand_int__ {MEM_TEST_EXPIRE_SECONDS}"
-                    )
+            from conductress.sweep.memory_coordinator import MemoryWorkload  # noqa: E402 (circular import)
+
+            workload = MemoryWorkload(
+                command=self.test,
+                key_size=self.key_size,
+                value_size=val_size,
+                field_size=self.field_size,
+                has_expire=self.has_expire,
+                label=f"{self.test}-populator",
+                item_count=count,
+                user_data_bytes=self.user_data_bytes,
+            )
+            populate(valkey.ip, valkey.port, workload)
 
             after_memory: dict[str, str] = await valkey.info("memory")
 
@@ -238,11 +248,13 @@ class MemTaskRunner(BaseTaskRunner):
                 # SET creates one key per item
                 item_count = key_count
             else:
-                # SADD/ZADD create a single collection with N members
+                # SADD/ZADD/HSET create a single collection with N members
                 if key_count != 1:
                     raise RuntimeError(f"Expected 1 collection key but found {key_count} on port {port}")
                 if self.test == "zadd":
                     cardinality_cmd, key_name = "ZCARD", "myzset"
+                elif self.test == "hset":
+                    cardinality_cmd, key_name = "HLEN", "myhash"
                 else:
                     cardinality_cmd, key_name = "SCARD", "myset"
                 result_str = await valkey.run_valkey_command(f"{cardinality_cmd} {key_name}")
@@ -268,16 +280,8 @@ class MemTaskRunner(BaseTaskRunner):
                     self.logger.info("Memory breakdown collected: %s", breakdown)
                 await cleanup_heap_dumps(valkey)
 
-            # Calculate per-item user data size based on test type
-            if self.test == "set":
-                # SET: each key is "key:__rand_int__" (16B) with a value of val_size
-                user_data_per_item = MEM_TEST_KEY_SIZE + val_size
-            elif self.test == "zadd":
-                # ZADD: member is "element:__rand_int__" (20B) + 8B score
-                user_data_per_item = MEM_TEST_MEMBER_SIZE + MEM_TEST_SCORE_SIZE
-            else:
-                # SADD: member is "element:__rand_int__" (20B)
-                user_data_per_item = MEM_TEST_MEMBER_SIZE
+            # User data per item from workload config
+            user_data_per_item = self.user_data_bytes
 
             before_usage = int(before_memory["used_memory"])
             after_usage = int(after_memory["used_memory"])

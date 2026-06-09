@@ -3,3 +3,4 @@ plotext>=5.2,<6.0
 scipy>=1.11,<2.0
 textual>=0.80,<1.0
 textual-plotext>=1.0,<2.0
+valkey>=6.0,<7.0
