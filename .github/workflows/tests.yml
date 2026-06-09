@@ -45,7 +45,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install package and dependencies
-        run: pip install -e . -r requirements/pip-requirements-dev.txt
+        run: pip install -e '.[dev]'
       - name: Run unit tests
         run: pytest tests/unit --cov=conductress --cov-report=term-missing --cov-report=xml --cov-fail-under=58
       - name: Run integration tests
