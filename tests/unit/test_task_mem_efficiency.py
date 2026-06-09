@@ -104,6 +104,8 @@ class TestMemTaskRunner:
     def mock_server(self):
         """Mock server for testing."""
         server = MagicMock(spec=Server)
+        server.ip = "127.0.0.1"
+        server.port = 6379
         server.get_available_cpu_count = AsyncMock(return_value=4)
         server.kill_all_valkey_instances_on_host = AsyncMock()
         server.ensure_binary_cached = AsyncMock(return_value=Path("/mock/binary"))
@@ -126,6 +128,8 @@ class TestMemTaskRunner:
             has_expire=False,
             make_args="-O2 -g",
             note="test note",
+            key_size=16,
+            user_data_bytes=80,  # 16B key + 64B value
         )
 
     def test_init_valid_test(self, runner):
@@ -188,9 +192,10 @@ class TestMemTaskRunner:
         assert runner.file_protocol.write_status.call_count >= 2
         runner.file_protocol.write_results.assert_called_once()
 
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_test_single_size_overhead(self, mock_server_class, runner, mock_server):
+    async def test_test_single_size_overhead(self, mock_server_class, mock_populate, runner, mock_server):
         """Test single size overhead calculation."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
 
@@ -213,15 +218,17 @@ class TestMemTaskRunner:
 
         # Verify server calls
         mock_server.info.assert_called()
-        mock_server.run_valkey_command_over_keyspace.assert_called()
+        mock_populate.assert_called_once()
         mock_server.count_items_expires.assert_called_once()
 
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_expiration_with_non_set_command(self, mock_server_class, runner, mock_server):
+    async def test_expiration_with_non_set_command(self, mock_server_class, mock_populate, runner, mock_server):
         """Test that expiration with non-set command logs error."""
         runner.test = "zadd"
         runner.has_expire = True
+        runner.user_data_bytes = 28
 
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
         mock_server.info.side_effect = [
@@ -233,18 +240,14 @@ class TestMemTaskRunner:
         # Set cached_binary_path as it would be set in run()
         runner.cached_binary_path = Path("/mock/binary")
 
-        with patch("conductress.tasks.task_mem_efficiency.logger") as mock_logger:
-            semaphore = asyncio.Semaphore(1)
-            with pytest.raises(RuntimeError):  # Should fail since expire_count != count
-                await runner.test_single_size_overhead(64, 6379, semaphore)
+        semaphore = asyncio.Semaphore(1)
+        with pytest.raises(RuntimeError):  # Should fail since expire_count != count
+            await runner.test_single_size_overhead(64, 6379, semaphore)
 
-            mock_logger.error.assert_called_once_with(
-                "Expiration is only supported for sets, skipping expiration test."
-            )
-
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_expiration_with_set_command(self, mock_server_class, runner, mock_server):
+    async def test_expiration_with_set_command(self, mock_server_class, mock_populate, runner, mock_server):
         """Test expiration works with set command."""
         runner.has_expire = True
 
@@ -264,10 +267,10 @@ class TestMemTaskRunner:
         semaphore = asyncio.Semaphore(1)
         _ = await runner.test_single_size_overhead(64, 6379, semaphore)
 
-        # Should call expire command
-        assert mock_server.run_valkey_command_over_keyspace.call_count == 2
-        expire_call = mock_server.run_valkey_command_over_keyspace.call_args_list[1]
-        assert "EXPIRE" in expire_call[0][1]
+        # Should call populate with has_expire=True
+        mock_populate.assert_called_once()
+        call_workload = mock_populate.call_args[0][2]
+        assert call_workload.has_expire is True
 
     def test_plot_basic(self, runner):
         """Test basic plotting functionality."""
@@ -293,9 +296,10 @@ class TestMemTaskRunner:
             overheads = plot_args[1]
             assert None in overheads  # Missing data should be None
 
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_memory_calculation_accuracy(self, mock_server_class, runner, mock_server):
+    async def test_memory_calculation_accuracy(self, mock_server_class, mock_populate, runner, mock_server):
         """Test memory calculation accuracy."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
 
@@ -324,9 +328,10 @@ class TestMemTaskRunner:
         assert result["per_item_overhead"] == expected_overhead
         assert result["user_data_per_item"] == key_size + val_size
 
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_assertion_failures(self, mock_server_class, runner, mock_server):
+    async def test_assertion_failures(self, mock_server_class, mock_populate, runner, mock_server):
         """Test assertion failures in count verification."""
         mock_server_class.with_path = AsyncMock(return_value=mock_server)
         mock_server.info.side_effect = [
@@ -344,9 +349,10 @@ class TestMemTaskRunner:
         with pytest.raises(RuntimeError):
             await runner.test_single_size_overhead(64, 6379, semaphore)
 
+    @patch("conductress.tasks.task_mem_efficiency.populate")
     @patch("conductress.tasks.task_mem_efficiency.Server")
     @pytest.mark.asyncio
-    async def test_expire_count_assertion(self, mock_server_class, runner, mock_server):
+    async def test_expire_count_assertion(self, mock_server_class, mock_populate, runner, mock_server):
         """Test expire count assertion."""
         runner.has_expire = True
 

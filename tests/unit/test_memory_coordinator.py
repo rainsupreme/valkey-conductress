@@ -16,16 +16,18 @@ from conductress.sweep.planner import SweepState
 from conductress.tasks.task_mem_efficiency import MemTaskData
 from conductress.tasks.task_perf_benchmark import PerfTaskData
 
-SET_WORKLOAD = MemoryWorkload(test="set", val_size=64, has_expire=False, label="set-64b")
-ZADD_WORKLOAD = MemoryWorkload(test="zadd", val_size=64, has_expire=False, label="zadd-64b")
-EXPIRE_WORKLOAD = MemoryWorkload(test="set", val_size=64, has_expire=True, label="set-64b-expire")
+SET_WORKLOAD = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
+ZADD_WORKLOAD = MemoryWorkload(command="zadd", key_size=0, value_size=64, label="zadd-m64", user_data_bytes=72)
+EXPIRE_WORKLOAD = MemoryWorkload(
+    command="set", key_size=16, value_size=64, has_expire=True, label="set-v64-expire", user_data_bytes=80
+)
 
 
 @pytest.fixture
 def tmp_state(tmp_path):
     state_dir = tmp_path / "sweep_data"
     state_dir.mkdir(parents=True)
-    state_file = state_dir / "memory_state_set-64b.json"
+    state_file = state_dir / "memory_state_set-v64.json"
     state = SweepState(
         merge_commits=["aaa", "bbb", "ccc"],
         commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
@@ -42,7 +44,7 @@ def coordinator(tmp_state, monkeypatch):
     monkeypatch.setattr(config, "REPO_NAMES", ["valkey", "rainsupreme"])
     monkeypatch.setattr(mc, "MEMORY_STATE_DIR", tmp_state / "sweep_data")
 
-    wl = MemoryWorkload(test="set", val_size=64, has_expire=False, label="set-64b")
+    wl = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
     coord = MemorySweepCoordinator(tmp_state / "repo", wl)
     coord.initialize()
     return coord
@@ -50,13 +52,13 @@ def coordinator(tmp_state, monkeypatch):
 
 class TestMemoryWorkload:
     def test_state_file_path(self):
-        wl = MemoryWorkload(test="zadd", val_size=64, has_expire=False, label="zadd-64b")
-        assert "memory_state_zadd-64b.json" in str(wl.state_file)
+        wl = MemoryWorkload(command="zadd", key_size=0, value_size=64, label="zadd-m64", user_data_bytes=72)
+        assert "memory_state_zadd-m64.json" in str(wl.state_file)
 
     def test_frozen(self):
         wl = SET_WORKLOAD
         with pytest.raises(Exception):
-            wl.test = "zadd"  # type: ignore
+            wl.command = "zadd"  # type: ignore
 
 
 class TestCoordinatorInit:
@@ -64,7 +66,7 @@ class TestCoordinatorInit:
         assert coordinator.metric_id == "memory"
 
     def test_workload_id_includes_label(self, coordinator):
-        assert coordinator.workload_id == "memory-set-64b"
+        assert coordinator.workload_id == "memory-set-v64"
 
     def test_metric_unit(self, coordinator):
         assert coordinator.metric_unit == "bytes/item"
@@ -85,7 +87,7 @@ class TestTaskCreation:
         assert task.val_sizes == [64]
         assert task.has_expire is False
         assert task.enable_profiling is True
-        assert "[memory-sweep:set-64b]" in task.note
+        assert "[memory-sweep:set-v64]" in task.note
 
 
 class TestTaskFiltering:
@@ -131,10 +133,10 @@ class TestFactory:
         coordinators = create_memory_coordinators(tmp_path / "repo")
         assert len(coordinators) == len(MEMORY_WORKLOADS)
         labels = [c._workload.label for c in coordinators]
-        assert "set-64b" in labels
-        assert "zadd-64b" in labels
-        assert "sadd-64b" in labels
-        assert "set-64b-expire" in labels
+        assert "set-v64" in labels
+        assert "zadd-m64" in labels
+        assert "sadd-m64" in labels
+        assert "set-v64-expire" in labels
 
     def test_each_has_unique_state_file(self, tmp_path, monkeypatch):
         import conductress.config as config
