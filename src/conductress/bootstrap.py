@@ -200,23 +200,18 @@ async def remove_motd(host: Host) -> None:
 
 async def update_pip_packages(host: Host):
     host.log_info_msg("Updating pip packages")
-    packages = load_requirements("pip-requirements")
-    if DEV:
-        packages += load_requirements("pip-requirements-dev")
-    # Quote each package spec to prevent shell interpretation of < and > in version ranges
-    quoted_packages = " ".join(f"'{p}'" for p in packages)
+    install_target = "'.[dev]'" if DEV else "."
     distro = await host.get_linux_distro()
     if distro == "Ubuntu":
-        # ensure virtual environment
         venv_path = Path("./python-venv")
         if not await path_exists(host, venv_path, expected_type="directory"):
             await host.run(f"python3 -m venv {venv_path}")
         pip = venv_path / "bin/pip"
         await host.run(f"{pip} install --upgrade pip")
-        await host.run(f"{pip} install {quoted_packages}")
+        await host.run(f"{pip} install {install_target}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install {quoted_packages}")
+        await host.run(f"pip install {install_target}")
 
 
 async def update_rhel_packages(host: Host):
