@@ -293,3 +293,121 @@ class TestMemTaskIntegration:
             status = json.load(f)
         assert "state" in status
         assert "start_time" in status
+
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @pytest.mark.asyncio
+    async def test_zadd_workflow_integration(self, temp_dir):
+        """Test ZADD memory workflow with populator (random scores, exact member size)."""
+        task_data = MemTaskData(
+            source="valkey",
+            specifier="8.0",
+            replicas=0,
+            note="zadd integration test",
+            requirements={},
+            make_args="",
+            type="zadd",
+            val_sizes=[64],
+            has_expire=False,
+            key_size=0,
+            user_data_bytes=72,
+        )
+
+        server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
+        runner = task_data.prepare_task_runner([server_info])
+        task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
+
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
+            await runner.run()
+
+        output_file = temp_dir / "output.jsonl"
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
+
+        result = results["data"]["results"][0]
+        assert result["val_size"] == 64
+        assert result["user_data_per_item"] == 72
+        assert result["per_item_overhead"] > 0
+
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @pytest.mark.asyncio
+    async def test_sadd_workflow_integration(self, temp_dir):
+        """Test SADD memory workflow with populator (exact member size)."""
+        task_data = MemTaskData(
+            source="valkey",
+            specifier="8.0",
+            replicas=0,
+            note="sadd integration test",
+            requirements={},
+            make_args="",
+            type="sadd",
+            val_sizes=[64],
+            has_expire=False,
+            key_size=0,
+            user_data_bytes=64,
+        )
+
+        server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
+        runner = task_data.prepare_task_runner([server_info])
+        task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
+
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
+            await runner.run()
+
+        output_file = temp_dir / "output.jsonl"
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
+
+        result = results["data"]["results"][0]
+        assert result["val_size"] == 64
+        assert result["user_data_per_item"] == 64
+        assert result["per_item_overhead"] > 0
+
+    @patch("conductress.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.task_queue.config.REPO_NAMES", ["valkey"])
+    @patch("conductress.tasks.task_mem_efficiency.MEM_TEST_ITEM_COUNT", 50_000)
+    @pytest.mark.asyncio
+    async def test_hset_workflow_integration(self, temp_dir):
+        """Test HSET memory workflow with populator (exact field + value size)."""
+        task_data = MemTaskData(
+            source="valkey",
+            specifier="8.0",
+            replicas=0,
+            note="hset integration test",
+            requirements={},
+            make_args="",
+            type="hset",
+            val_sizes=[64],
+            has_expire=False,
+            key_size=0,
+            field_size=64,
+            user_data_bytes=128,
+        )
+
+        server_info = ServerInfo(ip="127.0.0.1", username="test", name="test_server")
+        runner = task_data.prepare_task_runner([server_info])
+        task_name = f"{task_data.timestamp.strftime('%Y.%m.%d_%H.%M.%S.%f')}_{task_data.type}_mem"
+        runner.file_protocol = FileProtocol(task_name, "client", temp_dir)
+
+        with patch("conductress.tasks.task_mem_efficiency.plt"):
+            await runner.run()
+
+        output_file = temp_dir / "output.jsonl"
+        assert output_file.exists()
+
+        with open(output_file) as f:
+            results = json.loads(f.readlines()[-1])
+
+        result = results["data"]["results"][0]
+        assert result["val_size"] == 64
+        assert result["user_data_per_item"] == 128
+        assert result["per_item_overhead"] > 0
