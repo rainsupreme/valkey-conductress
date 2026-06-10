@@ -84,3 +84,53 @@ class TestExportBreakdown:
 
         data = json.loads(output.read_text())
         assert "breakdown" not in data["points"][0]
+
+    def test_recategorizes_from_raw_stacks_at_export(self, tmp_path):
+        """When num_keys is provided, export uses raw_stacks instead of stored breakdown."""
+        state = SweepState(
+            merge_commits=["aaa"],
+            commit_dates={"aaa": "2024-01-01"},
+        )
+        state.points["aaa"] = BenchmarkPoint(
+            commit="aaa",
+            date="2024-01-01",
+            value=50.0,
+            cv=0.0,
+            reps=1,
+            status=PointStatus.COMPLETED,
+            breakdown={"sds": 999.0},  # stale breakdown — should be ignored
+            raw_stacks=[
+                [["je_malloc", "sdsnewlen", "setCommand"], 40_000_000],
+                [["je_malloc", "hashtableExpand", "dbAdd"], 10_000_000],
+            ],
+        )
+        output = tmp_path / "series.json"
+        export_series(state, output, platform="arm64", workload="memory", num_keys=5_000_000)
+
+        data = json.loads(output.read_text())
+        bd = data["points"][0]["breakdown"]
+        assert bd["sds"] == 8.0  # 40M / 5M
+        assert bd["hashtable"] == 2.0  # 10M / 5M
+        # Stale breakdown value (999.0) was NOT used
+        assert bd["sds"] != 999.0
+
+    def test_falls_back_to_breakdown_without_raw_stacks(self, tmp_path):
+        """Points without raw_stacks use stored breakdown (backward compat)."""
+        state = SweepState(
+            merge_commits=["aaa"],
+            commit_dates={"aaa": "2024-01-01"},
+        )
+        state.points["aaa"] = BenchmarkPoint(
+            commit="aaa",
+            date="2024-01-01",
+            value=50.0,
+            cv=0.0,
+            reps=1,
+            status=PointStatus.COMPLETED,
+            breakdown={"embedded_val": 40.0, "hashtable": 10.0},
+        )
+        output = tmp_path / "series.json"
+        export_series(state, output, platform="arm64", workload="memory", num_keys=5_000_000)
+
+        data = json.loads(output.read_text())
+        assert data["points"][0]["breakdown"]["embedded_val"] == 40.0

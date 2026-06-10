@@ -74,6 +74,20 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
     def workload_id(self) -> str:  # type: ignore[override]
         return f"memory-{self._workload.label}"
 
+    def export(self, output_path: Path, platform: str) -> int:
+        """Override to pass num_keys for export-time re-categorization."""
+        from conductress.sweep.exporter import export_series
+
+        export_series(
+            self.state,
+            output_path,
+            platform=platform,
+            workload=self.workload_id,
+            lower_is_better=self.lower_is_better,
+            num_keys=self._workload.item_count,
+        )
+        return sum(1 for p in self.state.points.values() if p.value is not None)
+
     def _create_task(self, sweep_task: SweepTask) -> MemTaskData:
         return MemTaskData(
             source=SWEEP_SOURCE,
