@@ -95,7 +95,11 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
         """Match only tasks created by THIS workload coordinator."""
         if not isinstance(task, MemTaskData) or not task.sweep_commit:
             return False
-        return task.type == self._workload.command and task.has_expire == self._workload.has_expire
+        return (
+            task.type == self._workload.command
+            and task.has_expire == self._workload.has_expire
+            and task.val_sizes == [self._workload.value_size]
+        )
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         """Extract bytes_per_item from output. CV=0 (memory is deterministic)."""

@@ -96,6 +96,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is True
 
     def test_rejects_different_test_type(self, coordinator):
@@ -103,6 +104,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "zadd"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_different_expire_flag(self, coordinator):
@@ -110,6 +112,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = True
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_non_sweep_task(self, coordinator):
@@ -117,11 +120,21 @@ class TestTaskFiltering:
         task.sweep_commit = ""
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_perf_task(self, coordinator):
         task = MagicMock(spec=PerfTaskData)
         task.sweep_commit = "aaa"
+        assert coordinator._is_my_task(task) is False
+
+    def test_rejects_different_value_size(self, coordinator):
+        """zadd-m64 task must not be claimed by zadd-m20 coordinator (and vice versa)."""
+        task = MagicMock(spec=MemTaskData)
+        task.sweep_commit = "aaa"
+        task.type = "set"
+        task.has_expire = False
+        task.val_sizes = [20]  # Different from coordinator's 64
         assert coordinator._is_my_task(task) is False
 
 
@@ -214,6 +227,7 @@ class TestOnTaskCompleted:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
 
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             coordinator.on_task_completed(task)
@@ -238,6 +252,7 @@ class TestOnTaskCompleted:
         task.sweep_commit = "bbb"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
 
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             coordinator.on_task_completed(task)
