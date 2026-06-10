@@ -45,9 +45,7 @@ MEMORY_WORKLOADS: list[MemoryWorkload] = [
         command="set", key_size=16, value_size=64, has_expire=True, label="set-v64-expire", user_data_bytes=80
     ),
     MemoryWorkload(command="zadd", key_size=0, value_size=20, label="zadd-m20", user_data_bytes=28),
-    MemoryWorkload(command="zadd", key_size=0, value_size=64, label="zadd-m64", user_data_bytes=72),
     MemoryWorkload(command="sadd", key_size=0, value_size=20, label="sadd-m20", user_data_bytes=20),
-    MemoryWorkload(command="sadd", key_size=0, value_size=64, label="sadd-m64", user_data_bytes=64),
     MemoryWorkload(command="hset", key_size=0, value_size=64, field_size=64, label="hset-f64-v64", user_data_bytes=128),
 ]
 

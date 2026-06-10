@@ -147,8 +147,6 @@ class TestFactory:
         assert len(coordinators) == len(MEMORY_WORKLOADS)
         labels = [c._workload.label for c in coordinators]
         assert "set-v64" in labels
-        assert "zadd-m64" in labels
-        assert "sadd-m64" in labels
         assert "set-v64-expire" in labels
 
     def test_each_has_unique_state_file(self, tmp_path, monkeypatch):
