@@ -388,14 +388,14 @@ class TestBreakdownSerialization:
             cv=0.0,
             reps=1,
             status=PointStatus.COMPLETED,
-            breakdown={"embedded_val": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1},
+            breakdown={"robj_embval": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1},
         )
 
         state_file = tmp_path / "state.json"
         state.save(state_file)
 
         loaded = SweepState.load(state_file)
-        assert loaded.points["aaa"].breakdown == {"embedded_val": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1}
+        assert loaded.points["aaa"].breakdown == {"robj_embval": 40.0, "hashtable": 10.0, "sds": 0, "other": 0.1}
 
     def test_none_breakdown_survives_round_trip(self, tmp_path):
         from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
@@ -463,7 +463,7 @@ class TestLatencyDataSerialization:
             perf_counters={"cycles": 1000, "instructions": 2000},
             perf_duration_seconds=30.0,
             perf_rps=1500000.0,
-            breakdown={"embedded_val": 30.0, "sds": 10.0},
+            breakdown={"robj_embval": 30.0, "sds": 10.0},
             status=PointStatus.COMPLETED,
         )
 
