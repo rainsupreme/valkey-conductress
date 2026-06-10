@@ -96,6 +96,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is True
 
     def test_rejects_different_test_type(self, coordinator):
@@ -103,6 +104,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "zadd"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_different_expire_flag(self, coordinator):
@@ -110,6 +112,7 @@ class TestTaskFiltering:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = True
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_non_sweep_task(self, coordinator):
@@ -117,11 +120,21 @@ class TestTaskFiltering:
         task.sweep_commit = ""
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
     def test_rejects_perf_task(self, coordinator):
         task = MagicMock(spec=PerfTaskData)
         task.sweep_commit = "aaa"
+        assert coordinator._is_my_task(task) is False
+
+    def test_rejects_different_value_size(self, coordinator):
+        """zadd-m64 task must not be claimed by zadd-m20 coordinator (and vice versa)."""
+        task = MagicMock(spec=MemTaskData)
+        task.sweep_commit = "aaa"
+        task.type = "set"
+        task.has_expire = False
+        task.val_sizes = [20]  # Different from coordinator's 64
         assert coordinator._is_my_task(task) is False
 
 
@@ -170,7 +183,7 @@ class TestBreakdownExtraction:
         entry = {
             "task_id": "test_task",
             "score": 50.26,
-            "data": {"results": [{"breakdown": {"embedded_obj": 40.0, "hashtable": 10.0}}]},
+            "data": {"results": [{"breakdown": {"embedded_val": 40.0, "hashtable": 10.0}}]},
         }
         output_file.write_text(json.dumps(entry) + "\n")
 
@@ -180,7 +193,7 @@ class TestBreakdownExtraction:
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             breakdown = coordinator._extract_breakdown(task)
 
-        assert breakdown == {"embedded_obj": 40.0, "hashtable": 10.0}
+        assert breakdown == {"embedded_val": 40.0, "hashtable": 10.0}
 
     def test_returns_none_when_no_breakdown(self, coordinator, tmp_path):
         output_file = tmp_path / "results" / "output.jsonl"
@@ -205,7 +218,7 @@ class TestOnTaskCompleted:
         entry = {
             "task_id": "test_task",
             "score": 30.92,
-            "data": {"results": [{"breakdown": {"embedded_obj": 48.0, "hashtable": 12.8, "other": 0.1}}]},
+            "data": {"results": [{"breakdown": {"embedded_val": 48.0, "hashtable": 12.8, "other": 0.1}}]},
         }
         output_file.write_text(json.dumps(entry) + "\n")
 
@@ -214,6 +227,7 @@ class TestOnTaskCompleted:
         task.sweep_commit = "aaa"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
 
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             coordinator.on_task_completed(task)
@@ -224,7 +238,7 @@ class TestOnTaskCompleted:
         assert point.value == 30.92
 
         # Verify breakdown was attached
-        assert point.breakdown == {"embedded_obj": 48.0, "hashtable": 12.8, "other": 0.1}
+        assert point.breakdown == {"embedded_val": 48.0, "hashtable": 12.8, "other": 0.1}
 
     def test_records_result_without_breakdown(self, coordinator, tmp_path):
         """Result recorded even when breakdown is missing."""
@@ -238,6 +252,7 @@ class TestOnTaskCompleted:
         task.sweep_commit = "bbb"
         task.type = "set"
         task.has_expire = False
+        task.val_sizes = [64]
 
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             coordinator.on_task_completed(task)

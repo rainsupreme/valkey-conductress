@@ -13,7 +13,7 @@ import plotext as plt
 
 from conductress.config import MEM_TEST_ITEM_COUNT, MEM_TEST_KEY_SIZE, MEM_TEST_MAX_CONCURRENT, ServerInfo
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.heap_profiler import JEMALLOC_PROF_ENV, cleanup_heap_dumps, collect_heap_profile
+from conductress.heap_profiler import JEMALLOC_PROF_ENV, HeapProfileResult, cleanup_heap_dumps, collect_heap_profile
 from conductress.server import Server
 from conductress.sweep.populator import populate
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -274,9 +274,12 @@ class MemTaskRunner(BaseTaskRunner):
 
             # Collect heap profile if profiling is enabled (dump created on shutdown by prof_final)
             breakdown: Optional[dict[str, float]] = None
+            raw_stacks: Optional[list[list]] = None
             if self.enable_profiling:
-                breakdown = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
-                if breakdown:
+                profile_result = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
+                if profile_result:
+                    breakdown = profile_result.breakdown
+                    raw_stacks = profile_result.raw_stacks
                     self.logger.info("Memory breakdown collected: %s", breakdown)
                 await cleanup_heap_dumps(valkey)
 
@@ -298,6 +301,7 @@ class MemTaskRunner(BaseTaskRunner):
                 "per_key_size": per_key,
                 "per_item_overhead": per_item_overhead,
                 "breakdown": breakdown,
+                "raw_stacks": raw_stacks,
             }
             return result
 

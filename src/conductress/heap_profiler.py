@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Optional, Protocol
 
 
@@ -23,12 +24,21 @@ logger = logging.getLogger(__name__)
 # Categories ordered by specificity (most specific patterns first).
 # Each allocation is assigned to the FIRST matching category found
 # when walking the stack from leaf (allocator) toward root (main).
+#
+# Special handling for robj allocations:
+#   - embedded_val: EMBSTR encoding (value stored inline) — createEmbeddedString path
+#   - embedded_key: robj with key embedded in struct — createUnembedded/createObject
+#     when objectSetKey/objectSetKeyAndExpire appears in the caller stack
+#   - robj: plain robj without key embedding (old commits before key-embedding)
 CATEGORIES: list[tuple[str, list[str]]] = [
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
-    ("embedded_obj", ["createEmbedded", "objectSetKey", "objectSetVal"]),
+    ("embedded_val", ["createEmbeddedString"]),
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
-    ("hashtable", ["hashtable", "bucket", "resize", "kvstore", "Chained", "rehash"]),
+    (
+        "hashtable",
+        ["hashtable", "bucket", "resize", "kvstore", "Chained", "rehash", "hashTypeCreateEntry", "hashTypeEntry"],
+    ),
     (
         "dict",
         [
@@ -43,15 +53,29 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "dictSetKey",
         ],
     ),
-    ("robj", ["createObject", "createString", "createRaw", "createZset"]),
+    ("robj", ["createObject", "createString", "createRaw", "createZset", "createUnembedded"]),
     (
         "server_infra",
         ["initServer", "aeCreate", "createShared", "hdr_init", "bioInit", "initServerConfig", "ACL", "clusterInit"],
     ),
 ]
 
-# All category names in display order
-CATEGORY_NAMES: list[str] = [name for name, _ in CATEGORIES] + ["other"]
+# All category names in display order (embedded_key is determined by post-processing, not pattern match)
+CATEGORY_NAMES: list[str] = [
+    "skiplist",
+    "listpack",
+    "embedded_val",
+    "sds",
+    "hashtable",
+    "dict",
+    "embedded_key",
+    "robj",
+    "server_infra",
+    "other",
+]
+
+# Patterns indicating the robj allocation has an embedded key (checked across full stack)
+_EMBEDDED_KEY_MARKERS = ["objectSetKey", "objectSetKeyAndExpire"]
 
 # Function name patterns that indicate jemalloc/allocator internals (skip these frames)
 _JEMALLOC_PATTERNS = [
@@ -118,14 +142,27 @@ def _is_jemalloc_frame(func: str) -> bool:
 
 
 def _categorize_stack(funcs: list[str]) -> str:
-    """Walk resolved function names, skip allocator frames, return first matching category."""
+    """Walk resolved function names, skip allocator frames, return first matching category.
+
+    Special case: if the first match is 'robj' but the full stack contains an
+    embedded-key marker (objectSetKey/objectSetKeyAndExpire), reclassify as 'embedded_key'.
+    """
+    first_match: Optional[str] = None
     for func in funcs:
         if _is_jemalloc_frame(func):
             continue
-        for cat_name, patterns in CATEGORIES:
-            if any(pat in func for pat in patterns):
-                return cat_name
-    return "other"
+        if first_match is None:
+            for cat_name, patterns in CATEGORIES:
+                if any(pat in func for pat in patterns):
+                    first_match = cat_name
+                    break
+            if first_match and first_match != "robj":
+                return first_match
+            # If robj matched, continue scanning for embedded_key markers
+        elif first_match == "robj":
+            if any(marker in func for marker in _EMBEDDED_KEY_MARKERS):
+                return "embedded_key"
+    return first_match or "other"
 
 
 def _parse_stacks(heap_content: str) -> list[tuple[list[str], int]]:
@@ -189,13 +226,43 @@ def categorize_heap_dump(heap_content: str, addr2line_output: str) -> Optional[d
     return {cat: category_bytes.get(cat, 0) for cat in CATEGORY_NAMES}
 
 
+@dataclass
+class HeapProfileResult:
+    """Result of heap profiling: breakdown + retained stacks for re-categorization."""
+
+    breakdown: dict[str, float]  # category -> bytes/key
+    raw_stacks: list[list]  # [[func_names...], bytes] pairs for re-categorization
+
+    def to_serializable_stacks(self) -> list[list]:
+        """Return stacks in JSON-serializable format: [[funcs...], bytes]."""
+        return self.raw_stacks
+
+
+def recategorize_from_stacks(raw_stacks: list[list], num_keys: int) -> dict[str, float]:
+    """Re-categorize previously saved stacks using current CATEGORIES patterns.
+
+    Args:
+        raw_stacks: List of [func_names_list, bytes] pairs from HeapProfileResult.
+        num_keys: Number of keys for per-key normalization.
+
+    Returns:
+        Dict mapping category -> bytes/key with current category definitions.
+    """
+    category_bytes: dict[str, int] = defaultdict(int)
+    for entry in raw_stacks:
+        funcs, bytes_val = entry
+        cat = _categorize_stack(funcs)
+        category_bytes[cat] += bytes_val
+    return {cat: round(category_bytes.get(cat, 0) / num_keys, 2) for cat in CATEGORY_NAMES}
+
+
 async def collect_heap_profile(
     ssh_host: HasRunHostCommand, binary_path: str, num_keys: int
-) -> Optional[dict[str, float]]:
+) -> Optional[HeapProfileResult]:
     """Collect and parse heap profile from a remote host after server shutdown.
 
     Finds the most recent heap dump, resolves addresses via addr2line,
-    categorizes allocations, and returns per-key breakdown.
+    categorizes allocations, and returns breakdown + retained stacks.
 
     Args:
         ssh_host: Remote host with run_host_command(cmd) method.
@@ -203,7 +270,7 @@ async def collect_heap_profile(
         num_keys: Number of keys in the database (for per-key normalization).
 
     Returns:
-        Dict mapping category -> bytes/key, or None if profiling failed.
+        HeapProfileResult with breakdown and raw stacks, or None if profiling failed.
     """
     # Find the heap dump file
     heap_path, _ = await ssh_host.run_host_command(f"ls -t {HEAP_DUMP_PREFIX}*.heap 2>/dev/null | head -1", check=False)
@@ -236,10 +303,19 @@ async def collect_heap_profile(
         logger.warning("addr2line produced no output")
         return None
 
-    # Categorize
-    raw_breakdown = categorize_heap_dump(heap_content, addr2line_out)
-    if not raw_breakdown:
-        return None
+    # Resolve addresses to function names
+    resolved = _resolve_addresses(sorted_addrs, addr2line_out)
+
+    # Build resolved stacks (for retention) and categorize in one pass
+    resolved_stacks: list[list] = []
+    category_bytes: dict[str, int] = defaultdict(int)
+    for addrs, bytes_val in stacks:
+        funcs = [resolved.get(addr, "??") for addr in addrs]
+        resolved_stacks.append([funcs, bytes_val])
+        cat = _categorize_stack(funcs)
+        category_bytes[cat] += bytes_val
+
+    raw_breakdown = {cat: category_bytes.get(cat, 0) for cat in CATEGORY_NAMES}
 
     # Convert to per-key values
     if num_keys <= 0:
@@ -256,7 +332,7 @@ async def collect_heap_profile(
         num_keys,
         total_bytes / num_keys,
     )
-    return per_key
+    return HeapProfileResult(breakdown=per_key, raw_stacks=resolved_stacks)
 
 
 async def cleanup_heap_dumps(ssh_host: HasRunHostCommand) -> None:
