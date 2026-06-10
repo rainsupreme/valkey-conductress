@@ -22,7 +22,7 @@ def state_with_breakdown():
         cv=0.0,
         reps=1,
         status=PointStatus.COMPLETED,
-        breakdown={"embedded_obj": 40.0, "sds": 24.0, "hashtable": 0, "dict": 24.0, "other": 0.3},
+        breakdown={"embedded_val": 40.0, "sds": 24.0, "hashtable": 0, "dict": 24.0, "other": 0.3},
     )
     state.points["bbb"] = BenchmarkPoint(
         commit="bbb",
@@ -31,7 +31,7 @@ def state_with_breakdown():
         cv=0.0,
         reps=1,
         status=PointStatus.COMPLETED,
-        breakdown={"embedded_obj": 56.0, "sds": 0, "hashtable": 12.8, "dict": 0, "other": 0.3},
+        breakdown={"embedded_val": 56.0, "sds": 0, "hashtable": 12.8, "dict": 0, "other": 0.3},
     )
     return state
 
@@ -59,7 +59,7 @@ class TestExportBreakdown:
         export_series(state_with_breakdown, output, platform="arm64", workload="memory")
 
         data = json.loads(output.read_text())
-        assert data["points"][0]["breakdown"]["embedded_obj"] == 40.0
+        assert data["points"][0]["breakdown"]["embedded_val"] == 40.0
         assert data["points"][1]["breakdown"]["hashtable"] == 12.8
 
     def test_includes_categories_in_metadata(self, state_with_breakdown, tmp_path):
@@ -68,7 +68,7 @@ class TestExportBreakdown:
 
         data = json.loads(output.read_text())
         assert "categories" in data["metadata"]
-        assert "embedded_obj" in data["metadata"]["categories"]
+        assert "embedded_val" in data["metadata"]["categories"]
         assert "other" in data["metadata"]["categories"]
 
     def test_no_categories_without_breakdown(self, state_without_breakdown, tmp_path):

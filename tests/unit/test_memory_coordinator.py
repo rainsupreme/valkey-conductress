@@ -170,7 +170,7 @@ class TestBreakdownExtraction:
         entry = {
             "task_id": "test_task",
             "score": 50.26,
-            "data": {"results": [{"breakdown": {"embedded_obj": 40.0, "hashtable": 10.0}}]},
+            "data": {"results": [{"breakdown": {"embedded_val": 40.0, "hashtable": 10.0}}]},
         }
         output_file.write_text(json.dumps(entry) + "\n")
 
@@ -180,7 +180,7 @@ class TestBreakdownExtraction:
         with patch("conductress.sweep.memory_coordinator.CONDUCTRESS_RESULTS", tmp_path / "results"):
             breakdown = coordinator._extract_breakdown(task)
 
-        assert breakdown == {"embedded_obj": 40.0, "hashtable": 10.0}
+        assert breakdown == {"embedded_val": 40.0, "hashtable": 10.0}
 
     def test_returns_none_when_no_breakdown(self, coordinator, tmp_path):
         output_file = tmp_path / "results" / "output.jsonl"
@@ -205,7 +205,7 @@ class TestOnTaskCompleted:
         entry = {
             "task_id": "test_task",
             "score": 30.92,
-            "data": {"results": [{"breakdown": {"embedded_obj": 48.0, "hashtable": 12.8, "other": 0.1}}]},
+            "data": {"results": [{"breakdown": {"embedded_val": 48.0, "hashtable": 12.8, "other": 0.1}}]},
         }
         output_file.write_text(json.dumps(entry) + "\n")
 
@@ -224,7 +224,7 @@ class TestOnTaskCompleted:
         assert point.value == 30.92
 
         # Verify breakdown was attached
-        assert point.breakdown == {"embedded_obj": 48.0, "hashtable": 12.8, "other": 0.1}
+        assert point.breakdown == {"embedded_val": 48.0, "hashtable": 12.8, "other": 0.1}
 
     def test_records_result_without_breakdown(self, coordinator, tmp_path):
         """Result recorded even when breakdown is missing."""

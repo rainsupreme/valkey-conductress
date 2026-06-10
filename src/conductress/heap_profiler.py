@@ -24,12 +24,21 @@ logger = logging.getLogger(__name__)
 # Categories ordered by specificity (most specific patterns first).
 # Each allocation is assigned to the FIRST matching category found
 # when walking the stack from leaf (allocator) toward root (main).
+#
+# Special handling for robj allocations:
+#   - embedded_val: EMBSTR encoding (value stored inline) — createEmbeddedString path
+#   - embedded_key: robj with key embedded in struct — createUnembedded/createObject
+#     when objectSetKey/objectSetKeyAndExpire appears in the caller stack
+#   - robj: plain robj without key embedding (old commits before key-embedding)
 CATEGORIES: list[tuple[str, list[str]]] = [
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
-    ("embedded_obj", ["createEmbedded", "objectSetKey", "objectSetVal"]),
+    ("embedded_val", ["createEmbeddedString"]),
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
-    ("hashtable", ["hashtable", "bucket", "resize", "kvstore", "Chained", "rehash"]),
+    (
+        "hashtable",
+        ["hashtable", "bucket", "resize", "kvstore", "Chained", "rehash", "hashTypeCreateEntry", "hashTypeEntry"],
+    ),
     (
         "dict",
         [
@@ -44,15 +53,29 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "dictSetKey",
         ],
     ),
-    ("robj", ["createObject", "createString", "createRaw", "createZset"]),
+    ("robj", ["createObject", "createString", "createRaw", "createZset", "createUnembedded"]),
     (
         "server_infra",
         ["initServer", "aeCreate", "createShared", "hdr_init", "bioInit", "initServerConfig", "ACL", "clusterInit"],
     ),
 ]
 
-# All category names in display order
-CATEGORY_NAMES: list[str] = [name for name, _ in CATEGORIES] + ["other"]
+# All category names in display order (embedded_key is determined by post-processing, not pattern match)
+CATEGORY_NAMES: list[str] = [
+    "skiplist",
+    "listpack",
+    "embedded_val",
+    "sds",
+    "hashtable",
+    "dict",
+    "embedded_key",
+    "robj",
+    "server_infra",
+    "other",
+]
+
+# Patterns indicating the robj allocation has an embedded key (checked across full stack)
+_EMBEDDED_KEY_MARKERS = ["objectSetKey", "objectSetKeyAndExpire"]
 
 # Function name patterns that indicate jemalloc/allocator internals (skip these frames)
 _JEMALLOC_PATTERNS = [
@@ -119,14 +142,27 @@ def _is_jemalloc_frame(func: str) -> bool:
 
 
 def _categorize_stack(funcs: list[str]) -> str:
-    """Walk resolved function names, skip allocator frames, return first matching category."""
+    """Walk resolved function names, skip allocator frames, return first matching category.
+
+    Special case: if the first match is 'robj' but the full stack contains an
+    embedded-key marker (objectSetKey/objectSetKeyAndExpire), reclassify as 'embedded_key'.
+    """
+    first_match: Optional[str] = None
     for func in funcs:
         if _is_jemalloc_frame(func):
             continue
-        for cat_name, patterns in CATEGORIES:
-            if any(pat in func for pat in patterns):
-                return cat_name
-    return "other"
+        if first_match is None:
+            for cat_name, patterns in CATEGORIES:
+                if any(pat in func for pat in patterns):
+                    first_match = cat_name
+                    break
+            if first_match and first_match != "robj":
+                return first_match
+            # If robj matched, continue scanning for embedded_key markers
+        elif first_match == "robj":
+            if any(marker in func for marker in _EMBEDDED_KEY_MARKERS):
+                return "embedded_key"
+    return first_match or "other"
 
 
 def _parse_stacks(heap_content: str) -> list[tuple[list[str], int]]:

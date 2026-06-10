@@ -60,7 +60,7 @@ class TestCategorizeStack:
         [
             (
                 ["je_malloc_default", "ztrymalloc_usable_internal", "createEmbeddedStringObject", "setKey"],
-                "embedded_obj",
+                "embedded_val",
             ),
             (["zcalloc", "hashtableExpandIfNeeded", "hashtableAdd", "dbAddInternal"], "hashtable"),
             (["zmalloc", "sdsnewlen", "sdsdup", "processMultibulkBuffer"], "sds"),
@@ -68,6 +68,11 @@ class TestCategorizeStack:
             (["zmalloc", "dictExpand", "dictAdd", "dbAdd"], "dict"),
             (["zcalloc", "aeCreateEventLoop", "initServer", "main"], "server_infra"),
             (["zmalloc", "createObject", "createStringObject", "setCommand"], "robj"),
+            (
+                ["zmalloc", "createUnembeddedObjectWithKeyAndExpire", "objectSetKeyAndExpire", "dbAdd"],
+                "embedded_key",
+            ),
+            (["zmalloc", "hashTypeCreateEntry", "hashTypeSet", "hsetCommand"], "hashtable"),
             (["je_malloc_default", "imalloc", "??", "_start"], "other"),
         ],
     )
@@ -148,7 +153,7 @@ class TestCategorizeHeapDump:
         )
         result = categorize_heap_dump(heap, addr2line)
         assert result is not None
-        assert result["embedded_obj"] == 5000
+        assert result["embedded_val"] == 5000
         assert result["hashtable"] == 2000
         assert result["sds"] == 0
 
@@ -195,7 +200,7 @@ class TestCollectHeapProfile:
         result = await collect_heap_profile(ssh, "/path/to/valkey-server", num_keys=1000)
 
         assert result is not None
-        assert result.breakdown["embedded_obj"] == 48.0  # 48000 / 1000
+        assert result.breakdown["embedded_val"] == 48.0  # 48000 / 1000
         assert result.breakdown["hashtable"] == 12.0  # 12000 / 1000
         assert result.raw_stacks is not None
         assert len(result.raw_stacks) > 0
@@ -249,14 +254,25 @@ class TestCleanupHeapDumps:
 
 class TestCategoryNames:
     def test_has_all_expected_categories(self):
-        expected = {"embedded_obj", "sds", "hashtable", "skiplist", "robj", "listpack", "dict", "server_infra", "other"}
+        expected = {
+            "embedded_val",
+            "embedded_key",
+            "sds",
+            "hashtable",
+            "skiplist",
+            "robj",
+            "listpack",
+            "dict",
+            "server_infra",
+            "other",
+        }
         assert set(CATEGORY_NAMES) == expected
 
     def test_other_is_last(self):
         assert CATEGORY_NAMES[-1] == "other"
 
     def test_count(self):
-        assert len(CATEGORY_NAMES) == 9
+        assert len(CATEGORY_NAMES) == 10
 
 
 class TestRecategorizeFromStacks:
@@ -270,7 +286,7 @@ class TestRecategorizeFromStacks:
             [["je_malloc", "sdsnewlen", "catAppendOnlyGenericCommand"], 5000],
         ]
         result = recategorize_from_stacks(raw_stacks, num_keys=1000)
-        assert result["embedded_obj"] == 48.0
+        assert result["embedded_val"] == 48.0
         assert result["hashtable"] == 12.0
         assert result["sds"] == 5.0
 
