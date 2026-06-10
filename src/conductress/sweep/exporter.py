@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from conductress.heap_profiler import recategorize_from_stacks
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 
 # =============================================================================
@@ -148,6 +149,7 @@ def export_series(
     platform: str = "arm64/c7g.metal/graviton3",
     workload: str = "",
     lower_is_better: bool = False,
+    num_keys: int = 0,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -156,6 +158,7 @@ def export_series(
         output_path: Where to write series.json.
         platform: Platform identifier string.
         workload: Workload identifier string.
+        num_keys: If provided and point has raw_stacks, recompute breakdown at export time.
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -187,7 +190,10 @@ def export_series(
             entry["pr"] = pr
         if pr_title is not None:
             entry["pr_title"] = pr_title
-        if point.breakdown:
+        if point.raw_stacks and num_keys > 0:
+            entry["breakdown"] = recategorize_from_stacks(point.raw_stacks, num_keys)
+            has_breakdown = True
+        elif point.breakdown:
             entry["breakdown"] = point.breakdown
             has_breakdown = True
         points.append(entry)
