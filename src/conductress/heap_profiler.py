@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Optional, Protocol
 
 
@@ -189,13 +190,43 @@ def categorize_heap_dump(heap_content: str, addr2line_output: str) -> Optional[d
     return {cat: category_bytes.get(cat, 0) for cat in CATEGORY_NAMES}
 
 
+@dataclass
+class HeapProfileResult:
+    """Result of heap profiling: breakdown + retained stacks for re-categorization."""
+
+    breakdown: dict[str, float]  # category -> bytes/key
+    raw_stacks: list[list]  # [[func_names...], bytes] pairs for re-categorization
+
+    def to_serializable_stacks(self) -> list[list]:
+        """Return stacks in JSON-serializable format: [[funcs...], bytes]."""
+        return self.raw_stacks
+
+
+def recategorize_from_stacks(raw_stacks: list[list], num_keys: int) -> dict[str, float]:
+    """Re-categorize previously saved stacks using current CATEGORIES patterns.
+
+    Args:
+        raw_stacks: List of [func_names_list, bytes] pairs from HeapProfileResult.
+        num_keys: Number of keys for per-key normalization.
+
+    Returns:
+        Dict mapping category -> bytes/key with current category definitions.
+    """
+    category_bytes: dict[str, int] = defaultdict(int)
+    for entry in raw_stacks:
+        funcs, bytes_val = entry
+        cat = _categorize_stack(funcs)
+        category_bytes[cat] += bytes_val
+    return {cat: round(category_bytes.get(cat, 0) / num_keys, 2) for cat in CATEGORY_NAMES}
+
+
 async def collect_heap_profile(
     ssh_host: HasRunHostCommand, binary_path: str, num_keys: int
-) -> Optional[dict[str, float]]:
+) -> Optional[HeapProfileResult]:
     """Collect and parse heap profile from a remote host after server shutdown.
 
     Finds the most recent heap dump, resolves addresses via addr2line,
-    categorizes allocations, and returns per-key breakdown.
+    categorizes allocations, and returns breakdown + retained stacks.
 
     Args:
         ssh_host: Remote host with run_host_command(cmd) method.
@@ -203,7 +234,7 @@ async def collect_heap_profile(
         num_keys: Number of keys in the database (for per-key normalization).
 
     Returns:
-        Dict mapping category -> bytes/key, or None if profiling failed.
+        HeapProfileResult with breakdown and raw stacks, or None if profiling failed.
     """
     # Find the heap dump file
     heap_path, _ = await ssh_host.run_host_command(f"ls -t {HEAP_DUMP_PREFIX}*.heap 2>/dev/null | head -1", check=False)
@@ -236,10 +267,19 @@ async def collect_heap_profile(
         logger.warning("addr2line produced no output")
         return None
 
-    # Categorize
-    raw_breakdown = categorize_heap_dump(heap_content, addr2line_out)
-    if not raw_breakdown:
-        return None
+    # Resolve addresses to function names
+    resolved = _resolve_addresses(sorted_addrs, addr2line_out)
+
+    # Build resolved stacks (for retention) and categorize in one pass
+    resolved_stacks: list[list] = []
+    category_bytes: dict[str, int] = defaultdict(int)
+    for addrs, bytes_val in stacks:
+        funcs = [resolved.get(addr, "??") for addr in addrs]
+        resolved_stacks.append([funcs, bytes_val])
+        cat = _categorize_stack(funcs)
+        category_bytes[cat] += bytes_val
+
+    raw_breakdown = {cat: category_bytes.get(cat, 0) for cat in CATEGORY_NAMES}
 
     # Convert to per-key values
     if num_keys <= 0:
@@ -256,7 +296,7 @@ async def collect_heap_profile(
         num_keys,
         total_bytes / num_keys,
     )
-    return per_key
+    return HeapProfileResult(breakdown=per_key, raw_stacks=resolved_stacks)
 
 
 async def cleanup_heap_dumps(ssh_host: HasRunHostCommand) -> None:

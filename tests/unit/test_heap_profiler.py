@@ -13,6 +13,7 @@ from conductress.heap_profiler import (
     categorize_heap_dump,
     cleanup_heap_dumps,
     collect_heap_profile,
+    recategorize_from_stacks,
 )
 
 # =============================================================================
@@ -194,8 +195,10 @@ class TestCollectHeapProfile:
         result = await collect_heap_profile(ssh, "/path/to/valkey-server", num_keys=1000)
 
         assert result is not None
-        assert result["embedded_obj"] == 48.0  # 48000 / 1000
-        assert result["hashtable"] == 12.0  # 12000 / 1000
+        assert result.breakdown["embedded_obj"] == 48.0  # 48000 / 1000
+        assert result.breakdown["hashtable"] == 12.0  # 12000 / 1000
+        assert result.raw_stacks is not None
+        assert len(result.raw_stacks) > 0
 
     async def test_no_heap_dump_returns_none(self):
         ssh = AsyncMock()
@@ -254,3 +257,25 @@ class TestCategoryNames:
 
     def test_count(self):
         assert len(CATEGORY_NAMES) == 9
+
+
+class TestRecategorizeFromStacks:
+    """Verify re-categorization from saved stacks produces same results."""
+
+    def test_recategorize_matches_original(self):
+        """Recategorizing saved stacks should produce the same breakdown."""
+        raw_stacks = [
+            [["je_malloc", "createEmbeddedStringObject", "setCommand"], 48000],
+            [["je_malloc", "hashtableExpand", "dbAdd"], 12000],
+            [["je_malloc", "sdsnewlen", "catAppendOnlyGenericCommand"], 5000],
+        ]
+        result = recategorize_from_stacks(raw_stacks, num_keys=1000)
+        assert result["embedded_obj"] == 48.0
+        assert result["hashtable"] == 12.0
+        assert result["sds"] == 5.0
+
+    def test_recategorize_empty_stacks(self):
+        """Empty stacks should return all-zero breakdown."""
+        result = recategorize_from_stacks([], num_keys=1000)
+        assert all(v == 0.0 for v in result.values())
+        assert "other" in result

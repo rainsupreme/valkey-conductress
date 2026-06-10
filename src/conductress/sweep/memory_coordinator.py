@@ -134,8 +134,27 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
                 continue
         return None
 
+    def _extract_raw_stacks(self, task: BaseTaskData) -> Optional[list[list]]:
+        """Extract retained resolved stacks from the task output."""
+
+        output_file = CONDUCTRESS_RESULTS / "output.jsonl"
+        if not output_file.exists():
+            return None
+
+        for line in reversed(output_file.read_text().strip().splitlines()):
+            try:
+                entry = json.loads(line)
+                if entry.get("task_id") == task.task_id:
+                    data = entry.get("data", {})
+                    results = data.get("results", [])
+                    if results and results[0].get("raw_stacks"):
+                        return results[0]["raw_stacks"]
+            except (ValueError, KeyError, TypeError):
+                continue
+        return None
+
     def on_task_completed(self, task: BaseTaskData) -> None:
-        """Override to attach breakdown data to the recorded point."""
+        """Override to attach breakdown and raw stacks to the recorded point."""
         if not self._is_my_task(task):
             return
 
@@ -145,8 +164,12 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
 
             breakdown = self._extract_breakdown(task)
-            if breakdown and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
-                self.state.points[task.sweep_commit].breakdown = breakdown  # type: ignore[attr-defined]
+            raw_stacks = self._extract_raw_stacks(task)
+            if task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
+                if breakdown:
+                    self.state.points[task.sweep_commit].breakdown = breakdown  # type: ignore[attr-defined]
+                if raw_stacks:
+                    self.state.points[task.sweep_commit].raw_stacks = raw_stacks  # type: ignore[attr-defined]
                 self.state.save(self.state_file)
                 logger.info("Recorded breakdown for %s [%s]", task.sweep_commit[:8], self._workload.label)  # type: ignore[attr-defined]
         else:
