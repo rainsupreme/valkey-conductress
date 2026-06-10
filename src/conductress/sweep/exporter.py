@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from conductress.heap_profiler import recategorize_from_stacks
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 
 # =============================================================================
@@ -163,9 +164,6 @@ def export_series(
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
 
         workload = f"{SWEEP_TEST.upper()}_{SWEEP_VAL_SIZE}B_t{SWEEP_IO_THREADS}_p{SWEEP_PIPELINING}"
-
-    if num_keys > 0:
-        from conductress.heap_profiler import recategorize_from_stacks
 
     planner = SweepPlanner(state)
     commit_index = planner._commit_index
