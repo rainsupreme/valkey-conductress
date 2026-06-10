@@ -296,9 +296,9 @@ class BaseSweepCoordinator(ABC):
         """Populate landmarks from release branch points on unstable."""
         PRE_FORK_LANDMARKS = [
             Landmark(
-                commit="2b8cde71bb553713cf93794a0fb30a1618c0c955",
-                date="2023-08-16",
-                label="Valkey created",
+                commit="3431b1f156b05866e4f9a368304216974f047c43",
+                date="2023-11-29",
+                label="First benchmarkable",
             ),
             Landmark(
                 commit="f7b1d0287d62ec9fac72bf14cf789e350d14e52b",
