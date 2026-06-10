@@ -26,14 +26,14 @@ logger = logging.getLogger(__name__)
 # when walking the stack from leaf (allocator) toward root (main).
 #
 # Special handling for robj allocations:
-#   - embedded_val: EMBSTR encoding (value stored inline) — createEmbeddedString path
-#   - embedded_key: robj with key embedded in struct — createUnembedded/createObject
+#   - robj_embval: EMBSTR encoding (value stored inline) — createEmbeddedString path
+#   - robj_embkey: robj with key embedded in struct — createUnembedded/createObject
 #     when objectSetKey/objectSetKeyAndExpire appears in the caller stack
 #   - robj: plain robj without key embedding (old commits before key-embedding)
 CATEGORIES: list[tuple[str, list[str]]] = [
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
-    ("embedded_val", ["createEmbeddedString"]),
+    ("robj_embval", ["createEmbeddedString"]),
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
     (
         "hashtable",
@@ -60,18 +60,20 @@ CATEGORIES: list[tuple[str, list[str]]] = [
     ),
 ]
 
-# All category names in display order (embedded_key is determined by post-processing, not pattern match)
+# All category names in stacking order (bottom → top in stacked area chart).
+# Stable baseline at bottom, volatile categories at top.
+# Adjacent categories trade bytes (e.g. sds ↔ robj_emb*, dict ↔ hashtable).
 CATEGORY_NAMES: list[str] = [
-    "skiplist",
-    "listpack",
-    "embedded_val",
-    "sds",
-    "hashtable",
-    "dict",
-    "embedded_key",
-    "robj",
     "server_infra",
     "other",
+    "robj",
+    "robj_embkey",
+    "robj_embval",
+    "sds",
+    "dict",
+    "hashtable",
+    "listpack",
+    "skiplist",
 ]
 
 # Patterns indicating the robj allocation has an embedded key (checked across full stack)
@@ -145,7 +147,7 @@ def _categorize_stack(funcs: list[str]) -> str:
     """Walk resolved function names, skip allocator frames, return first matching category.
 
     Special case: if the first match is 'robj' but the full stack contains an
-    embedded-key marker (objectSetKey/objectSetKeyAndExpire), reclassify as 'embedded_key'.
+    embedded-key marker (objectSetKey/objectSetKeyAndExpire), reclassify as 'robj_embkey'.
     """
     first_match: Optional[str] = None
     for func in funcs:
@@ -158,10 +160,10 @@ def _categorize_stack(funcs: list[str]) -> str:
                     break
             if first_match and first_match != "robj":
                 return first_match
-            # If robj matched, continue scanning for embedded_key markers
+            # If robj matched, continue scanning for robj_embkey markers
         elif first_match == "robj":
             if any(marker in func for marker in _EMBEDDED_KEY_MARKERS):
-                return "embedded_key"
+                return "robj_embkey"
     return first_match or "other"
 
 
