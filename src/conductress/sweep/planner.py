@@ -5,8 +5,8 @@ which commit to benchmark next based on the expected information gain.
 
 Priority order:
 1. New HEAD on unstable (nightly tracking)
-2. Active bisection (narrowing a detected regression/improvement)
-3. Release commits not yet benchmarked (mandatory landmarks)
+2. Release commits not yet benchmarked (mandatory landmarks)
+3. Active bisection (narrowing a detected regression/improvement)
 4. Largest unresolved historical segment (backfill)
 """
 
@@ -28,8 +28,8 @@ class TaskPriority(Enum):
     """Priority levels for sweep tasks, lower value = higher priority."""
 
     NIGHTLY = 1
-    BISECTION = 2
-    LANDMARK = 3
+    LANDMARK = 2
+    BISECTION = 3
     BACKFILL = 4
 
 
