@@ -296,3 +296,59 @@ class TestUrgencyScore:
 
         score = coord.get_urgency_score()
         assert score > 0
+
+
+class TestFetchAndRefresh:
+    """Tests for _fetch_and_refresh stale commit detection."""
+
+    def test_refreshes_when_head_not_in_commit_list(self, tmp_dir):
+        """Regression: stale state with HEAD not in merge_commits must trigger refresh."""
+        state_file = tmp_dir / "state.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+            coord._last_fetch_time = 0.0
+
+        new_head = "ddd"  # Not in merge_commits
+
+        with (
+            patch("conductress.sweep.coordinator.get_head", return_value=new_head),
+            patch("conductress.sweep.coordinator.fetch_ref"),
+            patch.object(coord, "_refresh_commits") as mock_refresh,
+        ):
+            coord._fetch_and_refresh()
+            mock_refresh.assert_called_once()
+
+    def test_skips_refresh_when_head_in_commit_list_and_unchanged(self, tmp_dir):
+        """No refresh needed when HEAD is already in the commit list and didn't move."""
+        state_file = tmp_dir / "state.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+            coord._last_fetch_time = 0.0
+
+        with (
+            patch("conductress.sweep.coordinator.get_head", return_value="ccc"),
+            patch("conductress.sweep.coordinator.fetch_ref"),
+            patch.object(coord, "_refresh_commits") as mock_refresh,
+        ):
+            coord._fetch_and_refresh()
+            mock_refresh.assert_not_called()

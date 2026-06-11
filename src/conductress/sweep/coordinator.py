@@ -249,7 +249,7 @@ class BaseSweepCoordinator(ABC):
         return self.planner.get_next_task(current_head)
 
     def _fetch_and_refresh(self) -> None:
-        """Fetch origin and refresh commits if HEAD moved or state is empty."""
+        """Fetch origin and refresh commits if HEAD moved, state is empty, or stale."""
         try:
             old_head = get_head(self.repo_path, ref=SWEEP_REF)
         except Exception:
@@ -265,7 +265,8 @@ class BaseSweepCoordinator(ABC):
             new_head: Optional[str] = get_head(self.repo_path, ref=SWEEP_REF)
         except Exception:
             new_head = None
-        if new_head != old_head or not self.state.merge_commits:
+        head_not_in_list = new_head and new_head not in set(self.state.merge_commits)
+        if new_head != old_head or not self.state.merge_commits or head_not_in_list:
             old_count = len(self.state.merge_commits)
             self._refresh_commits()
             logger.info(
