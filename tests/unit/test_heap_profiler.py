@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from conductress.heap_profiler import (
+    CATEGORIES,
     CATEGORY_NAMES,
     _categorize_stack,
     _is_jemalloc_frame,
@@ -281,6 +282,37 @@ class TestCategoryNames:
 
     def test_count(self):
         assert len(CATEGORY_NAMES) == 11
+
+    def test_categories_and_names_in_sync(self):
+        """Every category in CATEGORIES must appear in CATEGORY_NAMES and vice versa."""
+        pattern_cats = {name for name, _ in CATEGORIES}
+        # robj_embkey is synthesized from robj + marker check, not in CATEGORIES directly
+        name_cats = set(CATEGORY_NAMES) - {"other", "robj_embkey"}
+        assert pattern_cats == name_cats, (
+            f"CATEGORIES and CATEGORY_NAMES out of sync.\n"
+            f"  In CATEGORIES but not CATEGORY_NAMES: {pattern_cats - name_cats}\n"
+            f"  In CATEGORY_NAMES but not CATEGORIES: {name_cats - pattern_cats}"
+        )
+
+    def test_no_duplicate_category_names(self):
+        """No duplicates in CATEGORY_NAMES."""
+        assert len(CATEGORY_NAMES) == len(set(CATEGORY_NAMES))
+
+    def test_hash_entry_before_hashtable(self):
+        """hash_entry must precede hashtable (entryConstruct calls hashtableInsertAtPosition)."""
+        cat_order = [name for name, _ in CATEGORIES]
+        assert cat_order.index("hash_entry") < cat_order.index("hashtable")
+
+    def test_robj_embval_before_robj(self):
+        """robj_embval must precede robj (createEmbeddedString contains createString)."""
+        cat_order = [name for name, _ in CATEGORIES]
+        assert cat_order.index("robj_embval") < cat_order.index("robj")
+
+    def test_sds_before_hashtable_and_dict(self):
+        """sds must precede hashtable/dict (SDS allocs appear in dict/hashtable stacks)."""
+        cat_order = [name for name, _ in CATEGORIES]
+        assert cat_order.index("sds") < cat_order.index("hashtable")
+        assert cat_order.index("sds") < cat_order.index("dict")
 
 
 class TestRecategorizeFromStacks:

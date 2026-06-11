@@ -25,17 +25,33 @@ logger = logging.getLogger(__name__)
 # Each allocation is assigned to the FIRST matching category found
 # when walking the stack from leaf (allocator) toward root (main).
 #
-# Special handling for robj allocations:
-#   - robj_embval: EMBSTR encoding (value stored inline) — createEmbeddedString path
-#   - robj_embkey: robj with key embedded in struct — createUnembedded/createObject
-#     when objectSetKey/objectSetKeyAndExpire appears in the caller stack
-#   - robj: plain robj without key embedding (old commits before key-embedding)
+# ⚠️  ORDER MATTERS — first match wins. Ordering rationale:
+#   1. Type-specific structs (skiplist, listpack, hash_entry) — most specific,
+#      their patterns would otherwise match broader categories below.
+#   2. robj_embval — "createEmbeddedString" would match robj's "createString" substring.
+#   3. sds — common allocator, must come before hashtable/dict because SDS allocations
+#      often appear in stacks that also contain hashtable/dict callers above them.
+#   4. hashtable — "resize"/"bucket" are generic-sounding; hash_entry must come first
+#      because entryConstruct calls hashtableInsertAtPosition (which contains "hashtable").
+#   5. dict — legacy dict; "createEntry" is a substring hazard (hash_entry's
+#      "entryCreate" is more specific and checked earlier).
+#   6. robj — broad catch-all for object creation; checked late so specific paths above
+#      (robj_embval, hash_entry) aren't shadowed.
+#   7. server_infra — startup allocations, least likely to collide.
+#
+# Special handling for robj allocations (see _categorize_stack):
+#   - robj_embkey: robj match + objectSetKey/objectSetKeyAndExpire in caller stack
 CATEGORIES: list[tuple[str, list[str]]] = [
+    # Type-specific data structures — most specific patterns
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
+    # hash_entry before hashtable: entryConstruct/hashTypeCreateEntry call into hashtable funcs
     ("hash_entry", ["entryConstruct", "entryCreate", "entryWrite", "hashTypeCreateEntry"]),
+    # robj_embval before robj: "createEmbeddedString" contains "createString"
     ("robj_embval", ["createEmbeddedString"]),
+    # sds before hashtable/dict: SDS allocs appear in stacks containing dict/hashtable callers
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
+    # hashtable: bucket array infrastructure only (entries captured by hash_entry above)
     (
         "hashtable",
         [
@@ -48,6 +64,7 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "hashTypeEntry",
         ],
     ),
+    # dict: legacy dict (pre-hashtable migration); "createEntry" shadowed by hash_entry above
     (
         "dict",
         [
@@ -62,7 +79,9 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "dictSetKey",
         ],
     ),
+    # robj: broad object creation — after specific paths (robj_embval, hash_entry)
     ("robj", ["createObject", "createString", "createRaw", "createZset", "createUnembedded"]),
+    # server_infra: startup/init allocations — least collision risk, checked last
     (
         "server_infra",
         ["initServer", "aeCreate", "createShared", "hdr_init", "bioInit", "initServerConfig", "ACL", "clusterInit"],
