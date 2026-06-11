@@ -172,6 +172,24 @@ class BaseSweepCoordinator(ABC):
         # Lower priority than bisection but still useful
         return math.log2(max(len(self.state.merge_commits) // max(completed, 1), 2))
 
+    def has_nightly_task(self) -> bool:
+        """Check if this coordinator would produce a NIGHTLY task (HEAD untested).
+
+        Also triggers a commit list refresh if HEAD is not in the list (stale state).
+        """
+        try:
+            head = get_head(self.repo_path, ref=SWEEP_REF)
+        except Exception:
+            return False
+        if head not in set(self.state.merge_commits):
+            # Stale commit list — refresh it so we can check properly
+            self._fetch_and_refresh()
+        return (
+            head != self.state.last_benchmarked_head
+            and head not in self.state.points
+            and head in set(self.state.merge_commits)
+        )
+
     # --- Abstract methods (subclass defines) ---
 
     # --- Abstract properties (subclass defines) ---
