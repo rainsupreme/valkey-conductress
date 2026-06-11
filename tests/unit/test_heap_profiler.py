@@ -816,6 +816,24 @@ class TestRealStackCategorization:
                 "SADD dict-era: set dict expansion",
                 id="sadd-dict-era-expand",
             ),
+            # === SADD — legacy dict rehash (was incorrectly categorized as hashtable) ===
+            pytest.param(
+                [
+                    "prof_backtrace_impl",
+                    "tsd_post_reentrancy_raw",
+                    "je_prof_tctx_create",
+                    "prof_alloc_prep",
+                    "ztrymalloc_usable_internal",
+                    "rehashEntriesInBucketAtIndex",
+                    "dictRehash",
+                    "_dictRehashStep",
+                    "setTypeAddAux",
+                    "saddCommand",
+                ],
+                "dict",
+                "SADD kvstore-era: legacy dict rehash entry migration (not new hashtable)",
+                id="sadd-dict-rehash-migration",
+            ),
             # === Input buffer allocations (all workloads) ===
             pytest.param(
                 [
