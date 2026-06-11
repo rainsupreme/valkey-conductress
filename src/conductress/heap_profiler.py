@@ -54,13 +54,14 @@ CATEGORIES: list[tuple[str, list[str]]] = [
     # hashtable: bucket array infrastructure only (entries captured by hash_entry above)
     # NOTE: "rehash" removed — new hashtable rehash is caught by "bucket"/"resize",
     # and legacy dict rehash (rehashEntriesInBucketAtIndex) should fall to "dict".
+    # NOTE: "kvstore" removed — kvstore is a wrapper layer above both dict and hashtable.
+    # The only case where it was the first match (kvstoreCreate in initServer) is server_infra.
     (
         "hashtable",
         [
             "hashtable",
             "bucket",
             "resize",
-            "kvstore",
             "Chained",
             "hashTypeEntry",
         ],
@@ -72,6 +73,7 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "dictCreate",
             "dictEntry",
             "createEntry",
+            "createEmbeddedEntry",
             "dictExpand",
             "dictResize",
             "dictRehash",

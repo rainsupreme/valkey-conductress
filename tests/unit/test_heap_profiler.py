@@ -386,6 +386,23 @@ class TestRealStackCategorization:
                 "SET kvstore-era: dict resize within kvstore layer",
                 id="set-kvstore-era-resize",
             ),
+            pytest.param(
+                [
+                    "prof_backtrace_impl",
+                    "tsd_post_reentrancy_raw",
+                    "je_prof_tctx_create",
+                    "prof_alloc_prep",
+                    "ztrymalloc_usable_internal",
+                    "createEmbeddedEntry",
+                    "kvstoreDictAddRaw",
+                    "dbAddInternal",
+                    "dbAdd",
+                    "setGenericCommand",
+                ],
+                "dict",
+                "SET kvstore-era: dict entry with embedded key SDS (not new hashtable)",
+                id="set-kvstore-era-embedded-entry",
+            ),
             # === SET workload — new hashtable era (commit idx ~2010) ===
             pytest.param(
                 [
