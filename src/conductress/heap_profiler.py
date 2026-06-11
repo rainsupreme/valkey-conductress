@@ -33,11 +33,20 @@ logger = logging.getLogger(__name__)
 CATEGORIES: list[tuple[str, list[str]]] = [
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
+    ("hash_entry", ["entryConstruct", "entryCreate", "entryWrite", "hashTypeCreateEntry"]),
     ("robj_embval", ["createEmbeddedString"]),
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
     (
         "hashtable",
-        ["hashtable", "bucket", "resize", "kvstore", "Chained", "rehash", "hashTypeCreateEntry", "hashTypeEntry"],
+        [
+            "hashtable",
+            "bucket",
+            "resize",
+            "kvstore",
+            "Chained",
+            "rehash",
+            "hashTypeEntry",
+        ],
     ),
     (
         "dict",
@@ -72,6 +81,7 @@ CATEGORY_NAMES: list[str] = [
     "sds",
     "dict",
     "hashtable",
+    "hash_entry",
     "listpack",
     "skiplist",
 ]

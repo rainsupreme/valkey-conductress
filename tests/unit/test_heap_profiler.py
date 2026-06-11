@@ -72,7 +72,12 @@ class TestCategorizeStack:
                 ["zmalloc", "createUnembeddedObjectWithKeyAndExpire", "objectSetKeyAndExpire", "dbAdd"],
                 "robj_embkey",
             ),
-            (["zmalloc", "hashTypeCreateEntry", "hashTypeSet", "hsetCommand"], "hashtable"),
+            (["zmalloc", "hashTypeCreateEntry", "hashTypeSet", "hsetCommand"], "hash_entry"),
+            # Post-PR#3366: entryConstruct called via hashTypeSet without hashtableInsertAtPosition
+            (
+                ["ztrymalloc_usable_internal", "entryConstruct", "entryCreate", "hashTypeSet", "hsetCommand"],
+                "hash_entry",
+            ),
             (["je_malloc_default", "imalloc", "??", "_start"], "other"),
         ],
     )
@@ -259,6 +264,7 @@ class TestCategoryNames:
             "robj_embkey",
             "sds",
             "hashtable",
+            "hash_entry",
             "skiplist",
             "robj",
             "listpack",
@@ -274,7 +280,7 @@ class TestCategoryNames:
         assert CATEGORY_NAMES[-1] == "skiplist"
 
     def test_count(self):
-        assert len(CATEGORY_NAMES) == 10
+        assert len(CATEGORY_NAMES) == 11
 
 
 class TestRecategorizeFromStacks:
