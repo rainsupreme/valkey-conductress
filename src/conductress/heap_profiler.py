@@ -52,6 +52,8 @@ CATEGORIES: list[tuple[str, list[str]]] = [
     # sds before hashtable/dict: SDS allocs appear in stacks containing dict/hashtable callers
     ("sds", ["sdsnewlen", "sdsdup", "sdsMakeRoom", "_sdsnewlen", "sdscatlen", "sdscat"]),
     # hashtable: bucket array infrastructure only (entries captured by hash_entry above)
+    # NOTE: "rehash" removed — new hashtable rehash is caught by "bucket"/"resize",
+    # and legacy dict rehash (rehashEntriesInBucketAtIndex) should fall to "dict".
     (
         "hashtable",
         [
@@ -60,7 +62,6 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "resize",
             "kvstore",
             "Chained",
-            "rehash",
             "hashTypeEntry",
         ],
     ),
@@ -73,6 +74,7 @@ CATEGORIES: list[tuple[str, list[str]]] = [
             "createEntry",
             "dictExpand",
             "dictResize",
+            "dictRehash",
             "dictAdd",
             "dictInsert",
             "dictSetVal",
