@@ -146,8 +146,8 @@ class TestFactory:
         coordinators = create_memory_coordinators(tmp_path / "repo")
         assert len(coordinators) == len(MEMORY_WORKLOADS)
         labels = [c._workload.label for c in coordinators]
-        assert "set-v64" in labels
-        assert "set-v64-expire" in labels
+        assert "set-k16-v64" in labels
+        assert "set-k16-v64-expire" in labels
 
     def test_each_has_unique_state_file(self, tmp_path, monkeypatch):
         import conductress.config as config
