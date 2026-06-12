@@ -75,11 +75,10 @@ class DashboardPublisher:
                 output = self._export_dir / f"series-{self._platform_id}-{coord.workload_id}-{coord.metric_id}.json"
                 coord.export(output, platform=self._platform_label)
 
-            # Export perf metrics from throughput coordinator (it holds perf counters)
+            # Export perf metrics from all throughput coordinators
             for coord in self.coordinators:
                 if coord.metric_id == "throughput":
                     export_perf_metrics(coord.state, self._export_dir, self._platform_id, coord.workload_id)
-                    break
 
             # Export manifest
             export_manifest(
