@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Protocol
 
+from conductress.sweep_config import load_sweep_config
 from conductress.task_queue import BaseTaskRunner
 
 from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, QUEUE_POLL_INTERVAL, get_servers
@@ -131,7 +132,9 @@ class TaskRunner:
                 for sub in self._subscribers:
                     sub.on_task_completed(self.task)
                 queue.finish_task(self.task)
-                self.task = queue.get_next_task()
+                # Check if any coordinator has a NIGHTLY task — overrides queue
+                nightly_task = self._check_nightly_priority()
+                self.task = nightly_task or queue.get_next_task()
 
             # Queue empty — notify subscribers (they may queue new work)
             self._notify_queue_empty()
@@ -147,14 +150,42 @@ class TaskRunner:
                     self._notify_queue_empty()
                     self.task = queue.get_next_task()
 
+    def _check_nightly_priority(self) -> Optional[BaseTaskData]:
+        """Check if any coordinator has a NIGHTLY task ready. Returns task or None."""
+        config = load_sweep_config()
+        for sub in self._subscribers:
+            wid = getattr(sub, "workload_id", None)
+            if wid and not config.is_allowed(wid):
+                continue
+            if getattr(sub, "has_nightly_task", lambda: False)():
+                sub.on_queue_empty()
+                queue = TaskQueue()
+                task = queue.get_next_task()
+                if task:
+                    return task
+        return None
+
     def _notify_queue_empty(self) -> None:
-        """Pick the highest-urgency sweeper and let it queue a task."""
+        """Pick the highest-urgency sweeper and let it queue a task.
+
+        NIGHTLY tasks (new HEAD untested) get absolute priority — any coordinator
+        with a pending nightly task wins regardless of urgency score.
+        """
         if not self._subscribers:
             return
 
-        from conductress.sweep_config import load_sweep_config
-
         config = load_sweep_config()
+
+        # Absolute priority: any coordinator with a NIGHTLY task goes first
+        for sub in self._subscribers:
+            wid = getattr(sub, "workload_id", None)
+            if wid and not config.is_allowed(wid):
+                continue
+            if getattr(sub, "has_nightly_task", lambda: False)():
+                sub.on_queue_empty()
+                queue = TaskQueue()
+                if queue.get_all_tasks():
+                    return
 
         # Score each subscriber that supports urgency scoring
         candidates = []

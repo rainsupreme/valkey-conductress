@@ -352,3 +352,73 @@ class TestFetchAndRefresh:
         ):
             coord._fetch_and_refresh()
             mock_refresh.assert_not_called()
+
+
+class TestHasNightlyTask:
+    """Tests for has_nightly_task detection."""
+
+    def test_returns_true_when_head_untested_and_in_list(self, tmp_dir):
+        state_file = tmp_dir / "state.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        state.last_benchmarked_head = "aaa"
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+
+        with patch("conductress.sweep.coordinator.get_head", return_value="ccc"):
+            assert coord.has_nightly_task() is True
+
+    def test_returns_false_when_head_already_benchmarked(self, tmp_dir):
+        state_file = tmp_dir / "state.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        state.last_benchmarked_head = "ccc"
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+
+        with patch("conductress.sweep.coordinator.get_head", return_value="ccc"):
+            assert coord.has_nightly_task() is False
+
+    def test_returns_true_after_refresh_when_head_not_in_list(self, tmp_dir):
+        """When HEAD is not in commit list, triggers refresh and then finds it."""
+        state_file = tmp_dir / "state.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},
+        )
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+            coord._last_fetch_time = 0.0
+
+        def fake_refresh():
+            # Simulate refresh adding the new commit
+            coord.state.merge_commits.append("zzz")
+            coord.planner = SweepPlanner(coord.state)
+
+        with (
+            patch("conductress.sweep.coordinator.get_head", return_value="zzz"),
+            patch.object(coord, "_fetch_and_refresh", side_effect=fake_refresh),
+        ):
+            assert coord.has_nightly_task() is True
