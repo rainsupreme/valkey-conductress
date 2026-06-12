@@ -82,3 +82,31 @@ class TestDashboardPublisher:
         with patch("conductress.sweep.exporter.export_perf_metrics", return_value={}):
             with patch("conductress.sweep.exporter.export_manifest"):
                 pub.on_task_completed(MagicMock())  # should not raise
+
+    @patch("conductress.publisher.subprocess.run")
+    def test_perf_metrics_exported_for_all_throughput_coordinators(self, mock_run):
+        """Regression: perf metrics must export for every throughput coordinator, not just the first."""
+        mock_run.return_value = MagicMock(returncode=0)
+        coord_16b = MagicMock()
+        coord_16b.workload_id = "get-k16-v16-t7-p10"
+        coord_16b.metric_id = "throughput"
+        coord_16b.state = MagicMock()
+        coord_16b.export.return_value = 5
+
+        coord_64b = MagicMock()
+        coord_64b.workload_id = "get-k16-v64-t7-p10"
+        coord_64b.metric_id = "throughput"
+        coord_64b.state = MagicMock()
+        coord_64b.export.return_value = 2
+
+        pub = DashboardPublisher("user@host:/path", [coord_16b, coord_64b])
+
+        with patch("conductress.sweep.exporter.export_perf_metrics") as mock_perf:
+            with patch("conductress.sweep.exporter.export_manifest"):
+                pub.on_task_completed(MagicMock())
+
+        # Both coordinators must have perf metrics exported
+        assert mock_perf.call_count == 2
+        workload_ids = [call.args[3] for call in mock_perf.call_args_list]
+        assert "get-k16-v16-t7-p10" in workload_ids
+        assert "get-k16-v64-t7-p10" in workload_ids
