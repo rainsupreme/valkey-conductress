@@ -63,7 +63,7 @@ class TestTaskRunnerInit:
             mock_factory.return_value = [mock_mem]
             runner = TaskRunner(sweep=True)
             # throughput + latency + 1 memory = 3
-            assert len(runner._subscribers) == 3
+            assert len(runner._subscribers) == 4  # 2 throughput (16B + 64B) + 1 latency + 1 memory
 
     def test_memory_sweep_standalone(self):
         """--memory-sweep without --sweep still works (backward compat)."""

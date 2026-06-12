@@ -40,9 +40,9 @@ class MemoryWorkload:
 
 # All memory workloads to sweep. Add new entries here to extend coverage.
 MEMORY_WORKLOADS: list[MemoryWorkload] = [
-    MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80),
+    MemoryWorkload(command="set", key_size=16, value_size=64, label="set-k16-v64", user_data_bytes=80),
     MemoryWorkload(
-        command="set", key_size=16, value_size=64, has_expire=True, label="set-v64-expire", user_data_bytes=80
+        command="set", key_size=16, value_size=64, has_expire=True, label="set-k16-v64-expire", user_data_bytes=80
     ),
     MemoryWorkload(command="zadd", key_size=0, value_size=20, label="zadd-m20", user_data_bytes=28),
     MemoryWorkload(command="sadd", key_size=0, value_size=20, label="sadd-m20", user_data_bytes=20),

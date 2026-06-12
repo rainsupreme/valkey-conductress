@@ -197,6 +197,7 @@ def main() -> None:
     elif args.command == "sweep":
         from pathlib import Path
 
+        from conductress.config import SWEEP_STATE_DIR, SWEEP_THROUGHPUT_WORKLOADS
         from conductress.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
         from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS, MemorySweepCoordinator
         from conductress.sweep.planner import SweepState
@@ -216,10 +217,14 @@ def main() -> None:
             if not args.metric or args.metric == "throughput":
                 if SWEEP_STATE_FILE.exists():
                     coordinators.append(SweepCoordinator(repo_path))
+                for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                    state_file = SWEEP_STATE_DIR / f"state_{wl['label']}.json"
+                    if state_file.exists():
+                        coordinators.append(SweepCoordinator(repo_path, val_size=wl["val_size"], label=wl["label"]))
             if not args.metric or args.metric == "memory":
-                for wl in MEMORY_WORKLOADS:
-                    if wl.state_file.exists():
-                        coordinators.append(MemorySweepCoordinator(repo_path, wl))
+                for mem_wl in MEMORY_WORKLOADS:
+                    if mem_wl.state_file.exists():
+                        coordinators.append(MemorySweepCoordinator(repo_path, mem_wl))
 
             if not coordinators:
                 print("No sweep data to export.")

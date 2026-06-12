@@ -19,6 +19,7 @@ from conductress.config import (
     SWEEP_DURATION,
     SWEEP_FETCH_INTERVAL,
     SWEEP_IO_THREADS,
+    SWEEP_KEY_SIZE,
     SWEEP_MAKE_ARGS,
     SWEEP_MAX_REPS,
     SWEEP_PIPELINING,
@@ -344,14 +345,20 @@ class BaseSweepCoordinator(ABC):
 
 
 class SweepCoordinator(BaseSweepCoordinator):
-    """Throughput sweep coordinator (GET 16B, io-threads=7, P=10)."""
+    """Throughput sweep coordinator (GET, configurable value size, io-threads, pipelining)."""
 
     metric_id = "throughput"
     metric_unit = "ops/sec"
-    workload_id = f"{SWEEP_TEST}{SWEEP_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
 
-    def __init__(self, repo_path: Path):
-        super().__init__(repo_path, SWEEP_STATE_FILE)
+    def __init__(self, repo_path: Path, val_size: int = SWEEP_VAL_SIZE, label: Optional[str] = None):
+        self._val_size = val_size
+        self._label = label or f"get-k{SWEEP_KEY_SIZE}-v{val_size}"
+        state_file = SWEEP_STATE_DIR / f"state_{self._label}.json" if label else SWEEP_STATE_FILE
+        super().__init__(repo_path, state_file)
+
+    @property
+    def workload_id(self) -> str:  # type: ignore[override]
+        return f"{self._label}-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
 
     def get_next_sweep_task(self) -> Optional[PerfTaskData]:
         """Legacy interface: get next task directly."""
@@ -370,7 +377,7 @@ class SweepCoordinator(BaseSweepCoordinator):
             note=f"[sweep] {sweep_task.reason}",
             requirements={},
             test=SWEEP_TEST,
-            val_size=SWEEP_VAL_SIZE,
+            val_size=self._val_size,
             io_threads=SWEEP_IO_THREADS,
             pipelining=SWEEP_PIPELINING,
             warmup=SWEEP_WARMUP,
@@ -425,4 +432,4 @@ class SweepCoordinator(BaseSweepCoordinator):
         return (counters, duration, rps)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
-        return isinstance(task, PerfTaskData) and bool(task.sweep_commit)
+        return isinstance(task, PerfTaskData) and bool(task.sweep_commit) and task.val_size == self._val_size

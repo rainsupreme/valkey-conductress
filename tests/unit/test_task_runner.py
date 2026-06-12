@@ -78,7 +78,8 @@ class TestSubscribers:
             mock_mem.initialize = MagicMock()
             mock_factory.return_value = [mock_mem]
             runner = TaskRunner(sweep=True)
-            assert len(runner._subscribers) == 3
+            # 2 throughput (16B default + 1 from SWEEP_THROUGHPUT_WORKLOADS) + 1 latency + 1 memory = 4
+            assert len(runner._subscribers) == 4
 
     def test_no_subscribers_without_sweep(self):
         runner = TaskRunner(sweep=False)

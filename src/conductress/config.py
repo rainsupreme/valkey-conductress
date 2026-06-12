@@ -83,6 +83,7 @@ SWEEP_REF = "origin/unstable"
 SWEEP_STATE_DIR = PROJECT_ROOT / "sweep_data"
 SWEEP_STATE_FILE = SWEEP_STATE_DIR / "state.json"
 SWEEP_TEST = "get"
+SWEEP_KEY_SIZE = 16
 SWEEP_VAL_SIZE = 16
 SWEEP_IO_THREADS = 7
 SWEEP_PIPELINING = 10
@@ -92,6 +93,11 @@ SWEEP_REPETITIONS = 3
 SWEEP_MAX_REPS = 7
 SWEEP_TARGET_CV = 0.5
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+
+# Additional throughput workloads (each gets its own state file + series)
+SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
+    {"val_size": 64, "label": "get-k16-v64"},
+]
 
 # =============================================================================
 # Sweep configuration: latency

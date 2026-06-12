@@ -228,8 +228,8 @@ class TestTaskRunnerSweepIntegration:
         from conductress.task_runner import TaskRunner
 
         runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        # throughput + latency + 4 memory = 6
-        assert len(runner._subscribers) == 7
+        # 2 throughput (16B + 64B) + 1 latency + 5 memory = 8
+        assert len(runner._subscribers) == 8
 
 
 class TestUrgencyScore:

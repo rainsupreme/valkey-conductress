@@ -42,7 +42,7 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from conductress.config import SWEEP_STATE_FILE
+            from conductress.config import SWEEP_STATE_FILE, SWEEP_THROUGHPUT_WORKLOADS
             from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
@@ -50,6 +50,12 @@ class TaskRunner:
             coordinator = SweepCoordinator(repo_path)
             coordinator.initialize()
             self._subscribers.append(coordinator)
+
+            # Additional throughput workloads (e.g. 64B values)
+            for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                extra = SweepCoordinator(repo_path, val_size=wl["val_size"], label=wl["label"])
+                extra.initialize()
+                self._subscribers.append(extra)
 
             # Latency sweep runs alongside throughput (uses its data)
             from conductress.sweep.latency_coordinator import LatencySweepCoordinator
