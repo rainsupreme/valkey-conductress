@@ -220,7 +220,11 @@ def main() -> None:
                 for wl in SWEEP_THROUGHPUT_WORKLOADS:
                     state_file = SWEEP_STATE_DIR / f"state_{wl['label']}.json"
                     if state_file.exists():
-                        coordinators.append(SweepCoordinator(repo_path, val_size=wl["val_size"], label=wl["label"]))
+                        coordinators.append(
+                            SweepCoordinator(
+                                repo_path, val_size=wl["val_size"], label=wl["label"], test=wl.get("test", "get")
+                            )
+                        )
             if not args.metric or args.metric == "memory":
                 for mem_wl in MEMORY_WORKLOADS:
                     if mem_wl.state_file.exists():

@@ -95,8 +95,12 @@ SWEEP_TARGET_CV = 0.5
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 # Additional throughput workloads (each gets its own state file + series)
+# "test" defaults to SWEEP_TEST ("get") if omitted.
 SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
     {"val_size": 64, "label": "get-k16-v64"},
+    {"val_size": 128, "label": "get-k16-v128"},
+    {"val_size": 16, "test": "set", "label": "set-k16-v16"},
+    {"val_size": 128, "test": "set", "label": "set-k16-v128"},
 ]
 
 # =============================================================================

@@ -345,13 +345,16 @@ class BaseSweepCoordinator(ABC):
 
 
 class SweepCoordinator(BaseSweepCoordinator):
-    """Throughput sweep coordinator (GET, configurable value size, io-threads, pipelining)."""
+    """Throughput sweep coordinator (GET/SET, configurable value size, io-threads, pipelining)."""
 
     metric_id = "throughput"
     metric_unit = "ops/sec"
 
-    def __init__(self, repo_path: Path, val_size: int = SWEEP_VAL_SIZE, label: Optional[str] = None):
+    def __init__(
+        self, repo_path: Path, val_size: int = SWEEP_VAL_SIZE, label: Optional[str] = None, test: str = SWEEP_TEST
+    ):
         self._val_size = val_size
+        self._test = test
         self._label = label or f"get-k{SWEEP_KEY_SIZE}-v{val_size}"
         state_file = SWEEP_STATE_DIR / f"state_{self._label}.json" if label else SWEEP_STATE_FILE
         super().__init__(repo_path, state_file)
@@ -376,7 +379,7 @@ class SweepCoordinator(BaseSweepCoordinator):
             replicas=0,
             note=f"[sweep] {sweep_task.reason}",
             requirements={},
-            test=SWEEP_TEST,
+            test=self._test,
             val_size=self._val_size,
             io_threads=SWEEP_IO_THREADS,
             pipelining=SWEEP_PIPELINING,
@@ -432,4 +435,9 @@ class SweepCoordinator(BaseSweepCoordinator):
         return (counters, duration, rps)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
-        return isinstance(task, PerfTaskData) and bool(task.sweep_commit) and task.val_size == self._val_size
+        return (
+            isinstance(task, PerfTaskData)
+            and bool(task.sweep_commit)
+            and task.val_size == self._val_size
+            and task.test == self._test
+        )
