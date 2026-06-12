@@ -53,7 +53,9 @@ class TaskRunner:
 
             # Additional throughput workloads (e.g. 64B values)
             for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                extra = SweepCoordinator(repo_path, val_size=wl["val_size"], label=wl["label"])
+                extra = SweepCoordinator(
+                    repo_path, val_size=wl["val_size"], label=wl["label"], test=wl.get("test", "get")
+                )
                 extra.initialize()
                 self._subscribers.append(extra)
 
