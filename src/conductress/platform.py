@@ -130,3 +130,30 @@ def _parse_cpu_list(cpu_list_str: str) -> list[int]:
         elif part.isdigit():
             cpus.append(int(part))
     return cpus
+
+
+def get_local_platform_tag() -> str:
+    """Detect local platform tag for workload filtering.
+
+    Returns one of: 'arm64', 'amd64', 'intel', 'unknown'.
+    Uses /proc/cpuinfo for vendor detection on x86.
+    """
+    import platform as _platform
+
+    machine = _platform.machine()
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    if machine in ("x86_64", "amd64"):
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("vendor_id"):
+                        if "AuthenticAMD" in line:
+                            return "amd64"
+                        if "GenuineIntel" in line:
+                            return "intel"
+                        break
+        except OSError:
+            pass
+        return "amd64"  # fallback for x86
+    return "unknown"

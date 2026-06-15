@@ -351,17 +351,25 @@ class SweepCoordinator(BaseSweepCoordinator):
     metric_unit = "ops/sec"
 
     def __init__(
-        self, repo_path: Path, val_size: int = SWEEP_VAL_SIZE, label: Optional[str] = None, test: str = SWEEP_TEST
+        self,
+        repo_path: Path,
+        val_size: int = SWEEP_VAL_SIZE,
+        label: Optional[str] = None,
+        test: str = SWEEP_TEST,
+        io_threads: int = SWEEP_IO_THREADS,
+        pipelining: int = SWEEP_PIPELINING,
     ):
         self._val_size = val_size
         self._test = test
+        self._io_threads = io_threads
+        self._pipelining = pipelining
         self._label = label or f"get-k{SWEEP_KEY_SIZE}-v{val_size}"
         state_file = SWEEP_STATE_DIR / f"state_{self._label}.json" if label else SWEEP_STATE_FILE
         super().__init__(repo_path, state_file)
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return f"{self._label}-t{SWEEP_IO_THREADS}-p{SWEEP_PIPELINING}"
+        return f"{self._label}-t{self._io_threads}-p{self._pipelining}"
 
     def get_next_sweep_task(self) -> Optional[PerfTaskData]:
         """Legacy interface: get next task directly."""
@@ -381,8 +389,8 @@ class SweepCoordinator(BaseSweepCoordinator):
             requirements={},
             test=self._test,
             val_size=self._val_size,
-            io_threads=SWEEP_IO_THREADS,
-            pipelining=SWEEP_PIPELINING,
+            io_threads=self._io_threads,
+            pipelining=self._pipelining,
             warmup=SWEEP_WARMUP,
             duration=SWEEP_DURATION,
             profiling_sample_rate=0,
@@ -440,4 +448,6 @@ class SweepCoordinator(BaseSweepCoordinator):
             and bool(task.sweep_commit)
             and task.val_size == self._val_size
             and task.test == self._test
+            and task.io_threads == self._io_threads
+            and task.pipelining == self._pipelining
         )
