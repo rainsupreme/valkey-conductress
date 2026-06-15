@@ -42,7 +42,13 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from conductress.config import SWEEP_STATE_FILE, SWEEP_THROUGHPUT_WORKLOADS
+            from conductress.config import (
+                SWEEP_IO_THREADS,
+                SWEEP_PIPELINING,
+                SWEEP_STATE_FILE,
+                SWEEP_THROUGHPUT_WORKLOADS,
+            )
+            from conductress.platform import get_local_platform_tag
             from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
@@ -51,10 +57,19 @@ class TaskRunner:
             coordinator.initialize()
             self._subscribers.append(coordinator)
 
-            # Additional throughput workloads (e.g. 64B values)
+            # Additional throughput workloads (e.g. 64B values, platform-optimal configs)
+            local_platform = get_local_platform_tag()
             for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                platforms = wl.get("platforms")
+                if platforms and local_platform not in platforms:
+                    continue
                 extra = SweepCoordinator(
-                    repo_path, val_size=wl["val_size"], label=wl["label"], test=wl.get("test", "get")
+                    repo_path,
+                    val_size=wl["val_size"],
+                    label=wl["label"],
+                    test=wl.get("test", "get"),
+                    io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                    pipelining=wl.get("pipelining", SWEEP_PIPELINING),
                 )
                 extra.initialize()
                 self._subscribers.append(extra)

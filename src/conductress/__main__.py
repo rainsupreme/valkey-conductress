@@ -197,7 +197,7 @@ def main() -> None:
     elif args.command == "sweep":
         from pathlib import Path
 
-        from conductress.config import SWEEP_STATE_DIR, SWEEP_THROUGHPUT_WORKLOADS
+        from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_STATE_DIR, SWEEP_THROUGHPUT_WORKLOADS
         from conductress.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
         from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS, MemorySweepCoordinator
         from conductress.sweep.planner import SweepState
@@ -222,7 +222,12 @@ def main() -> None:
                     if state_file.exists():
                         coordinators.append(
                             SweepCoordinator(
-                                repo_path, val_size=wl["val_size"], label=wl["label"], test=wl.get("test", "get")
+                                repo_path,
+                                val_size=wl["val_size"],
+                                label=wl["label"],
+                                test=wl.get("test", "get"),
+                                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
                             )
                         )
             if not args.metric or args.metric == "memory":

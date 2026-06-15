@@ -96,11 +96,32 @@ SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 # Additional throughput workloads (each gets its own state file + series)
 # "test" defaults to SWEEP_TEST ("get") if omitted.
+# "io_threads" and "pipelining" default to SWEEP_IO_THREADS / SWEEP_PIPELINING if omitted.
+# "platforms" limits the workload to specific architectures (omit for all platforms).
 SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
     {"val_size": 64, "label": "get-k16-v64"},
     {"val_size": 128, "label": "get-k16-v128"},
     {"val_size": 16, "test": "set", "label": "set-k16-v16"},
     {"val_size": 128, "test": "set", "label": "set-k16-v128"},
+    # Platform-optimal workloads: realistic configs for performance-sensitive users
+    {"val_size": 16, "io_threads": 24, "pipelining": 100, "label": "get-k16-v16-t24-p100", "platforms": ["intel"]},
+    {
+        "val_size": 16,
+        "io_threads": 24,
+        "pipelining": 100,
+        "test": "set",
+        "label": "set-k16-v16-t24-p100",
+        "platforms": ["intel"],
+    },
+    {"val_size": 16, "io_threads": 9, "pipelining": 50, "label": "get-k16-v16-t9-p50", "platforms": ["arm64"]},
+    {
+        "val_size": 16,
+        "io_threads": 9,
+        "pipelining": 50,
+        "test": "set",
+        "label": "set-k16-v16-t9-p50",
+        "platforms": ["arm64"],
+    },
 ]
 
 # =============================================================================

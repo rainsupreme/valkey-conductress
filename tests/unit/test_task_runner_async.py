@@ -55,6 +55,7 @@ class TestTaskRunnerInit:
             patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
             patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
             patch("conductress.sweep.memory_coordinator.create_memory_coordinators") as mock_factory,
+            patch("conductress.platform.get_local_platform_tag", return_value="amd64"),
         ):
             MockCoord.return_value.initialize = MagicMock()
             MockLatency.return_value.initialize = MagicMock()
@@ -62,7 +63,7 @@ class TestTaskRunnerInit:
             mock_mem.initialize = MagicMock()
             mock_factory.return_value = [mock_mem]
             runner = TaskRunner(sweep=True)
-            # 5 throughput (16B default + 4 extra) + 1 latency + 1 memory = 7
+            # 5 throughput (16B default + 4 cross-platform) + 1 latency + 1 memory = 7
             assert len(runner._subscribers) == 7
 
     def test_memory_sweep_standalone(self):

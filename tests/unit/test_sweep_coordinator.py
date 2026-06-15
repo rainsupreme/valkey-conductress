@@ -9,6 +9,7 @@ import pytest
 
 from conductress.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_TEST, SWEEP_VAL_SIZE, SweepCoordinator
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
+from conductress.tasks.task_perf_benchmark import PerfTaskData
 
 
 @pytest.fixture
@@ -224,12 +225,102 @@ class TestTaskRunnerSweepIntegration:
     @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
     @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
     @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
-    def test_task_runner_sweep_mode_creates_sweep_coordinator(self, mock_tags, mock_commits, mock_init, tmp_dir):
+    @patch("conductress.platform.get_local_platform_tag", return_value="amd64")
+    def test_task_runner_sweep_mode_creates_sweep_coordinator(
+        self, mock_platform, mock_tags, mock_commits, mock_init, tmp_dir
+    ):
         from conductress.task_runner import TaskRunner
 
         runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        # 5 throughput (16B + 4 extra) + 1 latency + 5 memory = 11
+        # 5 throughput (16B + 4 cross-platform) + 1 latency + 5 memory = 11
+        # AMD has no platform-specific workloads
         assert len(runner._subscribers) == 11
+
+    @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
+    @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
+    @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
+    @patch("conductress.platform.get_local_platform_tag", return_value="intel")
+    def test_task_runner_sweep_intel_gets_platform_workloads(
+        self, mock_platform, mock_tags, mock_commits, mock_init, tmp_dir
+    ):
+        from conductress.task_runner import TaskRunner
+
+        runner = TaskRunner(sweep=True, repo_path=tmp_dir)
+        # 5 throughput + 2 intel-only + 1 latency + 5 memory = 13
+        assert len(runner._subscribers) == 13
+
+    @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
+    @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
+    @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
+    @patch("conductress.platform.get_local_platform_tag", return_value="arm64")
+    def test_task_runner_sweep_arm_gets_platform_workloads(
+        self, mock_platform, mock_tags, mock_commits, mock_init, tmp_dir
+    ):
+        from conductress.task_runner import TaskRunner
+
+        runner = TaskRunner(sweep=True, repo_path=tmp_dir)
+        # 5 throughput + 2 arm64-only + 1 latency + 5 memory = 13
+        assert len(runner._subscribers) == 13
+
+
+class TestIsMyTask:
+    """Tests for _is_my_task with io_threads and pipelining matching."""
+
+    @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
+    @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
+    @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
+    @patch("conductress.config.REPO_NAMES", ["valkey", "rainsupreme"])
+    def test_is_my_task_matches_io_threads_and_pipelining(self, mock_tags, mock_commits, mock_init, tmp_dir):
+        coord_default = SweepCoordinator(tmp_dir / "repo")
+        coord_intel = SweepCoordinator(tmp_dir / "repo", label="get-k16-v16-t24-p100", io_threads=24, pipelining=100)
+
+        task_default = PerfTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            test="get",
+            val_size=SWEEP_VAL_SIZE,
+            io_threads=SWEEP_IO_THREADS,
+            pipelining=10,
+            warmup=5,
+            duration=30,
+            profiling_sample_rate=0,
+            perf_stat_enabled=True,
+            has_expire=False,
+            preload_keys=True,
+        )
+        task_default.sweep_commit = "abc123"
+
+        task_intel = PerfTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            test="get",
+            val_size=SWEEP_VAL_SIZE,
+            io_threads=24,
+            pipelining=100,
+            warmup=5,
+            duration=30,
+            profiling_sample_rate=0,
+            perf_stat_enabled=True,
+            has_expire=False,
+            preload_keys=True,
+        )
+        task_intel.sweep_commit = "abc123"
+
+        # Default coordinator matches default task, not intel task
+        assert coord_default._is_my_task(task_default) is True
+        assert coord_default._is_my_task(task_intel) is False
+
+        # Intel coordinator matches intel task, not default task
+        assert coord_intel._is_my_task(task_intel) is True
+        assert coord_intel._is_my_task(task_default) is False
 
 
 class TestUrgencyScore:
