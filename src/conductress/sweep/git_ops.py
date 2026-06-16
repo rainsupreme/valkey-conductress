@@ -125,6 +125,38 @@ def get_release_branch_points(repo_path: Path) -> List[Tuple[str, str, str]]:
     return points
 
 
+def resolve_tag_to_commit(repo_path: Path, tag: str) -> Optional[str]:
+    """Resolve a tag name (or tag^ parent syntax) to its commit hash."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-list", "-1", tag],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def resolve_floor_commit(repo_path: Path, floor_tag: str, ref: str) -> Optional[str]:
+    """Find the merge-base between a floor tag and the sweep ref.
+
+    This gives the correct since_commit for git log --first-parent on the
+    sweep ref, ensuring the floor tag's commit is included in the enumeration.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "merge-base", ref, floor_tag],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
 def find_fork_point(repo_path: Path, branch: str = "unstable", upstream: str = "origin") -> Optional[str]:
     """Find the fork point where the branch diverged from a known base.
 

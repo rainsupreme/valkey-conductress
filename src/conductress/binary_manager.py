@@ -41,12 +41,14 @@ class BinaryManager:
         self.specifier: Optional[str] = None
         self.hash: Optional[str] = None
         self.make_args: str = config.DEFAULT_MAKE_ARGS
+        self.binary_name: str = VALKEY_BINARY
 
     async def ensure_binary_cached(
         self,
         source: Optional[str] = None,
         specifier: Optional[str] = None,
         make_args: Optional[str] = None,
+        binary_name: Optional[str] = None,
     ) -> Path:
         """Ensure a binary is built and cached. Returns path to cached binary.
 
@@ -58,6 +60,8 @@ class BinaryManager:
             self.specifier = specifier
         if make_args is not None:
             self.make_args = make_args
+        if binary_name is not None:
+            self.binary_name = binary_name
 
         if self.source == config.MANUALLY_UPLOADED:
             return await self._ensure_binary_uploaded(self.specifier)
@@ -84,7 +88,7 @@ class BinaryManager:
         return self.path_root / self.source / "src"
 
     async def _is_binary_cached(self) -> bool:
-        return await self._host.check_file_exists(self.get_cached_build_path() / VALKEY_BINARY)
+        return await self._host.check_file_exists(self.get_cached_build_path() / self.binary_name)
 
     async def _normalize_specifier(self, specifier: Optional[str]) -> str:
         """Resolve a specifier to a valid git ref. Fetches from origin first."""
@@ -116,7 +120,7 @@ class BinaryManager:
         self.hash = await self._get_current_commit_hash()
 
         cached_build_path = self.get_cached_build_path()
-        cached_binary_path = cached_build_path / VALKEY_BINARY
+        cached_binary_path = cached_build_path / self.binary_name
 
         if not await self._is_binary_cached():
             self._logger.info("building %s:%s...", self.source, self.specifier)
@@ -128,9 +132,10 @@ class BinaryManager:
             except asyncssh.ProcessError as e:
                 self._logger.error("Build failed %d:\n%s", e.returncode, e.stderr)
                 raise
-            build_binary = source_path / VALKEY_BINARY
+            build_binary = source_path / self.binary_name
             if not await self._host.check_file_exists(build_binary):
-                build_binary = source_path / "redis-server"  # pre-fork commits
+                fallback = "redis-server" if self.binary_name == VALKEY_BINARY else VALKEY_BINARY
+                build_binary = source_path / fallback
             await self._host.run_host_command(f"mkdir -p {cached_build_path}")
             await self._host.run_host_command(f"cp {build_binary} {cached_binary_path}")
 
@@ -143,7 +148,7 @@ class BinaryManager:
             raise RuntimeError("Failed to run sha1sum on local binary")
         self.hash = out.strip().split()[0]
 
-        cached_binary_path = self.get_cached_build_path() / VALKEY_BINARY
+        cached_binary_path = self.get_cached_build_path() / self.binary_name
 
         if not await self._is_binary_cached():
             self._logger.info("copying %s to server... (not cached)", local_path)

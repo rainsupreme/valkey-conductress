@@ -239,6 +239,29 @@ def main() -> None:
                     if mem_wl.state_file.exists():
                         coordinators.append(MemorySweepCoordinator(repo_path, mem_wl))
 
+            # Additional engines (e.g. Redis)
+            if not args.metric or args.metric == "throughput":
+                from conductress.config import SWEEP_ENGINES
+
+                for engine in SWEEP_ENGINES:
+                    if engine.source == "valkey":
+                        continue
+                    engine_repo = Path(args.repo) if getattr(args, "repo", None) else Path.home() / engine.source
+                    primary = SweepCoordinator(engine_repo, engine=engine)
+                    if primary.state_file.exists():
+                        coordinators.append(primary)
+                    for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                        engine_coord = SweepCoordinator(
+                            engine_repo,
+                            val_size=wl["val_size"],
+                            test=wl.get("test", "get"),
+                            io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                            pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                            engine=engine,
+                        )
+                        if engine_coord.state_file.exists():
+                            coordinators.append(engine_coord)
+
             if not coordinators:
                 print("No sweep data to export.")
                 sys.exit(1)
