@@ -397,6 +397,8 @@ def export_latency(
     workload: str,
     load_fraction: float = 0.70,
     tool_version: str = "d52544b1",
+    repo: str = "valkey-io/valkey",
+    branch: str = "unstable",
 ) -> int:
     """Export latency sweep data to a dashboard-ready series file.
 

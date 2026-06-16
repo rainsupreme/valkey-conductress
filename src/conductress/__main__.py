@@ -251,7 +251,7 @@ def main() -> None:
                     if primary.state_file.exists():
                         coordinators.append(primary)
                     for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                        coord = SweepCoordinator(
+                        engine_coord = SweepCoordinator(
                             engine_repo,
                             val_size=wl["val_size"],
                             test=wl.get("test", "get"),
@@ -259,8 +259,8 @@ def main() -> None:
                             pipelining=wl.get("pipelining", SWEEP_PIPELINING),
                             engine=engine,
                         )
-                        if coord.state_file.exists():
-                            coordinators.append(coord)
+                        if engine_coord.state_file.exists():
+                            coordinators.append(engine_coord)
 
             if not coordinators:
                 print("No sweep data to export.")
