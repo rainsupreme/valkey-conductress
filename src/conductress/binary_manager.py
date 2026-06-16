@@ -129,7 +129,7 @@ class BinaryManager:
                 # persist-settings recipe's deps sub-make, which would race
                 # jemalloc's configure against source compilation.
                 make_command = (
-                    f"cd {source_path}; rm -f valkey-server redis-server;"
+                    f"cd {source_path.parent}; rm -f src/valkey-server src/redis-server;"
                     f" make distclean && cd src && MAKEFLAGS= make -j"
                 )
                 if self.make_args:
