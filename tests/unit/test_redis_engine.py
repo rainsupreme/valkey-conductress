@@ -8,7 +8,6 @@ import pytest
 
 from conductress.binary_manager import VALKEY_BINARY, BinaryManager
 from conductress.config import (
-    REPO_NAMES,
     SWEEP_ENGINES,
     SWEEP_MAKE_ARGS,
     SWEEP_REF,
@@ -52,7 +51,10 @@ class TestSweepEngineConfig:
         assert get_sweep_engine("nonexistent") is None
 
     def test_redis_source_in_repo_names(self):
-        assert "redis" in REPO_NAMES
+        from conductress.config import REPOSITORIES
+
+        repo_names = [repo[1] for repo in REPOSITORIES]
+        assert "redis" in repo_names
 
 
 class TestSweepCoordinatorEngine:

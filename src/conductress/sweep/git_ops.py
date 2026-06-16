@@ -125,7 +125,6 @@ def get_release_branch_points(repo_path: Path) -> List[Tuple[str, str, str]]:
     return points
 
 
-
 def resolve_tag_to_commit(repo_path: Path, tag: str) -> Optional[str]:
     """Resolve a tag name (or tag^ parent syntax) to its commit hash."""
     try:
