@@ -132,7 +132,7 @@ class TestSweepCoordinatorTaskGeneration:
         assert task.test == SWEEP_TEST
         assert task.val_size == SWEEP_VAL_SIZE
         assert task.io_threads == SWEEP_IO_THREADS
-        assert "[sweep]" in task.note
+        assert "[perf-sweep:" in task.note
 
     @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     @patch("conductress.sweep.coordinator.get_head")

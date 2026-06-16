@@ -153,7 +153,9 @@ class BaseSweepCoordinator(ABC):
         task = self._create_task(sweep_task)
         task.sweep_commit = sweep_task.commit  # type: ignore[attr-defined]
         queue.submit_task(task)
-        logger.info(f"[sweep] Queued: {sweep_task.commit[:8]} - {sweep_task.reason}")
+        logger.info(
+            f"[sweep] Queued: {self._sweep_source}/{self.workload_id} {sweep_task.commit[:8]} - {sweep_task.reason}"
+        )
         return True
 
     def get_urgency_score(self) -> float:
@@ -413,7 +415,7 @@ class SweepCoordinator(BaseSweepCoordinator):
             specifier=sweep_task.commit,
             make_args=self._sweep_make_args,
             replicas=0,
-            note=f"[sweep] {sweep_task.reason}",
+            note=f"[perf-sweep:{self._sweep_source}/{self.workload_id}] {sweep_task.reason}",
             requirements={},
             test=self._test,
             val_size=self._val_size,
