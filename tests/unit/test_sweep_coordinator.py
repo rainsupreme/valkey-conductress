@@ -322,6 +322,7 @@ class TestUrgencyScore:
             coord.state = state
             coord.state_file = state_file
             coord.planner = SweepPlanner(state)
+            coord.engine = None
 
         score = coord.get_urgency_score()
         assert score == float("inf")
@@ -343,6 +344,7 @@ class TestUrgencyScore:
             coord.state = state
             coord.state_file = state_file
             coord.planner = SweepPlanner(state)
+            coord.engine = None
 
         score = coord.get_urgency_score()
         assert score == 0.0
@@ -367,6 +369,7 @@ class TestUrgencyScore:
             coord.state = state
             coord.state_file = state_file
             coord.planner = SweepPlanner(state)
+            coord.engine = None
 
         score = coord.get_urgency_score()
         assert score > 0
@@ -390,6 +393,7 @@ class TestFetchAndRefresh:
             coord.state_file = state_file
             coord.state = state
             coord.planner = SweepPlanner(state)
+            coord.engine = None
             coord._last_fetch_time = 0.0
 
         new_head = "ddd"  # Not in merge_commits
@@ -417,6 +421,7 @@ class TestFetchAndRefresh:
             coord.state_file = state_file
             coord.state = state
             coord.planner = SweepPlanner(state)
+            coord.engine = None
             coord._last_fetch_time = 0.0
 
         with (
@@ -446,6 +451,7 @@ class TestHasNightlyTask:
             coord.state_file = state_file
             coord.state = state
             coord.planner = SweepPlanner(state)
+            coord.engine = None
 
         with patch("conductress.sweep.coordinator.get_head", return_value="ccc"):
             assert coord.has_nightly_task() is True
@@ -465,6 +471,7 @@ class TestHasNightlyTask:
             coord.state_file = state_file
             coord.state = state
             coord.planner = SweepPlanner(state)
+            coord.engine = None
 
         with patch("conductress.sweep.coordinator.get_head", return_value="ccc"):
             assert coord.has_nightly_task() is False
@@ -484,12 +491,14 @@ class TestHasNightlyTask:
             coord.state_file = state_file
             coord.state = state
             coord.planner = SweepPlanner(state)
+            coord.engine = None
             coord._last_fetch_time = 0.0
 
         def fake_refresh():
             # Simulate refresh adding the new commit
             coord.state.merge_commits.append("zzz")
             coord.planner = SweepPlanner(coord.state)
+            coord.engine = None
 
         with (
             patch("conductress.sweep.coordinator.get_head", return_value="zzz"),
