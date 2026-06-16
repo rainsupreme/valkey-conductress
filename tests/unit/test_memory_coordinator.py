@@ -94,6 +94,7 @@ class TestTaskFiltering:
     def test_accepts_matching_task(self, coordinator):
         task = MagicMock(spec=MemTaskData)
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = False
         task.val_sizes = [64]
@@ -102,6 +103,7 @@ class TestTaskFiltering:
     def test_rejects_different_test_type(self, coordinator):
         task = MagicMock(spec=MemTaskData)
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "zadd"
         task.has_expire = False
         task.val_sizes = [64]
@@ -110,6 +112,7 @@ class TestTaskFiltering:
     def test_rejects_different_expire_flag(self, coordinator):
         task = MagicMock(spec=MemTaskData)
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = True
         task.val_sizes = [64]
@@ -118,6 +121,7 @@ class TestTaskFiltering:
     def test_rejects_non_sweep_task(self, coordinator):
         task = MagicMock(spec=MemTaskData)
         task.sweep_commit = ""
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = False
         task.val_sizes = [64]
@@ -132,9 +136,20 @@ class TestTaskFiltering:
         """zadd-m64 task must not be claimed by zadd-m20 coordinator (and vice versa)."""
         task = MagicMock(spec=MemTaskData)
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = False
         task.val_sizes = [20]  # Different from coordinator's 64
+        assert coordinator._is_my_task(task) is False
+
+    def test_rejects_different_source(self, coordinator):
+        """Valkey coordinator must not claim Redis tasks."""
+        task = MagicMock(spec=MemTaskData)
+        task.sweep_commit = "aaa"
+        task.source = "redis"
+        task.type = "set"
+        task.has_expire = False
+        task.val_sizes = [64]
         assert coordinator._is_my_task(task) is False
 
 
@@ -223,6 +238,7 @@ class TestOnTaskCompleted:
         task = MagicMock(spec=MemTaskData)
         task.task_id = "test_task"
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = False
         task.val_sizes = [64]
@@ -248,6 +264,7 @@ class TestOnTaskCompleted:
         task = MagicMock(spec=MemTaskData)
         task.task_id = "test_task"
         task.sweep_commit = "bbb"
+        task.source = "valkey"
         task.type = "set"
         task.has_expire = False
         task.val_sizes = [64]
@@ -368,3 +385,95 @@ class TestFlatnessDiscount:
         score = coord.get_urgency_score()
         # 20% deltas everywhere — no discount, should stay at base (~3.3)
         assert score > 3.0
+
+
+class TestEngineSupport:
+    """Tests for multi-engine (Redis) memory sweep support."""
+
+    @pytest.fixture
+    def redis_engine(self):
+        from conductress.config import get_sweep_engine
+
+        return get_sweep_engine("redis")
+
+    @pytest.fixture
+    def redis_coordinator(self, tmp_path, monkeypatch, redis_engine):
+        import conductress.config as config
+        import conductress.sweep.memory_coordinator as mc
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey", "redis"])
+        monkeypatch.setattr(mc, "MEMORY_STATE_DIR", tmp_path / "sweep_data")
+        (tmp_path / "sweep_data").mkdir(parents=True, exist_ok=True)
+
+        wl = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
+        coord = MemorySweepCoordinator(tmp_path / "redis", wl, engine=redis_engine)
+        return coord
+
+    def test_state_file_has_engine_prefix(self, redis_engine):
+        wl = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
+        sf = wl.state_file_for_engine(redis_engine)
+        assert "redis-" in sf.name
+        assert sf.name == "memory_state_redis-set-v64.json"
+
+    def test_state_file_no_prefix_for_valkey(self):
+        from conductress.config import get_sweep_engine
+
+        valkey_engine = get_sweep_engine("valkey")
+        wl = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
+        sf = wl.state_file_for_engine(valkey_engine)
+        assert "redis-" not in sf.name
+        assert sf.name == "memory_state_set-v64.json"
+
+    def test_state_file_no_prefix_for_none(self):
+        wl = MemoryWorkload(command="set", key_size=16, value_size=64, label="set-v64", user_data_bytes=80)
+        sf = wl.state_file_for_engine(None)
+        assert sf.name == "memory_state_set-v64.json"
+
+    def test_workload_id_has_engine_prefix(self, redis_coordinator):
+        assert redis_coordinator.workload_id == "memory-redis-set-v64"
+
+    def test_create_task_uses_engine_source(self, redis_coordinator):
+        from conductress.sweep.planner import SweepTask, TaskPriority
+
+        sweep_task = SweepTask(commit="abc123", date="2024-01-01", priority=TaskPriority.BACKFILL, reason="test")
+        task = redis_coordinator._create_task(sweep_task)
+        assert task.source == "redis"
+
+    def test_create_task_make_args_include_jemalloc_prof(self, redis_coordinator):
+        from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
+        from conductress.sweep.planner import SweepTask, TaskPriority
+
+        sweep_task = SweepTask(commit="abc123", date="2024-01-01", priority=TaskPriority.BACKFILL, reason="test")
+        task = redis_coordinator._create_task(sweep_task)
+        assert JEMALLOC_PROF_CONFIGURE_OPTS in task.make_args
+
+    def test_is_my_task_matches_engine_source(self, redis_coordinator):
+        task = MagicMock(spec=MemTaskData)
+        task.sweep_commit = "abc123"
+        task.source = "redis"
+        task.type = "set"
+        task.has_expire = False
+        task.val_sizes = [64]
+        assert redis_coordinator._is_my_task(task) is True
+
+    def test_is_my_task_rejects_wrong_source(self, redis_coordinator):
+        task = MagicMock(spec=MemTaskData)
+        task.sweep_commit = "abc123"
+        task.source = "valkey"
+        task.type = "set"
+        task.has_expire = False
+        task.val_sizes = [64]
+        assert redis_coordinator._is_my_task(task) is False
+
+    def test_factory_with_engine(self, tmp_path, monkeypatch, redis_engine):
+        import conductress.config as config
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey", "redis"])
+        coordinators = create_memory_coordinators(tmp_path / "redis", engine=redis_engine)
+        assert len(coordinators) == len(MEMORY_WORKLOADS)
+        # All should have redis prefix in workload_id
+        for c in coordinators:
+            assert c.workload_id.startswith("memory-redis-")
+        # State files should have redis prefix
+        for c in coordinators:
+            assert "redis-" in c.state_file.name
