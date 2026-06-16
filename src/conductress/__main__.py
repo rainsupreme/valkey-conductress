@@ -197,8 +197,14 @@ def main() -> None:
     elif args.command == "sweep":
         from pathlib import Path
 
-        from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_STATE_DIR, SWEEP_THROUGHPUT_WORKLOADS
-        from conductress.sweep.coordinator import SWEEP_STATE_FILE, BaseSweepCoordinator, SweepCoordinator
+        from conductress.config import (
+            SWEEP_IO_THREADS,
+            SWEEP_PIPELINING,
+            SWEEP_STATE_DIR,
+            SWEEP_STATE_FILE,
+            SWEEP_THROUGHPUT_WORKLOADS,
+        )
+        from conductress.sweep.coordinator import BaseSweepCoordinator, SweepCoordinator
         from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS, MemorySweepCoordinator
         from conductress.sweep.planner import SweepState
 
@@ -215,21 +221,19 @@ def main() -> None:
             # Build list of coordinators to export
             coordinators: list[BaseSweepCoordinator] = []
             if not args.metric or args.metric == "throughput":
-                if SWEEP_STATE_FILE.exists():
-                    coordinators.append(SweepCoordinator(repo_path))
+                primary = SweepCoordinator(repo_path)
+                if primary.state_file.exists():
+                    coordinators.append(primary)
                 for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                    state_file = SWEEP_STATE_DIR / f"state_{wl['label']}.json"
-                    if state_file.exists():
-                        coordinators.append(
-                            SweepCoordinator(
-                                repo_path,
-                                val_size=wl["val_size"],
-                                label=wl["label"],
-                                test=wl.get("test", "get"),
-                                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
-                                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
-                            )
-                        )
+                    coord = SweepCoordinator(
+                        repo_path,
+                        val_size=wl["val_size"],
+                        test=wl.get("test", "get"),
+                        io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                        pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                    )
+                    if coord.state_file.exists():
+                        coordinators.append(coord)
             if not args.metric or args.metric == "memory":
                 for mem_wl in MEMORY_WORKLOADS:
                     if mem_wl.state_file.exists():

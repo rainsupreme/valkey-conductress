@@ -50,13 +50,13 @@ def mock_repo(tmp_dir):
 class TestSweepCoordinatorInit:
     """Tests for SweepCoordinator initialization."""
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     @patch("conductress.sweep.coordinator.get_merge_commits")
     def test_initialize_populates_commits(self, mock_commits, mock_state_file, tmp_dir):
         from conductress.sweep.git_ops import MergeCommit
 
         mock_state_file.__class__ = Path
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
 
         mock_commits.return_value = [
             MergeCommit(hash="aaa111", date="2024-03-20", pr=100, pr_title="First PR"),
@@ -64,7 +64,7 @@ class TestSweepCoordinatorInit:
         ]
 
         with (
-            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir),
             patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
@@ -74,9 +74,9 @@ class TestSweepCoordinatorInit:
         assert coordinator.state.merge_commits[0] == "aaa111"
         assert coordinator.state.commit_dates["bbb222"] == "2024-04-15"
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     def test_initialize_skips_if_already_populated(self, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         # Pre-populate state
         state = SweepState(
             merge_commits=["abc", "def"],
@@ -85,7 +85,7 @@ class TestSweepCoordinatorInit:
         state.save(state_file)
 
         with (
-            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir),
             patch("conductress.sweep.coordinator.get_merge_commits") as mock_git,
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
@@ -97,10 +97,10 @@ class TestSweepCoordinatorInit:
 class TestSweepCoordinatorTaskGeneration:
     """Tests for sweep task generation."""
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     @patch("conductress.sweep.coordinator.get_head")
     def test_generates_task_for_new_head(self, mock_head, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
             commit_dates={
@@ -120,7 +120,7 @@ class TestSweepCoordinatorTaskGeneration:
         mock_head.return_value = "ccc"
 
         with (
-            patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file),
+            patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir),
             patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"]),
         ):
             coordinator = SweepCoordinator(tmp_dir / "repo")
@@ -134,10 +134,10 @@ class TestSweepCoordinatorTaskGeneration:
         assert task.io_threads == SWEEP_IO_THREADS
         assert "[sweep]" in task.note
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     @patch("conductress.sweep.coordinator.get_head")
     def test_returns_none_when_all_done(self, mock_head, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},
@@ -161,7 +161,7 @@ class TestSweepCoordinatorTaskGeneration:
         state.last_benchmarked_head = "bbb"
         state.save(state_file)
 
-        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             task = coordinator.get_next_sweep_task()
@@ -172,10 +172,10 @@ class TestSweepCoordinatorTaskGeneration:
 class TestSweepCoordinatorResults:
     """Tests for recording results and cleanup."""
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     @patch("conductress.sweep.coordinator.get_head")
     def test_record_result_persists(self, mock_head, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},
@@ -183,7 +183,7 @@ class TestSweepCoordinatorResults:
         state.save(state_file)
         mock_head.return_value = "bbb"
 
-        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             coordinator.record_result("aaa", value=150000, cv=0.19, reps=3)
@@ -194,16 +194,16 @@ class TestSweepCoordinatorResults:
         assert loaded.points["aaa"].value == 150000
         assert loaded.points["aaa"].status == PointStatus.COMPLETED
 
-    @patch("conductress.sweep.coordinator.SWEEP_STATE_FILE")
+    @patch("conductress.sweep.coordinator.SWEEP_STATE_DIR")
     def test_record_build_failure_persists(self, mock_state_file, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa"],
             commit_dates={"aaa": "2024-01-01"},
         )
         state.save(state_file)
 
-        with patch("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file):
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_dir):
             coordinator = SweepCoordinator(tmp_dir / "repo")
             coordinator.initialize()
             coordinator.record_build_failure("aaa")
@@ -272,7 +272,7 @@ class TestIsMyTask:
     @patch("conductress.config.REPO_NAMES", ["valkey", "rainsupreme"])
     def test_is_my_task_matches_io_threads_and_pipelining(self, mock_tags, mock_commits, mock_init, tmp_dir):
         coord_default = SweepCoordinator(tmp_dir / "repo")
-        coord_intel = SweepCoordinator(tmp_dir / "repo", label="get-k16-v16-t24-p100", io_threads=24, pipelining=100)
+        coord_intel = SweepCoordinator(tmp_dir / "repo", io_threads=24, pipelining=100)
 
         task_default = PerfTaskData(
             source="valkey",
@@ -328,7 +328,7 @@ class TestUrgencyScore:
 
     def test_empty_series_returns_infinity(self, tmp_dir):
         """A series with <2 points should have infinite urgency (top priority)."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(threshold=0.02)
         state.merge_commits = ["aaa", "bbb", "ccc"]
         state.commit_dates = {"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"}
@@ -345,7 +345,7 @@ class TestUrgencyScore:
 
     def test_fully_resolved_returns_zero(self, tmp_dir):
         """A series with no work left should return 0."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(threshold=0.02)
         state.merge_commits = ["aaa", "bbb"]
         state.commit_dates = {"aaa": "2024-01-01", "bbb": "2024-02-01"}
@@ -366,7 +366,7 @@ class TestUrgencyScore:
 
     def test_large_delta_scores_higher(self, tmp_dir):
         """A segment with a large delta should score higher than a small one."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(threshold=0.02)
         commits = [f"c{i:03d}" for i in range(20)]
         state.merge_commits = commits
@@ -394,7 +394,7 @@ class TestFetchAndRefresh:
 
     def test_refreshes_when_head_not_in_commit_list(self, tmp_dir):
         """Regression: stale state with HEAD not in merge_commits must trigger refresh."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
@@ -421,7 +421,7 @@ class TestFetchAndRefresh:
 
     def test_skips_refresh_when_head_in_commit_list_and_unchanged(self, tmp_dir):
         """No refresh needed when HEAD is already in the commit list and didn't move."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
@@ -449,7 +449,7 @@ class TestHasNightlyTask:
     """Tests for has_nightly_task detection."""
 
     def test_returns_true_when_head_untested_and_in_list(self, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
@@ -468,7 +468,7 @@ class TestHasNightlyTask:
             assert coord.has_nightly_task() is True
 
     def test_returns_false_when_head_already_benchmarked(self, tmp_dir):
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb", "ccc"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
@@ -488,7 +488,7 @@ class TestHasNightlyTask:
 
     def test_returns_true_after_refresh_when_head_not_in_list(self, tmp_dir):
         """When HEAD is not in commit list, triggers refresh and then finds it."""
-        state_file = tmp_dir / "state.json"
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
         state = SweepState(
             merge_commits=["aaa", "bbb"],
             commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"},

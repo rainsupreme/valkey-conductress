@@ -94,34 +94,19 @@ SWEEP_MAX_REPS = 7
 SWEEP_TARGET_CV = 0.5
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
-# Additional throughput workloads (each gets its own state file + series)
-# "test" defaults to SWEEP_TEST ("get") if omitted.
-# "io_threads" and "pipelining" default to SWEEP_IO_THREADS / SWEEP_PIPELINING if omitted.
+# Additional throughput workloads (each gets its own state file + series).
+# Label is auto-generated as {test}-k{key_size}-v{val_size}-t{io_threads}-p{pipelining}.
 # "platforms" limits the workload to specific architectures (omit for all platforms).
 SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
-    {"val_size": 64, "label": "get-k16-v64"},
-    {"val_size": 128, "label": "get-k16-v128"},
-    {"val_size": 16, "test": "set", "label": "set-k16-v16"},
-    {"val_size": 128, "test": "set", "label": "set-k16-v128"},
+    {"val_size": 64},
+    {"val_size": 128},
+    {"val_size": 16, "test": "set"},
+    {"val_size": 128, "test": "set"},
     # Platform-optimal workloads: realistic configs for performance-sensitive users
-    {"val_size": 16, "io_threads": 24, "pipelining": 100, "label": "get-k16-v16-t24-p100", "platforms": ["intel"]},
-    {
-        "val_size": 16,
-        "io_threads": 24,
-        "pipelining": 100,
-        "test": "set",
-        "label": "set-k16-v16-t24-p100",
-        "platforms": ["intel"],
-    },
-    {"val_size": 16, "io_threads": 9, "pipelining": 50, "label": "get-k16-v16-t9-p50", "platforms": ["arm64"]},
-    {
-        "val_size": 16,
-        "io_threads": 9,
-        "pipelining": 50,
-        "test": "set",
-        "label": "set-k16-v16-t9-p50",
-        "platforms": ["arm64"],
-    },
+    {"val_size": 16, "io_threads": 24, "pipelining": 100, "platforms": ["intel"]},
+    {"val_size": 16, "io_threads": 24, "pipelining": 100, "test": "set", "platforms": ["intel"]},
+    {"val_size": 16, "io_threads": 9, "pipelining": 50, "platforms": ["arm64"]},
+    {"val_size": 16, "io_threads": 9, "pipelining": 50, "test": "set", "platforms": ["arm64"]},
 ]
 
 # =============================================================================

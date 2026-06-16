@@ -27,7 +27,6 @@ from conductress.config import (
     SWEEP_REPETITIONS,
     SWEEP_SOURCE,
     SWEEP_STATE_DIR,
-    SWEEP_STATE_FILE,
     SWEEP_TARGET_CV,
     SWEEP_TEST,
     SWEEP_VAL_SIZE,
@@ -354,7 +353,6 @@ class SweepCoordinator(BaseSweepCoordinator):
         self,
         repo_path: Path,
         val_size: int = SWEEP_VAL_SIZE,
-        label: Optional[str] = None,
         test: str = SWEEP_TEST,
         io_threads: int = SWEEP_IO_THREADS,
         pipelining: int = SWEEP_PIPELINING,
@@ -363,13 +361,13 @@ class SweepCoordinator(BaseSweepCoordinator):
         self._test = test
         self._io_threads = io_threads
         self._pipelining = pipelining
-        self._label = label or f"get-k{SWEEP_KEY_SIZE}-v{val_size}"
-        state_file = SWEEP_STATE_DIR / f"state_{self._label}.json" if label else SWEEP_STATE_FILE
+        self._label = f"{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+        state_file = SWEEP_STATE_DIR / f"state_{self._label}.json"
         super().__init__(repo_path, state_file)
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return f"{self._label}-t{self._io_threads}-p{self._pipelining}"
+        return self._label
 
     def get_next_sweep_task(self) -> Optional[PerfTaskData]:
         """Legacy interface: get next task directly."""
