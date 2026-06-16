@@ -82,7 +82,7 @@ class TaskRunner:
                 mem_coordinator.initialize()
                 self._subscribers.append(mem_coordinator)
 
-            # Additional engines (e.g. Redis) -- throughput sweep only
+            # Additional engines (e.g. Redis) -- throughput + memory sweep
             from conductress.config import SWEEP_ENGINES
 
             for engine in SWEEP_ENGINES:
@@ -109,6 +109,10 @@ class TaskRunner:
                     )
                     extra.initialize()
                     self._subscribers.append(extra)
+                # Memory sweep for this engine
+                for mem_coordinator in create_memory_coordinators(engine_repo, engine=engine):
+                    mem_coordinator.initialize()
+                    self._subscribers.append(mem_coordinator)
         if memory_sweep and not sweep:
             # Standalone memory sweep (backward compat, rarely used)
             from conductress.sweep.memory_coordinator import create_memory_coordinators

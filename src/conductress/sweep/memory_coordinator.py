@@ -1,7 +1,8 @@
-"""Memory sweep coordinator: tracks per-item memory overhead across Valkey history.
+"""Memory sweep coordinator: tracks per-item memory overhead across engine history.
 
 Supports multiple workloads (set, zadd, sadd, set+expire) via MemoryWorkload config.
 Each workload gets its own state file and sweep planner instance.
+Engine-aware: works with any engine (Valkey, Redis) via SweepEngine config.
 """
 
 import json
@@ -10,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, MEMORY_STATE_DIR, PROJECT_ROOT
-from conductress.heap_profiler import JEMALLOC_PROF_MAKE_ARGS
+from conductress.config import CONDUCTRESS_RESULTS, MEMORY_STATE_DIR, PROJECT_ROOT, SweepEngine
+from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
 from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
@@ -37,6 +38,10 @@ class MemoryWorkload:
     def state_file(self) -> Path:
         return MEMORY_STATE_DIR / f"memory_state_{self.label}.json"
 
+    def state_file_for_engine(self, engine: Optional[SweepEngine] = None) -> Path:
+        prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
+        return MEMORY_STATE_DIR / f"memory_state_{prefix}{self.label}.json"
+
 
 # All memory workloads to sweep. Add new entries here to extend coverage.
 MEMORY_WORKLOADS: list[MemoryWorkload] = [
@@ -60,9 +65,10 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
     metric_unit = "bytes/item"
     lower_is_better = True
 
-    def __init__(self, repo_path: Path, workload: MemoryWorkload):
+    def __init__(self, repo_path: Path, workload: MemoryWorkload, engine: Optional[SweepEngine] = None):
         self._workload = workload
-        super().__init__(repo_path, workload.state_file)
+        state_file = workload.state_file_for_engine(engine)
+        super().__init__(repo_path, state_file, engine=engine)
 
     @property
     def metric_id(self) -> str:  # type: ignore[override]
@@ -70,7 +76,8 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return f"memory-{self._workload.label}"
+        prefix = f"{self.engine.source}-" if self.engine and self.engine.source != "valkey" else ""
+        return f"memory-{prefix}{self._workload.label}"
 
     def get_urgency_score(self) -> float:
         """Memory urgency with flatness discount.
@@ -141,10 +148,13 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
     def _create_task(self, sweep_task: SweepTask) -> MemTaskData:
+        # Combine engine make_args with jemalloc profiling flag
+        engine_args = self._sweep_make_args
+        make_args = f"{engine_args} {JEMALLOC_PROF_CONFIGURE_OPTS}" if engine_args else JEMALLOC_PROF_CONFIGURE_OPTS
         return MemTaskData(
-            source=SWEEP_SOURCE,
+            source=self._sweep_source,
             specifier=sweep_task.commit,
-            make_args=JEMALLOC_PROF_MAKE_ARGS,
+            make_args=make_args,
             replicas=0,
             note=f"[memory-sweep:{self._workload.label}] {sweep_task.reason}",
             requirements={},
@@ -162,7 +172,8 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
         if not isinstance(task, MemTaskData) or not task.sweep_commit:
             return False
         return (
-            task.type == self._workload.command
+            task.source == self._sweep_source
+            and task.type == self._workload.command
             and task.has_expire == self._workload.has_expire
             and task.val_sizes == [self._workload.value_size]
         )
@@ -248,6 +259,6 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
         self.queue_next_if_needed()
 
 
-def create_memory_coordinators(repo_path: Path) -> list[MemorySweepCoordinator]:
+def create_memory_coordinators(repo_path: Path, engine: Optional[SweepEngine] = None) -> list[MemorySweepCoordinator]:
     """Factory: create one coordinator per configured workload."""
-    return [MemorySweepCoordinator(repo_path, wl) for wl in MEMORY_WORKLOADS]
+    return [MemorySweepCoordinator(repo_path, wl, engine=engine) for wl in MEMORY_WORKLOADS]
