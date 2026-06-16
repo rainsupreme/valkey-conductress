@@ -42,12 +42,7 @@ class TaskRunner:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
         if sweep:
-            from conductress.config import (
-                SWEEP_IO_THREADS,
-                SWEEP_PIPELINING,
-                SWEEP_STATE_FILE,
-                SWEEP_THROUGHPUT_WORKLOADS,
-            )
+            from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_THROUGHPUT_WORKLOADS
             from conductress.platform import get_local_platform_tag
             from conductress.sweep.coordinator import SweepCoordinator
 
@@ -66,7 +61,6 @@ class TaskRunner:
                 extra = SweepCoordinator(
                     repo_path,
                     val_size=wl["val_size"],
-                    label=wl["label"],
                     test=wl.get("test", "get"),
                     io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
                     pipelining=wl.get("pipelining", SWEEP_PIPELINING),
@@ -77,7 +71,7 @@ class TaskRunner:
             # Latency sweep runs alongside throughput (uses its data)
             from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 
-            latency_coordinator = LatencySweepCoordinator(repo_path, SWEEP_STATE_FILE)
+            latency_coordinator = LatencySweepCoordinator(repo_path, coordinator.state_file)
             latency_coordinator.initialize()
             self._subscribers.append(latency_coordinator)
 

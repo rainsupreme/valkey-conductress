@@ -36,8 +36,7 @@ def _make_task():
 @pytest.fixture
 def coordinator(tmp_path, monkeypatch):
     """Create a SweepCoordinator with mocked paths."""
-    state_file = tmp_path / "state.json"
-    monkeypatch.setattr("conductress.sweep.coordinator.SWEEP_STATE_FILE", state_file)
+    state_file = tmp_path / "state_get-k16-v16-t7-p10.json"
     monkeypatch.setattr("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_path)
 
     state = SweepState(
