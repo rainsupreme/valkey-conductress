@@ -325,9 +325,9 @@ class BaseSweepCoordinator(ABC):
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history."""
         if self.engine and self.engine.floor_tag:
-            from conductress.sweep.git_ops import resolve_tag_to_commit
+            from conductress.sweep.git_ops import resolve_floor_commit
 
-            floor_commit = resolve_tag_to_commit(self.repo_path, f"{self.engine.floor_tag}^")
+            floor_commit = resolve_floor_commit(self.repo_path, self.engine.floor_tag, self._sweep_ref)
         else:
             from conductress.sweep.git_ops import find_fork_point
 
