@@ -281,6 +281,7 @@ class TestOnTaskCompleted:
         task = MagicMock(spec=MemTaskData)
         task.task_id = "test_task"
         task.sweep_commit = "aaa"
+        task.source = "valkey"
         task.type = "zadd"  # wrong type for set-64b coordinator
         task.has_expire = False
 
