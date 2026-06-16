@@ -150,6 +150,8 @@ def export_series(
     workload: str = "",
     lower_is_better: bool = False,
     num_keys: int = 0,
+    repo: str = "valkey-io/valkey",
+    branch: str = "unstable",
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -215,8 +217,8 @@ def export_series(
 
     series: dict[str, Any] = {
         "metadata": {
-            "repo": "valkey-io/valkey",
-            "branch": "unstable",
+            "repo": repo,
+            "branch": branch,
             "platform": platform,
             "workload": workload,
             "generated": datetime.now(timezone.utc).isoformat(),
@@ -307,6 +309,8 @@ def export_perf_metrics(
     output_dir: Path,
     platform: str,
     workload: str = "",
+    repo: str = "valkey-io/valkey",
+    branch: str = "unstable",
 ) -> dict[str, int]:
     """Export perf stat metrics as individual series files.
 
@@ -451,8 +455,8 @@ def export_latency(
 
     series: dict[str, Any] = {
         "metadata": {
-            "repo": "valkey-io/valkey",
-            "branch": "unstable",
+            "repo": repo,
+            "branch": branch,
             "platform": platform,
             "workload": workload,
             "metric": "latency",

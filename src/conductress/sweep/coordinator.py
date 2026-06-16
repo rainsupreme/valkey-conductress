@@ -13,6 +13,7 @@ from pathlib import Path
 from statistics import stdev
 from typing import Optional
 
+from conductress import config
 from conductress.config import (
     CONDUCTRESS_RESULTS,
     PROJECT_ROOT,
@@ -51,12 +52,25 @@ class BaseSweepCoordinator(ABC):
     Subclasses define: task creation, result extraction, task filtering.
     """
 
-    def __init__(self, repo_path: Path, state_file: Path):
+    def __init__(self, repo_path: Path, state_file: Path, engine: Optional["config.SweepEngine"] = None):
         self.repo_path = repo_path
         self.state_file = state_file
+        self.engine = engine
         self.state = SweepState.load(state_file)
         self.planner = SweepPlanner(self.state)
         self._last_fetch_time: float = 0.0
+
+    @property
+    def _sweep_source(self) -> str:
+        return self.engine.source if self.engine else SWEEP_SOURCE
+
+    @property
+    def _sweep_ref(self) -> str:
+        return self.engine.ref if self.engine else SWEEP_REF
+
+    @property
+    def _sweep_make_args(self) -> str:
+        return self.engine.make_args if self.engine else SWEEP_MAKE_ARGS
 
     def initialize(self) -> None:
         """Initialize the merge commit list from git history, fetching first."""
@@ -67,7 +81,7 @@ class BaseSweepCoordinator(ABC):
         """Record a completed benchmark result and persist state."""
         self.planner.record_result(commit, value, cv, reps)
         try:
-            head = get_head(self.repo_path, ref=SWEEP_REF)
+            head = get_head(self.repo_path, ref=self._sweep_ref)
             if commit == head:
                 self.state.last_benchmarked_head = commit
         except Exception:
@@ -178,7 +192,7 @@ class BaseSweepCoordinator(ABC):
         Also triggers a commit list refresh if HEAD is not in the list (stale state).
         """
         try:
-            head = get_head(self.repo_path, ref=SWEEP_REF)
+            head = get_head(self.repo_path, ref=self._sweep_ref)
         except Exception:
             return False
         if head not in set(self.state.merge_commits):
@@ -223,8 +237,16 @@ class BaseSweepCoordinator(ABC):
         """Export this coordinator's data to a series JSON file. Returns point count."""
         from conductress.sweep.exporter import export_series
 
+        repo = "redis/redis" if self.engine and self.engine.source == "redis" else "valkey-io/valkey"
+        branch = self._sweep_ref.replace("origin/", "") if self.engine else "unstable"
         export_series(
-            self.state, output_path, platform=platform, workload=self.workload_id, lower_is_better=self.lower_is_better
+            self.state,
+            output_path,
+            platform=platform,
+            workload=self.workload_id,
+            lower_is_better=self.lower_is_better,
+            repo=repo,
+            branch=branch,
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
@@ -260,7 +282,7 @@ class BaseSweepCoordinator(ABC):
         if time.time() - self._last_fetch_time >= SWEEP_FETCH_INTERVAL:
             self._fetch_and_refresh()
         try:
-            current_head = get_head(self.repo_path, ref=SWEEP_REF)
+            current_head = get_head(self.repo_path, ref=self._sweep_ref)
         except Exception as e:
             logger.warning("Failed to get HEAD: %s", e)
             current_head = None
@@ -269,7 +291,7 @@ class BaseSweepCoordinator(ABC):
     def _fetch_and_refresh(self) -> None:
         """Fetch origin and refresh commits if HEAD moved, state is empty, or stale."""
         try:
-            old_head = get_head(self.repo_path, ref=SWEEP_REF)
+            old_head = get_head(self.repo_path, ref=self._sweep_ref)
         except Exception:
             old_head = None
         try:
@@ -280,7 +302,7 @@ class BaseSweepCoordinator(ABC):
                 return  # Non-fatal if we already have commits
         self._last_fetch_time = time.time()
         try:
-            new_head: Optional[str] = get_head(self.repo_path, ref=SWEEP_REF)
+            new_head: Optional[str] = get_head(self.repo_path, ref=self._sweep_ref)
         except Exception:
             new_head = None
         head_not_in_list = new_head and new_head not in set(self.state.merge_commits)
@@ -301,11 +323,16 @@ class BaseSweepCoordinator(ABC):
         self.planner = SweepPlanner(self.state)
 
     def _populate_commits(self) -> None:
-        """Populate merge_commits from git history (Valkey-era only)."""
-        from conductress.sweep.git_ops import find_fork_point
+        """Populate merge_commits from git history."""
+        if self.engine and self.engine.floor_tag:
+            from conductress.sweep.git_ops import resolve_tag_to_commit
 
-        fork_point = find_fork_point(self.repo_path)
-        commits = get_merge_commits(self.repo_path, since_commit=fork_point, ref=SWEEP_REF)
+            floor_commit = resolve_tag_to_commit(self.repo_path, f"{self.engine.floor_tag}^")
+        else:
+            from conductress.sweep.git_ops import find_fork_point
+
+            floor_commit = find_fork_point(self.repo_path)
+        commits = get_merge_commits(self.repo_path, since_commit=floor_commit, ref=self._sweep_ref)
         self.state.merge_commits = [c.hash for c in commits]
         self.state.commit_dates = {c.hash: c.date for c in commits}
         self.state.commit_prs = {c.hash: c.pr for c in commits if c.pr is not None}
@@ -328,9 +355,10 @@ class BaseSweepCoordinator(ABC):
         try:
             points = get_release_branch_points(self.repo_path)
             commit_set = set(self.state.merge_commits)
-            for lm in PRE_FORK_LANDMARKS:
-                if lm.commit in commit_set:
-                    self.state.landmarks.append(lm)
+            if not self.engine or self.engine.source == "valkey":
+                for lm in PRE_FORK_LANDMARKS:
+                    if lm.commit in commit_set:
+                        self.state.landmarks.append(lm)
             for commit_hash, date, label in points:
                 if commit_hash in commit_set:
                     self.state.landmarks.append(Landmark(commit=commit_hash, date=date, label=label))
@@ -356,14 +384,16 @@ class SweepCoordinator(BaseSweepCoordinator):
         test: str = SWEEP_TEST,
         io_threads: int = SWEEP_IO_THREADS,
         pipelining: int = SWEEP_PIPELINING,
+        engine: Optional[config.SweepEngine] = None,
     ):
         self._val_size = val_size
         self._test = test
         self._io_threads = io_threads
         self._pipelining = pipelining
-        self._label = f"{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+        engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
+        self._label = f"{engine_prefix}{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
         state_file = SWEEP_STATE_DIR / f"state_{self._label}.json"
-        super().__init__(repo_path, state_file)
+        super().__init__(repo_path, state_file, engine=engine)
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
@@ -379,9 +409,9 @@ class SweepCoordinator(BaseSweepCoordinator):
 
     def _create_task(self, sweep_task: SweepTask) -> PerfTaskData:
         return PerfTaskData(
-            source=SWEEP_SOURCE,
+            source=self._sweep_source,
             specifier=sweep_task.commit,
-            make_args=SWEEP_MAKE_ARGS,
+            make_args=self._sweep_make_args,
             replicas=0,
             note=f"[sweep] {sweep_task.reason}",
             requirements={},
@@ -444,6 +474,7 @@ class SweepCoordinator(BaseSweepCoordinator):
         return (
             isinstance(task, PerfTaskData)
             and bool(task.sweep_commit)
+            and task.source == self._sweep_source
             and task.val_size == self._val_size
             and task.test == self._test
             and task.io_threads == self._io_threads

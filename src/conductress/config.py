@@ -1,7 +1,7 @@
 """Configuration for the Conductress benchmark framework"""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -109,6 +109,52 @@ SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
     {"val_size": 16, "io_threads": 9, "pipelining": 50, "test": "set", "platforms": ["arm64"]},
 ]
 
+
+# =============================================================================
+# Sweep engine configuration: multi-engine support (Valkey, Redis, etc.)
+# =============================================================================
+
+
+@dataclass
+class SweepEngine:
+    """Configuration for a benchmarking engine (server software to sweep)."""
+
+    source: str  # REPOSITORIES entry name (e.g. "valkey", "redis")
+    ref: str  # git ref to track (e.g. "origin/unstable")
+    binary_name: str  # server binary produced by build (e.g. "valkey-server", "redis-server")
+    floor_tag: Optional[str] = None  # earliest tag to sweep from (None = use find_fork_point)
+    make_args: str = DEFAULT_MAKE_ARGS  # compiler flags
+    heap_alloc_funcs: list[str] = field(default_factory=list)  # for memory profiling
+
+
+SWEEP_ENGINES: list[SweepEngine] = [
+    SweepEngine(
+        source="valkey",
+        ref="origin/unstable",
+        binary_name="valkey-server",
+        floor_tag=None,
+        make_args="USE_FAST_FLOAT=yes",
+        heap_alloc_funcs=["valkey_malloc", "valkey_calloc", "valkey_realloc"],
+    ),
+    SweepEngine(
+        source="redis",
+        ref="origin/unstable",
+        binary_name="redis-server",
+        floor_tag="8.0.0",
+        make_args="",
+        heap_alloc_funcs=["zmalloc", "zcalloc", "zrealloc"],
+    ),
+]
+
+
+def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
+    """Look up a SweepEngine by source name."""
+    for engine in SWEEP_ENGINES:
+        if engine.source == source:
+            return engine
+    return None
+
+
 # =============================================================================
 # Sweep configuration: latency
 # =============================================================================
@@ -178,6 +224,7 @@ REPOSITORIES = [
     ("https://github.com/valkey-io/valkey.git", "zuiderkwast"),
     ("https://github.com/JimB123/valkey.git", "JimB123"),
     ("https://github.com/valkey-rainfall/valkey.git", "valkey-rainfall"),
+    ("https://github.com/redis/redis.git", "redis"),
 ]
 REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 

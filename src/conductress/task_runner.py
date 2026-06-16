@@ -81,6 +81,34 @@ class TaskRunner:
             for mem_coordinator in create_memory_coordinators(repo_path):
                 mem_coordinator.initialize()
                 self._subscribers.append(mem_coordinator)
+
+            # Additional engines (e.g. Redis) -- throughput sweep only
+            from conductress.config import SWEEP_ENGINES
+
+            for engine in SWEEP_ENGINES:
+                if engine.source == "valkey":
+                    continue  # Already handled above
+                engine_repo = Path.home() / engine.source
+                if not engine_repo.exists():
+                    logger.info("Skipping engine %s: repo %s not found", engine.source, engine_repo)
+                    continue
+                engine_coord = SweepCoordinator(engine_repo, engine=engine)
+                engine_coord.initialize()
+                self._subscribers.append(engine_coord)
+                for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                    platforms = wl.get("platforms")
+                    if platforms and local_platform not in platforms:
+                        continue
+                    extra = SweepCoordinator(
+                        engine_repo,
+                        val_size=wl["val_size"],
+                        test=wl.get("test", "get"),
+                        io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                        pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                        engine=engine,
+                    )
+                    extra.initialize()
+                    self._subscribers.append(extra)
         if memory_sweep and not sweep:
             # Standalone memory sweep (backward compat, rarely used)
             from conductress.sweep.memory_coordinator import create_memory_coordinators

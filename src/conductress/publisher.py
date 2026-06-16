@@ -78,7 +78,11 @@ class DashboardPublisher:
             # Export perf metrics from all throughput coordinators
             for coord in self.coordinators:
                 if coord.metric_id == "throughput":
-                    export_perf_metrics(coord.state, self._export_dir, self._platform_id, coord.workload_id)
+                    repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
+                    branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
+                    export_perf_metrics(
+                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                    )
 
             # Export manifest
             export_manifest(
