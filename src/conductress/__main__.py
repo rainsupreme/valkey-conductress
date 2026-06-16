@@ -225,15 +225,15 @@ def main() -> None:
                 if primary.state_file.exists():
                     coordinators.append(primary)
                 for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                    coord = SweepCoordinator(
+                    wl_coord = SweepCoordinator(
                         repo_path,
                         val_size=wl["val_size"],
                         test=wl.get("test", "get"),
                         io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
                         pipelining=wl.get("pipelining", SWEEP_PIPELINING),
                     )
-                    if coord.state_file.exists():
-                        coordinators.append(coord)
+                    if wl_coord.state_file.exists():
+                        coordinators.append(wl_coord)
             if not args.metric or args.metric == "memory":
                 for mem_wl in MEMORY_WORKLOADS:
                     if mem_wl.state_file.exists():
