@@ -1,11 +1,27 @@
 """Tests for Redis engine support in Conductress sweep pipeline."""
 
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from conductress.config import SWEEP_ENGINES, SweepEngine, get_sweep_engine
+from conductress.binary_manager import VALKEY_BINARY, BinaryManager
+from conductress.config import (
+    REPO_NAMES,
+    SWEEP_ENGINES,
+    SWEEP_MAKE_ARGS,
+    SWEEP_REF,
+    SWEEP_SOURCE,
+    SWEEP_STATE_DIR,
+    SweepEngine,
+    get_sweep_engine,
+)
+from conductress.sweep.coordinator import SweepCoordinator
+from conductress.sweep.exporter import export_series
+from conductress.sweep.git_ops import resolve_tag_to_commit
+from conductress.sweep.planner import SweepPlanner, SweepState
+from conductress.tasks.task_perf_benchmark import PerfTaskData
 
 
 class TestSweepEngineConfig:
@@ -36,8 +52,6 @@ class TestSweepEngineConfig:
         assert get_sweep_engine("nonexistent") is None
 
     def test_redis_source_in_repo_names(self):
-        from conductress.config import REPO_NAMES
-
         assert "redis" in REPO_NAMES
 
 
@@ -45,11 +59,8 @@ class TestSweepCoordinatorEngine:
     """SweepCoordinator with engine parameter."""
 
     def test_redis_workload_label_has_prefix(self):
-        from conductress.sweep.coordinator import SweepCoordinator
-
         redis = get_sweep_engine("redis")
         coord = SweepCoordinator.__new__(SweepCoordinator)
-        # Simulate __init__ label generation
         engine_prefix = f"{redis.source}-" if redis and redis.source != "valkey" else ""
         label = f"{engine_prefix}get-k16-v16-t7-p10"
         assert label == "redis-get-k16-v16-t7-p10"
@@ -61,21 +72,11 @@ class TestSweepCoordinatorEngine:
         assert label == "get-k16-v16-t7-p10"
 
     def test_redis_state_file_name(self):
-        from conductress.config import SWEEP_STATE_DIR
-        from conductress.sweep.coordinator import SweepCoordinator
-
-        redis = get_sweep_engine("redis")
-        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
-            coord = SweepCoordinator.__new__(SweepCoordinator)
-        # Verify the state file naming convention
         expected_name = "state_redis-get-k16-v16-t7-p10.json"
         state_file = SWEEP_STATE_DIR / expected_name
         assert "redis-" in state_file.name
 
     def test_sweep_source_returns_engine_source(self):
-        from conductress.sweep.coordinator import SweepCoordinator
-        from conductress.sweep.planner import SweepPlanner, SweepState
-
         redis = get_sweep_engine("redis")
         with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
             coord = SweepCoordinator.__new__(SweepCoordinator)
@@ -87,10 +88,6 @@ class TestSweepCoordinatorEngine:
         assert coord._sweep_make_args == ""
 
     def test_sweep_source_defaults_without_engine(self):
-        from conductress.config import SWEEP_MAKE_ARGS, SWEEP_REF, SWEEP_SOURCE
-        from conductress.sweep.coordinator import SweepCoordinator
-        from conductress.sweep.planner import SweepPlanner, SweepState
-
         with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
             coord = SweepCoordinator.__new__(SweepCoordinator)
             coord.engine = None
@@ -101,10 +98,6 @@ class TestSweepCoordinatorEngine:
         assert coord._sweep_make_args == SWEEP_MAKE_ARGS
 
     def test_is_my_task_checks_source(self):
-        from conductress.sweep.coordinator import SweepCoordinator
-        from conductress.sweep.planner import SweepPlanner, SweepState
-        from conductress.tasks.task_perf_benchmark import PerfTaskData
-
         redis = get_sweep_engine("redis")
         with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
             coord = SweepCoordinator.__new__(SweepCoordinator)
@@ -141,18 +134,12 @@ class TestBinaryManagerEngine:
     """BinaryManager with engine-aware binary name."""
 
     def test_default_binary_name(self):
-        from conductress.binary_manager import VALKEY_BINARY, BinaryManager
-
         host = MagicMock()
         host.ip = "127.0.0.1"
         mgr = BinaryManager(host)
         assert mgr.binary_name == VALKEY_BINARY
 
     def test_redis_binary_name_override(self):
-        from unittest.mock import AsyncMock
-
-        from conductress.binary_manager import BinaryManager
-
         host = MagicMock()
         host.ip = "127.0.0.1"
         host.run_host_command = AsyncMock()
@@ -168,11 +155,6 @@ class TestExporterEngineMetadata:
     """Exporter produces correct metadata for different engines."""
 
     def test_default_repo_metadata(self, tmp_path):
-        from conductress.sweep.exporter import export_series
-        from conductress.sweep.planner import SweepState
-
-        import json
-
         state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2024-01-01"})
         output = tmp_path / "test.json"
         export_series(state, output)
@@ -181,11 +163,6 @@ class TestExporterEngineMetadata:
         assert data["metadata"]["branch"] == "unstable"
 
     def test_redis_repo_metadata(self, tmp_path):
-        from conductress.sweep.exporter import export_series
-        from conductress.sweep.planner import SweepState
-
-        import json
-
         state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2024-01-01"})
         output = tmp_path / "test.json"
         export_series(state, output, repo="redis/redis", branch="unstable")
@@ -198,19 +175,14 @@ class TestGitOpsResolveTag:
     """resolve_tag_to_commit for floor tag resolution."""
 
     def test_resolve_existing_tag(self):
-        from conductress.sweep.git_ops import resolve_tag_to_commit
-
-        # Use the local valkey repo which has tags
         repo = Path.home() / "valkey"
         if not repo.exists():
             pytest.skip("valkey repo not available")
         result = resolve_tag_to_commit(repo, "8.0.0")
         assert result is not None
-        assert len(result) == 40  # full SHA
+        assert len(result) == 40
 
     def test_resolve_nonexistent_tag(self):
-        from conductress.sweep.git_ops import resolve_tag_to_commit
-
         repo = Path.home() / "valkey"
         if not repo.exists():
             pytest.skip("valkey repo not available")
@@ -218,8 +190,6 @@ class TestGitOpsResolveTag:
         assert result is None
 
     def test_resolve_parent_syntax(self):
-        from conductress.sweep.git_ops import resolve_tag_to_commit
-
         repo = Path.home() / "valkey"
         if not repo.exists():
             pytest.skip("valkey repo not available")
