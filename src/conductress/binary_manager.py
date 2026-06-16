@@ -125,7 +125,13 @@ class BinaryManager:
         if not await self._is_binary_cached():
             self._logger.info("building %s:%s...", self.source, self.specifier)
             try:
-                make_command = f"cd {source_path}; rm -f valkey-server redis-server; make distclean && make -j"
+                # MAKEFLAGS= prevents -j from being inherited into the
+                # persist-settings recipe's deps sub-make, which would race
+                # jemalloc's configure against source compilation.
+                make_command = (
+                    f"cd {source_path}; rm -f valkey-server redis-server;"
+                    f" make distclean && cd src && MAKEFLAGS= make -j"
+                )
                 if self.make_args:
                     make_command += f" {self.make_args}"
                 await self._host.run_host_command(make_command)
