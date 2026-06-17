@@ -240,9 +240,9 @@ class TestUrgencyTierOrdering:
         score_bisect = coord_bisect.get_urgency_score()
         score_backfill = coord_backfill.get_urgency_score()
 
-        assert score_bisect > score_backfill, (
-            f"Bisection ({score_bisect:.2f}) should score higher than backfill ({score_backfill:.2f})"
-        )
+        assert (
+            score_bisect > score_backfill
+        ), f"Bisection ({score_bisect:.2f}) should score higher than backfill ({score_backfill:.2f})"
 
     def test_larger_regression_scores_higher(self, tmp_path):
         """A 20% regression in a wide gap should outscore a 5% regression in a narrow gap."""
