@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conductress.sweep.planner import BenchmarkPoint, SweepPlanner, SweepState
 from conductress.task_runner import TaskRunner
 
 
@@ -180,3 +181,117 @@ class TestScheduleNext:
             runner._schedule_next()  # Should not raise
 
         sub.on_queue_empty.assert_called_once()
+
+
+class TestUrgencyTierOrdering:
+    """Verify that urgency scores follow the expected priority hierarchy:
+    NIGHTLY (absolute preemption) > new series (inf) > bisection > backfill.
+    """
+
+    def _make_coordinator(self, state, repo_path):
+        """Create a real SweepCoordinator with mocked git ops."""
+        from conductress.sweep.coordinator import SweepCoordinator
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = repo_path
+            coord.state = state
+            coord.state_file = repo_path / "state.json"
+            coord.planner = SweepPlanner(state)
+            coord.engine = None
+        return coord
+
+    def test_new_series_has_infinite_urgency(self, tmp_path):
+        """A coordinator with <2 completed points should have infinite urgency."""
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc", "ddd", "eee"],
+            commit_dates={c: "2024-01-01" for c in ["aaa", "bbb", "ccc", "ddd", "eee"]},
+        )
+        # Only 1 completed point
+        state.points["aaa"] = BenchmarkPoint(commit="aaa", date="2024-01-01", value=1000.0, cv=0.5, reps=3)
+
+        coord = self._make_coordinator(state, tmp_path)
+        assert coord.get_urgency_score() == float("inf")
+
+    def test_bisection_scores_higher_than_backfill(self, tmp_path):
+        """A coordinator with active bisection scores higher than one doing backfill only."""
+        # Bisection scenario: two points with a large delta and wide gap
+        state_bisect = SweepState(
+            merge_commits=[f"c{i}" for i in range(100)],
+            commit_dates={f"c{i}": "2024-01-01" for i in range(100)},
+        )
+        state_bisect.points["c0"] = BenchmarkPoint(commit="c0", date="2024-01-01", value=1000.0, cv=0.5, reps=3)
+        state_bisect.points["c99"] = BenchmarkPoint(commit="c99", date="2024-01-01", value=1200.0, cv=0.5, reps=3)
+
+        # Backfill scenario: well-covered series with small deltas
+        state_backfill = SweepState(
+            merge_commits=[f"c{i}" for i in range(100)],
+            commit_dates={f"c{i}": "2024-01-01" for i in range(100)},
+        )
+        # Many points, all similar values (no bisection needed)
+        for i in range(0, 100, 5):
+            state_backfill.points[f"c{i}"] = BenchmarkPoint(
+                commit=f"c{i}", date="2024-01-01", value=1000.0 + i * 0.1, cv=0.5, reps=3
+            )
+
+        coord_bisect = self._make_coordinator(state_bisect, tmp_path)
+        coord_backfill = self._make_coordinator(state_backfill, tmp_path)
+
+        score_bisect = coord_bisect.get_urgency_score()
+        score_backfill = coord_backfill.get_urgency_score()
+
+        assert score_bisect > score_backfill, (
+            f"Bisection ({score_bisect:.2f}) should score higher than backfill ({score_backfill:.2f})"
+        )
+
+    def test_larger_regression_scores_higher(self, tmp_path):
+        """A 20% regression in a wide gap should outscore a 5% regression in a narrow gap."""
+        # Large regression, wide gap
+        state_large = SweepState(
+            merge_commits=[f"c{i}" for i in range(100)],
+            commit_dates={f"c{i}": "2024-01-01" for i in range(100)},
+        )
+        state_large.points["c0"] = BenchmarkPoint(commit="c0", date="2024-01-01", value=1000.0, cv=0.5, reps=3)
+        state_large.points["c99"] = BenchmarkPoint(commit="c99", date="2024-01-01", value=800.0, cv=0.5, reps=3)
+
+        # Small regression, narrow gap
+        state_small = SweepState(
+            merge_commits=[f"c{i}" for i in range(20)],
+            commit_dates={f"c{i}": "2024-01-01" for i in range(20)},
+        )
+        state_small.points["c0"] = BenchmarkPoint(commit="c0", date="2024-01-01", value=1000.0, cv=0.5, reps=3)
+        state_small.points["c19"] = BenchmarkPoint(commit="c19", date="2024-01-01", value=950.0, cv=0.5, reps=3)
+
+        coord_large = self._make_coordinator(state_large, tmp_path)
+        coord_small = self._make_coordinator(state_small, tmp_path)
+
+        assert coord_large.get_urgency_score() > coord_small.get_urgency_score()
+
+    def test_nightly_preempts_infinite_urgency(self, runner, mock_config):
+        """Even a coordinator with inf urgency (new series) loses to NIGHTLY preemption."""
+        new_series = _make_subscriber("get-k16-v16-t7-p10", urgency=float("inf"), has_nightly=False)
+        nightly = _make_subscriber("memory-redis-set-k16-v64", urgency=0.0, has_nightly=True)
+        runner._subscribers = [new_series, nightly]
+
+        with patch("conductress.task_runner.TaskQueue") as MockQueue:
+            queue = MagicMock()
+            queue.get_all_tasks.return_value = [MagicMock()]
+            MockQueue.return_value = queue
+            runner._schedule_next()
+
+        nightly.on_queue_empty.assert_called_once()
+        new_series.on_queue_empty.assert_not_called()
+
+    def test_completed_series_has_zero_urgency(self, tmp_path):
+        """A fully-swept series with no remaining work returns 0 urgency."""
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        # All commits benchmarked with similar values (no bisection needed, no gaps)
+        state.points["aaa"] = BenchmarkPoint(commit="aaa", date="2024-01-01", value=1000.0, cv=0.5, reps=3)
+        state.points["bbb"] = BenchmarkPoint(commit="bbb", date="2024-02-01", value=1001.0, cv=0.5, reps=3)
+        state.points["ccc"] = BenchmarkPoint(commit="ccc", date="2024-03-01", value=1002.0, cv=0.5, reps=3)
+
+        coord = self._make_coordinator(state, tmp_path)
+        assert coord.get_urgency_score() == 0.0
