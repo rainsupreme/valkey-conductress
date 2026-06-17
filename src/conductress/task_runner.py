@@ -165,7 +165,7 @@ class TaskRunner:
         queue = TaskQueue()
         self.task = queue.get_next_task()
         if not self.task:
-            self._notify_queue_empty()
+            self._schedule_next()
         while True:
             while self.task:
                 try:
@@ -175,18 +175,18 @@ class TaskRunner:
                     for sub in self._subscribers:
                         sub.on_task_failed(self.task)
                     queue.finish_task(self.task)
+                    self._schedule_next()
                     self.task = queue.get_next_task()
                     continue
 
                 for sub in self._subscribers:
                     sub.on_task_completed(self.task)
                 queue.finish_task(self.task)
-                # Check if any coordinator has a NIGHTLY task — overrides queue
-                nightly_task = self._check_nightly_priority()
-                self.task = nightly_task or queue.get_next_task()
+                self._schedule_next()
+                self.task = queue.get_next_task()
 
-            # Queue empty — notify subscribers (they may queue new work)
-            self._notify_queue_empty()
+            # Queue empty — schedule next (may queue new work)
+            self._schedule_next()
             self.task = queue.get_next_task()
             if self.task:
                 continue
@@ -196,29 +196,15 @@ class TaskRunner:
                 time.sleep(QUEUE_POLL_INTERVAL)
                 self.task = queue.get_next_task()
                 if not self.task:
-                    self._notify_queue_empty()
+                    self._schedule_next()
                     self.task = queue.get_next_task()
 
-    def _check_nightly_priority(self) -> Optional[BaseTaskData]:
-        """Check if any coordinator has a NIGHTLY task ready. Returns task or None."""
-        config = load_sweep_config()
-        for sub in self._subscribers:
-            wid = getattr(sub, "workload_id", None)
-            if wid and not config.is_allowed(wid):
-                continue
-            if getattr(sub, "has_nightly_task", lambda: False)():
-                sub.on_queue_empty()
-                queue = TaskQueue()
-                task = queue.get_next_task()
-                if task:
-                    return task
-        return None
+    def _schedule_next(self) -> None:
+        """Pick the highest-priority coordinator and let it queue a task.
 
-    def _notify_queue_empty(self) -> None:
-        """Pick the highest-urgency sweeper and let it queue a task.
-
-        NIGHTLY tasks (new HEAD untested) get absolute priority — any coordinator
-        with a pending nightly task wins regardless of urgency score.
+        Called after every task completion/failure. Each coordinator proposes
+        its next task via urgency scoring. NIGHTLY (untested HEAD) gets
+        absolute priority over all urgency scores.
         """
         if not self._subscribers:
             return
@@ -239,7 +225,6 @@ class TaskRunner:
         # Score each subscriber that supports urgency scoring
         candidates = []
         for sub in self._subscribers:
-            # Check if this sweep is allowed by the runtime config
             wid = getattr(sub, "workload_id", None)
             if wid and not config.is_allowed(wid):
                 continue
@@ -249,7 +234,6 @@ class TaskRunner:
         candidates.sort(key=lambda x: x[0], reverse=True)
         for _score, sub in candidates:
             sub.on_queue_empty()
-            # Check if it actually queued something
             queue = TaskQueue()
             if queue.get_all_tasks():
                 return
