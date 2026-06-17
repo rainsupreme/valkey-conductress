@@ -180,7 +180,7 @@ class TestExportManifest:
         from unittest.mock import patch
 
         with patch("conductress.publisher.detect_platform", return_value=("amd64", "amd64/test")):
-            export_manifest(tmp_path, platforms=["amd64", "arm64"], workloads=["get16b-t7-p10"])
+            export_manifest(tmp_path, platforms=["amd64", "arm64"], workloads=[("get16b-t7-p10", "throughput")])
         manifest_file = tmp_path / "manifest-amd64.json"
         assert manifest_file.exists()
         data = json.loads(manifest_file.read_text())
