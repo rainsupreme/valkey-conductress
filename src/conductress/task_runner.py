@@ -68,10 +68,10 @@ class TaskRunner:
                 extra.initialize()
                 self._subscribers.append(extra)
 
-            # Latency sweep runs alongside throughput (uses its data)
+            # Latency sweep runs independently (flat rate, no throughput dependency)
             from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 
-            latency_coordinator = LatencySweepCoordinator(repo_path, coordinator.state_file)
+            latency_coordinator = LatencySweepCoordinator(repo_path)
             latency_coordinator.initialize()
             self._subscribers.append(latency_coordinator)
 

@@ -1,4 +1,4 @@
-"""Latency benchmark task: measures per-request latency at a fixed load using memtier_benchmark."""
+"""Latency benchmark task: measures per-request latency at a flat 100K rps using memtier_benchmark."""
 
 import json
 import logging
@@ -14,6 +14,7 @@ from conductress.config import (
     LATENCY_KEYSPACE,
     LATENCY_PIPELINE,
     LATENCY_REPS,
+    LATENCY_TARGET_RPS,
     LATENCY_THREADS,
     LATENCY_VAL_SIZE,
     ServerInfo,
@@ -25,18 +26,15 @@ from conductress.task_queue import BaseTaskData, BaseTaskRunner
 
 logger = logging.getLogger(__name__)
 
-# Latency test configuration (same across all platforms)
-
 # Percentile points to extract from HDR histogram
 HISTOGRAM_PERCENTILES = [0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.995, 0.999, 1.0]
 
 
 @dataclass
 class LatencyTaskData(BaseTaskData):
-    """Task data for latency measurement at a fixed load."""
+    """Task data for latency measurement at a flat load."""
 
-    target_rps: int = 0
-    load_fraction: float = 0.70
+    target_rps: int = LATENCY_TARGET_RPS
     io_threads: int = 9
     repetitions: int = LATENCY_REPS
     sweep_commit: str = ""  # non-empty marks this as a sweep task
@@ -46,7 +44,7 @@ class LatencyTaskData(BaseTaskData):
         self.task_type = "LatencyTaskData"
 
     def short_description(self) -> str:
-        return f"Latency @ {self.target_rps} rps ({self.load_fraction:.0%})"
+        return f"Latency @ {self.target_rps} rps (P=1 flat)"
 
     def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "LatencyTaskRunner":
         return LatencyTaskRunner(
@@ -57,13 +55,12 @@ class LatencyTaskData(BaseTaskData):
             make_args=self.make_args,
             io_threads=self.io_threads,
             target_rps=self.target_rps,
-            load_fraction=self.load_fraction,
             repetitions=self.repetitions,
         )
 
 
 class LatencyTaskRunner(BaseTaskRunner):
-    """Runs memtier_benchmark with rate limiting to measure latency at fixed load."""
+    """Runs memtier_benchmark with rate limiting (P=1) to measure latency at fixed load."""
 
     def __init__(
         self,
@@ -74,7 +71,6 @@ class LatencyTaskRunner(BaseTaskRunner):
         make_args: str,
         io_threads: int,
         target_rps: int,
-        load_fraction: float,
         repetitions: int,
     ):
         super().__init__(task_name)
@@ -84,7 +80,6 @@ class LatencyTaskRunner(BaseTaskRunner):
         self.make_args = make_args
         self.io_threads = io_threads
         self.target_rps = target_rps
-        self.load_fraction = load_fraction
         self.repetitions = repetitions
 
     async def run(self) -> None:
@@ -94,7 +89,6 @@ class LatencyTaskRunner(BaseTaskRunner):
         if rate_per_conn <= 0:
             raise ValueError(f"target_rps {self.target_rps} too low for {total_conns} connections")
 
-        # Steps: populate + measure per rep (2 steps each) = 2 * reps
         self.status = BenchmarkStatus(steps_total=self.repetitions * 2, task_type="latency")
         self.file_protocol.write_status(self.status)
 
@@ -106,7 +100,7 @@ class LatencyTaskRunner(BaseTaskRunner):
 
         try:
             for rep in range(self.repetitions):
-                logger.info("Latency rep %d/%d (target %d rps)", rep + 1, self.repetitions, self.target_rps)
+                logger.info("Latency rep %d/%d (target %d rps, P=1)", rep + 1, self.repetitions, self.target_rps)
 
                 # Between-rep: stop server, drop caches
                 if rep > 0:
@@ -137,7 +131,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                 self.status.steps_completed = rep * 2 + 1
                 self.file_protocol.write_status(self.status)
 
-                # Run latency measurement
+                # Run latency measurement (P=1, flat rate)
                 hdr_prefix = "/tmp/latency-hdr"
                 measure_cmd = (
                     f"~/conductress/memtier_benchmark "
@@ -251,13 +245,12 @@ class LatencyTaskRunner(BaseTaskRunner):
             "source": self.source,
             "specifier": self.specifier,
             "commit_hash": self.specifier[:8],
-            "note": f"latency @ {self.target_rps} rps ({self.load_fraction:.0%})",
+            "note": f"latency @ {self.target_rps} rps (P=1 flat)",
             "end_time": datetime.now().strftime("%Y.%m.%d_%H.%M.%S.%f"),
             "score": result["p99_us"],  # p99 is the primary bisection metric
             "data": {
                 "actual_rps": result["actual_rps"],
                 "target_rps": self.target_rps,
-                "load_fraction": self.load_fraction,
                 "p50_us": result["p50_us"],
                 "p99_us": result["p99_us"],
                 "p99_9_us": result["p99_9_us"],

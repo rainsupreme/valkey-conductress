@@ -1,4 +1,4 @@
-"""Tests for LatencySweepCoordinator."""
+"""Tests for LatencySweepCoordinator (flat 100K rps, P=1, no throughput dependency)."""
 
 import json
 from pathlib import Path
@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
-from conductress.sweep.latency_coordinator import LATENCY_LOAD_FRACTION, LATENCY_STATE_FILE, LatencySweepCoordinator
-from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+from conductress.config import LATENCY_TARGET_RPS
+from conductress.sweep.latency_coordinator import LatencySweepCoordinator
+from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 from conductress.tasks.task_latency import LatencyTaskData
 
 
@@ -15,26 +16,6 @@ from conductress.tasks.task_latency import LatencyTaskData
 def patch_repo_names(monkeypatch):
     """Allow 'valkey' as a valid source in task creation."""
     monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
-
-
-@pytest.fixture
-def throughput_state_file(tmp_path):
-    """Create a throughput state file with some completed points."""
-    state = SweepState()
-    state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
-    # Simulate throughput results for 3 commits
-    state.points["aaa"] = BenchmarkPoint(
-        commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
-    )
-    state.points["ccc"] = BenchmarkPoint(
-        commit="ccc", date="2026-03-01", value=2100000, cv=0.4, reps=3, status=PointStatus.COMPLETED
-    )
-    state.points["eee"] = BenchmarkPoint(
-        commit="eee", date="2026-05-01", value=1800000, cv=0.6, reps=3, status=PointStatus.COMPLETED
-    )
-    state_file = tmp_path / "throughput_state.json"
-    state.save(state_file)
-    return state_file
 
 
 @pytest.fixture
@@ -54,14 +35,11 @@ def repo_path(tmp_path):
 
 
 @pytest.fixture
-def coordinator(repo_path, throughput_state_file, latency_state_file):
+def coordinator(repo_path, latency_state_file):
     """Create a LatencySweepCoordinator with test fixtures."""
-    coord = LatencySweepCoordinator(repo_path, throughput_state_file)
+    coord = LatencySweepCoordinator(repo_path)
     # Manually set merge commits (normally done by initialize())
     coord.state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
-    # Recreate planner with updated state
-    from conductress.sweep.planner import SweepPlanner
-
     coord.planner = SweepPlanner(coord.state)
     return coord
 
@@ -74,87 +52,46 @@ class TestLatencyCoordinatorProperties:
         assert coordinator.lower_is_better is True
 
     def test_workload_id(self, coordinator):
-        assert "get" in coordinator.workload_id
-        assert "p10" in coordinator.workload_id
-
-
-class TestCandidateCommits:
-    def test_returns_only_throughput_measured_commits(self, coordinator):
-        candidates = coordinator._get_candidate_commits()
-        assert set(candidates) == {"aaa", "ccc", "eee"}
-
-    def test_sorted_by_commit_index(self, coordinator):
-        candidates = coordinator._get_candidate_commits()
-        assert candidates == ["aaa", "ccc", "eee"]
-
-    def test_empty_when_no_throughput_data(self, repo_path, tmp_path, monkeypatch):
-        empty_state = tmp_path / "empty_throughput.json"
-        SweepState().save(empty_state)
-        monkeypatch.setattr(
-            "conductress.sweep.latency_coordinator.LATENCY_STATE_FILE",
-            tmp_path / "lat.json",
-        )
-        coord = LatencySweepCoordinator(repo_path, empty_state)
-        assert coord._get_candidate_commits() == []
+        assert coordinator.workload_id == "get-k16-v16-latency"
 
 
 class TestUrgencyScore:
-    def test_zero_when_insufficient_throughput_data(self, repo_path, tmp_path, monkeypatch):
-        """Need at least 2 throughput points to run."""
-        state_file = tmp_path / "one_point.json"
-        state = SweepState()
-        state.merge_commits = ["aaa"]
-        state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
-        )
-        state.save(state_file)
-        monkeypatch.setattr(
-            "conductress.sweep.latency_coordinator.LATENCY_STATE_FILE",
-            tmp_path / "lat.json",
-        )
-        coord = LatencySweepCoordinator(repo_path, state_file)
-        assert coord.get_urgency_score() == 0.0
-
     def test_infinity_for_new_series(self, coordinator):
         """New series with <2 latency points gets infinity."""
         assert coordinator.get_urgency_score() == float("inf")
 
-    def test_urgency_after_initial_points(self, coordinator):
-        """After 2+ points, urgency equals base bisection score."""
-        from conductress.sweep.planner import PointStatus, SweepPlanner
-
+    def test_finite_after_two_points(self, coordinator):
+        """After 2+ points, urgency is dampened by 0.5x."""
         coordinator.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
+            commit="aaa", date="2026-01-01", value=50, cv=0, reps=3, status=PointStatus.COMPLETED
         )
         coordinator.state.points["eee"] = BenchmarkPoint(
-            commit="eee", date="2026-05-01", value=900, cv=0, reps=3, status=PointStatus.COMPLETED
+            commit="eee", date="2026-05-01", value=90, cv=0, reps=3, status=PointStatus.COMPLETED
         )
         coordinator.planner = SweepPlanner(coordinator.state)
         score = coordinator.get_urgency_score()
-        # Should be finite and positive (there's a gap to bisect)
         assert 0 < score < float("inf")
 
 
 class TestCreateTask:
-    def test_creates_latency_task_with_correct_target(self, coordinator):
+    def test_creates_latency_task_with_flat_rate(self, coordinator):
         from conductress.sweep.planner import SweepTask, TaskPriority
 
         task = coordinator._create_task(
             SweepTask(commit="ccc", date="2026-03-01", priority=TaskPriority.BISECTION, reason="test")
         )
         assert isinstance(task, LatencyTaskData)
-        assert task.target_rps == int(2100000 * LATENCY_LOAD_FRACTION)
-        assert task.load_fraction == LATENCY_LOAD_FRACTION
+        assert task.target_rps == LATENCY_TARGET_RPS
         assert task.source == "valkey"
         assert task.specifier == "ccc"
 
-    def test_raises_when_no_throughput(self, coordinator):
+    def test_task_note_mentions_flat_rate(self, coordinator):
         from conductress.sweep.planner import SweepTask, TaskPriority
 
-        with pytest.raises(ValueError, match="No throughput data"):
-            coordinator._create_task(
-                SweepTask(commit="bbb", date="2026-02-01", priority=TaskPriority.BISECTION, reason="test")
-            )
+        task = coordinator._create_task(
+            SweepTask(commit="aaa", date="2026-01-01", priority=TaskPriority.LANDMARK, reason="landmark")
+        )
+        assert "100K rps flat" in task.note
 
 
 class TestIsMyTask:
@@ -166,7 +103,7 @@ class TestIsMyTask:
             replicas=0,
             note="test",
             requirements={},
-            target_rps=1000000,
+            target_rps=100000,
         )
         task.sweep_commit = "ccc"
         assert coordinator._is_my_task(task) is True
@@ -179,7 +116,7 @@ class TestIsMyTask:
             replicas=0,
             note="test",
             requirements={},
-            target_rps=1000000,
+            target_rps=100000,
         )
         assert coordinator._is_my_task(task) is False
 
@@ -213,8 +150,8 @@ class TestExtractResult:
         output_file = tmp_path / "output.jsonl"
         entry = {
             "task_id": "2026-05-27_01-00-00",
-            "score": 892.0,
-            "data": {"reps": 3, "p99_us": 892.0},
+            "score": 42.0,
+            "data": {"reps": 3, "p99_us": 42.0},
         }
         output_file.write_text(json.dumps(entry) + "\n")
         monkeypatch.setattr("conductress.sweep.latency_coordinator.CONDUCTRESS_RESULTS", tmp_path)
@@ -226,171 +163,49 @@ class TestExtractResult:
             replicas=0,
             note="test",
             requirements={},
-            target_rps=1000000,
+            target_rps=100000,
         )
-        # Mock the task_id to match
         from unittest.mock import PropertyMock
 
         type(task).task_id = PropertyMock(return_value="2026-05-27_01-00-00")
 
         result = coordinator._extract_result(task)
-        assert result == (892.0, 0.0, 3)
+        assert result == (42.0, 0.0, 3)
 
 
-class TestGetNextTaskDependency:
-    """Test that _get_next_task respects throughput data dependency."""
+class TestNoThroughputDependency:
+    """Verify the coordinator operates independently of throughput data."""
 
-    def test_returns_none_when_fewer_than_2_candidates(self, repo_path, tmp_path, monkeypatch):
-        """Can't bisect with only 1 throughput point."""
-        state_file = tmp_path / "tp.json"
-        state = SweepState()
-        state.merge_commits = ["aaa", "bbb"]
-        state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
-        )
-        state.save(state_file)
-        monkeypatch.setattr("conductress.sweep.latency_coordinator.LATENCY_STATE_FILE", tmp_path / "lat.json")
-        coord = LatencySweepCoordinator(repo_path, state_file)
-        coord.state.merge_commits = ["aaa", "bbb"]
-        from conductress.sweep.planner import SweepPlanner
+    def test_no_throughput_state_file_parameter(self):
+        """Constructor takes only repo_path — no throughput_state_file."""
+        import inspect
 
-        coord.planner = SweepPlanner(coord.state)
-        assert coord._get_next_task() is None
+        sig = inspect.signature(LatencySweepCoordinator.__init__)
+        params = list(sig.parameters.keys())
+        assert params == ["self", "repo_path"]
 
-    def test_returns_task_for_commit_with_throughput(self, coordinator):
-        """When planner suggests a commit that has throughput data, use it."""
-        task = coordinator._get_next_task()
-        # Should return a task (new series, planner will suggest something)
-        if task is not None:
-            # The commit must have throughput data
-            assert coordinator._get_throughput_for_commit(task.commit) is not None
+    def test_operates_on_full_commit_history(self, coordinator):
+        """Uses all merge commits, not a throughput-measured subset."""
+        # The coordinator's state has all 5 commits
+        assert len(coordinator.state.merge_commits) == 5
 
-    def test_falls_back_when_planner_picks_commit_without_throughput(self, coordinator):
-        """When planner picks a commit without throughput, fall back to first unmeasured candidate."""
-        # Give the latency coordinator some existing points so planner does bisection
-        from conductress.sweep.planner import SweepPlanner
+    def test_all_commits_eligible_for_tasks(self, coordinator):
+        """Any commit can get a latency task (no throughput gate)."""
+        from conductress.sweep.planner import SweepTask, TaskPriority
 
-        coordinator.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.state.points["eee"] = BenchmarkPoint(
-            commit="eee", date="2026-05-01", value=900, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.planner = SweepPlanner(coordinator.state)
-
-        # Planner will try to bisect between aaa and eee, picking "ccc" (midpoint)
-        # "ccc" HAS throughput data, so it should be returned directly
-        task = coordinator._get_next_task()
-        if task is not None:
-            # Must be a commit with throughput data
-            assert coordinator._get_throughput_for_commit(task.commit) is not None
-
-    def test_skips_commits_already_measured_in_fallback(self, coordinator):
-        """Fallback skips candidates that already have latency data."""
-        from conductress.sweep.planner import SweepPlanner
-
-        # Mark aaa and ccc as already measured for latency
-        coordinator.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.state.points["ccc"] = BenchmarkPoint(
-            commit="ccc", date="2026-03-01", value=600, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.planner = SweepPlanner(coordinator.state)
-
-        task = coordinator._get_next_task()
-        if task is not None:
-            # Should NOT pick aaa or ccc (already measured)
-            assert task.commit not in ["aaa", "ccc"] or task.commit == "eee"
-
-    def test_returns_none_when_all_candidates_measured(self, coordinator):
-        """Returns None when all throughput-measured commits have latency data."""
-        from conductress.sweep.planner import SweepPlanner
-
-        # Mark all 3 candidates as measured
-        coordinator.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.state.points["ccc"] = BenchmarkPoint(
-            commit="ccc", date="2026-03-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.state.points["eee"] = BenchmarkPoint(
-            commit="eee", date="2026-05-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.planner = SweepPlanner(coordinator.state)
-
-        # All candidates measured with same value (no bisection needed)
-        task = coordinator._get_next_task()
-        # Should be None (no work to do) since all values are identical (no segments to bisect)
-        assert task is None
-
-    def test_landmarks_prioritized_over_backfill(self, repo_path, tmp_path, monkeypatch):
-        """When planner picks a commit without throughput, unmeasured landmarks get priority."""
-        from conductress.sweep.planner import Landmark, SweepPlanner, TaskPriority
-
-        # Throughput state: aaa and eee measured, but NOT ddd (a landmark)
-        tp_state = SweepState()
-        tp_state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
-        tp_state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=2000000, cv=0.5, reps=3, status=PointStatus.COMPLETED
-        )
-        tp_state.points["ccc"] = BenchmarkPoint(
-            commit="ccc", date="2026-03-01", value=2100000, cv=0.4, reps=3, status=PointStatus.COMPLETED
-        )
-        tp_state.points["eee"] = BenchmarkPoint(
-            commit="eee", date="2026-05-01", value=1800000, cv=0.6, reps=3, status=PointStatus.COMPLETED
-        )
-        state_file = tmp_path / "tp2.json"
-        tp_state.save(state_file)
-        monkeypatch.setattr("conductress.sweep.latency_coordinator.LATENCY_STATE_FILE", tmp_path / "lat2.json")
-
-        coord = LatencySweepCoordinator(repo_path, state_file)
-        coord.state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
-        coord.state.commit_dates = {"ccc": "2026-03-01", "eee": "2026-05-01"}
-        # Add a landmark at "eee" (has throughput) and "bbb" (no throughput)
-        coord.state.landmarks = [
-            Landmark(commit="bbb", date="2026-02-01", label="8.0"),
-            Landmark(commit="eee", date="2026-05-01", label="9.0"),
-        ]
-        # Mark aaa and ccc as already measured for latency
-        coord.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=500, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coord.state.points["ccc"] = BenchmarkPoint(
-            commit="ccc", date="2026-03-01", value=600, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coord.planner = SweepPlanner(coord.state)
-
-        task = coord._get_next_task()
-        # Should pick landmark "eee" (has throughput), NOT backfill to random candidate
-        assert task is not None
-        assert task.commit == "eee"
-        assert task.priority == TaskPriority.LANDMARK
-
-    def test_queue_next_if_needed_respects_dependency(self, coordinator, monkeypatch):
-        """queue_next_if_needed only queues tasks for commits with throughput data."""
-        from unittest.mock import MagicMock, patch
-
-        # Mock TaskQueue to capture what gets submitted
-        mock_queue = MagicMock()
-        mock_queue.get_all_tasks.return_value = []
-        monkeypatch.setattr("conductress.sweep.coordinator.TaskQueue", lambda: mock_queue)
-
-        queued = coordinator.queue_next_if_needed()
-        if queued:
-            # Verify the submitted task has a valid target_rps (derived from throughput)
-            submitted_task = mock_queue.submit_task.call_args[0][0]
-            assert isinstance(submitted_task, LatencyTaskData)
-            assert submitted_task.target_rps > 0
+        # Even commits without throughput data can get tasks
+        for commit in ["aaa", "bbb", "ccc", "ddd", "eee"]:
+            task = coordinator._create_task(
+                SweepTask(commit=commit, date="2026-01-01", priority=TaskPriority.BACKFILL, reason="test")
+            )
+            assert task.target_rps == LATENCY_TARGET_RPS
 
 
 class TestLatencyTaskSerialization:
     """Regression test: sweep_commit must survive queue save/load roundtrip."""
 
     def test_sweep_commit_persists_through_queue(self, tmp_path, monkeypatch):
-        """Without sweep_commit as a dataclass field, it was lost during serialization."""
-        from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
-        from conductress.task_queue import BaseTaskData, TaskQueue
+        from conductress.task_queue import TaskQueue
 
         monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
         monkeypatch.setattr("conductress.task_queue.config.CONDUCTRESS_QUEUE", tmp_path)
@@ -398,22 +213,20 @@ class TestLatencyTaskSerialization:
         task = LatencyTaskData(
             source="valkey",
             specifier="abc123def456",
-            make_args=LATENCY_MAKE_ARGS,
+            make_args="",
             replicas=0,
             note="test",
             requirements={},
-            target_rps=1500000,
-            io_threads=SWEEP_IO_THREADS,
+            target_rps=LATENCY_TARGET_RPS,
+            io_threads=7,
             sweep_commit="abc123def456",
         )
 
-        # Save to queue
         queue = TaskQueue(queue_dir=tmp_path)
         queue.submit_task(task)
 
-        # Load back
         loaded = queue.get_next_task()
         assert loaded is not None
         assert isinstance(loaded, LatencyTaskData)
         assert loaded.sweep_commit == "abc123def456"
-        assert loaded.target_rps == 1500000
+        assert loaded.target_rps == LATENCY_TARGET_RPS

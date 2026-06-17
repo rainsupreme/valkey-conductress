@@ -164,12 +164,12 @@ def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
 # Sweep configuration: latency
 # =============================================================================
 LATENCY_STATE_FILE = SWEEP_STATE_DIR / "latency_state.json"
-LATENCY_LOAD_FRACTION = 0.70
+LATENCY_TARGET_RPS = 100_000  # flat rate, same across all platforms/commits
 LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
 LATENCY_THREADS = 4
-LATENCY_CLIENTS = 50  # 200 total connections
-LATENCY_PIPELINE = 10
+LATENCY_CLIENTS = 16  # 64 total connections
+LATENCY_PIPELINE = 1  # no pipelining — measures true per-request latency
 LATENCY_DURATION = 60
 LATENCY_KEYSPACE = 1_000_000
 LATENCY_VAL_SIZE = 16

@@ -205,7 +205,9 @@ class TestLatencyExport:
         data = json.loads(output_file.read_text())
         assert data["metadata"]["metric"] == "latency"
         assert data["metadata"]["unit"] == "µs"
-        assert data["metadata"]["load_fraction"] == 0.70
+        assert data["metadata"]["load_fraction"] is None
+        assert data["metadata"]["target_rps"] == 100000
+        assert data["metadata"]["pipeline"] == 1
         assert data["metadata"]["platform"] == "arm64"
         assert len(data["points"]) == 2
         assert data["points"][0]["commit"] == "aaa"
