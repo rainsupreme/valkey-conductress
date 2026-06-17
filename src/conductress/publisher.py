@@ -84,12 +84,9 @@ class DashboardPublisher:
                         coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
 
-            # Export manifest
-            export_manifest(
-                self._export_dir,
-                platforms=["amd64", "arm64", "intel"],
-                workloads=[self.coordinators[0].workload_id] if self.coordinators else [],
-            )
+            # Export manifest with all workload IDs
+            all_workloads = list(dict.fromkeys(c.workload_id for c in self.coordinators))
+            export_manifest(self._export_dir, platforms=["amd64", "arm64", "intel"], workloads=all_workloads)
 
             # Rsync to target
             self._rsync()

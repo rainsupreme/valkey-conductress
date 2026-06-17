@@ -480,11 +480,15 @@ def export_latency(
 
 
 def export_manifest(output_dir: Path, platforms: list[str], workloads: list[str]) -> None:
-    """Write the manifest.json grouping file for the dashboard."""
+    """Write per-platform manifest for dashboard auto-discovery."""
+    from conductress.publisher import detect_platform
+
+    platform_id, _ = detect_platform()
     manifest: dict[str, Any] = {
-        "version": 1,
-        "platforms": platforms,
-        "workloads": [{"id": w, "label": w} for w in workloads],
+        "version": 2,
+        "platform": platform_id,
+        "throughput_workloads": [w for w in workloads if not w.startswith("memory-")],
+        "memory_workloads": [w for w in workloads if w.startswith("memory-")],
         "groups": [
             {
                 "id": "throughput",
@@ -502,4 +506,4 @@ def export_manifest(output_dir: Path, platforms: list[str], workloads: list[str]
         + PERF_GROUPS,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    (output_dir / f"manifest-{platform_id}.json").write_text(json.dumps(manifest, indent=2))
