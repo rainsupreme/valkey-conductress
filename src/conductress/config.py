@@ -102,6 +102,11 @@ SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
     {"val_size": 128},
     {"val_size": 16, "test": "set"},
     {"val_size": 128, "test": "set"},
+    # No-pipeline workloads: single-request latency-sensitive baseline
+    {"val_size": 16, "pipelining": 1},
+    {"val_size": 128, "pipelining": 1},
+    {"val_size": 16, "test": "set", "pipelining": 1},
+    {"val_size": 128, "test": "set", "pipelining": 1},
     # Platform-optimal workloads: realistic configs for performance-sensitive users
     {"val_size": 16, "io_threads": 24, "pipelining": 100, "platforms": ["intel"]},
     {"val_size": 16, "io_threads": 24, "pipelining": 100, "test": "set", "platforms": ["intel"]},

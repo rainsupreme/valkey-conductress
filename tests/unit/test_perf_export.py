@@ -177,12 +177,15 @@ class TestExportPerfMetrics:
 
 class TestExportManifest:
     def test_writes_manifest(self, tmp_path):
-        export_manifest(tmp_path, platforms=["amd64", "arm64"], workloads=["get16b-t7-p10"])
-        manifest_file = tmp_path / "manifest.json"
+        from unittest.mock import patch
+
+        with patch("conductress.publisher.detect_platform", return_value=("amd64", "amd64/test")):
+            export_manifest(tmp_path, platforms=["amd64", "arm64"], workloads=["get16b-t7-p10"])
+        manifest_file = tmp_path / "manifest-amd64.json"
         assert manifest_file.exists()
         data = json.loads(manifest_file.read_text())
-        assert data["version"] == 1
-        assert "amd64" in data["platforms"]
+        assert data["version"] == 2
+        assert data["platform"] == "amd64"
         group_ids = [g["id"] for g in data["groups"]]
         assert "throughput" in group_ids
         assert "efficiency" in group_ids
