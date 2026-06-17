@@ -1,39 +1,35 @@
-"""Latency sweep coordinator: measures per-request latency at 70% of max throughput.
+"""Latency sweep coordinator: measures per-request latency at a flat 100K rps.
 
-Depends on throughput sweep data -- only queues tasks for commits that have
-a completed throughput measurement. Bisects on p99 latency with 10% threshold.
+Independent of throughput sweep -- operates on full commit history.
+Bisects on p99 latency with 10% threshold.
 """
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Optional
 
 from conductress.config import (
     CONDUCTRESS_RESULTS,
-    LATENCY_DETECTION_THRESHOLD,
-    LATENCY_LOAD_FRACTION,
     LATENCY_MAKE_ARGS,
     LATENCY_STATE_FILE,
+    LATENCY_TARGET_RPS,
     SWEEP_IO_THREADS,
     SWEEP_SOURCE,
-    SWEEP_STATE_DIR,
 )
 from conductress.sweep.coordinator import BaseSweepCoordinator
-from conductress.sweep.planner import SweepState, SweepTask
+from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
-from conductress.tasks.task_latency import LATENCY_PIPELINE, LATENCY_REPS, LATENCY_VAL_SIZE, LatencyTaskData
+from conductress.tasks.task_latency import LATENCY_REPS, LatencyTaskData
 
 logger = logging.getLogger(__name__)
 
 
 class LatencySweepCoordinator(BaseSweepCoordinator):
-    """Latency sweep: measures p99 latency at 70% of max throughput across history.
+    """Latency sweep: measures p99 latency at a flat 100K rps across history.
 
-    Key difference from throughput/memory coordinators:
-    - Operates only on commits with completed throughput measurements
-    - Computes target_rps from throughput result × load_fraction
+    Key differences from throughput coordinator:
+    - Uses flat rate (no throughput dependency)
     - Uses p99 as bisection metric (lower is better)
     - Priority dampened by 0.5x (fills in behind throughput)
     """
@@ -41,9 +37,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
     metric_unit = "µs"
     lower_is_better = True
 
-    def __init__(self, repo_path: Path, throughput_state_file: Path):
-        self._throughput_state_file = throughput_state_file
-        self._throughput_state: Optional[SweepState] = None
+    def __init__(self, repo_path: Path):
         super().__init__(repo_path, LATENCY_STATE_FILE)
 
     @property
@@ -52,96 +46,26 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return f"get{LATENCY_VAL_SIZE}b-t{SWEEP_IO_THREADS}-p{LATENCY_PIPELINE}"
-
-    @property
-    def throughput_state(self) -> SweepState:
-        """Load throughput state (cached, refreshed on each queue_next cycle)."""
-        if self._throughput_state is None:
-            self._throughput_state = SweepState.load(self._throughput_state_file)
-        return self._throughput_state
-
-    def _refresh_throughput_state(self) -> None:
-        """Reload throughput state from disk."""
-        self._throughput_state = SweepState.load(self._throughput_state_file)
-
-    def _get_candidate_commits(self) -> list[str]:
-        """Only commits with completed throughput measurements."""
-        commit_order = {c: i for i, c in enumerate(self.throughput_state.merge_commits)}
-        return sorted(
-            [c for c, p in self.throughput_state.points.items() if p.value is not None],
-            key=lambda c: commit_order.get(c, 0),
-        )
-
-    def _get_throughput_for_commit(self, commit: str) -> Optional[float]:
-        """Get the throughput (rps) for a commit from throughput state."""
-        point = self.throughput_state.points.get(commit)
-        if point and point.value is not None:
-            return point.value
-        return None
+        return "get-k16-v16-latency"
 
     def get_urgency_score(self) -> float:
-        """Priority score, equal to throughput/memory.
-
-        Returns 0 if no throughput data exists (can't run without it).
-        Latency is naturally throttled by its throughput dependency.
-        """
-        self._refresh_throughput_state()
-        candidates = self._get_candidate_commits()
-        if len(candidates) < 2:
-            return 0.0  # Need at least 2 throughput points to bisect between
-
+        """Priority score, dampened by 0.5x relative to throughput."""
         completed = sum(1 for p in self.state.points.values() if p.value is not None)
         if completed < 2:
             return float("inf")  # New series, top priority
 
-        return super().get_urgency_score()
-
-    def _get_next_task(self) -> Optional[SweepTask]:
-        """Select next commit using bisection over the throughput-measured subset.
-
-        Builds a projected planner whose universe is only commits with throughput
-        data. The standard planner logic (landmarks → bisection → backfill) then
-        operates on this subset, guaranteeing every pick is runnable.
-        """
-        candidates = self._get_candidate_commits()
-        if len(candidates) < 2:
-            return None
-
-        # Build projected state: only candidate commits, with their latency results
-        candidate_set = set(candidates)
-        projected = SweepState()
-        projected.merge_commits = candidates
-        projected.commit_dates = {c: self.state.commit_dates.get(c, "") for c in candidates}
-        projected.landmarks = [lm for lm in self.state.landmarks if lm.commit in candidate_set]
-        projected.threshold = self.state.threshold
-
-        # Copy latency points that are in the candidate set
-        for commit, point in self.state.points.items():
-            if commit in candidate_set:
-                projected.points[commit] = point
-
-        from conductress.sweep.planner import SweepPlanner
-
-        projected_planner = SweepPlanner(projected)
-        return projected_planner.get_next_task(current_head=None)
+        base = super().get_urgency_score()
+        return base * 0.5
 
     def _create_task(self, sweep_task: SweepTask) -> LatencyTaskData:
-        throughput_rps = self._get_throughput_for_commit(sweep_task.commit)
-        if throughput_rps is None:
-            raise ValueError(f"No throughput data for {sweep_task.commit[:8]}")
-
-        target_rps = int(throughput_rps * LATENCY_LOAD_FRACTION)
-
         return LatencyTaskData(
             source=SWEEP_SOURCE,
             specifier=sweep_task.commit,
             make_args=LATENCY_MAKE_ARGS,
             replicas=0,
-            note=f"[latency-sweep] {sweep_task.reason} (target {target_rps} rps)",
+            note=f"[latency-sweep] {sweep_task.reason} (100K rps flat)",
             requirements={},
-            target_rps=target_rps,
-            load_fraction=LATENCY_LOAD_FRACTION,
+            target_rps=LATENCY_TARGET_RPS,
             io_threads=SWEEP_IO_THREADS,
         )
 
@@ -161,7 +85,6 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
                     score = entry.get("score")  # p99_us
                     data = entry.get("data", {})
                     reps = data.get("reps", LATENCY_REPS)
-                    # CV not meaningful for latency (inherent variance)
                     cv = 0.0
                     if score and score > 0:
                         return (score, cv, reps)
@@ -170,7 +93,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
         return None
 
     def on_task_completed(self, task: BaseTaskData) -> None:
-        """Override to store full latency data (all percentiles + histogram) on the point."""
+        """Store full latency data (all percentiles + histogram) on the point."""
         if not self._is_my_task(task):
             return
 
@@ -179,7 +102,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
 
-            # Store full latency data for export (p50, p99.9, histogram, rps)
+            # Store full latency data for export
             latency_data = self._extract_full_data(task)
             if latency_data and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
                 self.state.points[task.sweep_commit].latency_data = latency_data  # type: ignore[attr-defined]
@@ -213,5 +136,5 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
             output_path,
             platform=platform,
             workload=self.workload_id,
-            load_fraction=LATENCY_LOAD_FRACTION,
+            target_rps=LATENCY_TARGET_RPS,
         )
