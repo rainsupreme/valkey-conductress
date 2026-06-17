@@ -202,7 +202,7 @@ class BaseSweepCoordinator(ABC):
             self._fetch_and_refresh()
         return (
             head != self.state.last_benchmarked_head
-            and head not in self.state.points
+            and (head not in self.state.points or not self.state.points[head].is_complete)
             and head in set(self.state.merge_commits)
         )
 
