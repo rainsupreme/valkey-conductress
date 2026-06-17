@@ -505,3 +505,30 @@ class TestHasNightlyTask:
             patch.object(coord, "_fetch_and_refresh", side_effect=fake_refresh),
         ):
             assert coord.has_nightly_task() is True
+
+    def test_returns_true_when_head_in_points_but_incomplete(self, tmp_dir):
+        """Planner pre-creates placeholder points with value=None.
+
+        has_nightly_task should still return True for these since they
+        haven't actually been benchmarked.
+        """
+        state_file = tmp_dir / "state_get-k16-v16-t7-p10.json"
+        state = SweepState(
+            merge_commits=["aaa", "bbb", "ccc"],
+            commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01", "ccc": "2024-03-01"},
+        )
+        # HEAD exists as a placeholder (no value, not completed)
+        state.points["ccc"] = BenchmarkPoint(commit="ccc", date="2024-03-01", value=None)
+        state.last_benchmarked_head = "aaa"
+        state.save(state_file)
+
+        with patch.object(SweepCoordinator, "__init__", lambda self, *a, **kw: None):
+            coord = SweepCoordinator.__new__(SweepCoordinator)
+            coord.repo_path = tmp_dir
+            coord.state_file = state_file
+            coord.state = state
+            coord.planner = SweepPlanner(state)
+            coord.engine = None
+
+        with patch("conductress.sweep.coordinator.get_head", return_value="ccc"):
+            assert coord.has_nightly_task() is True
