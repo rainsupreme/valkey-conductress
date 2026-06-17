@@ -129,7 +129,6 @@ class BaseSweepCoordinator(ABC):
         else:
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract result for sweep commit %s", commit[:8])
-        self.queue_next_if_needed()
 
     def on_task_failed(self, task: BaseTaskData) -> None:
         """Called on every task failure. Filters to own tasks."""
@@ -137,7 +136,6 @@ class BaseSweepCoordinator(ABC):
             return
         commit = getattr(task, "sweep_commit", "")
         self.record_build_failure(commit)
-        self.queue_next_if_needed()
 
     def queue_next_if_needed(self) -> bool:
         """Queue the next sweep task if none is already pending."""
