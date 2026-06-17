@@ -54,6 +54,12 @@ class TestLatencyCoordinatorProperties:
     def test_workload_id(self, coordinator):
         assert coordinator.workload_id == "get-k16-v16"
 
+    def test_export_filename_no_double_suffix(self, coordinator):
+        """Publisher uses {workload_id}-{metric_id}.json — workload_id must not contain metric_id."""
+        filename = f"series-arm64-{coordinator.workload_id}-{coordinator.metric_id}.json"
+        assert filename == "series-arm64-get-k16-v16-latency.json"
+        assert "latency-latency" not in filename
+
 
 class TestUrgencyScore:
     def test_infinity_for_new_series(self, coordinator):
