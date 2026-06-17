@@ -481,16 +481,20 @@ def export_latency(
     return len(points)
 
 
-def export_manifest(output_dir: Path, platforms: list[str], workloads: list[str]) -> None:
+def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tuple[str, str]]) -> None:
     """Write per-platform manifest for dashboard auto-discovery."""
     from conductress.publisher import detect_platform
 
     platform_id, _ = detect_platform()
+    throughput = [w for w, m in workloads if m == "throughput"]
+    memory = [w for w, m in workloads if m == "memory"]
+    latency = [w for w, m in workloads if m == "latency"]
     manifest: dict[str, Any] = {
         "version": 2,
         "platform": platform_id,
-        "throughput_workloads": [w for w in workloads if not w.startswith("memory-")],
-        "memory_workloads": [w for w in workloads if w.startswith("memory-")],
+        "throughput_workloads": throughput,
+        "memory_workloads": memory,
+        "latency_workloads": latency,
         "groups": [
             {
                 "id": "throughput",
