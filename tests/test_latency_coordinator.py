@@ -52,7 +52,7 @@ class TestLatencyCoordinatorProperties:
         assert coordinator.lower_is_better is True
 
     def test_workload_id(self, coordinator):
-        assert coordinator.workload_id == "get-k16-v16-latency"
+        assert coordinator.workload_id == "get-k16-v16"
 
 
 class TestUrgencyScore:

@@ -46,7 +46,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
-        return "get-k16-v16-latency"
+        return "get-k16-v16"
 
     def get_urgency_score(self) -> float:
         """Priority score, dampened by 0.5x relative to throughput."""
