@@ -20,14 +20,11 @@ class SyncTaskData(BaseTaskData):
     val_size: int
     val_count: int
     io_threads: int
-    profiling_sample_rate: int
 
     def short_description(self) -> str:
-        profiling = self.profiling_sample_rate > 0
         return (
             f"{HumanNumber.to_human(self.val_count)} {HumanByte.to_human(self.val_size)} {self.test} items, "
             f"{self.replicas} replica"
-            f"{', profiling' if profiling else ''}"
         )
 
     def prepare_task_runner(self, server_infos: list) -> "SyncTaskRunner":
@@ -40,7 +37,6 @@ class SyncTaskData(BaseTaskData):
             io_threads=self.io_threads,
             valsize=self.val_size,
             valcount=self.val_count,
-            profiling_sample_rate=self.profiling_sample_rate,
             make_args=self.make_args,
             note=self.note,
         )
@@ -58,7 +54,6 @@ class SyncTaskRunner(BaseTaskRunner):
         io_threads: int,
         valsize: int,
         valcount: int,
-        profiling_sample_rate: int,
         make_args: str,
         note: str,
     ):
@@ -73,7 +68,6 @@ class SyncTaskRunner(BaseTaskRunner):
         self.io_threads = io_threads
         self.valsize = valsize
         self.valcount = valcount
-        self.profiling_sample_rate = profiling_sample_rate
         self.note = note
         self.make_args = make_args
 
@@ -95,7 +89,6 @@ class SyncTaskRunner(BaseTaskRunner):
 
     async def run(self) -> None:
         """Run the full sync test."""
-        profiling = self.profiling_sample_rate > 0
 
         # Setup replication group
         self.logger.info("setting up replication group with %d servers", len(self.server_ips))
@@ -128,10 +121,8 @@ class SyncTaskRunner(BaseTaskRunner):
         await self.replication_group.begin_replication()
         start = time.monotonic()
 
-        if profiling:
-            for server in self.replication_group.servers:
-                server.profiling_start(self.profiling_sample_rate)
-
+        for server in self.replication_group.servers:
+            pass
         in_sync = False
         while not in_sync:
             replica_info = await self.replication_group.replicas[0].info("replication")
@@ -143,9 +134,8 @@ class SyncTaskRunner(BaseTaskRunner):
             time.sleep(0.25)
         end = time.monotonic()
         self.logger.info("full sync complete")
-        if profiling:
-            for server in self.replication_group.servers:
-                await server.profiling_stop()
+        for server in self.replication_group.servers:
+            pass
 
         duration = end - start
         user_data_size = self.valsize * self.valcount
@@ -177,21 +167,11 @@ class SyncTaskRunner(BaseTaskRunner):
         self.status.end_time = time.time()
         self.file_protocol.write_status(self.status)
 
-        if profiling:
-            self.__profiling_reports()
-
         # Clean up all servers and release CPUs
         await self.replication_group.stop_all_servers()
 
-    def __profiling_reports(self):
         """This takes some time, so we have all hosts perform the task in parallel."""
         self.logger.info("generating flamegraphs")
         if self.replication_group is None:
             raise RuntimeError("Replication group not initialized")
-        tasks = [
-            (self.replication_group.primary, "primary"),
-            *[(replica, f"replica{i}") for i, replica in enumerate(self.replication_group.replicas)],
-        ]
-        with ThreadPoolExecutor() as executor:
-            executor.map(lambda t: t[0].profiling_report(self.task_name, t[1]), tasks)  # TODO: fix up profiling
         self.logger.info("flamegraphs done")

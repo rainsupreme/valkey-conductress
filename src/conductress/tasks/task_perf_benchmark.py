@@ -93,7 +93,6 @@ class PerfTaskData(BaseTaskData):
     pipelining: int
     warmup: int
     duration: int
-    profiling_sample_rate: int
     perf_stat_enabled: bool
     has_expire: bool
     preload_keys: bool
@@ -109,12 +108,10 @@ class PerfTaskData(BaseTaskData):
         self.duration = int(self.duration)
 
     def short_description(self) -> str:
-        profiling = self.profiling_sample_rate > 0
         return (
             f"{HumanByte.to_human(self.val_size)} {self.test} items for "
             f"{HumanTime.to_human(self.duration)}, {self.io_threads} threads"
             f", {self.pipelining} pipelined"
-            f"{', profiling' if profiling else ''}"
             f"{', perf-stat' if self.perf_stat_enabled else ''}"
         )
 
@@ -134,7 +131,6 @@ class PerfTaskData(BaseTaskData):
             preload_keys=self.preload_keys,
             has_expire=self.has_expire,
             make_args=self.make_args,
-            sample_rate=self.profiling_sample_rate,
             perf_stat_enabled=self.perf_stat_enabled,
             note=self.note,
             key_size=self.key_size,
@@ -219,7 +215,6 @@ class PerfTaskRunner(BaseTaskRunner):
         preload_keys: bool,
         has_expire: bool,
         make_args: str,
-        sample_rate: int = -1,
         perf_stat_enabled: bool = False,
         note: str = "",
         key_size: int = 0,
@@ -244,7 +239,6 @@ class PerfTaskRunner(BaseTaskRunner):
         self.duration = duration  # seconds
         self.preload_keys = preload_keys
         self.has_expire = has_expire
-        self.sample_rate = sample_rate
         self.note = note
         self.make_args = make_args
         self.key_size = key_size
@@ -252,9 +246,10 @@ class PerfTaskRunner(BaseTaskRunner):
         self.max_reps = max_reps
         self.target_cv = target_cv
 
-        self.profiling_thread = None
-        self.profiling = self.sample_rate > 0
         self.perf_stat_enabled = perf_stat_enabled
+        self._is_last_rep = False
+        self._cpu_stacks_main: list[list] = []
+        self._cpu_stacks_io: list[list] = []
 
         # Build custom commands when key_size > 0
         if self.key_size > 0:
@@ -275,8 +270,6 @@ class PerfTaskRunner(BaseTaskRunner):
         )
         if self.key_size > 0:
             self.title += f", key-size={HumanByte.to_human(self.key_size)}"
-        if self.profiling:
-            self.title += f", profiling={self.sample_rate}Hz"
         if self.perf_stat_enabled:
             self.title += ", perf-stat"
 
@@ -370,7 +363,6 @@ class PerfTaskRunner(BaseTaskRunner):
                 "size": self.valsize,
                 "key_size": self.key_size,
                 "preload_keys": self.preload_keys,
-                "profiling_enabled": self.profiling,
                 "perf_stat_enabled": self.perf_stat_enabled,
                 "lscpu": lscpu_output,
                 "server_cpus": server.server_cpus,
@@ -382,6 +374,9 @@ class PerfTaskRunner(BaseTaskRunner):
             if perf_counters:
                 detailed_data["perf_counters"] = perf_counters
                 detailed_data["perf_duration_seconds"] = float(self.duration)
+            if self._cpu_stacks_main:
+                detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
+                detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -407,7 +402,6 @@ class PerfTaskRunner(BaseTaskRunner):
                 "size": self.valsize,
                 "key_size": self.key_size,
                 "preload_keys": self.preload_keys,
-                "profiling_enabled": self.profiling,
                 "perf_stat_enabled": self.perf_stat_enabled,
                 "avg_rps": avg_rps,
                 "lscpu": lscpu_output,
@@ -416,6 +410,9 @@ class PerfTaskRunner(BaseTaskRunner):
             if perf_counters:
                 detailed_data["perf_counters"] = perf_counters
                 detailed_data["perf_duration_seconds"] = float(self.duration)
+            if self._cpu_stacks_main:
+                detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
+                detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -516,6 +513,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
                 # Build and execute benchmark command
                 command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)
+                self._is_last_rep = rep == effective_reps - 1 or should_stop_adaptive(
+                    per_run_rps, rep, self.repetitions, self.target_cv
+                )
                 avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
                 per_run_rps.append(avg_rps)
                 self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps)
@@ -529,6 +529,16 @@ class PerfTaskRunner(BaseTaskRunner):
                     else:
                         for k, v in rep_counters.items():
                             perf_counters[k] = perf_counters.get(k, 0) + v
+
+                # Collect CPU profile stacks on last rep
+                if self._is_last_rep and self.perf_stat_enabled:
+                    try:
+                        cpu_main, cpu_io = await server.cpu_profile_collect()
+                        if cpu_main:
+                            self._cpu_stacks_main = cpu_main
+                            self._cpu_stacks_io = cpu_io
+                    except Exception as e:
+                        self.logger.warning("CPU profile collection failed: %s", e)
 
                 # Adaptive early exit
                 if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
@@ -649,18 +659,16 @@ class PerfTaskRunner(BaseTaskRunner):
                 last_heartbeat = time.time()
 
             if now > end_time:
-                if self.profiling:
-                    await server.profiling_stop()
                 if self.perf_stat_enabled:
                     await server.perf_stat_stop()
                 command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 warming_up = False
-                if self.profiling:
-                    server.profiling_start(self.sample_rate)
                 if self.perf_stat_enabled:
                     await server.perf_stat_start()
+                if self.perf_stat_enabled and self._is_last_rep:
+                    server.cpu_profile_start(self.duration)
 
         await self.__collect_metrics(command)
 
@@ -669,11 +677,7 @@ class PerfTaskRunner(BaseTaskRunner):
         return sum(self.rps_data) / len(self.rps_data)
 
     async def _collect_profiling_reports(self, server: "Server") -> Optional[dict]:
-        """Collect profiling and perf stat reports if enabled. Returns perf counters dict or None."""
-        if self.profiling:
-            server.profiling_wait()
-            result_dir = self.file_protocol.get_result_dir()
-            await server.profiling_report(result_dir)
+        """Collect perf stat and CPU profile reports. Returns perf counters dict or None."""
         if self.perf_stat_enabled:
             server.perf_stat_wait()
             result_dir = self.file_protocol.get_result_dir()

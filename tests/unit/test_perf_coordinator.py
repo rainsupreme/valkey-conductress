@@ -26,7 +26,6 @@ def _make_task():
         pipelining=10,
         warmup=5,
         duration=30,
-        profiling_sample_rate=0,
         perf_stat_enabled=True,
         has_expire=False,
         preload_keys=True,

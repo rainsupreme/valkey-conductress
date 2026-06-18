@@ -816,7 +816,6 @@ class PerfTaskForm(BaseTaskForm):
                 make_args_list,
             )
         )
-        profiling_sample_rate = 399 if profiling else -1
 
         tasks: list[BaseTaskData] = []
         for size, pipe, thread, test, key_size, specifier, make_args in all_tests:
@@ -833,7 +832,6 @@ class PerfTaskForm(BaseTaskForm):
                 test=test,
                 warmup=warmup,
                 duration=duration,
-                profiling_sample_rate=profiling_sample_rate,
                 perf_stat_enabled=perf_stat,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
@@ -985,7 +983,6 @@ class SyncTaskForm(BaseTaskForm):
                 make_args_list,
             )
         )
-        profiling_sample_rate = 3999 if profiling else -1
 
         tasks: list[BaseTaskData] = []
         for size, count, thread, specifier, make_args in all_tests:
@@ -997,7 +994,6 @@ class SyncTaskForm(BaseTaskForm):
                 io_threads=thread,
                 replicas=replicas,
                 test=test,
-                profiling_sample_rate=profiling_sample_rate,
                 note=note,
                 requirements={},
                 make_args=make_args,

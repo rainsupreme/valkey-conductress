@@ -364,25 +364,14 @@ class Server:
     # PROFILING METHODS (delegated to ProfilingManager)
     # =============================================================================
 
-    def profiling_start(self, sample_rate: int) -> None:
-        """Start profiling the server using perf record."""
-        self._profiling.profiling_start(sample_rate)
+    def cpu_profile_start(self, duration: int) -> None:
+        """Start CPU profile (perf record) for the given duration."""
+        self._profiling.target_pid = self.valkey_pid
+        self._profiling.cpu_profile_start(duration)
 
-    def is_profiling(self) -> bool:
-        """Check if profiling is currently running."""
-        return self._profiling.is_profiling()
-
-    async def profiling_stop(self) -> None:
-        """Signal profiling to stop."""
-        await self._profiling.profiling_stop()
-
-    def profiling_wait(self) -> None:
-        """Block until profiling finishes."""
-        self._profiling.profiling_wait()
-
-    async def profiling_report(self, result_dir: Path) -> None:
-        """Generate flamegraph and copy results to result_dir."""
-        await self._profiling.profiling_report(result_dir)
+    async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
+        """Collect CPU profile stacks. Returns (main_stacks, io_stacks)."""
+        return await self._profiling.cpu_profile_collect()
 
     # =============================================================================
     # PERF STAT METHODS (delegated to ProfilingManager)

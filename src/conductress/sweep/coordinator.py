@@ -126,6 +126,8 @@ class BaseSweepCoordinator(ABC):
             if perf_data:
                 counters, duration, rps = perf_data
                 self.record_perf_counters(task.sweep_commit, counters, duration, rps)  # type: ignore[attr-defined]
+            # Extract CPU profile stacks if available
+            self._extract_cpu_stacks(task)
         else:
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract result for sweep commit %s", commit[:8])
@@ -269,6 +271,9 @@ class BaseSweepCoordinator(ABC):
         to provide extraction logic.
         """
         return None
+
+    def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
+        """Extract CPU profile stacks from task and store on point. Subclasses override."""
 
     @abstractmethod
     def _is_my_task(self, task: BaseTaskData) -> bool:
@@ -421,7 +426,6 @@ class SweepCoordinator(BaseSweepCoordinator):
             pipelining=self._pipelining,
             warmup=SWEEP_WARMUP,
             duration=SWEEP_DURATION,
-            profiling_sample_rate=0,
             perf_stat_enabled=True,
             has_expire=False,
             preload_keys=True,
@@ -469,6 +473,21 @@ class SweepCoordinator(BaseSweepCoordinator):
         duration = data.get("perf_duration_seconds", 0.0)
         rps = entry.get("score", 0.0)
         return (counters, duration, rps)
+
+    def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
+        """Extract CPU profile stacks from task output and store on the point."""
+        entry = self._find_task_entry(task)
+        if not entry:
+            return
+        data = entry.get("data", {})
+        cpu_main = data.get("cpu_stacks_main")
+        if not cpu_main:
+            return
+        commit = getattr(task, "sweep_commit", "")
+        if commit and commit in self.state.points:
+            self.state.points[commit].cpu_stacks_main = cpu_main
+            self.state.points[commit].cpu_stacks_io = data.get("cpu_stacks_io", [])
+            self.state.save(self.state_file)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
         return (
