@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from conductress.config import ANNOTATION_THRESHOLD
 from conductress.heap_profiler import recategorize_from_stacks
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 
@@ -261,8 +262,7 @@ def _build_annotations(
             if left.value is None or right.value is None:
                 continue
             delta = (right.value - left.value) / left.value
-            noise_floor = max(left.cv or 0.0, right.cv or 0.0) / 100.0
-            if abs(delta) >= max(state.threshold, noise_floor):
+            if abs(delta) >= ANNOTATION_THRESHOLD:
                 annotation: dict[str, Any] = {
                     "commit": right.commit,
                     "delta": round(delta, 4),
