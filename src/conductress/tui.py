@@ -28,7 +28,6 @@ from textual.widgets import (
 from textual.widgets.selection_list import Selection
 
 from conductress.file_protocol import FileProtocol
-from conductress.tasks.task_full_sync import SyncTaskData
 from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 from conductress.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
 from conductress.tui_data_service import TUIDataService
@@ -144,8 +143,6 @@ class BenchmarkApp(App):
                         yield PerfTaskForm(self.refresh_data)
                     with TabPane("Mem"):
                         yield MemTaskForm(self.refresh_data)
-                    with TabPane("Sync"):
-                        yield SyncTaskForm(self.refresh_data)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -816,7 +813,6 @@ class PerfTaskForm(BaseTaskForm):
                 make_args_list,
             )
         )
-        profiling_sample_rate = 399 if profiling else -1
 
         tasks: list[BaseTaskData] = []
         for size, pipe, thread, test, key_size, specifier, make_args in all_tests:
@@ -833,7 +829,6 @@ class PerfTaskForm(BaseTaskForm):
                 test=test,
                 warmup=warmup,
                 duration=duration,
-                profiling_sample_rate=profiling_sample_rate,
                 perf_stat_enabled=perf_stat,
                 has_expire=expire_keys,
                 preload_keys=preload_keys,
@@ -914,90 +909,6 @@ class MemTaskForm(BaseTaskForm):
                 type=test,
                 has_expire=expire_keys,
                 replicas=-1,
-                note=note,
-                requirements={},
-                make_args=make_args,
-            )
-            tasks.append(task)
-        self.queue_tasks(tasks)
-
-
-class SyncTaskForm(BaseTaskForm):
-    """Form for creating a full sync benchmark task"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.io_threads = IOThreadsField()
-        self.sizes = SizesField()
-        self.counts = CountsField()
-
-    def compose(self) -> ComposeResult:
-        for widget in self._compose_source_specifier_input():
-            yield widget
-
-        yield Label("Replicas: 1")  # TODO allow configurable replica count
-        yield Label("Test: set")  # TODO allow configurable data type
-
-        for field in (self.io_threads, self.sizes, self.counts):
-            for widget in field.widgets():
-                yield widget
-
-        yield self._compose_switch_row(
-            ("profiling", "Profiling", False),
-        )
-
-        for widget in self._compose_note_input():
-            yield widget
-
-        for widget in self._compose_make_args_input():
-            yield widget
-
-        yield Button("Submit", variant="primary", id="submit-sync-task")
-
-    @on(Button.Pressed, "#submit-sync-task")
-    def submit_task(self) -> None:
-        """Submit the task to the queue"""
-
-        replicas = 1
-        test = "set"
-
-        try:
-            io_threads: list[int] = self.io_threads.values()
-            sizes: list[int] = self.sizes.values()
-            counts: list[int] = self.counts.values()
-            profiling: bool = self.query_one("#profiling", Switch).value
-        except ValueError as e:
-            self.notify(f"Invalid input: {e}", severity="error")
-            return
-
-        specifiers, note, make_args_list, error = self._validate_and_get_common_inputs()
-        if error:
-            self.notify(error, severity="error")
-            return
-
-        all_tests = list(
-            product(
-                sizes,
-                counts,
-                io_threads,
-                specifiers,
-                make_args_list,
-            )
-        )
-        profiling_sample_rate = 3999 if profiling else -1
-
-        tasks: list[BaseTaskData] = []
-        for size, count, thread, specifier, make_args in all_tests:
-            task = SyncTaskData(
-                source=specifier[0],
-                specifier=specifier[1],
-                val_size=size,
-                val_count=count,
-                io_threads=thread,
-                replicas=replicas,
-                test=test,
-                profiling_sample_rate=profiling_sample_rate,
                 note=note,
                 requirements={},
                 make_args=make_args,

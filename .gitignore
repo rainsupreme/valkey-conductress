@@ -24,3 +24,4 @@ build/
 .env
 *.png
 sweep_data/
+.venv

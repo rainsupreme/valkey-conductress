@@ -243,7 +243,6 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             pipelining=pipeline,
             warmup=warmup,
             duration=duration,
-            profiling_sample_rate=0,
             perf_stat_enabled=args.perf_stat,
             has_expire=False,
             preload_keys=not args.no_preload,

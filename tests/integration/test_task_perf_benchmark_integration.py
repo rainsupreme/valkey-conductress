@@ -44,7 +44,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=2,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
@@ -111,7 +110,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=2,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=True,
@@ -151,7 +149,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=2,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
@@ -192,7 +189,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=2,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=True,
             preload_keys=True,
@@ -232,7 +228,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=2,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,
@@ -276,7 +271,6 @@ class TestPerfTaskIntegration:
                 pipelining=16,
                 warmup=1,
                 duration=1,
-                profiling_sample_rate=0,
                 perf_stat_enabled=False,
                 has_expire=False,
                 preload_keys=False,
@@ -319,7 +313,6 @@ class TestPerfTaskIntegration:
             pipelining=32,
             warmup=10,
             duration=60,
-            profiling_sample_rate=99,
             perf_stat_enabled=False,
             has_expire=True,
             preload_keys=True,
@@ -338,7 +331,6 @@ class TestPerfTaskIntegration:
         assert loaded_task.pipelining == original_task.pipelining
         assert loaded_task.warmup == original_task.warmup
         assert loaded_task.duration == original_task.duration
-        assert loaded_task.profiling_sample_rate == original_task.profiling_sample_rate
         assert loaded_task.has_expire == original_task.has_expire
         assert loaded_task.preload_keys == original_task.preload_keys
 
@@ -366,7 +358,6 @@ class TestPerfTaskIntegration:
             pipelining=16,
             warmup=1,
             duration=3,
-            profiling_sample_rate=99,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=False,

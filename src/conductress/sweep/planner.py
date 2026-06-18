@@ -51,6 +51,8 @@ class BenchmarkPoint:
     breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
     raw_stacks: Optional[list[list]] = None  # retained resolved stacks for re-categorization
     latency_data: Optional[dict] = None  # full latency results (p50, p99.9, histogram, rps)
+    cpu_stacks_main: Optional[list[list]] = None  # per-thread collapsed stacks [[stack, count], ...]
+    cpu_stacks_io: Optional[list[list]] = None  # IO thread collapsed stacks [[stack, count], ...]
     status: PointStatus = PointStatus.PENDING
 
     @property

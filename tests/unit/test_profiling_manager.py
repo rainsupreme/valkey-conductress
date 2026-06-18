@@ -21,38 +21,82 @@ def manager(mock_host):
     return ProfilingManager(mock_host)
 
 
-class TestProfilingStart:
-    def test_raises_if_already_profiling(self, manager):
+class TestCpuProfileStart:
+    def test_raises_if_already_running(self, manager):
         import threading
-        import time
 
-        # Keep thread alive so is_profiling() returns True
         event = threading.Event()
-        manager._profiling_thread = threading.Thread(target=event.wait)
-        manager._profiling_thread.start()
+        manager._cpu_profile_thread = threading.Thread(target=event.wait)
+        manager._cpu_profile_thread.start()
         try:
-            with pytest.raises(RuntimeError, match="already started"):
-                manager.profiling_start(99)
+            with pytest.raises(RuntimeError, match="already running"):
+                manager.cpu_profile_start(30)
         finally:
             event.set()
-            manager._profiling_thread.join()
+            manager._cpu_profile_thread.join()
 
-    def test_not_profiling_initially(self, manager):
-        assert not manager.is_profiling()
+    def test_no_thread_initially(self, manager):
+        assert manager._cpu_profile_thread is None
 
 
-class TestProfilingStop:
+class TestCpuProfileCollect:
     @pytest.mark.asyncio
-    async def test_stop_noop_when_not_started(self, manager):
-        # Should not raise
-        await manager.profiling_stop()
+    async def test_returns_empty_when_no_main_thread(self, manager, mock_host):
+        """If we can't identify the main thread, return empty."""
+        mock_host.run_host_command = AsyncMock(return_value=("", ""))
+        manager._target_pid = 12345
+        main, io = await manager.cpu_profile_collect()
+        assert main == []
+        assert io == []
 
     @pytest.mark.asyncio
-    async def test_stop_removes_status_file(self, manager, mock_host):
-        with patch.object(manager, "_profiling_run_sync"):
-            manager.profiling_start(99)
-        await manager.profiling_stop()
-        mock_host.run_host_command.assert_called_with("rm -f /tmp/profiling_running")
+    async def test_parses_collapsed_stacks(self, manager, mock_host):
+        """Test that collapsed stacks output is correctly parsed."""
+        manager._target_pid = 12345
+
+        # First call: discover TIDs
+        tid_output = "12345 valkey-server\n12346 io_thd_1\n12347 io_thd_2\n"
+        # Second call: main thread stacks
+        main_output = "func_a;func_b;hashtableFind 500\nfunc_a;func_c;zmalloc 200\n"
+        # Third call: IO thread stacks
+        io_output = "io_thd_1;IOThreadMain;pthread_mutex_lock 1000\n"
+
+        call_count = [0]
+
+        async def mock_run(cmd):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return (tid_output, "")
+            elif call_count[0] == 2:
+                return (main_output, "")
+            elif call_count[0] == 3:
+                return (io_output, "")
+            return ("", "")
+
+        mock_host.run_host_command = mock_run
+
+        main, io = await manager.cpu_profile_collect()
+        assert len(main) == 2
+        assert main[0] == ["func_a;func_b;hashtableFind", 500]
+        assert main[1] == ["func_a;func_c;zmalloc", 200]
+        assert len(io) == 1
+        assert io[0] == ["io_thd_1;IOThreadMain;pthread_mutex_lock", 1000]
+
+
+class TestParseCollapsed:
+    def test_basic_parsing(self):
+        output = "a;b;c 100\nd;e;f 200\n"
+        result = ProfilingManager._parse_collapsed(output)
+        assert result == [["a;b;c", 100], ["d;e;f", 200]]
+
+    def test_empty_input(self):
+        assert ProfilingManager._parse_collapsed("") == []
+        assert ProfilingManager._parse_collapsed("\n\n") == []
+
+    def test_invalid_lines_skipped(self):
+        output = "valid;stack 100\ninvalid line without count\nanother;valid 50\n"
+        result = ProfilingManager._parse_collapsed(output)
+        assert len(result) == 2
 
 
 class TestPerfStatStart:
@@ -96,7 +140,6 @@ class TestPerfStatReport:
         result_dir = tmp_path / "results"
         result_dir.mkdir()
 
-        # Create a fake perf stat file that get_remote_file will "produce"
         async def fake_get_remote(src, dest):
             dest.write_text("     1000      instructions:u\n     500      cycles:u\n")
 
@@ -117,6 +160,5 @@ class TestCleanup:
     async def test_cleanup_removes_artifacts(self, manager, mock_host):
         await manager.cleanup()
         call_args = mock_host.run_host_command.call_args[0][0]
-        assert "perf.data" in call_args
-        assert "flamegraph.svg" in call_args
+        assert "perf-cpu-profile.data" in call_args
         assert "perf_stat_output" in call_args

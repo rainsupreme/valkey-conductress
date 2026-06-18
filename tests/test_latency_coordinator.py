@@ -142,7 +142,6 @@ class TestIsMyTask:
             pipelining=10,
             warmup=5,
             duration=30,
-            profiling_sample_rate=0,
             perf_stat_enabled=False,
             has_expire=False,
             preload_keys=True,

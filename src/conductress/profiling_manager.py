@@ -1,6 +1,6 @@
-"""Profiling and performance counter collection for Valkey servers.
+"""Profiling and performance counter collection for Valkey/Redis servers.
 
-Manages perf record (flamegraph) and perf stat (hardware counters)
+Manages perf stat (hardware counters) and CPU profiling (per-thread flamegraph stacks)
 lifecycle on remote hosts via SSH.
 """
 
@@ -13,26 +13,21 @@ from typing import Optional
 from . import config
 from .ssh_host import SshHost
 
-PERF_STATUS_FILE = "/tmp/profiling_running"
 PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
-
-# Remote paths for profiling artifacts
-_PATH_ROOT = Path("~")
-PERF_DATA_PATH = _PATH_ROOT / "perf.data"
-FLAMEGRAPH_PATH = _PATH_ROOT / "flamegraph.svg"
-PERF_STATS_PATH = _PATH_ROOT / "perf_stat_output"
-FLAMEGRAPH_DIR = _PATH_ROOT / "FlameGraph"
+PERF_STATS_PATH = Path("~") / "perf_stat_output"
+CPU_PROFILE_DATA = "/tmp/perf-cpu-profile.data"
+FLAMEGRAPH_DIR = Path("~") / "FlameGraph"
 
 logger = logging.getLogger(__name__)
 
 
 class ProfilingManager:
-    """Manages perf record and perf stat on a remote host."""
+    """Manages perf stat and CPU profile collection on a remote host."""
 
     def __init__(self, host: SshHost) -> None:
         self._host = host
-        self._profiling_thread: Optional[Thread] = None
         self._perf_stat_thread: Optional[Thread] = None
+        self._cpu_profile_thread: Optional[Thread] = None
         self._target_pid: int = -1
 
     @property
@@ -44,73 +39,106 @@ class ProfilingManager:
         self._target_pid = pid
 
     # =========================================================================
-    # PERF RECORD (flamegraph)
+    # CPU PROFILE (per-thread flamegraph stacks)
     # =========================================================================
 
-    def profiling_start(self, sample_rate: int) -> None:
-        """Start profiling the server using perf record."""
-        if self.is_profiling():
-            raise RuntimeError("Profiling already started")
-        self._profiling_thread = Thread(target=self._profiling_run_sync, args=(sample_rate,))
-        self._profiling_thread.start()
+    def cpu_profile_start(self, duration: int) -> None:
+        """Start perf record with frame-pointer call-graph on target PID.
 
-    def _profiling_run_sync(self, sample_rate: int) -> None:
+        Records for the specified duration in seconds. Non-blocking — runs in a thread.
+        Call cpu_profile_collect() after the duration to retrieve results.
+        """
+        if self._cpu_profile_thread and self._cpu_profile_thread.is_alive():
+            raise RuntimeError("CPU profile already running")
+        self._cpu_profile_thread = Thread(target=self._cpu_profile_run_sync, args=(duration,))
+        self._cpu_profile_thread.start()
+
+    def _cpu_profile_run_sync(self, duration: int) -> None:
         """Run perf record synchronously in a thread."""
         ip = self._host.ip
-        command = f"touch {PERF_STATUS_FILE}"
+        command = (
+            f"sudo perf record -g --call-graph fp -p {self._target_pid} " f"-o {CPU_PROFILE_DATA} -- sleep {duration}"
+        )
         if ip in ["127.0.0.1", "localhost"]:
             subprocess.run(command, shell=True, check=True)
         else:
             subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command], check=True)
 
-        perf_command = (
-            f"sudo perf record -F {sample_rate} -a -g -o {PERF_DATA_PATH} "
-            f"-- sh -c 'while [ -f {PERF_STATUS_FILE} ]; do sleep 1; done'"
+    async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
+        """Wait for perf record and return per-thread collapsed stacks.
+
+        Returns:
+            (main_stacks, io_stacks) where each is [[stack_string, sample_count], ...].
+            Returns ([], []) if collection failed.
+        """
+        if self._cpu_profile_thread:
+            self._cpu_profile_thread.join()
+            self._cpu_profile_thread = None
+
+        pid = self._target_pid
+        # Discover thread TIDs by comm name
+        discover_cmd = (
+            f"for tid in $(ls /proc/{pid}/task/ 2>/dev/null); do "
+            f"  comm=$(cat /proc/{pid}/task/$tid/comm 2>/dev/null); "
+            f'  echo "$tid $comm"; '
+            f"done"
         )
-        if ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(perf_command, shell=True, check=True)
-        else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, perf_command], check=True)
+        output, _ = await self._host.run_host_command(discover_cmd)
 
-    def is_profiling(self) -> bool:
-        """Check if profiling is currently running."""
-        return self._profiling_thread is not None and self._profiling_thread.is_alive()
+        main_tid = None
+        io_tids: list[str] = []
+        for line in output.strip().splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            tid, comm = parts
+            if comm in ("valkey-server", "redis-server"):
+                main_tid = tid
+            elif comm.startswith("io_thd_"):
+                io_tids.append(tid)
 
-    async def profiling_stop(self) -> None:
-        """Signal profiling to stop. Use profiling_wait() to block until done."""
-        if self._profiling_thread is None:
-            return
-        await self._host.run_host_command(f"rm -f {PERF_STATUS_FILE}")
+        if not main_tid:
+            logger.warning("Could not identify main thread TID for PID %d", pid)
+            await self._cpu_profile_cleanup()
+            return [], []
 
-    def profiling_wait(self) -> None:
-        """Block until profiling finishes."""
-        if self._profiling_thread is None:
-            return
-        self._profiling_thread.join()
-        self._profiling_thread = None
+        stackcollapse = f"{FLAMEGRAPH_DIR}/stackcollapse-perf.pl"
 
-    async def profiling_report(self, result_dir: Path) -> None:
-        """Generate flamegraph and copy results to local result_dir."""
-        if not result_dir.exists():
-            raise FileNotFoundError(f"Result directory {result_dir} must exist")
+        # Generate collapsed stacks for main thread
+        main_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | " f"{stackcollapse}"
+        main_output, _ = await self._host.run_host_command(main_cmd)
+        main_stacks = self._parse_collapsed(main_output)
 
-        out_perf_path = _PATH_ROOT / "out.perf"
-        out_folded_path = _PATH_ROOT / "out.folded"
+        # Generate collapsed stacks for IO threads
+        io_stacks: list[list] = []
+        if io_tids:
+            io_tid_str = ",".join(io_tids)
+            io_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | " f"{stackcollapse}"
+            io_output, _ = await self._host.run_host_command(io_cmd)
+            io_stacks = self._parse_collapsed(io_output)
 
-        if self.is_profiling():
-            await self.profiling_stop()
-        self.profiling_wait()
+        await self._cpu_profile_cleanup()
+        return main_stacks, io_stacks
 
-        await self._host.run_host_command(f"sudo chmod a+r {PERF_DATA_PATH}")
-        await self._host.run_host_command(f"perf script -i {PERF_DATA_PATH} > {out_perf_path}")
-        await self._host.run_host_command(
-            f"{FLAMEGRAPH_DIR/'stackcollapse-perf.pl'} " f"{out_perf_path} > {out_folded_path}"
-        )
-        await self._host.run_host_command(f"{FLAMEGRAPH_DIR/'flamegraph.pl'} {out_folded_path} > {FLAMEGRAPH_PATH}")
-        await self._host.run_host_command(f"rm -f {out_perf_path} {out_folded_path}")
+    @staticmethod
+    def _parse_collapsed(output: str) -> list[list]:
+        """Parse stackcollapse-perf.pl output into [[stack, count], ...] pairs."""
+        stacks: list[list] = []
+        for line in output.strip().splitlines():
+            if not line:
+                continue
+            # Format: "func1;func2;func3 12345"
+            parts = line.rsplit(" ", 1)
+            if len(parts) == 2:
+                try:
+                    stacks.append([parts[0], int(parts[1])])
+                except ValueError:
+                    continue
+        return stacks
 
-        await self._host.get_remote_file(PERF_DATA_PATH, result_dir / "perf.data")
-        await self._host.get_remote_file(FLAMEGRAPH_PATH, result_dir / "flamegraph.svg")
+    async def _cpu_profile_cleanup(self) -> None:
+        """Remove CPU profile data file from remote host."""
+        await self._host.run_host_command(f"sudo rm -f {CPU_PROFILE_DATA}")
 
     # =========================================================================
     # PERF STAT (hardware counters)
@@ -231,4 +259,4 @@ class ProfilingManager:
 
     async def cleanup(self) -> None:
         """Remove profiling artifacts from the remote host."""
-        await self._host.run_host_command(f"rm -f {PERF_DATA_PATH} {FLAMEGRAPH_PATH} {PERF_STATS_PATH}")
+        await self._host.run_host_command(f"rm -f {CPU_PROFILE_DATA} {PERF_STATS_PATH}")
