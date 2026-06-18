@@ -85,7 +85,13 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
                     score = entry.get("score")  # p99_us
                     data = entry.get("data", {})
                     reps = data.get("reps", LATENCY_REPS)
-                    cv = 0.0
+                    per_rep = data.get("per_rep_p99", [])
+                    if len(per_rep) >= 2 and score and score > 0:
+                        from statistics import mean, stdev
+
+                        cv = (stdev(per_rep) / mean(per_rep)) * 100
+                    else:
+                        cv = 0.0
                     if score and score > 0:
                         return (score, cv, reps)
             except (ValueError, KeyError, TypeError):

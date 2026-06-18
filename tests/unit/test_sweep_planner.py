@@ -507,3 +507,64 @@ class TestLatencyDataSerialization:
         idx = commits.index(task.commit)
         # Must be in the valid range (between c06 and c15, or after c15)
         assert idx > 6
+
+
+class TestSegmentSignificance:
+    """Tests for Segment.is_significant t-test logic."""
+
+    def _seg(self, left_val, right_val, left_cv=1.0, right_cv=1.0, left_reps=3, right_reps=3):
+        return Segment(
+            left_commit="a",
+            right_commit="b",
+            left_value=left_val,
+            right_value=right_val,
+            commit_count=1,
+            left_cv=left_cv,
+            right_cv=right_cv,
+            left_reps=left_reps,
+            right_reps=right_reps,
+        )
+
+    def test_large_delta_low_cv_is_significant(self):
+        # 10% delta with CV=1%, 3 reps — clearly significant
+        seg = self._seg(2_000_000, 1_800_000, left_cv=1.0, right_cv=1.0)
+        assert seg.is_significant is True
+
+    def test_small_delta_low_cv_not_significant(self):
+        # 0.5% delta with CV=1%, 3 reps — not significant
+        seg = self._seg(2_000_000, 1_990_000, left_cv=1.0, right_cv=1.0)
+        assert seg.is_significant is False
+
+    def test_moderate_delta_high_cv_not_significant(self):
+        # 3% delta but CV=5% — CIs overlap, not significant
+        seg = self._seg(2_000_000, 1_940_000, left_cv=5.0, right_cv=5.0)
+        assert seg.is_significant is False
+
+    def test_moderate_delta_low_cv_is_significant(self):
+        # 3% delta with CV=0.5% — very tight, significant
+        seg = self._seg(2_000_000, 1_940_000, left_cv=0.5, right_cv=0.5)
+        assert seg.is_significant is True
+
+    def test_more_reps_increases_power(self):
+        # 2% delta, CV=1.5% — borderline. 3 reps: not significant. 10 reps: significant.
+        seg_3 = self._seg(2_000_000, 1_960_000, left_cv=1.5, right_cv=1.5, left_reps=3, right_reps=3)
+        seg_10 = self._seg(2_000_000, 1_960_000, left_cv=1.5, right_cv=1.5, left_reps=10, right_reps=10)
+        assert seg_3.is_significant is False
+        assert seg_10.is_significant is True
+
+    def test_cv_zero_both_sides_uses_threshold_fallback(self):
+        # CV=0 means we can't compute SE; fall back to abs_delta >= 0.02
+        seg_big = self._seg(100, 95, left_cv=0.0, right_cv=0.0)  # 5% delta
+        seg_small = self._seg(100, 99.5, left_cv=0.0, right_cv=0.0)  # 0.5% delta
+        assert seg_big.is_significant is True
+        assert seg_small.is_significant is False
+
+    def test_reps_below_2_uses_threshold_fallback(self):
+        # reps=1 means we can't compute variance; fall back to threshold
+        seg = self._seg(2_000_000, 1_900_000, left_cv=1.0, right_cv=1.0, left_reps=1, right_reps=1)
+        assert seg.is_significant is True  # 5% > 2% threshold
+
+    def test_asymmetric_reps(self):
+        # One side has 3 reps, other has 7 — should still work
+        seg = self._seg(2_000_000, 1_850_000, left_cv=1.0, right_cv=0.8, left_reps=3, right_reps=7)
+        assert seg.is_significant is True

@@ -232,6 +232,7 @@ class LatencyTaskRunner(BaseTaskRunner):
             "p100_us": median([r["p100_us"] for r in reps]),
             "histogram": reps[len(reps) // 2]["histogram"],  # median rep's histogram
             "reps": len(reps),
+            "per_rep_p99": [r["p99_us"] for r in reps],
         }
 
     def _write_result(self, result: dict) -> None:
