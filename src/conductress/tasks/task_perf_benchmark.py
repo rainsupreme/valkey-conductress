@@ -513,12 +513,14 @@ class PerfTaskRunner(BaseTaskRunner):
 
                 # Build and execute benchmark command
                 command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)
-                self._is_last_rep = rep == effective_reps - 1 or should_stop_adaptive(
-                    per_run_rps, rep, self.repetitions, self.target_cv
-                )
+                self._is_last_rep = rep == effective_reps - 1
                 avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
                 per_run_rps.append(avg_rps)
                 self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps)
+
+                # Update last-rep flag after we have this rep's data
+                if not self._is_last_rep:
+                    self._is_last_rep = should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv)
 
                 # Collect profiling reports
                 rep_counters = await self._collect_profiling_reports(server)
@@ -667,7 +669,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 warming_up = False
                 if self.perf_stat_enabled:
                     await server.perf_stat_start()
-                if self.perf_stat_enabled and self._is_last_rep:
+                if self.perf_stat_enabled:
                     server.cpu_profile_start(self.duration)
 
         await self.__collect_metrics(command)
