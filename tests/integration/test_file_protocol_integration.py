@@ -34,7 +34,6 @@ class TestPerfTaskRunnerIntegration:
             duration=10,
             preload_keys=False,
             has_expire=False,
-            sample_rate=-1,
         )
 
         assert hasattr(task_runner, "file_protocol")
@@ -57,7 +56,6 @@ class TestPerfTaskRunnerIntegration:
             duration=1,
             preload_keys=False,
             has_expire=False,
-            sample_rate=-1,
         )
 
         # Override to use temp directory
