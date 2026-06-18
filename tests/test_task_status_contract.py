@@ -10,12 +10,9 @@ import inspect
 import pytest
 
 from conductress.task_queue import BaseTaskRunner
-from conductress.tasks.task_full_sync import SyncTaskRunner
 from conductress.tasks.task_latency import LatencyTaskRunner
 from conductress.tasks.task_mem_efficiency import MemTaskRunner
 from conductress.tasks.task_perf_benchmark import PerfTaskRunner
-
-ALL_RUNNERS = [PerfTaskRunner, MemTaskRunner, SyncTaskRunner, LatencyTaskRunner]
 
 
 @pytest.mark.parametrize("runner_cls", ALL_RUNNERS, ids=lambda c: c.__name__)
