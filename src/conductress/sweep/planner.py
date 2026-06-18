@@ -10,6 +10,7 @@ Priority order:
 4. Largest unresolved historical segment (backfill)
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -77,6 +78,8 @@ class Segment:
     commit_count: int  # number of merge commits between left and right (exclusive)
     left_cv: float = 0.0
     right_cv: float = 0.0
+    left_reps: int = 3
+    right_reps: int = 3
 
     @property
     def delta(self) -> float:
@@ -93,6 +96,46 @@ class Segment:
     def noise_floor(self) -> float:
         """Minimum detectable change given the CV of both endpoints (as fraction)."""
         return max(self.left_cv, self.right_cv) / 100.0
+
+    @property
+    def is_significant(self) -> bool:
+        """Check if the delta is statistically significant using a Welch's t-test approximation.
+
+        Returns True if the difference between endpoints is significant at p<0.05,
+        or if we lack enough information to compute significance (conservative fallback).
+        """
+        if self.left_reps < 2 or self.right_reps < 2:
+            # Can't compute variance with <2 reps; fall back to threshold-based check
+            return self.abs_delta >= max(0.02, self.noise_floor)
+
+        # Standard error from CV: SE = mean * CV% / 100 / sqrt(n)
+        left_se = self.left_value * (self.left_cv / 100.0) / math.sqrt(self.left_reps)
+        right_se = self.right_value * (self.right_cv / 100.0) / math.sqrt(self.right_reps)
+
+        pooled_se = math.sqrt(left_se**2 + right_se**2)
+        if pooled_se == 0:
+            return self.abs_delta >= 0.02  # Both CV=0; use threshold only
+
+        t_stat = abs(self.right_value - self.left_value) / pooled_se
+
+        # Welch-Satterthwaite degrees of freedom
+        df: float
+        if left_se == 0 or right_se == 0:
+            df = max(self.left_reps, self.right_reps) - 1
+        else:
+            df = (left_se**2 + right_se**2) ** 2 / (
+                left_se**4 / (self.left_reps - 1) + right_se**4 / (self.right_reps - 1)
+            )
+
+        # Approximate t critical value for p<0.05 two-tailed
+        # For df >= 3: use 2.5 as a conservative approximation (exact ranges from 3.18 at df=3 to 1.96 at df=∞)
+        t_crit = (
+            3.18
+            if df <= 3
+            else 2.78 if df <= 5 else 2.45 if df <= 7 else 2.23 if df <= 10 else 2.09 if df <= 20 else 2.0
+        )  # noqa: E501
+
+        return t_stat > t_crit
 
 
 @dataclass
@@ -317,6 +360,8 @@ class SweepPlanner:
                     commit_count=commit_count,
                     left_cv=left.cv or 0.0,
                     right_cv=right.cv or 0.0,
+                    left_reps=left.reps,
+                    right_reps=right.reps,
                 )
                 segments.append(seg)
 
@@ -324,11 +369,11 @@ class SweepPlanner:
         return segments
 
     def get_unresolved_segments(self) -> list[Segment]:
-        """Get segments that exceed the noise floor and have commits to bisect."""
+        """Get segments that are statistically significant and have commits to bisect."""
         return [
             s
             for s in self.get_segments()
-            if s.abs_delta >= max(self.state.threshold, s.noise_floor) and s.commit_count > 0
+            if s.abs_delta >= self.state.threshold and s.is_significant and s.commit_count > 0
         ]
 
     def _check_nightly(self, current_head: Optional[str]) -> Optional[SweepTask]:

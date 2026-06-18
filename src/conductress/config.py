@@ -90,8 +90,11 @@ SWEEP_PIPELINING = 10
 SWEEP_WARMUP = 5
 SWEEP_DURATION = 30
 SWEEP_REPETITIONS = 3
-SWEEP_MAX_REPS = 7
+SWEEP_MAX_REPS = 10
 SWEEP_TARGET_CV = 0.5
+# Minimum |delta| to annotate a pinpointed change as "notable" in exported data.
+# Set above binary layout noise floor (~3-4%) to reduce false positives.
+ANNOTATION_THRESHOLD = 0.04
 SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
 
 # Additional throughput workloads (each gets its own state file + series).

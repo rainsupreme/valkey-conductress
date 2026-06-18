@@ -244,6 +244,8 @@ def _build_annotations(
     state: SweepState, planner: SweepPlanner, workload: str, lower_is_better: bool = False
 ) -> list[dict[str, Any]]:
     """Build annotations for commits where a change was pinpointed."""
+    from conductress.config import ANNOTATION_THRESHOLD
+
     annotations: list[dict[str, Any]] = []
 
     # Find segments of exactly 1 commit (fully bisected)
@@ -261,8 +263,7 @@ def _build_annotations(
             if left.value is None or right.value is None:
                 continue
             delta = (right.value - left.value) / left.value
-            noise_floor = max(left.cv or 0.0, right.cv or 0.0) / 100.0
-            if abs(delta) >= max(state.threshold, noise_floor):
+            if abs(delta) >= ANNOTATION_THRESHOLD:
                 annotation: dict[str, Any] = {
                     "commit": right.commit,
                     "delta": round(delta, 4),
