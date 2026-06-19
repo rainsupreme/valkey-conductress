@@ -270,4 +270,4 @@ class ProfilingManager:
 
     async def cleanup(self) -> None:
         """Remove profiling artifacts from the remote host."""
-        await self._host.run_host_command(f"rm -f {CPU_PROFILE_DATA} {PERF_STATS_PATH}")
+        await self._host.run_host_command(f"sudo rm -f {CPU_PROFILE_DATA} {PERF_STATS_PATH}")
