@@ -53,27 +53,28 @@ class TestCpuProfileCollect:
     async def test_parses_collapsed_stacks(self, manager, mock_host):
         """Test that collapsed stacks output is correctly parsed."""
         manager._target_pid = 12345
+        manager._main_tid = "12345"
+        manager._io_tids = ["12346", "12347"]
 
-        # First call: discover TIDs
-        tid_output = "12345 valkey-server\n12346 io_thd_1\n12347 io_thd_2\n"
-        # Second call: main thread stacks
+        # First call: write main stacks to file
         main_output = "func_a;func_b;hashtableFind 500\nfunc_a;func_c;zmalloc 200\n"
-        # Third call: IO thread stacks
+        # Second call: read main stacks file
+        # Third call: write IO stacks to file
         io_output = "io_thd_1;IOThreadMain;pthread_mutex_lock 1000\n"
+        # Fourth call: read IO stacks file
+        # Fifth call: cleanup
 
         call_count = [0]
 
         async def mock_run(cmd):
             call_count[0] += 1
-            if call_count[0] == 1:
-                return (tid_output, "")
-            elif call_count[0] == 2:  # write main stacks to file
+            if call_count[0] == 1:  # write main stacks to file
                 return ("", "")
-            elif call_count[0] == 3:  # cat main stacks file
+            elif call_count[0] == 2:  # cat main stacks file
                 return (main_output, "")
-            elif call_count[0] == 4:  # write io stacks to file
+            elif call_count[0] == 3:  # write io stacks to file
                 return ("", "")
-            elif call_count[0] == 5:  # cat io stacks file
+            elif call_count[0] == 4:  # cat io stacks file
                 return (io_output, "")
             return ("", "")
 
