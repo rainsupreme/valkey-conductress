@@ -106,7 +106,8 @@ class ProfilingManager:
 
         # Generate collapsed stacks for main thread
         main_cmd = (
-            f"sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | " f"{stackcollapse} > /tmp/collapsed-main.txt"
+            f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | "
+            f"{stackcollapse} > /tmp/collapsed-main.txt'"
         )
         await self._host.run_host_command(main_cmd)
         main_output, _ = await self._host.run_host_command("cat /tmp/collapsed-main.txt")
@@ -117,8 +118,8 @@ class ProfilingManager:
         if io_tids:
             io_tid_str = ",".join(io_tids)
             io_cmd = (
-                f"sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | "
-                f"{stackcollapse} > /tmp/collapsed-io.txt"
+                f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | "
+                f"{stackcollapse} > /tmp/collapsed-io.txt'"
             )
             await self._host.run_host_command(io_cmd)
             io_output, _ = await self._host.run_host_command("cat /tmp/collapsed-io.txt")
