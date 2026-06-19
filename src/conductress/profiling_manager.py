@@ -47,9 +47,28 @@ class ProfilingManager:
 
         Records for the specified duration in seconds. Non-blocking — runs in a thread.
         Call cpu_profile_collect() after the duration to retrieve results.
+        Also discovers thread TIDs now (while server is alive).
         """
         if self._cpu_profile_thread and self._cpu_profile_thread.is_alive():
             raise RuntimeError("CPU profile already running")
+        # Discover TIDs now while server is running (won't exist after shutdown)
+        self._main_tid = str(self._target_pid)  # main thread TID = PID
+        self._io_tids: list[str] = []
+        try:
+            import os
+
+            task_dir = f"/proc/{self._target_pid}/task"
+            for tid in os.listdir(task_dir):
+                comm_path = f"{task_dir}/{tid}/comm"
+                try:
+                    with open(comm_path) as f:
+                        comm = f.read().strip()
+                    if comm.startswith("io_thd_"):
+                        self._io_tids.append(tid)
+                except (FileNotFoundError, PermissionError):
+                    pass
+        except (FileNotFoundError, PermissionError):
+            pass
         self._cpu_profile_thread = Thread(target=self._cpu_profile_run_sync, args=(duration,))
         self._cpu_profile_thread.start()
 
@@ -57,12 +76,13 @@ class ProfilingManager:
         """Run perf record synchronously in a thread."""
         ip = self._host.ip
         command = (
-            f"sudo perf record -g --call-graph fp -p {self._target_pid} " f"-o {CPU_PROFILE_DATA} -- sleep {duration}"
+            f"sudo perf record -g --call-graph fp -p {self._target_pid} "
+            f"-o {CPU_PROFILE_DATA} -- sleep {max(duration - 2, 5)}"
         )
         if ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, shell=True)
         else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command], check=True)
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command])
 
     async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
         """Wait for perf record and return per-thread collapsed stacks.
@@ -75,46 +95,35 @@ class ProfilingManager:
             self._cpu_profile_thread.join()
             self._cpu_profile_thread = None
 
-        pid = self._target_pid
-        # Discover thread TIDs by comm name
-        discover_cmd = (
-            f"for tid in $(ls /proc/{pid}/task/ 2>/dev/null); do "
-            f"  comm=$(cat /proc/{pid}/task/$tid/comm 2>/dev/null); "
-            f'  echo "$tid $comm"; '
-            f"done"
-        )
-        output, _ = await self._host.run_host_command(discover_cmd)
-
-        main_tid = None
-        io_tids: list[str] = []
-        for line in output.strip().splitlines():
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            tid, comm = parts
-            if comm in ("valkey-server", "redis-server"):
-                main_tid = tid
-            elif comm.startswith("io_thd_"):
-                io_tids.append(tid)
+        main_tid = getattr(self, "_main_tid", None)
+        io_tids = getattr(self, "_io_tids", [])
 
         if not main_tid:
-            logger.warning("Could not identify main thread TID for PID %d", pid)
+            logger.warning("No main thread TID stored (cpu_profile_start not called?)")
             await self._cpu_profile_cleanup()
             return [], []
 
         stackcollapse = f"{FLAMEGRAPH_DIR}/stackcollapse-perf.pl"
 
         # Generate collapsed stacks for main thread
-        main_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | " f"{stackcollapse}"
-        main_output, _ = await self._host.run_host_command(main_cmd)
+        main_cmd = (
+            f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | "
+            f"{stackcollapse} > /tmp/collapsed-main.txt'"
+        )
+        await self._host.run_host_command(main_cmd)
+        main_output, _ = await self._host.run_host_command("cat /tmp/collapsed-main.txt")
         main_stacks = self._parse_collapsed(main_output)
 
         # Generate collapsed stacks for IO threads
         io_stacks: list[list] = []
         if io_tids:
             io_tid_str = ",".join(io_tids)
-            io_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | " f"{stackcollapse}"
-            io_output, _ = await self._host.run_host_command(io_cmd)
+            io_cmd = (
+                f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | "
+                f"{stackcollapse} > /tmp/collapsed-io.txt'"
+            )
+            await self._host.run_host_command(io_cmd)
+            io_output, _ = await self._host.run_host_command("cat /tmp/collapsed-io.txt")
             io_stacks = self._parse_collapsed(io_output)
 
         await self._cpu_profile_cleanup()
@@ -138,7 +147,9 @@ class ProfilingManager:
 
     async def _cpu_profile_cleanup(self) -> None:
         """Remove CPU profile data file from remote host."""
-        await self._host.run_host_command(f"sudo rm -f {CPU_PROFILE_DATA}")
+        await self._host.run_host_command(
+            f"sudo rm -f {CPU_PROFILE_DATA} /tmp/collapsed-main.txt /tmp/collapsed-io.txt"
+        )
 
     # =========================================================================
     # PERF STAT (hardware counters)
@@ -259,4 +270,4 @@ class ProfilingManager:
 
     async def cleanup(self) -> None:
         """Remove profiling artifacts from the remote host."""
-        await self._host.run_host_command(f"rm -f {CPU_PROFILE_DATA} {PERF_STATS_PATH}")
+        await self._host.run_host_command(f"sudo rm -f {CPU_PROFILE_DATA} {PERF_STATS_PATH}")
