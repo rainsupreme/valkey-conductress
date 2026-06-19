@@ -76,7 +76,8 @@ class ProfilingManager:
         """Run perf record synchronously in a thread."""
         ip = self._host.ip
         command = (
-            f"sudo perf record -g --call-graph fp -p {self._target_pid} " f"-o {CPU_PROFILE_DATA} -- sleep {duration}"
+            f"sudo perf record -g --call-graph fp -p {self._target_pid} "
+            f"-o {CPU_PROFILE_DATA} -- sleep {max(duration - 2, 5)}"
         )
         if ip in ["127.0.0.1", "localhost"]:
             subprocess.run(command, shell=True)
