@@ -162,8 +162,8 @@ _SKIP_FUNCS = {"??", "_start", "main", "__libc_start_call_main", "__libc_start_m
 # jemalloc env var for profiling (Valkey uses je_ prefix)
 JEMALLOC_PROF_ENV = 'JE_MALLOC_CONF="prof:true,lg_prof_sample:0,prof_final:true,prof_prefix:/tmp/valkey-heap"'
 
-# Make args to enable jemalloc profiling (Valkey-specific, includes USE_FAST_FLOAT)
-JEMALLOC_PROF_MAKE_ARGS = 'USE_FAST_FLOAT=yes JEMALLOC_CONFIGURE_OPTS="--enable-prof"'
+# Make args to enable jemalloc profiling (Valkey-specific)
+JEMALLOC_PROF_MAKE_ARGS = 'JEMALLOC_CONFIGURE_OPTS="--enable-prof"'
 
 # Engine-agnostic jemalloc profiling flag (combine with engine.make_args)
 JEMALLOC_PROF_CONFIGURE_OPTS = 'JEMALLOC_CONFIGURE_OPTS="--enable-prof"'

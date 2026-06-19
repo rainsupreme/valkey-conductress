@@ -141,6 +141,20 @@ PERF_GROUPS = [
         "series": ["branch-mpki"],
         "y_axes": [{"id": "left", "label": "misses per 1K instructions", "series": ["branch-mpki"]}],
     },
+    {
+        "id": "cpu-main",
+        "title": "CPU Profile — Main Thread",
+        "series": ["cpu-main"],
+        "stacked": True,
+        "y_axes": [{"id": "left", "label": "% of samples", "series": ["cpu-main"]}],
+    },
+    {
+        "id": "cpu-io",
+        "title": "CPU Profile — IO Threads",
+        "series": ["cpu-io"],
+        "stacked": True,
+        "y_axes": [{"id": "left", "label": "% of samples", "series": ["cpu-io"]}],
+    },
 ]
 
 
@@ -479,6 +493,106 @@ def export_latency(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))
     return len(points)
+
+
+def export_cpu_profile(
+    state: SweepState,
+    output_dir: Path,
+    platform: str,
+    workload: str,
+    repo: str = "valkey-io/valkey",
+    branch: str = "unstable",
+) -> dict[str, int]:
+    """Export per-thread CPU profile breakdowns as stacked-area series files.
+
+    Produces two files per workload:
+      series-{platform}-{workload}-cpu-main.json  (main thread categories)
+      series-{platform}-{workload}-cpu-io.json    (IO thread categories)
+
+    Each point's ``breakdown`` is a category -> percentage map (sums to ~100,
+    including an ``idle`` band). Forward-only: only points that actually have
+    collapsed stacks contribute, so the series is sparse until sweep tasks
+    accumulate CPU data. Returns {metric_id: point_count} for non-empty series.
+    """
+    from conductress.cpu_profiler import (
+        CPU_CATEGORIES_IO,
+        CPU_CATEGORIES_MAIN,
+        CPU_CATEGORY_NAMES_IO,
+        CPU_CATEGORY_NAMES_MAIN,
+        categorize_cpu_stacks,
+    )
+
+    planner = SweepPlanner(state)
+    commit_index = planner._commit_index
+    completed = planner._get_ordered_completed_points()
+
+    landmarks = [
+        {
+            "commit": lm.commit,
+            "date": lm.date,
+            "label": lm.label,
+            "type": "release",
+            "commit_index": commit_index.get(lm.commit, 0),
+        }
+        for lm in state.landmarks
+    ]
+
+    variants = [
+        ("cpu-main", "cpu_stacks_main", CPU_CATEGORIES_MAIN, CPU_CATEGORY_NAMES_MAIN, "Main thread"),
+        ("cpu-io", "cpu_stacks_io", CPU_CATEGORIES_IO, CPU_CATEGORY_NAMES_IO, "IO threads"),
+    ]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    exported: dict[str, int] = {}
+
+    for metric_id, attr, categories, category_names, thread_label in variants:
+        points: list[dict[str, Any]] = []
+        for point in completed:
+            stacks = getattr(point, attr, None)
+            if not stacks:
+                continue
+            breakdown = categorize_cpu_stacks(stacks, categories)
+            # Round for compact JSON; drop near-zero noise categories.
+            breakdown = {cat: round(pct, 4) for cat, pct in breakdown.items() if pct >= 0.05}
+            entry: dict[str, Any] = {
+                "commit": point.commit,
+                "commit_index": commit_index.get(point.commit, 0),
+                "date": point.date,
+                "breakdown": breakdown,
+            }
+            pr = state.commit_prs.get(point.commit) or point.pr
+            pr_title = state.commit_titles.get(point.commit) or point.pr_title
+            if pr is not None:
+                entry["pr"] = pr
+            if pr_title is not None:
+                entry["pr_title"] = pr_title
+            points.append(entry)
+
+        if not points:
+            continue
+
+        series: dict[str, Any] = {
+            "metadata": {
+                "repo": repo,
+                "branch": branch,
+                "platform": platform,
+                "workload": workload,
+                "metric": metric_id,
+                "thread": thread_label,
+                "unit": "%",
+                "categories": category_names,
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "total_commits": len(state.merge_commits),
+            },
+            "points": points,
+            "landmarks": landmarks,
+        }
+
+        filename = f"series-{platform}-{workload}-{metric_id}.json"
+        (output_dir / filename).write_text(json.dumps(series, indent=2))
+        exported[metric_id] = len(points)
+
+    return exported
 
 
 def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tuple[str, str]]) -> None:

@@ -19,11 +19,11 @@ class TestInit:
             ReplicationGroup([], "valkey", "main", 1)
 
     def test_stores_config(self, server_infos):
-        group = ReplicationGroup(server_infos, "valkey", "unstable", 7, "USE_FAST_FLOAT=yes")
+        group = ReplicationGroup(server_infos, "valkey", "unstable", 7, "OPTIMIZATION=-O2")
         assert group.binary_source == "valkey"
         assert group.specifier == "unstable"
         assert group.threads == 7
-        assert group.make_args == "USE_FAST_FLOAT=yes"
+        assert group.make_args == "OPTIMIZATION=-O2"
         assert group.primary is None
         assert group.replicas == []
 

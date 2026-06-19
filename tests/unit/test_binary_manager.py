@@ -24,7 +24,7 @@ def manager(mock_host):
     mgr = BinaryManager(mock_host)
     mgr.source = "valkey"
     mgr.specifier = "unstable"
-    mgr.make_args = "USE_FAST_FLOAT=yes"
+    mgr.make_args = "OPTIMIZATION=-O2"
     return mgr
 
 
@@ -170,7 +170,7 @@ class TestMakeArgsAffectCacheKey:
         mgr1 = BinaryManager(mock_host)
         mgr1.source = "valkey"
         mgr1.hash = "abc123"
-        mgr1.make_args = "USE_FAST_FLOAT=yes"
+        mgr1.make_args = "OPTIMIZATION=-O2"
 
         mgr2 = BinaryManager(mock_host)
         mgr2.source = "valkey"

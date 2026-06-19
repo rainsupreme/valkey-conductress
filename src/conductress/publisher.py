@@ -67,7 +67,7 @@ class DashboardPublisher:
 
     def _publish(self) -> None:
         """Export all coordinator data + perf metrics + manifest, then rsync."""
-        from conductress.sweep.exporter import export_manifest, export_perf_metrics
+        from conductress.sweep.exporter import export_cpu_profile, export_manifest, export_perf_metrics
 
         try:
             # Export each coordinator's series
@@ -81,6 +81,9 @@ class DashboardPublisher:
                     repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
                     branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
                     export_perf_metrics(
+                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                    )
+                    export_cpu_profile(
                         coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
 
