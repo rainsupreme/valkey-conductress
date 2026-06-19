@@ -60,9 +60,9 @@ class ProfilingManager:
             f"sudo perf record -g --call-graph fp -p {self._target_pid} " f"-o {CPU_PROFILE_DATA} -- sleep {duration}"
         )
         if ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(command, shell=True)
         else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command], check=True)
+            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command])
 
     async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
         """Wait for perf record and return per-thread collapsed stacks.
@@ -105,16 +105,23 @@ class ProfilingManager:
         stackcollapse = f"{FLAMEGRAPH_DIR}/stackcollapse-perf.pl"
 
         # Generate collapsed stacks for main thread
-        main_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | " f"{stackcollapse}"
-        main_output, _ = await self._host.run_host_command(main_cmd)
+        main_cmd = (
+            f"sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | " f"{stackcollapse} > /tmp/collapsed-main.txt"
+        )
+        await self._host.run_host_command(main_cmd)
+        main_output, _ = await self._host.run_host_command("cat /tmp/collapsed-main.txt")
         main_stacks = self._parse_collapsed(main_output)
 
         # Generate collapsed stacks for IO threads
         io_stacks: list[list] = []
         if io_tids:
             io_tid_str = ",".join(io_tids)
-            io_cmd = f"sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | " f"{stackcollapse}"
-            io_output, _ = await self._host.run_host_command(io_cmd)
+            io_cmd = (
+                f"sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | "
+                f"{stackcollapse} > /tmp/collapsed-io.txt"
+            )
+            await self._host.run_host_command(io_cmd)
+            io_output, _ = await self._host.run_host_command("cat /tmp/collapsed-io.txt")
             io_stacks = self._parse_collapsed(io_output)
 
         await self._cpu_profile_cleanup()
@@ -138,7 +145,9 @@ class ProfilingManager:
 
     async def _cpu_profile_cleanup(self) -> None:
         """Remove CPU profile data file from remote host."""
-        await self._host.run_host_command(f"sudo rm -f {CPU_PROFILE_DATA}")
+        await self._host.run_host_command(
+            f"sudo rm -f {CPU_PROFILE_DATA} /tmp/collapsed-main.txt /tmp/collapsed-io.txt"
+        )
 
     # =========================================================================
     # PERF STAT (hardware counters)

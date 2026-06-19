@@ -67,9 +67,13 @@ class TestCpuProfileCollect:
             call_count[0] += 1
             if call_count[0] == 1:
                 return (tid_output, "")
-            elif call_count[0] == 2:
+            elif call_count[0] == 2:  # write main stacks to file
+                return ("", "")
+            elif call_count[0] == 3:  # cat main stacks file
                 return (main_output, "")
-            elif call_count[0] == 3:
+            elif call_count[0] == 4:  # write io stacks to file
+                return ("", "")
+            elif call_count[0] == 5:  # cat io stacks file
                 return (io_output, "")
             return ("", "")
 
