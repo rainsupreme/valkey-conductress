@@ -67,7 +67,12 @@ class DashboardPublisher:
 
     def _publish(self) -> None:
         """Export all coordinator data + perf metrics + manifest, then rsync."""
-        from conductress.sweep.exporter import export_cpu_profile, export_manifest, export_perf_metrics
+        from conductress.sweep.exporter import (
+            export_cpu_profile,
+            export_cpu_stacks_raw,
+            export_manifest,
+            export_perf_metrics,
+        )
 
         try:
             # Export each coordinator's series
@@ -84,6 +89,9 @@ class DashboardPublisher:
                         coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
                     export_cpu_profile(
+                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                    )
+                    export_cpu_stacks_raw(
                         coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
 

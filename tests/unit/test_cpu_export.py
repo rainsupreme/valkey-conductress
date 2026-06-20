@@ -11,7 +11,7 @@ from conductress.cpu_profiler import (
     CPU_CATEGORY_NAMES_MAIN,
     categorize_cpu_stacks,
 )
-from conductress.sweep.exporter import export_cpu_profile
+from conductress.sweep.exporter import export_cpu_profile, export_cpu_stacks_raw
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
 
 # Realistic collapsed-stack fragments captured from a live armbench sweep.
@@ -125,3 +125,79 @@ class TestExportCpuProfile:
         exported = export_cpu_profile(empty, tmp_path, platform="arm64", workload="get-k16-v16-t7-p10")
         assert exported == {}
         assert not list(tmp_path.glob("*.json"))
+
+
+class TestExportCpuStacksRaw:
+    WORKLOAD = "get-k16-v16-t7-p10"
+
+    def _index(self, tmp_path):
+        return json.loads((tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-index.json").read_text())
+
+    def test_writes_one_file_per_point_with_stacks(self, state_with_cpu, tmp_path):
+        result = export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        assert result == {"files_written": 2, "indexed": 2}
+        # aaa and bbb have stacks; ccc (no stacks) must NOT produce a file
+        assert (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json").exists()
+        assert (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-bbb.json").exists()
+        assert not (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-ccc.json").exists()
+
+    def test_raw_arrays_preserved_exactly(self, state_with_cpu, tmp_path):
+        export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        data = json.loads((tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json").read_text())
+        # Raw stacks are stored verbatim — not categorized, not rounded.
+        assert data["cpu_stacks_main"] == MAIN_STACKS
+        assert data["cpu_stacks_io"] == IO_STACKS
+        assert data["metadata"]["metric"] == "cpu-stacks"
+        assert data["metadata"]["commit"] == "aaa"
+        assert data["metadata"]["platform"] == "arm64"
+        assert data["metadata"]["workload"] == self.WORKLOAD
+
+    def test_pr_metadata_threaded_through(self, state_with_cpu, tmp_path):
+        export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        bbb = json.loads((tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-bbb.json").read_text())
+        assert bbb["metadata"]["pr"] == 42
+        assert bbb["metadata"]["pr_title"] == "Optimize pipelining"
+        # aaa has no PR metadata — keys should be absent, not None.
+        aaa = json.loads((tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json").read_text())
+        assert "pr" not in aaa["metadata"]
+        assert "pr_title" not in aaa["metadata"]
+
+    def test_index_matches_files(self, state_with_cpu, tmp_path):
+        export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        index = self._index(tmp_path)
+        commits = [c["commit"] for c in index["commits"]]
+        assert commits == ["aaa", "bbb"]  # ordered by commit_index, ccc excluded
+        # Every indexed commit has a corresponding file on disk.
+        for entry in index["commits"]:
+            assert {"commit", "commit_index", "date"} <= entry.keys()
+            assert (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-{entry['commit']}.json").exists()
+        assert index["metadata"]["metric"] == "cpu-stacks-index"
+
+    def test_idempotent_skips_existing_files(self, state_with_cpu, tmp_path):
+        export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        # Second run: files already exist, so nothing is rewritten, but the index
+        # is still rebuilt from all points that have stacks.
+        result = export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        assert result == {"files_written": 0, "indexed": 2}
+
+    def test_no_data_produces_no_files(self, tmp_path):
+        empty = SweepState(merge_commits=[], commit_dates={}, commit_prs={}, commit_titles={}, landmarks=[])
+        result = export_cpu_stacks_raw(empty, tmp_path, platform="arm64", workload=self.WORKLOAD)
+        assert result == {"files_written": 0, "indexed": 0}
+        assert not list(tmp_path.glob("*.json"))
+
+    def test_save_load_export_round_trip(self, state_with_cpu, tmp_path):
+        """Stacks set in memory must survive a state save/load before export.
+
+        Guards the class of bug where new BenchmarkPoint fields are dropped by the
+        hand-written SweepState.save/load serializers.
+        """
+        state_path = tmp_path / "state.json"
+        state_with_cpu.save(state_path)
+        reloaded = SweepState.load(state_path)
+        out = tmp_path / "out"
+        result = export_cpu_stacks_raw(reloaded, out, platform="arm64", workload=self.WORKLOAD)
+        assert result == {"files_written": 2, "indexed": 2}
+        data = json.loads((out / f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json").read_text())
+        assert data["cpu_stacks_main"] == MAIN_STACKS
+        assert data["cpu_stacks_io"] == IO_STACKS
