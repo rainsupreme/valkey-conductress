@@ -296,7 +296,7 @@ class TestCliPerfQueuing:
         assert data["io_threads"] == 9
         assert data["pipelining"] == 10
         assert data["val_size"] == 512
-        assert data["make_args"] == "USE_FAST_FLOAT=yes"
+        assert data["make_args"] == ""
 
 
 class TestCliQueueListing:

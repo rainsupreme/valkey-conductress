@@ -22,7 +22,7 @@ class TestGetCachedBuildPath:
         return mgr
 
     def test_basic_path_construction(self):
-        mgr = self._make_manager(source="valkey", hash_val="abc123def456", make_args="USE_FAST_FLOAT=yes")
+        mgr = self._make_manager(source="valkey", hash_val="abc123def456", make_args="OPTIMIZATION=-O2")
         path = mgr.get_cached_build_path()
 
         assert path.parts[-3] == "valkey"
@@ -32,7 +32,7 @@ class TestGetCachedBuildPath:
     def test_different_make_args_different_path(self):
         mgr = self._make_manager(hash_val="abc123")
 
-        mgr.make_args = "USE_FAST_FLOAT=yes"
+        mgr.make_args = "OPTIMIZATION=-O2"
         path1 = mgr.get_cached_build_path()
 
         mgr.make_args = ""

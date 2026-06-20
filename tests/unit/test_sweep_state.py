@@ -66,6 +66,33 @@ class TestStatePersistence:
         assert loaded.points["a"].status == PointStatus.COMPLETED
         assert loaded.points["c"].status == PointStatus.BUILD_FAILED
 
+    def test_cpu_stacks_round_trip(self, tmp_path):
+        """Regression: cpu_stacks_main/io must survive save+load.
+
+        Bug found Jun 20 2026: save() and load() omitted these fields, so CPU
+        profile stacks were set in memory by the coordinator but silently
+        dropped on the next state write — state files had 0 CPU points despite
+        active collection, and export_cpu_profile() produced nothing.
+        """
+        path = tmp_path / "state.json"
+        state = SweepState(merge_commits=["a"], commit_dates={"a": "2024-01-01"})
+        main_stacks = [["valkey-server;main;processCommand;getCommand", 100]]
+        io_stacks = [["io_thd_1;IOThreadMain;IOJobQueue_availableJobs", 500]]
+        state.points["a"] = BenchmarkPoint(
+            commit="a",
+            date="2024-01-01",
+            value=2_000_000,
+            status=PointStatus.COMPLETED,
+            cpu_stacks_main=main_stacks,
+            cpu_stacks_io=io_stacks,
+        )
+
+        state.save(path)
+        loaded = SweepState.load(path)
+
+        assert loaded.points["a"].cpu_stacks_main == main_stacks
+        assert loaded.points["a"].cpu_stacks_io == io_stacks
+
     def test_load_nonexistent_returns_empty(self, tmp_path):
         path = tmp_path / "nonexistent.json"
         state = SweepState.load(path)

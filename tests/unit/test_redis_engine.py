@@ -45,7 +45,7 @@ class TestSweepEngineConfig:
         assert valkey is not None
         assert valkey.binary_name == "valkey-server"
         assert valkey.floor_tag is None
-        assert valkey.make_args == "USE_FAST_FLOAT=yes"
+        assert valkey.make_args == ""
 
     def test_get_sweep_engine_nonexistent(self):
         assert get_sweep_engine("nonexistent") is None

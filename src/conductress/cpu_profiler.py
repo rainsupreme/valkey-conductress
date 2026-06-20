@@ -37,6 +37,17 @@ CPU_CATEGORIES_IO = [
     ("reply_build", r"addReply|_addReplyToBuffer|trackBufReferences|releaseBufReferences"),
 ]
 
+# Stacks whose path goes through the event-loop poll wait or the IO-thread
+# job-queue spin are idle/spin-wait, not useful work. They are matched against
+# the FULL stack string (not just the leaf) before leaf categorization, since
+# the leaf is usually a deep kernel frame. Representing idle as its own band is
+# essential — IO threads spend most of their time here at low pipeline depth.
+IDLE_PATTERN = re.compile(r"IOJobQueue_availableJobs|IOThreadPoll|aeApiPoll|epoll_pwait|epoll_wait")
+
+# Ordered category names for dashboard metadata (idle + other always appended).
+CPU_CATEGORY_NAMES_MAIN = [name for name, _ in CPU_CATEGORIES_MAIN] + ["idle", "other"]
+CPU_CATEGORY_NAMES_IO = [name for name, _ in CPU_CATEGORIES_IO] + ["idle", "other"]
+
 
 def categorize_cpu_stacks(
     collapsed_stacks: list[list],
@@ -58,6 +69,14 @@ def categorize_cpu_stacks(
 
     for entry in collapsed_stacks:
         stack_str, count = str(entry[0]), int(entry[1])
+        grand_total += count
+
+        # Idle/spin-wait is detected against the FULL stack (poll wait or
+        # job-queue spin appears mid-stack; the leaf is a deep kernel frame).
+        if IDLE_PATTERN.search(stack_str):
+            totals["idle"] = totals.get("idle", 0) + count
+            continue
+
         # Leaf function is the last semicolon-separated element
         leaf = stack_str.rsplit(";", 1)[-1] if ";" in stack_str else stack_str
 
@@ -69,7 +88,6 @@ def categorize_cpu_stacks(
                 break
         if not matched:
             totals["other"] = totals.get("other", 0) + count
-        grand_total += count
 
     if grand_total == 0:
         return {"other": 100.0}

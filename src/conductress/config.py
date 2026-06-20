@@ -13,9 +13,10 @@ PERF_BENCH_KEYSPACE = 3_000_000
 PERF_BENCH_CLIENTS = 1200
 PERF_BENCH_THREADS = 16  # 75 connections per thread
 
-# Default compiler arguments for Valkey builds
-# Bare make already gives O3+LTO+frame-pointer; USE_FAST_FLOAT enables fast_float library
-DEFAULT_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+# Default compiler arguments for Valkey builds.
+# Bare make already gives O3+LTO+frame-pointer, so no extra flags are needed.
+# (USE_FAST_FLOAT was a no-op — no such variable exists in the Valkey Makefile.)
+DEFAULT_MAKE_ARGS = ""
 
 # Benchmark defaults (single source of truth for CLI and TUI)
 DEFAULT_IO_THREADS = 9
@@ -95,7 +96,7 @@ SWEEP_TARGET_CV = 0.5
 # Minimum |delta| to annotate a pinpointed change as "notable" in exported data.
 # Set above binary layout noise floor (~3-4%) to reduce false positives.
 ANNOTATION_THRESHOLD = 0.04
-SWEEP_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+SWEEP_MAKE_ARGS = ""
 
 # Additional throughput workloads (each gets its own state file + series).
 # Label is auto-generated as {test}-k{key_size}-v{val_size}-t{io_threads}-p{pipelining}.
@@ -141,7 +142,7 @@ SWEEP_ENGINES: list[SweepEngine] = [
         ref="origin/unstable",
         binary_name="valkey-server",
         floor_tag=None,
-        make_args="USE_FAST_FLOAT=yes",
+        make_args="",
         heap_alloc_funcs=["valkey_malloc", "valkey_calloc", "valkey_realloc"],
     ),
     SweepEngine(
@@ -168,7 +169,7 @@ def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
 # =============================================================================
 LATENCY_STATE_FILE = SWEEP_STATE_DIR / "latency_state.json"
 LATENCY_TARGET_RPS = 100_000  # flat rate, same across all platforms/commits
-LATENCY_MAKE_ARGS = "USE_FAST_FLOAT=yes"
+LATENCY_MAKE_ARGS = ""
 LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
 LATENCY_THREADS = 4
 LATENCY_CLIENTS = 16  # 64 total connections

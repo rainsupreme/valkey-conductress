@@ -284,7 +284,7 @@ class TestQueueAddSubcommand:
         assert task.io_threads == 9
         assert task.pipelining == 10
         assert task.repetitions == 5
-        assert task.make_args == "USE_FAST_FLOAT=yes"
+        assert task.make_args == ""
 
 
 class TestQueueListSubcommand:

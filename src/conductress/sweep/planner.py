@@ -197,6 +197,8 @@ class SweepState:
                     "breakdown": p.breakdown,
                     "raw_stacks": p.raw_stacks,
                     "latency_data": p.latency_data,
+                    "cpu_stacks_main": p.cpu_stacks_main,
+                    "cpu_stacks_io": p.cpu_stacks_io,
                     "status": p.status.name,
                 }
                 for commit, p in self.points.items()
@@ -247,6 +249,8 @@ class SweepState:
                 breakdown=p_data.get("breakdown"),
                 raw_stacks=p_data.get("raw_stacks"),
                 latency_data=p_data.get("latency_data"),
+                cpu_stacks_main=p_data.get("cpu_stacks_main"),
+                cpu_stacks_io=p_data.get("cpu_stacks_io"),
                 status=PointStatus[p_data.get("status", "PENDING")],
             )
 
