@@ -595,6 +595,107 @@ def export_cpu_profile(
     return exported
 
 
+def export_cpu_stacks_raw(
+    state: SweepState,
+    output_dir: Path,
+    platform: str,
+    workload: str,
+    repo: str = "valkey-io/valkey",
+    branch: str = "unstable",
+) -> dict[str, int]:
+    """Export raw per-commit CPU collapsed stacks for future flamegraph drill-down.
+
+    For each completed point that carries collapsed stacks, writes one file:
+      series-{platform}-{workload}-cpu-stacks-{commit}.json
+
+    containing the raw ``cpu_stacks_main`` / ``cpu_stacks_io`` arrays
+    (shape ``[[stack_string, sample_count], ...]``) preserved exactly, plus
+    minimal metadata. These files are intentionally separate from the small
+    ``cpu-main`` / ``cpu-io`` percentage series so the dashboard load stays fast;
+    a future flamegraph page fetches a single raw-stacks file lazily by commit.
+
+    A lightweight per-workload index is also written:
+      series-{platform}-{workload}-cpu-stacks-index.json
+
+    listing ``[{commit, commit_index, date}, ...]`` for every commit that has a
+    raw-stacks file, so a future page can discover available stacks without a
+    directory listing on the static host.
+
+    Forward-only/sparse: points without stacks are skipped. Idempotent: per-commit
+    files that already exist are not rewritten (raw IO arrays are multi-MB, so
+    re-serializing the full history every publish would be wasteful). The index is
+    always rebuilt from the points that have stacks.
+
+    Returns ``{"files_written": n, "indexed": m}``.
+    """
+    planner = SweepPlanner(state)
+    commit_index = planner._commit_index
+    completed = planner._get_ordered_completed_points()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files_written = 0
+    index_entries: list[dict[str, Any]] = []
+
+    for point in completed:
+        if not point.cpu_stacks_main and not point.cpu_stacks_io:
+            continue
+
+        idx = commit_index.get(point.commit, 0)
+        index_entries.append({"commit": point.commit, "commit_index": idx, "date": point.date})
+
+        filename = f"series-{platform}-{workload}-cpu-stacks-{point.commit}.json"
+        file_path = output_dir / filename
+        # Idempotent: raw IO arrays are multi-MB; never rewrite an existing file.
+        if file_path.exists():
+            continue
+
+        metadata: dict[str, Any] = {
+            "repo": repo,
+            "branch": branch,
+            "platform": platform,
+            "workload": workload,
+            "metric": "cpu-stacks",
+            "commit": point.commit,
+            "commit_index": idx,
+            "date": point.date,
+            "generated": datetime.now(timezone.utc).isoformat(),
+        }
+        pr = state.commit_prs.get(point.commit) or point.pr
+        pr_title = state.commit_titles.get(point.commit) or point.pr_title
+        if pr is not None:
+            metadata["pr"] = pr
+        if pr_title is not None:
+            metadata["pr_title"] = pr_title
+
+        payload: dict[str, Any] = {
+            "metadata": metadata,
+            "cpu_stacks_main": point.cpu_stacks_main or [],
+            "cpu_stacks_io": point.cpu_stacks_io or [],
+        }
+        file_path.write_text(json.dumps(payload))
+        files_written += 1
+
+    if not index_entries:
+        return {"files_written": 0, "indexed": 0}
+
+    index = {
+        "metadata": {
+            "repo": repo,
+            "branch": branch,
+            "platform": platform,
+            "workload": workload,
+            "metric": "cpu-stacks-index",
+            "generated": datetime.now(timezone.utc).isoformat(),
+        },
+        "commits": index_entries,
+    }
+    index_path = output_dir / f"series-{platform}-{workload}-cpu-stacks-index.json"
+    index_path.write_text(json.dumps(index, indent=2))
+
+    return {"files_written": files_written, "indexed": len(index_entries)}
+
+
 def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tuple[str, str]]) -> None:
     """Write per-platform manifest for dashboard auto-discovery."""
     from conductress.publisher import detect_platform
