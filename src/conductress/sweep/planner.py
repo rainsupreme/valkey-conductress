@@ -45,7 +45,9 @@ class BenchmarkPoint:
     reps: int = 3
     pr: Optional[int] = None
     pr_title: Optional[str] = None
-    perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters
+    perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters (process-wide)
+    perf_counters_main: Optional[dict[str, int]] = None  # raw perf stat counters, main thread only
+    perf_counters_io: Optional[dict[str, int]] = None  # raw perf stat counters, IO threads summed
     perf_duration_seconds: Optional[float] = None  # perf stat measurement window
     perf_rps: Optional[float] = None  # throughput during perf stat collection
     breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
@@ -192,6 +194,8 @@ class SweepState:
                     "pr": p.pr,
                     "pr_title": p.pr_title,
                     "perf_counters": p.perf_counters,
+                    "perf_counters_main": p.perf_counters_main,
+                    "perf_counters_io": p.perf_counters_io,
                     "perf_duration_seconds": p.perf_duration_seconds,
                     "perf_rps": p.perf_rps,
                     "breakdown": p.breakdown,
@@ -244,6 +248,8 @@ class SweepState:
                 pr=p_data.get("pr"),
                 pr_title=p_data.get("pr_title"),
                 perf_counters=p_data.get("perf_counters"),
+                perf_counters_main=p_data.get("perf_counters_main"),
+                perf_counters_io=p_data.get("perf_counters_io"),
                 perf_duration_seconds=p_data.get("perf_duration_seconds"),
                 perf_rps=p_data.get("perf_rps"),
                 breakdown=p_data.get("breakdown"),

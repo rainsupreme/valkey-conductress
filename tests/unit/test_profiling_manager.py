@@ -145,14 +145,32 @@ class TestPerfStatReport:
         result_dir = tmp_path / "results"
         result_dir.mkdir()
 
+        # Per-thread output: main TID = 100, IO TIDs = 101, 102.
+        manager._main_tid = "100"
+        manager._io_tids = ["101", "102"]
+
         async def fake_get_remote(src, dest):
-            dest.write_text("     1000      instructions:u\n     500      cycles:u\n")
+            dest.write_text(
+                "   valkey-server-100     1000      instructions\n"
+                "        io_thd_1-101      400      instructions\n"
+                "        io_thd_2-102      600      instructions\n"
+                "   valkey-server-100      500      cycles\n"
+                "        io_thd_1-101      250      cycles\n"
+                "        io_thd_2-102      250      cycles\n"
+            )
 
         mock_host.get_remote_file = fake_get_remote
 
         result = await manager.perf_stat_report(result_dir)
-        assert result["instructions"] == 1000
-        assert result["cycles"] == 500
+        # Process-wide total (all monitored TIDs summed)
+        assert result["all"]["instructions"] == 2000
+        assert result["all"]["cycles"] == 1000
+        # Main thread only
+        assert result["main"]["instructions"] == 1000
+        assert result["main"]["cycles"] == 500
+        # IO threads summed
+        assert result["io"]["instructions"] == 1000
+        assert result["io"]["cycles"] == 500
 
     @pytest.mark.asyncio
     async def test_raises_if_result_dir_missing(self, manager, tmp_path):

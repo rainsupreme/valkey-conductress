@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from conductress.config import ANNOTATION_THRESHOLD
 from conductress.heap_profiler import recategorize_from_stacks
@@ -99,7 +99,7 @@ PERF_METRICS: dict[str, dict[str, Any]] = {
     },
 }
 
-PERF_GROUPS = [
+PERF_GROUPS: list[dict[str, Any]] = [
     {
         "id": "efficiency",
         "title": "Execution Efficiency",
@@ -156,6 +156,48 @@ PERF_GROUPS = [
         "y_axes": [{"id": "left", "label": "% of samples", "series": ["cpu-io"]}],
     },
 ]
+
+# Counter-based groups that can be split by thread (everything except the
+# cpu-main/cpu-io flamegraph groups, which are already thread-specific).
+_PER_THREAD_BASE_GROUP_IDS = ("efficiency", "cache", "pipeline", "tma", "branching")
+_PER_THREAD_SUFFIXES = (("-main", "Main Thread"), ("-io", "IO Threads"))
+
+
+def _build_per_thread_groups() -> list[dict[str, Any]]:
+    """Derive per-thread (main/io) variants of the counter-based perf groups.
+
+    For each splittable base group (e.g. ``efficiency``) this produces
+    ``efficiency-main`` and ``efficiency-io`` groups whose series/axes reference
+    the per-thread metric variants (``ipc-main`` / ``ipc-io`` etc.), mirroring the
+    cpu-main/cpu-io split. The original process-wide groups are left untouched.
+    """
+    base_by_id: dict[str, dict[str, Any]] = {g["id"]: g for g in PERF_GROUPS}
+    out: list[dict[str, Any]] = []
+    for base_id in _PER_THREAD_BASE_GROUP_IDS:
+        base = base_by_id.get(base_id)
+        if base is None:
+            continue
+        for suffix, label in _PER_THREAD_SUFFIXES:
+            axes: list[dict[str, Any]] = base["y_axes"]
+            group: dict[str, Any] = {
+                "id": f"{base_id}{suffix}",
+                "title": f"{base['title']} — {label}",
+                "series": [f"{s}{suffix}" for s in base["series"]],
+                "y_axes": [
+                    {
+                        "id": axis["id"],
+                        "label": axis["label"],
+                        "series": [f"{s}{suffix}" for s in axis["series"]],
+                    }
+                    for axis in axes
+                ],
+                "per_thread": suffix.lstrip("-"),  # "main" | "io" — dashboard hint
+            }
+            out.append(group)
+    return out
+
+
+PER_THREAD_PERF_GROUPS = _build_per_thread_groups()
 
 
 def export_series(
@@ -301,21 +343,24 @@ def _build_annotations(
 # =============================================================================
 
 
-def _compute_metric(point: BenchmarkPoint, metric_id: str) -> Any:
-    """Compute a normalized metric value from raw perf counters."""
-    if not point.perf_counters:
+def _compute_metric_from_counters(counters: Optional[dict], metric_id: str, rps: float, duration: float) -> Any:
+    """Compute a normalized metric value from a raw perf-counter dict."""
+    if not counters:
         return None
     metric_def = PERF_METRICS.get(metric_id)
     if not metric_def:
         return None
     try:
-        return metric_def["compute"](
-            point.perf_counters,
-            rps=point.perf_rps or 0,
-            duration=point.perf_duration_seconds or 0,
-        )
+        return metric_def["compute"](counters, rps=rps, duration=duration)
     except (ZeroDivisionError, KeyError, TypeError):
         return None
+
+
+def _compute_metric(point: BenchmarkPoint, metric_id: str) -> Any:
+    """Compute a normalized metric value from a point's process-wide perf counters."""
+    return _compute_metric_from_counters(
+        point.perf_counters, metric_id, point.perf_rps or 0, point.perf_duration_seconds or 0
+    )
 
 
 def export_perf_metrics(
@@ -359,47 +404,65 @@ def export_perf_metrics(
     output_dir.mkdir(parents=True, exist_ok=True)
     exported: dict[str, int] = {}
 
+    # Each metric is emitted in up to three variants: process-wide (no suffix),
+    # main-thread ("-main"), and IO-threads ("-io"). The per-thread variants read
+    # the point's per-thread counter dicts (sparse/forward-only — only points that
+    # collected per-thread data contribute). All variants reuse the same compute
+    # lambdas via _compute_metric_from_counters.
+    variants: list[tuple[str, str]] = [
+        ("", "perf_counters"),
+        ("-main", "perf_counters_main"),
+        ("-io", "perf_counters_io"),
+    ]
+
     for metric_id, metric_def in PERF_METRICS.items():
-        points: list[dict[str, Any]] = []
-        for point in perf_points:
-            value = _compute_metric(point, metric_id)
-            if value is None:
+        for suffix, counter_attr in variants:
+            points: list[dict[str, Any]] = []
+            for point in perf_points:
+                counters = getattr(point, counter_attr, None)
+                if not counters:
+                    continue
+                value = _compute_metric_from_counters(
+                    counters, metric_id, point.perf_rps or 0, point.perf_duration_seconds or 0
+                )
+                if value is None:
+                    continue
+                entry: dict[str, Any] = {
+                    "commit": point.commit,
+                    "commit_index": commit_index.get(point.commit, 0),
+                    "date": point.date,
+                    "value": round(value, 6),
+                }
+                pr = state.commit_prs.get(point.commit) or point.pr
+                pr_title = state.commit_titles.get(point.commit)
+                if pr is not None:
+                    entry["pr"] = pr
+                if pr_title is not None:
+                    entry["pr_title"] = pr_title
+                points.append(entry)
+
+            if not points:
                 continue
-            entry: dict[str, Any] = {
-                "commit": point.commit,
-                "commit_index": commit_index.get(point.commit, 0),
-                "date": point.date,
-                "value": round(value, 6),
+
+            metric_key = f"{metric_id}{suffix}"
+            series: dict[str, Any] = {
+                "metadata": {
+                    "repo": "valkey-io/valkey",
+                    "branch": "unstable",
+                    "platform": platform,
+                    "workload": workload,
+                    "metric": metric_key,
+                    "unit": metric_def["unit"],
+                    "generated": datetime.now(timezone.utc).isoformat(),
+                    "total_commits": len(state.merge_commits),
+                },
+                "points": points,
+                "landmarks": landmarks,
             }
-            pr = state.commit_prs.get(point.commit) or point.pr
-            pr_title = state.commit_titles.get(point.commit)
-            if pr is not None:
-                entry["pr"] = pr
-            if pr_title is not None:
-                entry["pr_title"] = pr_title
-            points.append(entry)
 
-        if not points:
-            continue
-
-        series: dict[str, Any] = {
-            "metadata": {
-                "repo": "valkey-io/valkey",
-                "branch": "unstable",
-                "platform": platform,
-                "workload": workload,
-                "metric": metric_id,
-                "unit": metric_def["unit"],
-                "generated": datetime.now(timezone.utc).isoformat(),
-                "total_commits": len(state.merge_commits),
-            },
-            "points": points,
-            "landmarks": landmarks,
-        }
-
-        filename = f"series-{platform}-{workload}-{metric_id}.json"
-        (output_dir / filename).write_text(json.dumps(series, indent=2))
-        exported[metric_id] = len(points)
+            filename = f"series-{platform}-{workload}-{metric_key}.json"
+            (output_dir / filename).write_text(json.dumps(series, indent=2))
+            exported[metric_key] = len(points)
 
     return exported
 
@@ -724,7 +787,8 @@ def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tupl
                 "y_axes": [{"id": "left", "label": "bytes/key", "series": ["memory"]}],
             },
         ]
-        + PERF_GROUPS,
+        + PERF_GROUPS
+        + PER_THREAD_PERF_GROUPS,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / f"manifest-{platform_id}.json").write_text(json.dumps(manifest, indent=2))
