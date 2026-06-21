@@ -145,10 +145,13 @@ class TestExtractPerfCounters:
 
         result = coordinator._extract_perf_counters(task)
         assert result is not None
-        counters, duration, rps = result
+        counters, duration, rps, counters_main, counters_io = result
         assert counters["instructions"] == 900000000000
         assert duration == 30.0
         assert rps == 2000000
+        # No per-thread data in this fixture
+        assert counters_main is None
+        assert counters_io is None
 
     def test_returns_none_when_no_counters(self, coordinator, output_jsonl):
         task = _make_task()

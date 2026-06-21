@@ -339,6 +339,31 @@ class PerfTaskRunner(BaseTaskRunner):
 
             line, _ = command.poll_output()
 
+    def _store_perf_counters(self, detailed_data: dict, perf_counters: dict) -> None:
+        """Write perf counters into detailed_data, splitting per-thread buckets.
+
+        ``perf_counters`` is the bucketed structure produced by the collection path:
+        ``{"all": {...}, "main": {...}, "io": {...}}``. The process-wide total goes
+        to ``perf_counters`` (preserving the historical key/shape so existing export
+        and dashboard code is unaffected); the per-thread groups go to
+        ``perf_counters_main`` / ``perf_counters_io`` when non-empty. A legacy flat
+        dict (no bucket keys) is treated as the process-wide total.
+        """
+        if any(k in perf_counters for k in ("all", "main", "io")):
+            all_counters = perf_counters.get("all") or {}
+            main_counters = perf_counters.get("main") or {}
+            io_counters = perf_counters.get("io") or {}
+        else:
+            all_counters, main_counters, io_counters = perf_counters, {}, {}
+
+        if all_counters:
+            detailed_data["perf_counters"] = all_counters
+            detailed_data["perf_duration_seconds"] = float(self.duration)
+        if main_counters:
+            detailed_data["perf_counters_main"] = main_counters
+        if io_counters:
+            detailed_data["perf_counters_io"] = io_counters
+
     async def __record_result(
         self, server, per_run_rps: Optional[list[float]] = None, perf_counters: Optional[dict] = None
     ):
@@ -372,8 +397,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 "ci_95": ci_95,
             }
             if perf_counters:
-                detailed_data["perf_counters"] = perf_counters
-                detailed_data["perf_duration_seconds"] = float(self.duration)
+                self._store_perf_counters(detailed_data, perf_counters)
             if self._cpu_stacks_main:
                 detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
                 detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
@@ -408,8 +432,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 "server_cpus": server.server_cpus,
             }
             if perf_counters:
-                detailed_data["perf_counters"] = perf_counters
-                detailed_data["perf_duration_seconds"] = float(self.duration)
+                self._store_perf_counters(detailed_data, perf_counters)
             if self._cpu_stacks_main:
                 detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
                 detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
@@ -525,12 +548,15 @@ class PerfTaskRunner(BaseTaskRunner):
                 # Collect profiling reports
                 rep_counters = await self._collect_profiling_reports(server)
                 if rep_counters:
-                    # Sum raw counters across all reps for better statistical robustness
+                    # Sum raw counters across all reps for better statistical robustness.
+                    # rep_counters is bucketed: {"all": {...}, "main": {...}, "io": {...}}.
                     if perf_counters is None:
                         perf_counters = rep_counters
                     else:
-                        for k, v in rep_counters.items():
-                            perf_counters[k] = perf_counters.get(k, 0) + v
+                        for bucket, events in rep_counters.items():
+                            acc = perf_counters.setdefault(bucket, {})
+                            for k, v in events.items():
+                                acc[k] = acc.get(k, 0) + v
 
                 # Collect CPU profile stacks on last rep
                 if self._is_last_rep and self.perf_stat_enabled:

@@ -768,3 +768,39 @@ class TestRepetitionsUnitTests:
         task = _make_perf_task_data()
         runner = task.prepare_task_runner(server_infos=[])
         assert runner.repetitions == 1
+
+
+class TestStorePerfCounters:
+    """Unit tests for _store_perf_counters bucket splitting (per-thread feature)."""
+
+    def test_splits_bucketed_counters(self):
+        runner = _make_runner()
+        detailed: dict = {}
+        bucketed = {
+            "all": {"instructions": 60, "cycles": 20},
+            "main": {"instructions": 14, "cycles": 5},
+            "io": {"instructions": 46, "cycles": 15},
+        }
+        runner._store_perf_counters(detailed, bucketed)
+        assert detailed["perf_counters"] == {"instructions": 60, "cycles": 20}
+        assert detailed["perf_counters_main"] == {"instructions": 14, "cycles": 5}
+        assert detailed["perf_counters_io"] == {"instructions": 46, "cycles": 15}
+        assert detailed["perf_duration_seconds"] == float(runner.duration)
+
+    def test_empty_per_thread_buckets_omitted(self):
+        runner = _make_runner()
+        detailed: dict = {}
+        bucketed = {"all": {"instructions": 60}, "main": {}, "io": {}}
+        runner._store_perf_counters(detailed, bucketed)
+        assert detailed["perf_counters"] == {"instructions": 60}
+        assert "perf_counters_main" not in detailed
+        assert "perf_counters_io" not in detailed
+
+    def test_legacy_flat_dict_treated_as_process_wide(self):
+        runner = _make_runner()
+        detailed: dict = {}
+        # A flat dict (no bucket keys) is interpreted as the process-wide total
+        runner._store_perf_counters(detailed, {"instructions": 99, "cycles": 33})
+        assert detailed["perf_counters"] == {"instructions": 99, "cycles": 33}
+        assert "perf_counters_main" not in detailed
+        assert "perf_counters_io" not in detailed
