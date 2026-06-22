@@ -137,6 +137,7 @@ class TestPerfStatSweepIntegration:
             perf_counters=data["perf_counters"],
             perf_duration_seconds=data["perf_duration_seconds"],
             perf_rps=results["score"],
+            perf_rep_count=data.get("perf_rep_count"),
         )
 
         # Verify normalization produces valid values

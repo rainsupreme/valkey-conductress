@@ -22,8 +22,14 @@ PERF_METRICS: dict[str, dict[str, Any]] = {
     "instructions-per-req": {
         "label": "Instructions per Request",
         "unit": "instructions/request",
-        "compute": lambda c, rps=0, duration=0, **_: (
-            c["instructions"] / (rps * duration) if rps and duration and c.get("instructions") else None
+        # Raw counters are SUMMED across all collected reps (see task_perf_benchmark
+        # run loop), but rps/duration describe a single rep, so the summed instruction
+        # total must be divided by the rep count to recover per-request instructions.
+        # Omitting this caused a bimodal artifact (value scaled linearly with rep
+        # count: 3x for fixed 3-rep runs, up to 10x for adaptive runs). Unlike ratio
+        # metrics (IPC, MPKI, stall%), the rep factor does not cancel here.
+        "compute": lambda c, rps=0, duration=0, reps=1, **_: (
+            c["instructions"] / (rps * duration * (reps or 1)) if rps and duration and c.get("instructions") else None
         ),
     },
     "icache-mpki": {
@@ -343,7 +349,20 @@ def _build_annotations(
 # =============================================================================
 
 
-def _compute_metric_from_counters(counters: Optional[dict], metric_id: str, rps: float, duration: float) -> Any:
+def _effective_perf_reps(point: BenchmarkPoint) -> int:
+    """Number of reps whose raw counters were summed into this point's perf data.
+
+    Raw perf counters are summed across reps, so absolute per-request metrics must
+    divide by this count. ``perf_rep_count`` is the exact summed-rep count recorded
+    going forward; historical points predate that field and fall back to ``reps``
+    (which equalled the perf-rep count for all collected sweep data — verified).
+    """
+    return point.perf_rep_count or point.reps or 1
+
+
+def _compute_metric_from_counters(
+    counters: Optional[dict], metric_id: str, rps: float, duration: float, reps: int = 1
+) -> Any:
     """Compute a normalized metric value from a raw perf-counter dict."""
     if not counters:
         return None
@@ -351,7 +370,7 @@ def _compute_metric_from_counters(counters: Optional[dict], metric_id: str, rps:
     if not metric_def:
         return None
     try:
-        return metric_def["compute"](counters, rps=rps, duration=duration)
+        return metric_def["compute"](counters, rps=rps, duration=duration, reps=reps)
     except (ZeroDivisionError, KeyError, TypeError):
         return None
 
@@ -359,7 +378,11 @@ def _compute_metric_from_counters(counters: Optional[dict], metric_id: str, rps:
 def _compute_metric(point: BenchmarkPoint, metric_id: str) -> Any:
     """Compute a normalized metric value from a point's process-wide perf counters."""
     return _compute_metric_from_counters(
-        point.perf_counters, metric_id, point.perf_rps or 0, point.perf_duration_seconds or 0
+        point.perf_counters,
+        metric_id,
+        point.perf_rps or 0,
+        point.perf_duration_seconds or 0,
+        _effective_perf_reps(point),
     )
 
 
@@ -423,7 +446,11 @@ def export_perf_metrics(
                 if not counters:
                     continue
                 value = _compute_metric_from_counters(
-                    counters, metric_id, point.perf_rps or 0, point.perf_duration_seconds or 0
+                    counters,
+                    metric_id,
+                    point.perf_rps or 0,
+                    point.perf_duration_seconds or 0,
+                    _effective_perf_reps(point),
                 )
                 if value is None:
                     continue

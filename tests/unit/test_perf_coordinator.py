@@ -139,16 +139,18 @@ class TestExtractPerfCounters:
                 "per_run_rps": [2000000],
                 "perf_counters": {"instructions": 900000000000, "cycles": 300000000000},
                 "perf_duration_seconds": 30.0,
+                "perf_rep_count": 3,
             },
         }
         output_jsonl.write_text(json.dumps(entry) + "\n")
 
         result = coordinator._extract_perf_counters(task)
         assert result is not None
-        counters, duration, rps, counters_main, counters_io = result
+        counters, duration, rps, counters_main, counters_io, rep_count = result
         assert counters["instructions"] == 900000000000
         assert duration == 30.0
         assert rps == 2000000
+        assert rep_count == 3
         # No per-thread data in this fixture
         assert counters_main is None
         assert counters_io is None
@@ -174,6 +176,7 @@ class TestStateRoundTrip:
             perf_counters={"instructions": 900000000000, "cycles": 300000000000, "LLC-load-misses": 9000000},
             perf_duration_seconds=30.0,
             perf_rps=2000000.0,
+            perf_rep_count=5,
         )
 
         path = tmp_path / "state.json"
@@ -187,6 +190,7 @@ class TestStateRoundTrip:
         }
         assert loaded.points["aaa"].perf_duration_seconds == 30.0
         assert loaded.points["aaa"].perf_rps == 2000000.0
+        assert loaded.points["aaa"].perf_rep_count == 5
 
     def test_none_counters_survive_round_trip(self, tmp_path):
         state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2024-01-01"})
@@ -201,3 +205,4 @@ class TestStateRoundTrip:
         assert loaded.points["aaa"].perf_counters is None
         assert loaded.points["aaa"].perf_duration_seconds is None
         assert loaded.points["aaa"].perf_rps is None
+        assert loaded.points["aaa"].perf_rep_count is None
