@@ -97,11 +97,14 @@ class BaseSweepCoordinator(ABC):
         rps: float,
         counters_main: Optional[dict[str, int]] = None,
         counters_io: Optional[dict[str, int]] = None,
+        rep_count: Optional[int] = None,
     ) -> None:
         """Record perf stat counters for a commit and persist state.
 
         ``counters`` is the process-wide total; ``counters_main`` / ``counters_io``
-        are the optional per-thread (main vs IO) breakdowns.
+        are the optional per-thread (main vs IO) breakdowns. ``rep_count`` is the
+        number of reps whose raw counters were summed (needed to normalize absolute
+        per-request metrics, which would otherwise scale with the rep count).
         """
         point = self.state.points.get(commit)
         if point is None:
@@ -112,6 +115,7 @@ class BaseSweepCoordinator(ABC):
         point.perf_counters_io = counters_io
         point.perf_duration_seconds = duration
         point.perf_rps = rps
+        point.perf_rep_count = rep_count
         self.state.save(self.state_file)
         logger.info("Perf counters recorded: %s (%d events)", commit[:8], len(counters))
 
@@ -138,9 +142,9 @@ class BaseSweepCoordinator(ABC):
             # Extract perf counters if available
             perf_data = self._extract_perf_counters(task)  # pylint: disable=assignment-from-none
             if perf_data:
-                counters, duration, rps, counters_main, counters_io = perf_data
+                counters, duration, rps, counters_main, counters_io, rep_count = perf_data
                 commit = task.sweep_commit  # type: ignore[attr-defined]
-                self.record_perf_counters(commit, counters, duration, rps, counters_main, counters_io)
+                self.record_perf_counters(commit, counters, duration, rps, counters_main, counters_io, rep_count)
             # Extract CPU profile stacks if available
             self._extract_cpu_stacks(task)
         else:
@@ -281,13 +285,16 @@ class BaseSweepCoordinator(ABC):
 
     def _extract_perf_counters(
         self, task: BaseTaskData
-    ) -> Optional[tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]]]]:
+    ) -> Optional[
+        tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]], Optional[int]]
+    ]:
         """Extract perf counters from a completed task.
 
-        Returns ``(counters, duration_seconds, rps, counters_main, counters_io)``
-        or ``None`` if perf stat data is not available. The ``_main``/``_io`` items
-        may be ``None`` when per-thread data was not collected. Subclasses override
-        to provide extraction logic.
+        Returns ``(counters, duration_seconds, rps, counters_main, counters_io,
+        rep_count)`` or ``None`` if perf stat data is not available. The
+        ``_main``/``_io`` items may be ``None`` when per-thread data was not
+        collected; ``rep_count`` may be ``None`` for legacy data. Subclasses
+        override to provide extraction logic.
         """
         return None
 
@@ -482,7 +489,9 @@ class SweepCoordinator(BaseSweepCoordinator):
 
     def _extract_perf_counters(
         self, task: BaseTaskData
-    ) -> Optional[tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]]]]:
+    ) -> Optional[
+        tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]], Optional[int]]
+    ]:
         """Extract perf stat counters (process-wide + per-thread) from task output."""
         entry = self._find_task_entry(task)
         if not entry:
@@ -495,7 +504,8 @@ class SweepCoordinator(BaseSweepCoordinator):
         rps = entry.get("score", 0.0)
         counters_main = data.get("perf_counters_main")
         counters_io = data.get("perf_counters_io")
-        return (counters, duration, rps, counters_main, counters_io)
+        rep_count = data.get("perf_rep_count")
+        return (counters, duration, rps, counters_main, counters_io, rep_count)
 
     def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
         """Extract CPU profile stacks from task output and store on the point."""

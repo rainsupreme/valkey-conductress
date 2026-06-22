@@ -48,8 +48,9 @@ class BenchmarkPoint:
     perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters (process-wide)
     perf_counters_main: Optional[dict[str, int]] = None  # raw perf stat counters, main thread only
     perf_counters_io: Optional[dict[str, int]] = None  # raw perf stat counters, IO threads summed
-    perf_duration_seconds: Optional[float] = None  # perf stat measurement window
+    perf_duration_seconds: Optional[float] = None  # perf stat measurement window (one rep)
     perf_rps: Optional[float] = None  # throughput during perf stat collection
+    perf_rep_count: Optional[int] = None  # reps whose raw counters were summed into perf_counters*
     breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
     raw_stacks: Optional[list[list]] = None  # retained resolved stacks for re-categorization
     latency_data: Optional[dict] = None  # full latency results (p50, p99.9, histogram, rps)
@@ -198,6 +199,7 @@ class SweepState:
                     "perf_counters_io": p.perf_counters_io,
                     "perf_duration_seconds": p.perf_duration_seconds,
                     "perf_rps": p.perf_rps,
+                    "perf_rep_count": p.perf_rep_count,
                     "breakdown": p.breakdown,
                     "raw_stacks": p.raw_stacks,
                     "latency_data": p.latency_data,
@@ -252,6 +254,7 @@ class SweepState:
                 perf_counters_io=p_data.get("perf_counters_io"),
                 perf_duration_seconds=p_data.get("perf_duration_seconds"),
                 perf_rps=p_data.get("perf_rps"),
+                perf_rep_count=p_data.get("perf_rep_count"),
                 breakdown=p_data.get("breakdown"),
                 raw_stacks=p_data.get("raw_stacks"),
                 latency_data=p_data.get("latency_data"),

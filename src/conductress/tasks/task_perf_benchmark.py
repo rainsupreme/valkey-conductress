@@ -250,6 +250,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self._is_last_rep = False
         self._cpu_stacks_main: list[list] = []
         self._cpu_stacks_io: list[list] = []
+        self._perf_rep_count = 0  # reps whose perf counters were summed into perf_counters
 
         # Build custom commands when key_size > 0
         if self.key_size > 0:
@@ -359,6 +360,9 @@ class PerfTaskRunner(BaseTaskRunner):
         if all_counters:
             detailed_data["perf_counters"] = all_counters
             detailed_data["perf_duration_seconds"] = float(self.duration)
+            # Counters are summed across reps; record how many so the exporter can
+            # normalize absolute per-request metrics (instructions-per-req).
+            detailed_data["perf_rep_count"] = self._perf_rep_count or 1
         if main_counters:
             detailed_data["perf_counters_main"] = main_counters
         if io_counters:
@@ -550,6 +554,12 @@ class PerfTaskRunner(BaseTaskRunner):
                 if rep_counters:
                     # Sum raw counters across all reps for better statistical robustness.
                     # rep_counters is bucketed: {"all": {...}, "main": {...}, "io": {...}}.
+                    # NOTE: because counters are SUMMED across reps while rps/duration
+                    # describe a single rep, the per-request divisor must multiply by
+                    # this rep count (tracked here, persisted as perf_rep_count) — see
+                    # exporter instructions-per-req. Ratio metrics (IPC, MPKI) are
+                    # unaffected since the rep factor cancels.
+                    self._perf_rep_count += 1
                     if perf_counters is None:
                         perf_counters = rep_counters
                     else:
