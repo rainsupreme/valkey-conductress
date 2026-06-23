@@ -153,6 +153,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser = queue_sub.add_parser("add", help="Add performance benchmark tasks to the queue")
     _add_perf_args(add_parser)
 
+    # queue add-memory
+    mem_parser = queue_sub.add_parser("add-memory", help="Add memory efficiency tasks to the queue")
+    mem_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    mem_parser.add_argument("--specifier", default="unstable", help="Branch, tag, commit, or path (default: unstable)")
+    mem_parser.add_argument(
+        "--types",
+        default="set,sadd,zadd,hset",
+        help="Comma-separated data types (default: set,sadd,zadd,hset)",
+    )
+    mem_parser.add_argument("--expire", action="store_true", help="Also test with expiration enabled")
+    mem_parser.add_argument("--note", default="", help="Optional note for the tasks")
+    mem_parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+
     # queue add-latency
     lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
     lat_parser.add_argument("source", help="Source repo name (e.g. 'valkey')")
@@ -289,6 +306,61 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_memory(args: argparse.Namespace) -> int:
+    """Handle 'queue add-memory': submit memory efficiency tasks."""
+    from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
+    from conductress.tasks.task_mem_efficiency import MemTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    types = [t.strip() for t in args.types.split(",") if t.strip()]
+    valid_types = ["set", "sadd", "zadd", "hset"]
+    for t in types:
+        if t not in valid_types:
+            print(f"Error: Invalid type '{t}'. Valid: {', '.join(valid_types)}", file=sys.stderr)
+            return 1
+
+    # Match workloads from MEMORY_WORKLOADS config
+    workloads = [w for w in MEMORY_WORKLOADS if w.command in types and not w.has_expire]
+    if args.expire:
+        workloads += [w for w in MEMORY_WORKLOADS if w.command in types and w.has_expire]
+
+    if not workloads:
+        print("Error: No matching workloads found.", file=sys.stderr)
+        return 1
+
+    queue = TaskQueue()
+    for wl in workloads:
+        task = MemTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=0,
+            note=args.note or f"manual mem-{wl.command}",
+            requirements={},
+            type=wl.command,
+            val_sizes=[wl.value_size],
+            has_expire=wl.has_expire,
+            enable_profiling=True,
+            key_size=wl.key_size,
+            field_size=wl.field_size,
+            user_data_bytes=wl.user_data_bytes,
+        )
+        queue.submit_task(task)
+
+    print(f"Queued {len(workloads)} memory task(s):")
+    print(f"  source={args.source} specifier={args.specifier}")
+    for wl in workloads:
+        expire_str = " +expire" if wl.has_expire else ""
+        print(f"  - {wl.command} v={wl.value_size}B k={wl.key_size}B{expire_str}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
+
+
 def handle_queue_list(args: argparse.Namespace) -> int:
     """Handle 'queue list': show all pending tasks."""
     queue = TaskQueue()
@@ -350,6 +422,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return handle_queue_list(args)
         elif args.queue_command == "add":
             return handle_queue_add(args)
+        elif args.queue_command == "add-memory":
+            return handle_queue_add_memory(args)
         elif args.queue_command == "add-latency":
             return handle_queue_add_latency(args)
         elif args.queue_command == "remove":
