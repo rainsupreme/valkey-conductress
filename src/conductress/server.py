@@ -316,6 +316,9 @@ class Server:
                     continue
 
                 if comm.startswith("io_thd_"):
+                    if io_thread_cpu_index >= len(self.server_cpus):
+                        logging.warning("More IO threads than allocated CPUs — skipping pin for %s", comm)
+                        break
                     cpu = self.server_cpus[io_thread_cpu_index]
                     await self.run_host_command(f"taskset -cp {cpu} {tid}")
                     logging.info("Pinned I/O thread %s (%s) to CPU %d", tid, comm, cpu)
