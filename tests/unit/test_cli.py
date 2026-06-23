@@ -356,3 +356,53 @@ class TestQueueClearSubcommand:
         exit_code = main(["queue", "clear"])
         assert exit_code == 0
         assert mock_queue.remove_task.call_count == 2
+
+
+class TestQueueAddMemorySubcommand:
+    """Unit tests for the 'queue add-memory' subcommand."""
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_defaults(self, mock_queue_cls):
+        """All 4 types queued without --expire gives 4 tasks."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "abc123"])
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 4
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_with_expire(self, mock_queue_cls):
+        """--expire adds expire variants (5 total for default types)."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "abc123", "--expire"])
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 5
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_single_type(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set"])
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 1
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_manually_uploaded(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "manual", "--specifier", "/path/to/binary"])
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 4
+
+    def test_add_memory_invalid_source(self):
+        exit_code = main(["queue", "add-memory", "--source", "bogus", "--specifier", "x"])
+        assert exit_code == 1
+
+    def test_add_memory_invalid_type(self):
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "badtype"])
+        assert exit_code == 1
