@@ -291,3 +291,27 @@ class TestServerCpuAllocation:
         result = await server._detect_l3_cache_topology(list(range(4)))
 
         assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_pin_threads_handles_more_io_threads_than_cpus(self):
+        """Guard against IndexError when binary spawns more IO threads than allocated CPUs."""
+        server = Server("127.0.0.1", 9000)
+        server.server_cpus = [0, 1]  # Only 2 CPUs: main + 1 IO thread max
+
+        # Simulate ps output with 3 IO threads (exceeds allocation)
+        ps_output = "  1000 valkey-server\n" "  1001 io_thd_1\n" "  1002 io_thd_2\n" "  1003 io_thd_3\n"
+        server.run_host_command = AsyncMock(
+            side_effect=[
+                ("1000\n", ""),  # lsof -ti :port
+                (ps_output, ""),  # ps -T
+                ("", ""),  # taskset main
+                ("", ""),  # taskset io_thd_1
+                # Should NOT attempt io_thd_2 or io_thd_3
+            ]
+        )
+
+        # Must not raise IndexError
+        await server._pin_valkey_threads()
+
+        # Verify only 3 calls: lsof + ps + pin main + pin 1 IO thread
+        assert server.run_host_command.call_count == 4
