@@ -172,6 +172,20 @@ class TestLoadRequirements:
         assert result == ["package1", "", "package2"]
 
 
+class TestMemtierBuildDeps:
+    """memtier_benchmark's configure needs libevent (openssl), pcre2 and zlib
+    dev packages; without them fresh-host bootstrap fails at ensure_memtier.
+    Guard that the package requirement lists include them."""
+
+    MEMTIER_DEPS = {"libevent-devel", "openssl-devel", "pcre2-devel", "zlib-devel"}
+
+    @pytest.mark.parametrize("reqs", ["amz_requirements", "rhel-requirements"])
+    def test_memtier_deps_present(self, reqs):
+        pkgs = set(load_requirements(reqs))
+        missing = self.MEMTIER_DEPS - pkgs
+        assert not missing, f"{reqs} missing memtier build deps: {missing}"
+
+
 class TestHostGetHomePath:
 
     def test_with_username(self):

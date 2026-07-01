@@ -7,3 +7,8 @@ numactl
 perf
 perl-open.noarch # needed for brendangregg/FlameGraph in rhel
 python3-pip
+# memtier_benchmark build deps (see bootstrap.ensure_memtier)
+libevent-devel
+openssl-devel
+pcre2-devel
+zlib-devel
