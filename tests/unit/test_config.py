@@ -124,3 +124,13 @@ class TestGetServers:
         servers = get_servers()
         assert len(servers) == 1
         assert servers[0].ip == "10.0.0.5"
+
+
+class TestPinnedCommits:
+    def test_valkey_benchmark_commit_is_full_sha(self):
+        """VALKEY_BENCHMARK_COMMIT must be a full 40-char hex SHA. A short or
+        invalid SHA (e.g. '0e09824') silently breaks fresh-host bootstrap at
+        `git checkout <sha>` because the object may not resolve."""
+        sha = config_module.VALKEY_BENCHMARK_COMMIT
+        assert len(sha) == 40, f"expected full 40-char SHA, got {sha!r} (len {len(sha)})"
+        assert all(c in "0123456789abcdef" for c in sha), f"non-hex chars in {sha!r}"

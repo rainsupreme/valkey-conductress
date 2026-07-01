@@ -179,7 +179,7 @@ LATENCY_KEYSPACE = 1_000_000
 LATENCY_VAL_SIZE = 16
 LATENCY_REPS = 3
 MEMTIER_COMMIT = "d52544b1"  # pinned version for reproducible latency measurements
-VALKEY_BENCHMARK_COMMIT = "0e09824"  # pinned valkey commit for benchmark client binary
+VALKEY_BENCHMARK_COMMIT = "d2eee78a151884518441572c53fc378bf6689e81"  # pinned valkey commit for benchmark client binary
 
 # =============================================================================
 # Sweep configuration: memory

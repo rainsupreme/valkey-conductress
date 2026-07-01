@@ -1,10 +1,95 @@
 import ast
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
-from conductress.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
+from conductress.bootstrap import (
+    Host,
+    ensure_file_descriptor_limits,
+    load_requirements,
+    path_exists,
+    update_amazon_packages,
+    update_pip_packages,
+    update_rhel_packages,
+)
+
+
+class TestPackageInstallSerialized:
+    """dnf must never be invoked concurrently: parallel installs race on the
+    shared /var/cache/dnf cache and fail on a cold cache with a spurious
+    "No such file or directory: <pkg>.rpm" error (observed on a fresh
+    c8g.metal). These tests fail against the old asyncio.gather() code."""
+
+    @staticmethod
+    def _overlap_tracking_host():
+        """Return (host, get_max_concurrency) where host.run tracks how many
+        dnf commands are in-flight simultaneously."""
+        host = MagicMock(spec=Host)
+        host.log_info_msg = MagicMock()
+        state = {"active": 0, "max": 0}
+
+        async def fake_run(command, *args, **kwargs):
+            if "dnf install" in command or "groupinstall" in command:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+                await asyncio.sleep(0)  # yield so any concurrent task can interleave
+                state["active"] -= 1
+            return ""
+
+        host.run = AsyncMock(side_effect=fake_run)
+        return host, lambda: state["max"]
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.load_requirements", return_value=["pkg-a", "pkg-b"])
+    async def test_amazon_packages_not_concurrent(self, _mock_reqs):
+        host, get_max = self._overlap_tracking_host()
+        await update_amazon_packages(host)
+        assert get_max() == 1, "dnf installs must not run concurrently"
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.load_requirements", return_value=["pkg-a", "pkg-b"])
+    async def test_rhel_packages_not_concurrent(self, _mock_reqs):
+        host, get_max = self._overlap_tracking_host()
+        await update_rhel_packages(host)
+        assert get_max() == 1, "dnf installs must not run concurrently"
+
+
+class TestPipInstallEditable:
+    """pip must install conductress editable (-e) from the repo's absolute
+    path, not a bare '.' relative to $HOME. asyncssh runs commands from
+    $HOME, and a non-editable install breaks config.PROJECT_ROOT. These
+    tests fail against the old `pip install '.[dev]'` code."""
+
+    @staticmethod
+    def _host(distro):
+        host = MagicMock(spec=Host)
+        host.log_info_msg = MagicMock()
+        host.get_home_path = MagicMock(return_value=Path("/home/tester"))
+        host.get_linux_distro = AsyncMock(return_value=distro)
+        host.run = AsyncMock(return_value="")
+        return host
+
+    @pytest.mark.asyncio
+    async def test_amazon_installs_editable_absolute(self):
+        host = self._host("Amazon Linux")
+        await update_pip_packages(host)
+        joined = " ".join(call.args[0] for call in host.run.await_args_list)
+        assert "install -e" in joined, f"expected editable install: {joined}"
+        assert "/home/tester/conductress" in joined
+        assert "'.[dev]'" not in joined  # old CWD-relative, non-editable target
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.path_exists", new_callable=AsyncMock, return_value=True)
+    async def test_ubuntu_installs_editable_in_repo_venv(self, _mock_pe):
+        host = self._host("Ubuntu")
+        await update_pip_packages(host)
+        joined = " ".join(call.args[0] for call in host.run.await_args_list)
+        assert "install -e" in joined, f"expected editable install: {joined}"
+        assert "/home/tester/conductress" in joined
+        # the venv must live under the repo, never in $HOME
+        assert "python-venv" not in joined or "/home/tester/conductress/python-venv" in joined
 
 
 class TestFileDescriptorLimits:
@@ -85,6 +170,20 @@ class TestLoadRequirements:
         with patch("builtins.open", mock_open(read_data=content)):
             result = load_requirements("test")
         assert result == ["package1", "", "package2"]
+
+
+class TestMemtierBuildDeps:
+    """memtier_benchmark's configure needs libevent (openssl), pcre2 and zlib
+    dev packages; without them fresh-host bootstrap fails at ensure_memtier.
+    Guard that the package requirement lists include them."""
+
+    MEMTIER_DEPS = {"libevent-devel", "openssl-devel", "pcre2-devel", "zlib-devel"}
+
+    @pytest.mark.parametrize("reqs", ["amz_requirements", "rhel-requirements"])
+    def test_memtier_deps_present(self, reqs):
+        pkgs = set(load_requirements(reqs))
+        missing = self.MEMTIER_DEPS - pkgs
+        assert not missing, f"{reqs} missing memtier build deps: {missing}"
 
 
 class TestHostGetHomePath:

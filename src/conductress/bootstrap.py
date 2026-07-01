@@ -200,27 +200,34 @@ async def remove_motd(host: Host) -> None:
 
 async def update_pip_packages(host: Host):
     host.log_info_msg("Updating pip packages")
-    install_target = "'.[dev]'" if DEV else "."
+    # Install editable (-e) from the repo's absolute path. asyncssh runs
+    # commands from $HOME, so a bare "." target fails ("no pyproject.toml"),
+    # and a non-editable install breaks config.PROJECT_ROOT resolution
+    # (PROJECT_ROOT must point at ~/conductress, not site-packages).
+    conductress_path = host.get_home_path() / "conductress"
+    target = f"'{conductress_path}[dev]'" if DEV else f"'{conductress_path}'"
     distro = await host.get_linux_distro()
     if distro == "Ubuntu":
-        venv_path = Path("./python-venv")
+        venv_path = conductress_path / "python-venv"
         if not await path_exists(host, venv_path, expected_type="directory"):
             await host.run(f"python3 -m venv {venv_path}")
         pip = venv_path / "bin/pip"
         await host.run(f"{pip} install --upgrade pip")
-        await host.run(f"{pip} install {install_target}")
+        await host.run(f"{pip} install -e {target}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install {install_target}")
+        await host.run(f"pip install -e {target}")
 
 
 async def update_rhel_packages(host: Host):
     packages = load_requirements("rhel-requirements")
     host.log_info_msg("Updating RHEL packages")
     await host.run("sudo dnf update -y", check=False)
-    devtools_task = host.run('sudo dnf groupinstall -y "Development Tools"')
-    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools_task, packages_task)
+    # dnf must not run concurrently: parallel installs race on the shared
+    # /var/cache/dnf package cache and fail on a cold cache with a spurious
+    # "No such file or directory: <pkg>.rpm" error. Run them sequentially.
+    await host.run('sudo dnf groupinstall -y "Development Tools"')
+    await host.run(f"sudo dnf install -y {' '.join(packages)}")
 
 
 async def update_amazon_packages(host: Host) -> None:
@@ -228,9 +235,10 @@ async def update_amazon_packages(host: Host) -> None:
     packages = load_requirements("amz_requirements")
     host.log_info_msg("Updating Amazon Linux packages")
     await host.run("sudo dnf update -y")
-    devtools_task = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
-    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools_task, packages_task)
+    # See update_rhel_packages: dnf installs must be serialized, not run
+    # concurrently, to avoid a cold-cache race in /var/cache/dnf.
+    await host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
+    await host.run(f"sudo dnf install -y {' '.join(packages)}")
 
 
 async def update_ubuntu_packages(host: Host) -> None:
