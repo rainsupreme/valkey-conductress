@@ -1,10 +1,58 @@
 import ast
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
-from conductress.bootstrap import Host, ensure_file_descriptor_limits, load_requirements, path_exists
+from conductress.bootstrap import (
+    Host,
+    ensure_file_descriptor_limits,
+    load_requirements,
+    path_exists,
+    update_amazon_packages,
+    update_rhel_packages,
+)
+
+
+class TestPackageInstallSerialized:
+    """dnf must never be invoked concurrently: parallel installs race on the
+    shared /var/cache/dnf cache and fail on a cold cache with a spurious
+    "No such file or directory: <pkg>.rpm" error (observed on a fresh
+    c8g.metal). These tests fail against the old asyncio.gather() code."""
+
+    @staticmethod
+    def _overlap_tracking_host():
+        """Return (host, get_max_concurrency) where host.run tracks how many
+        dnf commands are in-flight simultaneously."""
+        host = MagicMock(spec=Host)
+        host.log_info_msg = MagicMock()
+        state = {"active": 0, "max": 0}
+
+        async def fake_run(command, *args, **kwargs):
+            if "dnf install" in command or "groupinstall" in command:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+                await asyncio.sleep(0)  # yield so any concurrent task can interleave
+                state["active"] -= 1
+            return ""
+
+        host.run = AsyncMock(side_effect=fake_run)
+        return host, lambda: state["max"]
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.load_requirements", return_value=["pkg-a", "pkg-b"])
+    async def test_amazon_packages_not_concurrent(self, _mock_reqs):
+        host, get_max = self._overlap_tracking_host()
+        await update_amazon_packages(host)
+        assert get_max() == 1, "dnf installs must not run concurrently"
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.load_requirements", return_value=["pkg-a", "pkg-b"])
+    async def test_rhel_packages_not_concurrent(self, _mock_reqs):
+        host, get_max = self._overlap_tracking_host()
+        await update_rhel_packages(host)
+        assert get_max() == 1, "dnf installs must not run concurrently"
 
 
 class TestFileDescriptorLimits:

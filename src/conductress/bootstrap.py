@@ -218,9 +218,11 @@ async def update_rhel_packages(host: Host):
     packages = load_requirements("rhel-requirements")
     host.log_info_msg("Updating RHEL packages")
     await host.run("sudo dnf update -y", check=False)
-    devtools_task = host.run('sudo dnf groupinstall -y "Development Tools"')
-    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools_task, packages_task)
+    # dnf must not run concurrently: parallel installs race on the shared
+    # /var/cache/dnf package cache and fail on a cold cache with a spurious
+    # "No such file or directory: <pkg>.rpm" error. Run them sequentially.
+    await host.run('sudo dnf groupinstall -y "Development Tools"')
+    await host.run(f"sudo dnf install -y {' '.join(packages)}")
 
 
 async def update_amazon_packages(host: Host) -> None:
@@ -228,9 +230,10 @@ async def update_amazon_packages(host: Host) -> None:
     packages = load_requirements("amz_requirements")
     host.log_info_msg("Updating Amazon Linux packages")
     await host.run("sudo dnf update -y")
-    devtools_task = host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
-    packages_task = host.run(f"sudo dnf install -y {' '.join(packages)}")
-    await asyncio.gather(devtools_task, packages_task)
+    # See update_rhel_packages: dnf installs must be serialized, not run
+    # concurrently, to avoid a cold-cache race in /var/cache/dnf.
+    await host.run("sudo dnf install -y gcc gcc-c++ make automake autoconf libtool")
+    await host.run(f"sudo dnf install -y {' '.join(packages)}")
 
 
 async def update_ubuntu_packages(host: Host) -> None:
