@@ -200,18 +200,23 @@ async def remove_motd(host: Host) -> None:
 
 async def update_pip_packages(host: Host):
     host.log_info_msg("Updating pip packages")
-    install_target = "'.[dev]'" if DEV else "."
+    # Install editable (-e) from the repo's absolute path. asyncssh runs
+    # commands from $HOME, so a bare "." target fails ("no pyproject.toml"),
+    # and a non-editable install breaks config.PROJECT_ROOT resolution
+    # (PROJECT_ROOT must point at ~/conductress, not site-packages).
+    conductress_path = host.get_home_path() / "conductress"
+    target = f"'{conductress_path}[dev]'" if DEV else f"'{conductress_path}'"
     distro = await host.get_linux_distro()
     if distro == "Ubuntu":
-        venv_path = Path("./python-venv")
+        venv_path = conductress_path / "python-venv"
         if not await path_exists(host, venv_path, expected_type="directory"):
             await host.run(f"python3 -m venv {venv_path}")
         pip = venv_path / "bin/pip"
         await host.run(f"{pip} install --upgrade pip")
-        await host.run(f"{pip} install {install_target}")
+        await host.run(f"{pip} install -e {target}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install {install_target}")
+        await host.run(f"pip install -e {target}")
 
 
 async def update_rhel_packages(host: Host):

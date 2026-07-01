@@ -11,6 +11,7 @@ from conductress.bootstrap import (
     load_requirements,
     path_exists,
     update_amazon_packages,
+    update_pip_packages,
     update_rhel_packages,
 )
 
@@ -53,6 +54,42 @@ class TestPackageInstallSerialized:
         host, get_max = self._overlap_tracking_host()
         await update_rhel_packages(host)
         assert get_max() == 1, "dnf installs must not run concurrently"
+
+
+class TestPipInstallEditable:
+    """pip must install conductress editable (-e) from the repo's absolute
+    path, not a bare '.' relative to $HOME. asyncssh runs commands from
+    $HOME, and a non-editable install breaks config.PROJECT_ROOT. These
+    tests fail against the old `pip install '.[dev]'` code."""
+
+    @staticmethod
+    def _host(distro):
+        host = MagicMock(spec=Host)
+        host.log_info_msg = MagicMock()
+        host.get_home_path = MagicMock(return_value=Path("/home/tester"))
+        host.get_linux_distro = AsyncMock(return_value=distro)
+        host.run = AsyncMock(return_value="")
+        return host
+
+    @pytest.mark.asyncio
+    async def test_amazon_installs_editable_absolute(self):
+        host = self._host("Amazon Linux")
+        await update_pip_packages(host)
+        joined = " ".join(call.args[0] for call in host.run.await_args_list)
+        assert "install -e" in joined, f"expected editable install: {joined}"
+        assert "/home/tester/conductress" in joined
+        assert "'.[dev]'" not in joined  # old CWD-relative, non-editable target
+
+    @pytest.mark.asyncio
+    @patch("conductress.bootstrap.path_exists", new_callable=AsyncMock, return_value=True)
+    async def test_ubuntu_installs_editable_in_repo_venv(self, _mock_pe):
+        host = self._host("Ubuntu")
+        await update_pip_packages(host)
+        joined = " ".join(call.args[0] for call in host.run.await_args_list)
+        assert "install -e" in joined, f"expected editable install: {joined}"
+        assert "/home/tester/conductress" in joined
+        # the venv must live under the repo, never in $HOME
+        assert "python-venv" not in joined or "/home/tester/conductress/python-venv" in joined
 
 
 class TestFileDescriptorLimits:
