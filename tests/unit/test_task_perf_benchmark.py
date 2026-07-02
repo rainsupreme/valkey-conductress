@@ -155,6 +155,51 @@ class TestNewTestTypes:
         assert entry.test_command == " -- MGET key:__rand_int__ key:__rand_int__ key:__rand_int__ key:__rand_int__"
 
 
+class TestZsetBatteryTests:
+    """Tests for the zset steady-state battery (zrange, zrangebyscore,
+    zrandmember, zrem, zpop) added for the fbtree comparison."""
+
+    def test_zset_read_entries(self):
+        """zrange/zrangebyscore use --count range placeholders; zrandmember uses a literal count."""
+        zr = PerfTaskRunner.tests["zrange"]
+        assert zr.preload_command == "-t zadd"
+        assert zr.test_command == "--count 100 -- ZRANGE myzset __rand_beg__ __rand_end__"
+        assert zr.keyspace is None
+
+        zrbs = PerfTaskRunner.tests["zrangebyscore"]
+        assert zrbs.test_command == "--count 100 -- ZRANGEBYSCORE myzset __rand_beg__ __rand_end__"
+
+        zrand = PerfTaskRunner.tests["zrandmember"]
+        assert zrand.test_command == " -- ZRANDMEMBER myzset 100"
+
+    def test_zrem_is_balanced_add_remove_sequence(self):
+        """zrem pairs a random add and a random remove over the same keyspace,
+        with a shell-quoted ';' sequence separator, so it self-balances at ~K/2."""
+        entry = PerfTaskRunner.tests["zrem"]
+        assert entry.preload_command == "-t zadd"
+        assert entry.test_command == (
+            " -- ZADD myzset __rand_int__ element:__rand_int__ ';' ZREM myzset element:__rand_int__"
+        )
+        assert " ';' " in entry.test_command  # semicolon quoted for the shell
+        assert entry.keyspace is None
+
+    def test_zpop_is_sliding_window_with_wide_append_keyspace(self):
+        """zpop pops the min and appends a distinct-prefix member; its timed -r
+        is overridden to a huge namespace so the resident set never drains empty."""
+        entry = PerfTaskRunner.tests["zpop"]
+        assert entry.preload_command == "-t zadd"
+        assert entry.test_command == " -- ZPOPMIN myzset ';' ZADD myzset __rand_int__ nm:__rand_int__"
+        assert " ';' " in entry.test_command
+        assert entry.keyspace == PerfTaskRunner.ZPOP_APPEND_KEYSPACE
+        # Append namespace must dwarf the resident keyspace to bound the drain.
+        assert entry.keyspace > config.PERF_BENCH_KEYSPACE * 100
+
+    def test_only_zpop_overrides_keyspace(self):
+        """No other test overrides the timed keyspace (they share PERF_BENCH_KEYSPACE)."""
+        overriding = {name for name, t in PerfTaskRunner.tests.items() if t.keyspace is not None}
+        assert overriding == {"zpop"}
+
+
 class TestPerfTaskDataSerialization:
     """Tests for PerfTaskData serialization/deserialization with new test names."""
 
