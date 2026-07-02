@@ -151,6 +151,18 @@ class PerfTaskRunner(BaseTaskRunner):
         preload_command: Optional[str]
         test_command: str
         expire_command: Optional[str] = None
+        # Optional per-test override for the timed benchmark's -r keyspace.
+        # Preload always fills PERF_BENCH_KEYSPACE; this only widens the -r used
+        # during measurement (needed by zpop, whose append must draw from a
+        # namespace far larger than the resident set to avoid draining it).
+        keyspace: Optional[int] = None
+
+    # Append namespace for the zpop sliding-window test. ZPOPMIN never misses,
+    # so a 50/50 pop/append drains with time-constant = append-keyspace (in
+    # pairs). At ~1.5M pairs/s over a 5min run (~500M pairs) a 2B namespace keeps
+    # the ~3M resident set from draining more than ~25%, so it never empties and
+    # ZPOPMIN (O(1)) throughput stays representative.
+    ZPOP_APPEND_KEYSPACE = 2_000_000_000
 
     tests: dict[str, Test] = {
         "set": Test(
@@ -182,6 +194,46 @@ class PerfTaskRunner(BaseTaskRunner):
             name="zscore",
             preload_command="-t zadd",
             test_command=" -- ZSCORE myzset element:__rand_int__",
+        ),
+        # Scattered range scan of ~100 elements at a random rank offset. --count
+        # activates __rand_beg__/__rand_end__ (end = beg + count - 1).
+        "zrange": Test(
+            name="zrange",
+            preload_command="-t zadd",
+            test_command="--count 100 -- ZRANGE myzset __rand_beg__ __rand_end__",
+        ),
+        # Score-range variant: preloaded scores are dense (sequential 0..K-1),
+        # so a width-100 score window returns ~100 elements.
+        "zrangebyscore": Test(
+            name="zrangebyscore",
+            preload_command="-t zadd",
+            test_command="--count 100 -- ZRANGEBYSCORE myzset __rand_beg__ __rand_end__",
+        ),
+        # Random-sample read of 100 members (literal COUNT arg; no placeholder).
+        "zrandmember": Test(
+            name="zrandmember",
+            preload_command="-t zadd",
+            test_command=" -- ZRANDMEMBER myzset 100",
+        ),
+        # Scattered delete: 50/50 random add/remove over the same keyspace. ZREM
+        # can miss, so the pair self-balances at ~K/2 (birth-death, P=0.5). The
+        # ';' is shell-quoted so valkey-benchmark receives it as a sequence
+        # separator. ~50% of ZREMs miss (hashtable-only) -> structural signal is
+        # directional. Warmup relaxes the preloaded full set K -> K/2.
+        "zrem": Test(
+            name="zrem",
+            preload_command="-t zadd",
+            test_command=" -- ZADD myzset __rand_int__ element:__rand_int__ ';' ZREM myzset element:__rand_int__",
+        ),
+        # Hot-spot delete: sliding window. ZPOPMIN removes the min; ZADD appends
+        # a new member (distinct 'nm:' prefix) drawn from a huge namespace so the
+        # resident set drains only slowly and never empties (see
+        # ZPOP_APPEND_KEYSPACE). Measures pop+append combined (O(1) pop).
+        "zpop": Test(
+            name="zpop",
+            preload_command="-t zadd",
+            test_command=" -- ZPOPMIN myzset ';' ZADD myzset __rand_int__ nm:__rand_int__",
+            keyspace=ZPOP_APPEND_KEYSPACE,
         ),
         "sismember": Test(
             name="sismember",
@@ -303,6 +355,11 @@ class PerfTaskRunner(BaseTaskRunner):
                 "zrank": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
                 "zcount": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
                 "zscore": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zrange": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zrangebyscore": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zrandmember": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zrem": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "zpop": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
             }
             return preload_map[name]
         else:
@@ -318,6 +375,11 @@ class PerfTaskRunner(BaseTaskRunner):
                 "zrank": f" -- ZRANK {padded_key} element:__rand_int__",
                 "zcount": f" -- ZCOUNT {padded_key} __rand_int__ __rand_int__",
                 "zscore": f" -- ZSCORE {padded_key} element:__rand_int__",
+                "zrange": f"--count 100 -- ZRANGE {padded_key} __rand_beg__ __rand_end__",
+                "zrangebyscore": f"--count 100 -- ZRANGEBYSCORE {padded_key} __rand_beg__ __rand_end__",
+                "zrandmember": f" -- ZRANDMEMBER {padded_key} 100",
+                "zrem": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__ ';' ZREM {padded_key} element:__rand_int__",
+                "zpop": f" -- ZPOPMIN {padded_key} ';' ZADD {padded_key} __rand_int__ nm:__rand_int__",
             }
             return test_map[name]
 
@@ -644,20 +706,24 @@ class PerfTaskRunner(BaseTaskRunner):
         """Build the numactl + valkey-benchmark command string."""
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
 
+        # Per-test override for the timed -r keyspace (preload always uses
+        # PERF_BENCH_KEYSPACE); only zpop widens this today.
+        keyspace = self.test.keyspace or PERF_BENCH_KEYSPACE
+
         if benchmark_alloc_tag and self._is_local_benchmark(target_ip):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
             benchmark_cpu_list = ",".join(map(str, allocated)) if allocated else ""
             return (
                 f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
                 f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         else:
             return (
                 f"numactl --cpunodebind={net_numa} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {PERF_BENCH_KEYSPACE} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
                 f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
 
