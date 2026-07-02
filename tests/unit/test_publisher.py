@@ -11,9 +11,17 @@ from conductress.publisher import DashboardPublisher, detect_platform
 class TestDetectPlatform:
     def test_aarch64(self):
         with patch("conductress.publisher.platform.machine", return_value="aarch64"):
-            pid, label = detect_platform()
-            assert pid == "arm64"
-            assert "graviton" in label
+            with patch("conductress.platform.aarch64_platform_id", return_value="arm64"):
+                pid, label = detect_platform()
+                assert pid == "arm64"
+                assert "graviton" in label
+
+    def test_aarch64_graviton4(self):
+        with patch("conductress.publisher.platform.machine", return_value="aarch64"):
+            with patch("conductress.platform.aarch64_platform_id", return_value="graviton4"):
+                pid, label = detect_platform()
+                assert pid == "graviton4"
+                assert "graviton4" in label
 
     def test_x86_64_amd(self):
         with patch("conductress.publisher.platform.machine", return_value="x86_64"):

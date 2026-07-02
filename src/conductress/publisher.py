@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 # Platform detection: map uname machine + optional CPU model to dashboard platform ID
 _PLATFORM_MAP = {
-    "aarch64": ("arm64", "arm64/c7g.metal/graviton3"),
     "x86_64": ("amd64", "amd64/epyc-9r14/zen4"),
 }
 
@@ -33,6 +32,12 @@ def detect_platform() -> tuple[str, str]:
                 return "intel", "intel/xeon-8488c/sapphire-rapids"
         except OSError:
             pass
+    if arch in ("aarch64", "arm64"):
+        from conductress.platform import aarch64_platform_id
+
+        if aarch64_platform_id() == "graviton4":
+            return "graviton4", "arm64/c8g.metal/graviton4"
+        return "arm64", "arm64/c7g.metal/graviton3"
     platform_id, label = _PLATFORM_MAP.get(arch, (arch, arch))
     return platform_id, label
 
