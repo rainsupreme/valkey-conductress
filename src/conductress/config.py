@@ -114,8 +114,8 @@ SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
     # Platform-optimal workloads: realistic configs for performance-sensitive users
     {"val_size": 16, "io_threads": 24, "pipelining": 100, "platforms": ["intel"]},
     {"val_size": 16, "io_threads": 24, "pipelining": 100, "test": "set", "platforms": ["intel"]},
-    {"val_size": 16, "io_threads": 9, "pipelining": 50, "platforms": ["arm64"]},
-    {"val_size": 16, "io_threads": 9, "pipelining": 50, "test": "set", "platforms": ["arm64"]},
+    {"val_size": 16, "io_threads": 9, "pipelining": 50, "platforms": ["arm64", "graviton4"]},
+    {"val_size": 16, "io_threads": 9, "pipelining": 50, "test": "set", "platforms": ["arm64", "graviton4"]},
 ]
 
 

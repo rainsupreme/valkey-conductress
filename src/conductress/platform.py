@@ -132,17 +132,34 @@ def _parse_cpu_list(cpu_list_str: str) -> list[int]:
     return cpus
 
 
+def aarch64_platform_id() -> str:
+    """Map the local aarch64 CPU to a dashboard platform id.
+
+    Neoverse-V2 (CPU part 0xd4f, AWS Graviton4) -> 'graviton4'. Everything
+    else (including Neoverse-V1/Graviton3) -> 'arm64', which preserves the
+    existing armbench (Graviton3) series history on the dashboard.
+    """
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("CPU part"):
+                    return "graviton4" if line.split(":", 1)[1].strip().lower() == "0xd4f" else "arm64"
+    except OSError:
+        pass
+    return "arm64"
+
+
 def get_local_platform_tag() -> str:
     """Detect local platform tag for workload filtering.
 
-    Returns one of: 'arm64', 'amd64', 'intel', 'unknown'.
-    Uses /proc/cpuinfo for vendor detection on x86.
+    Returns one of: 'arm64', 'graviton4', 'amd64', 'intel', 'unknown'.
+    Uses /proc/cpuinfo for CPU-part (arm) and vendor (x86) detection.
     """
     import platform as _platform
 
     machine = _platform.machine()
     if machine in ("aarch64", "arm64"):
-        return "arm64"
+        return aarch64_platform_id()
     if machine in ("x86_64", "amd64"):
         try:
             with open("/proc/cpuinfo") as f:
