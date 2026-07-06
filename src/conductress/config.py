@@ -21,9 +21,9 @@ DEFAULT_MAKE_ARGS = ""
 # Benchmark defaults (single source of truth for CLI and TUI)
 DEFAULT_IO_THREADS = 9
 DEFAULT_PIPELINING = 10
-DEFAULT_WARMUP = 30  # seconds
-DEFAULT_DURATION = 300  # seconds (5m)
-DEFAULT_REPETITIONS = 5
+DEFAULT_WARMUP = 5  # seconds
+DEFAULT_DURATION = 30  # seconds
+DEFAULT_REPETITIONS = 3
 DEFAULT_VAL_SIZE = 512  # bytes
 DEFAULT_KEY_SIZE = 0  # 0 = standard keys
 
