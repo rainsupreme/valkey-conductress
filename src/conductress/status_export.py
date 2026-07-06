@@ -57,9 +57,8 @@ def export_status(publish_target: str = "") -> Path:
 
 def _publish_status(target: str) -> None:
     """Rsync status.json to the dashboard data server."""
-    import subprocess
-
     from conductress.publisher import detect_platform
+    from conductress.utility import run_rsync
 
     platform_id, _ = detect_platform()
     # Map platform to status filename expected by dashboard
@@ -71,14 +70,11 @@ def _publish_status(target: str) -> None:
         ssh_key = Path.home() / ".ssh" / "openssh-ec2-pair.pem"
     ssh_cmd = f"ssh -i {ssh_key} -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10"
     dest = f"{target}/status/{filename}.json"
-    result = subprocess.run(
+    run_rsync(
         ["rsync", "-az", "--chmod=D755,F644", "-e", ssh_cmd, str(STATUS_EXPORT_FILE), dest],
-        capture_output=True,
-        text=True,
+        dest,
         timeout=15,
     )
-    if result.returncode != 0:
-        logger.warning("Status publish failed: %s", result.stderr.strip())
 
 
 def _get_hostname() -> str:

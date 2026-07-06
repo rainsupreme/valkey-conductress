@@ -25,6 +25,36 @@ GB = 1024 * MB
 MINUTE = 60
 
 
+def run_rsync(args: Sequence[str], target: str, timeout: int = 30) -> bool:
+    """Run an rsync command, log the outcome, and return True on success.
+
+    Failures are logged at ERROR (not WARNING) and a full-disk condition on the
+    destination is called out explicitly. A silently-swallowed publish failure
+    can freeze the dashboard (status + series data) for hours with no signal, so
+    these failures must be loud. Returns False on any failure; never raises for a
+    non-zero rsync exit, so callers stay resilient and keep processing the queue.
+    """
+    try:
+        result = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.error("rsync to %s timed out after %ds — data not published", target, timeout)
+        return False
+    if result.returncode == 0:
+        logger.info("Published to %s", target)
+        return True
+    stderr = result.stderr.strip()
+    if "no space left on device" in stderr.lower():
+        logger.error(
+            "rsync to %s FAILED: destination disk is FULL (no space left on device). "
+            "Published data is now STALE until space is freed. rsync rc=%d",
+            target,
+            result.returncode,
+        )
+    else:
+        logger.error("rsync to %s failed (rc=%d): %s", target, result.returncode, stderr)
+    return False
+
+
 def get_console_width() -> int:
     """Determine the width of the console."""
     try:

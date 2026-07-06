@@ -54,7 +54,7 @@ class TestDashboardPublisher:
         pub = DashboardPublisher("user@host:/path", [])
         pub.on_queue_empty()  # should not raise
 
-    @patch("conductress.publisher.subprocess.run")
+    @patch("conductress.utility.subprocess.run")
     def test_publish_calls_rsync(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
         coord = MagicMock()
@@ -75,7 +75,7 @@ class TestDashboardPublisher:
         assert call_args[0] == "rsync"
         assert "user@host:/path" in call_args[-1]
 
-    @patch("conductress.publisher.subprocess.run")
+    @patch("conductress.utility.subprocess.run")
     def test_publish_failure_does_not_raise(self, mock_run):
         """Publish failures are non-fatal."""
         mock_run.side_effect = Exception("network error")
@@ -91,7 +91,7 @@ class TestDashboardPublisher:
             with patch("conductress.sweep.exporter.export_manifest"):
                 pub.on_task_completed(MagicMock())  # should not raise
 
-    @patch("conductress.publisher.subprocess.run")
+    @patch("conductress.utility.subprocess.run")
     def test_perf_metrics_exported_for_all_throughput_coordinators(self, mock_run):
         """Regression: perf metrics must export for every throughput coordinator, not just the first."""
         mock_run.return_value = MagicMock(returncode=0)
