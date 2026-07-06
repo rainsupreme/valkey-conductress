@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from conductress.config import should_profile_internals
 from conductress.utility import run_rsync
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ class DashboardPublisher:
                     # CPU flamegraph data exposes the binary's symbols — skip for engines that
                     # opt out (Redis). Also stops any pre-existing stacks in state from being
                     # re-published. Aggregate perf metrics above are unaffected.
-                    if coord.engine is None or coord.engine.profile_internals:
+                    if should_profile_internals(coord.engine):
                         export_cpu_profile(
                             coord.state,
                             self._export_dir,

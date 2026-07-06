@@ -16,6 +16,7 @@ from conductress.config import (
     MEM_TEST_KEY_SIZE,
     MEM_TEST_MAX_CONCURRENT,
     ServerInfo,
+    get_sweep_engine,
     should_profile_internals,
 )
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
@@ -283,7 +284,7 @@ class MemTaskRunner(BaseTaskRunner):
             # expose the binary's symbols. Total memory below is still recorded regardless.
             breakdown: Optional[dict[str, float]] = None
             raw_stacks: Optional[list[list]] = None
-            if self.enable_profiling and should_profile_internals(self.source):
+            if self.enable_profiling and should_profile_internals(get_sweep_engine(self.source)):
                 profile_result = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
                 if profile_result:
                     breakdown = profile_result.breakdown

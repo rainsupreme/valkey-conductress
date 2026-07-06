@@ -169,13 +169,14 @@ def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
     return None
 
 
-def should_profile_internals(source: str) -> bool:
-    """Whether to collect internal profiling (CPU flamegraphs, jemalloc breakdown) for a source.
+def should_profile_internals(engine: Optional["SweepEngine"]) -> bool:
+    """Whether to collect internal profiling (CPU flamegraphs, jemalloc breakdown) for an engine.
 
-    Defaults to True for unknown sources (e.g. forks) so Valkey profiling is unaffected;
-    an engine only opts out by setting profile_internals=False (currently Redis).
+    Absent/unknown engine (e.g. a fork source, or legacy state with no engine) defaults to True
+    so Valkey profiling is unaffected; an engine only opts out via profile_internals=False (Redis).
+    This is the single source of truth for the policy — call it everywhere rather than inlining
+    `engine.profile_internals` checks (which have to re-handle the None case and read poorly).
     """
-    engine = get_sweep_engine(source)
     return engine.profile_internals if engine else True
 
 

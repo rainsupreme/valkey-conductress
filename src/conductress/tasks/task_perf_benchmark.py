@@ -21,6 +21,7 @@ from conductress.config import (
     PROJECT_ROOT,
     VALKEY_BENCHMARK,
     ServerInfo,
+    get_sweep_engine,
     should_profile_internals,
 )
 from conductress.cpu_allocator import AllocationTag
@@ -286,7 +287,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.specifier = specifier
         # CPU flamegraph stacks expose the server binary's symbols; skip for engines
         # that opt out (Redis). Aggregate perf-stat counters are unaffected.
-        self._profile_internals = should_profile_internals(binary_source)
+        self._profile_internals = should_profile_internals(get_sweep_engine(binary_source))
         self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining

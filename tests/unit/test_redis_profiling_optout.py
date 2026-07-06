@@ -13,15 +13,17 @@ from conductress.publisher import DashboardPublisher
 
 class TestShouldProfileInternals:
     def test_redis_opts_out(self):
-        assert should_profile_internals("redis") is False
-        assert get_sweep_engine("redis").profile_internals is False
+        redis = get_sweep_engine("redis")
+        assert redis.profile_internals is False
+        assert should_profile_internals(redis) is False
 
     def test_valkey_profiles(self):
-        assert should_profile_internals("valkey") is True
+        assert should_profile_internals(get_sweep_engine("valkey")) is True
 
-    def test_unknown_source_defaults_on(self):
-        # Forks (e.g. a valkey-rainfall source) must keep profiling.
-        assert should_profile_internals("valkey-rainfall") is True
+    def test_unknown_engine_defaults_on(self):
+        # A fork (get_sweep_engine returns None) or legacy state must keep profiling.
+        assert should_profile_internals(get_sweep_engine("valkey-rainfall")) is True
+        assert should_profile_internals(None) is True
 
 
 def _throughput_coord(source, profile_internals):
