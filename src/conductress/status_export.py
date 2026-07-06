@@ -7,6 +7,7 @@ aggregator on benchdev.
 
 import json
 import logging
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ def export_status(publish_target: str = "") -> Path:
         "current_task": _get_current_task(),
         "queue": _get_queue_info(),
         "recent_results": _get_recent_results(),
+        "disk": _get_disk_info(),
     }
 
     # Estimate time to complete queue
@@ -82,6 +84,27 @@ def _get_hostname() -> str:
     import socket
 
     return socket.gethostname().split(".")[0]
+
+
+def _get_disk_info() -> dict[str, Any]:
+    """Report free space on the filesystem holding builds, benchmark output, and RDBs.
+
+    A host's local disk can fill (perf.data captures, build trees, stray RDBs, logs)
+    and stall the runner, so the dashboard surfaces a per-host disk alarm. Measured on
+    PROJECT_ROOT, which shares a filesystem with the ~/valkey and ~/redis build trees.
+    """
+    try:
+        usage = shutil.disk_usage(PROJECT_ROOT)
+    except OSError:
+        return {}
+    free_pct = round(usage.free * 100 / usage.total) if usage.total else 0
+    return {
+        "path": str(PROJECT_ROOT),
+        "size_bytes": usage.total,
+        "used_bytes": usage.used,
+        "avail_bytes": usage.free,
+        "free_pct": free_pct,
+    }
 
 
 def _get_runner_info() -> dict[str, Any]:
