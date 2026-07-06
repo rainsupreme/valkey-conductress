@@ -21,6 +21,7 @@ from conductress.config import (
     PROJECT_ROOT,
     VALKEY_BENCHMARK,
     ServerInfo,
+    should_profile_internals,
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
@@ -283,6 +284,9 @@ class PerfTaskRunner(BaseTaskRunner):
         self.server_infos = server_infos
         self.binary_source = binary_source
         self.specifier = specifier
+        # CPU flamegraph stacks expose the server binary's symbols; skip for engines
+        # that opt out (Redis). Aggregate perf-stat counters are unaffected.
+        self._profile_internals = should_profile_internals(binary_source)
         self.io_threads = io_threads
         self.valsize = valsize
         self.pipelining = pipelining
@@ -631,7 +635,7 @@ class PerfTaskRunner(BaseTaskRunner):
                                 acc[k] = acc.get(k, 0) + v
 
                 # Collect CPU profile stacks on last rep
-                if self._is_last_rep and self.perf_stat_enabled:
+                if self._is_last_rep and self.perf_stat_enabled and self._profile_internals:
                     try:
                         cpu_main, cpu_io = await server.cpu_profile_collect()
                         if cpu_main:
@@ -771,7 +775,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 warming_up = False
                 if self.perf_stat_enabled:
                     await server.perf_stat_start()
-                if self.perf_stat_enabled:
+                if self.perf_stat_enabled and self._profile_internals:
                     server.cpu_profile_start(self.duration)
 
         await self.__collect_metrics(command)

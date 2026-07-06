@@ -134,6 +134,7 @@ class SweepEngine:
     floor_tag: Optional[str] = None  # earliest tag to sweep from (None = use find_fork_point)
     make_args: str = DEFAULT_MAKE_ARGS  # compiler flags
     heap_alloc_funcs: list[str] = field(default_factory=list)  # for memory profiling
+    profile_internals: bool = True  # collect CPU flamegraphs + jemalloc allocation breakdown for this engine
 
 
 SWEEP_ENGINES: list[SweepEngine] = [
@@ -152,6 +153,10 @@ SWEEP_ENGINES: list[SweepEngine] = [
         floor_tag="8.0.0",
         make_args="",
         heap_alloc_funcs=["zmalloc", "zcalloc", "zrealloc"],
+        # CPU flamegraphs and jemalloc allocation breakdowns expose the Redis binary's
+        # symbol table (function names / call graph), which we do not analyze or surface.
+        # Redis keeps aggregate performance data only: throughput, latency, total memory.
+        profile_internals=False,
     ),
 ]
 
@@ -162,6 +167,16 @@ def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
         if engine.source == source:
             return engine
     return None
+
+
+def should_profile_internals(source: str) -> bool:
+    """Whether to collect internal profiling (CPU flamegraphs, jemalloc breakdown) for a source.
+
+    Defaults to True for unknown sources (e.g. forks) so Valkey profiling is unaffected;
+    an engine only opts out by setting profile_internals=False (currently Redis).
+    """
+    engine = get_sweep_engine(source)
+    return engine.profile_internals if engine else True
 
 
 # =============================================================================

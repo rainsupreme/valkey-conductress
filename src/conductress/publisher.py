@@ -94,12 +94,26 @@ class DashboardPublisher:
                     export_perf_metrics(
                         coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
-                    export_cpu_profile(
-                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
-                    )
-                    export_cpu_stacks_raw(
-                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
-                    )
+                    # CPU flamegraph data exposes the binary's symbols — skip for engines that
+                    # opt out (Redis). Also stops any pre-existing stacks in state from being
+                    # re-published. Aggregate perf metrics above are unaffected.
+                    if coord.engine is None or coord.engine.profile_internals:
+                        export_cpu_profile(
+                            coord.state,
+                            self._export_dir,
+                            self._platform_id,
+                            coord.workload_id,
+                            repo=repo,
+                            branch=branch,
+                        )
+                        export_cpu_stacks_raw(
+                            coord.state,
+                            self._export_dir,
+                            self._platform_id,
+                            coord.workload_id,
+                            repo=repo,
+                            branch=branch,
+                        )
 
             # Export manifest with all workload IDs, categorized by metric
             all_workloads = list(dict.fromkeys((c.workload_id, c.metric_id) for c in self.coordinators))
