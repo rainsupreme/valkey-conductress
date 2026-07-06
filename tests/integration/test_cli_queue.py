@@ -289,9 +289,9 @@ class TestCliPerfQueuing:
         with open(task_files[0]) as f:
             data = json.load(f)
 
-        assert data["warmup"] == 30
-        assert data["duration"] == 300
-        assert data["repetitions"] == 5
+        assert data["warmup"] == 5
+        assert data["duration"] == 30
+        assert data["repetitions"] == 3
         assert data["key_size"] == 0
         assert data["io_threads"] == 9
         assert data["pipelining"] == 10

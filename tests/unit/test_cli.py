@@ -283,7 +283,7 @@ class TestQueueAddSubcommand:
         assert task.val_size == 512
         assert task.io_threads == 9
         assert task.pipelining == 10
-        assert task.repetitions == 5
+        assert task.repetitions == 3
         assert task.make_args == ""
 
 
