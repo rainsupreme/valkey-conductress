@@ -11,7 +11,14 @@ from typing import Any, Optional
 
 import plotext as plt
 
-from conductress.config import MEM_TEST_ITEM_COUNT, MEM_TEST_KEY_SIZE, MEM_TEST_MAX_CONCURRENT, ServerInfo
+from conductress.config import (
+    MEM_TEST_ITEM_COUNT,
+    MEM_TEST_KEY_SIZE,
+    MEM_TEST_MAX_CONCURRENT,
+    ServerInfo,
+    get_sweep_engine,
+    should_profile_internals,
+)
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
 from conductress.heap_profiler import JEMALLOC_PROF_ENV, HeapProfileResult, cleanup_heap_dumps, collect_heap_profile
 from conductress.server import Server
@@ -272,10 +279,12 @@ class MemTaskRunner(BaseTaskRunner):
 
             await valkey.stop()  # required cleanup, release CPU allocations, etc
 
-            # Collect heap profile if profiling is enabled (dump created on shutdown by prof_final)
+            # Collect heap profile if profiling is enabled (dump created on shutdown by prof_final).
+            # Skipped for engines that opt out of internal profiling (Redis): allocation stacks
+            # expose the binary's symbols. Total memory below is still recorded regardless.
             breakdown: Optional[dict[str, float]] = None
             raw_stacks: Optional[list[list]] = None
-            if self.enable_profiling:
+            if self.enable_profiling and should_profile_internals(get_sweep_engine(self.source)):
                 profile_result = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
                 if profile_result:
                     breakdown = profile_result.breakdown
