@@ -215,6 +215,7 @@ def export_series(
     num_keys: int = 0,
     repo: str = "valkey-io/valkey",
     branch: str = "unstable",
+    include_breakdown: bool = True,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -224,6 +225,8 @@ def export_series(
         platform: Platform identifier string.
         workload: Workload identifier string.
         num_keys: If provided and point has raw_stacks, recompute breakdown at export time.
+        include_breakdown: When False, omit the jemalloc memory breakdown entirely (engines that
+            opt out of internal profiling, e.g. Redis, keep total memory but not the decomposition).
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -255,10 +258,10 @@ def export_series(
             entry["pr"] = pr
         if pr_title is not None:
             entry["pr_title"] = pr_title
-        if point.raw_stacks and num_keys > 0:
+        if include_breakdown and point.raw_stacks and num_keys > 0:
             entry["breakdown"] = recategorize_from_stacks(point.raw_stacks, num_keys)
             has_breakdown = True
-        elif point.breakdown:
+        elif include_breakdown and point.breakdown:
             entry["breakdown"] = point.breakdown
             has_breakdown = True
         points.append(entry)
