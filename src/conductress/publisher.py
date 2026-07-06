@@ -2,10 +2,11 @@
 
 import logging
 import platform
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from conductress.utility import run_rsync
 
 if TYPE_CHECKING:
     from conductress.sweep.coordinator import BaseSweepCoordinator
@@ -107,18 +108,12 @@ class DashboardPublisher:
             # Rsync to target
             self._rsync()
         except Exception:
-            logger.warning("Publish failed (non-fatal)", exc_info=True)
+            logger.error("Publish failed (non-fatal) — dashboard data may be stale", exc_info=True)
 
     def _rsync(self) -> None:
         """Rsync export directory to remote target."""
         ssh_cmd = f"ssh -i {self._ssh_key} -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10"
-        result = subprocess.run(
+        run_rsync(
             ["rsync", "-az", "--chmod=D755,F644", "-e", ssh_cmd, f"{self._export_dir}/", self.target],
-            capture_output=True,
-            text=True,
-            timeout=30,
+            self.target,
         )
-        if result.returncode == 0:
-            logger.info("Published to %s", self.target)
-        else:
-            logger.warning("rsync failed (rc=%d): %s", result.returncode, result.stderr.strip())
