@@ -281,3 +281,110 @@ class TestUnsupportedCommand:
         )
         with pytest.raises(ValueError, match="Unsupported command: lpush"):
             populate("127.0.0.1", 6379, workload)
+
+
+class TestOperations:
+    """Test the pure _operations generator across modes and command types."""
+
+    def _replay(self, ops):
+        """Replay op tuples into a live-item set, returning (live_set, n_add, n_del)."""
+        live: set = set()
+        n_add = n_del = 0
+        for op in ops:
+            item = op[1]
+            if op[0] == "add":
+                live.add(item)
+                n_add += 1
+            else:
+                live.discard(item)
+                n_del += 1
+        return live, n_add, n_del
+
+    def _ops(self, command, count, mode, value_size=20, key_size=16, field_size=16):
+        from conductress.sweep.populator import _operations
+
+        return list(_operations(command, count, key_size, value_size, field_size, mode))
+
+    def test_zadd_sequential_ascending_scores_exact_count(self):
+        ops = self._ops("zadd", 100, "sequential")
+        assert len(ops) == 100 and all(op[0] == "add" for op in ops)
+        assert [op[2] for op in ops] == list(range(100))  # dense ascending scores
+        live, _, n_del = self._replay(ops)
+        assert len(live) == 100 and n_del == 0
+
+    def test_zadd_random_exact_count_random_scores(self):
+        from conductress.sweep.populator import MAX_SCORE
+
+        ops = self._ops("zadd", 100, "random")
+        assert len(ops) == 100 and all(op[0] == "add" for op in ops)
+        scores = [op[2] for op in ops]
+        assert all(isinstance(s, int) and 0 <= s <= MAX_SCORE for s in scores)
+        assert scores != sorted(scores)  # scattered, not monotonic
+        live, _, n_del = self._replay(ops)
+        assert len(live) == 100 and n_del == 0  # unique members -> exact count
+
+    def test_deterministic(self):
+        assert self._ops("zadd", 50, "random") == self._ops("zadd", 50, "random")
+        assert self._ops("sadd", 50, "churn") == self._ops("sadd", 50, "churn")
+
+    @pytest.mark.parametrize("command", ["set", "sadd", "hset", "zadd"])
+    def test_all_modes_supported_for_all_types(self, command):
+        # No mode is rejected for any type (uniform support, no guard).
+        for mode in ("random", "sequential", "churn"):
+            ops = self._ops(command, 100, mode)
+            assert len(ops) >= 100  # churn adds extra ops
+            assert all(op[0] in ("add", "del") for op in ops)
+
+    @pytest.mark.parametrize("command", ["set", "sadd", "hset", "zadd"])
+    def test_churn_exercises_deletes_for_all_types(self, command):
+        count = 200
+        ops = self._ops(command, count, "churn")
+        live, n_add, n_del = self._replay(ops)
+        assert n_del > 0, f"churn should issue deletes for {command}"
+        assert n_add > count, f"churn should add beyond the initial fill for {command}"
+        assert 0 < len(live) < 2 * count
+        assert abs(len(live) - count) <= count // 2
+
+    def test_churn_never_deletes_absent_item(self):
+        present: set = set()
+        for op in self._ops("zadd", 200, "churn"):
+            if op[0] == "add":
+                present.add(op[1])
+            else:
+                assert op[1] in present, "churn deleted an item that was not live"
+                present.discard(op[1])
+
+    def test_sequential_and_random_equivalent_membership_for_hashtable_types(self):
+        # For set/sadd/hset, order doesn't change the resident item set (memory is
+        # order-independent); both modes produce the same 100 unique items.
+        seq_live, _, _ = self._replay(self._ops("sadd", 100, "sequential"))
+        rnd_live, _, _ = self._replay(self._ops("sadd", 100, "random"))
+        assert seq_live == rnd_live and len(seq_live) == 100
+
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match="Unknown populate_mode"):
+            self._ops("zadd", 10, "bogus")
+
+
+class TestChurnAllTypes:
+    """Churn (and every mode) is supported uniformly for all types — no guard."""
+
+    @patch("conductress.sweep.populator.valkey.Valkey")
+    def test_sadd_churn_runs_and_issues_srem(self, mock_valkey_cls):
+        mock_client = MagicMock()
+        mock_pipe = MagicMock()
+        mock_client.pipeline.return_value = mock_pipe
+        mock_valkey_cls.return_value = mock_client
+
+        wl = MemoryWorkload(command="sadd", key_size=0, value_size=20, populate_mode="churn", item_count=100)
+        populate("localhost", 6379, wl)  # must NOT raise
+        assert mock_pipe.sadd.call_count > 100  # initial fill + churn adds
+        assert mock_pipe.srem.call_count > 0  # churn deletes
+
+    @patch("conductress.sweep.populator.valkey.Valkey")
+    def test_churn_with_expire_rejected(self, mock_valkey_cls):
+        # churn + expire is genuinely incompatible (churn changes which keys exist).
+        mock_valkey_cls.return_value = MagicMock()
+        wl = MemoryWorkload(command="set", key_size=16, value_size=64, has_expire=True, populate_mode="churn")
+        with pytest.raises(ValueError, match="incompatible with has_expire"):
+            populate("localhost", 6379, wl)

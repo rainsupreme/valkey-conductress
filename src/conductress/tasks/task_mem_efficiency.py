@@ -41,6 +41,7 @@ class MemTaskData(BaseTaskData):
     key_size: int = 0  # key size in bytes (SET) or 0 (single-key commands); set by coordinator
     field_size: int = 0  # field name size (HSET only)
     user_data_bytes: int = 0  # per-item user data for overhead calculation
+    populate_mode: str = "random"  # zadd insertion pattern: random | sequential | churn
 
     def short_description(self) -> str:
         description = self.type
@@ -68,6 +69,7 @@ class MemTaskData(BaseTaskData):
             self.key_size,
             self.field_size,
             self.user_data_bytes,
+            self.populate_mode,
         )
 
 
@@ -91,6 +93,7 @@ class MemTaskRunner(BaseTaskRunner):
         key_size: int = 0,
         field_size: int = 0,
         user_data_bytes: int = 0,
+        populate_mode: str = "random",
     ):
         super().__init__(task_name)
 
@@ -114,6 +117,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.key_size = key_size
         self.field_size = field_size
         self.user_data_bytes = user_data_bytes
+        self.populate_mode = populate_mode
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -245,6 +249,7 @@ class MemTaskRunner(BaseTaskRunner):
                 label=f"{self.test}-populator",
                 item_count=count,
                 user_data_bytes=self.user_data_bytes,
+                populate_mode=self.populate_mode,
             )
             populate(valkey.ip, valkey.port, workload)
 
@@ -268,7 +273,12 @@ class MemTaskRunner(BaseTaskRunner):
                 if result_str is None:
                     raise RuntimeError(f"{cardinality_cmd} returned None on port {port}")
                 item_count = int(result_str)
-            if item_count != count:
+            # churn ends near `count` (random walk), not exactly; sequential/random are exact.
+            # The queried item_count is the source of truth for per-item math.
+            if self.populate_mode == "churn":
+                if not (0 < item_count < 2 * count):
+                    raise RuntimeError(f"churn produced {item_count} items, expected ~{count} on port {port}")
+            elif item_count != count:
                 raise RuntimeError(f"Expected {count} items but found {item_count} on port {port}")
             if self.has_expire:
                 if expire_count != count:
@@ -285,7 +295,7 @@ class MemTaskRunner(BaseTaskRunner):
             breakdown: Optional[dict[str, float]] = None
             raw_stacks: Optional[list[list]] = None
             if self.enable_profiling and should_profile_internals(get_sweep_engine(self.source)):
-                profile_result = await collect_heap_profile(valkey, str(self.cached_binary_path), count)
+                profile_result = await collect_heap_profile(valkey, str(self.cached_binary_path), item_count)
                 if profile_result:
                     breakdown = profile_result.breakdown
                     raw_stacks = profile_result.raw_stacks
@@ -298,7 +308,7 @@ class MemTaskRunner(BaseTaskRunner):
             before_usage = int(before_memory["used_memory"])
             after_usage = int(after_memory["used_memory"])
             total_usage = after_usage - before_usage
-            per_key = float(total_usage) / count
+            per_key = float(total_usage) / item_count  # queried cardinality (exact for all modes)
             per_item_overhead = per_key - user_data_per_item
 
             result = {

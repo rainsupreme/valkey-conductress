@@ -33,6 +33,7 @@ class MemoryWorkload:
     label: str = ""  # unique identifier used in state filename and dashboard
     item_count: int = 5_000_000
     user_data_bytes: int = 0  # per-item user data for dashboard baseline
+    populate_mode: str = "random"  # zadd insertion pattern: random | sequential | churn
 
     @property
     def state_file(self) -> Path:

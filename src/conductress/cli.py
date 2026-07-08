@@ -163,6 +163,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated data types (default: set,sadd,zadd,hset)",
     )
     mem_parser.add_argument("--expire", action="store_true", help="Also test with expiration enabled")
+    mem_parser.add_argument(
+        "--populate-mode",
+        choices=["random", "sequential", "churn"],
+        default="random",
+        help="zadd insertion pattern (default: random). sequential=dense/best-case, "
+        "churn=50/50 add-delete steady state. Only affects zadd.",
+    )
     mem_parser.add_argument("--note", default="", help="Optional note for the tasks")
     mem_parser.add_argument(
         "--make-args",
@@ -348,6 +355,7 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
             key_size=wl.key_size,
             field_size=wl.field_size,
             user_data_bytes=wl.user_data_bytes,
+            populate_mode=args.populate_mode,
         )
         queue.submit_task(task)
 
