@@ -176,6 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=config.DEFAULT_MAKE_ARGS,
         help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
     )
+    mem_parser.add_argument(
+        "--settle",
+        action="store_true",
+        help="Quiesce until used_memory plateaus before sampling (captures steady-state "
+        "memory after background reclamation, e.g. zset compaction). Default off.",
+    )
 
     # queue add-latency
     lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
@@ -356,6 +362,7 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
             field_size=wl.field_size,
             user_data_bytes=wl.user_data_bytes,
             populate_mode=args.populate_mode,
+            settle=args.settle,
         )
         queue.submit_task(task)
 

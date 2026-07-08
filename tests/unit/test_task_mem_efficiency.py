@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from conductress.config import ServerInfo
+from conductress.config import MANUALLY_UPLOADED, ServerInfo
 from conductress.file_protocol import BenchmarkResults
 from conductress.server import Server
 from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
@@ -462,3 +462,168 @@ class TestMemTaskRunner:
         # Verify both sizes were processed
         assert len([x for x in call_order if x.startswith("start_")]) == 2
         assert len([x for x in call_order if x.startswith("end_")]) == 2
+
+
+class TestQuiesceUntilStable:
+    """Test the opt-in quiesce-until-stable helper (background-reclamation settling)."""
+
+    @staticmethod
+    def _seq_sampler(values):
+        """Return an async sample_fn yielding `values` in order, repeating the last."""
+        state = {"i": 0}
+
+        async def _fn():
+            i = state["i"]
+            state["i"] = i + 1
+            return values[i] if i < len(values) else values[-1]
+
+        return _fn
+
+    @staticmethod
+    async def _noop_sleep(_seconds):
+        return None
+
+    def test_window_stable(self):
+        from conductress.tasks.task_mem_efficiency import _window_stable
+
+        assert _window_stable([100_000, 100_050, 99_970], 0.001)  # spread 80 <= ~100
+        assert not _window_stable([100_000, 100_300, 100_000], 0.001)  # spread 300 > ~100
+        # slow monotonic drift: each consecutive delta (40) is < eps, but the
+        # spread across the window (120) exceeds eps -> correctly NOT stable.
+        assert not _window_stable([100_000, 100_040, 100_080, 100_120], 0.001)
+        assert _window_stable([500, 500, 500], 0.001)  # flat
+
+    @pytest.mark.asyncio
+    async def test_slow_drift_not_stable(self):
+        from conductress.tasks.task_mem_efficiency import quiesce_until_stable
+
+        # Declines 40/poll: each pairwise delta (~0.04%) is under rel_eps, but the
+        # windowed spread accumulates past it, so this must NOT be called stable
+        # (a pairwise criterion would have stopped early here).
+        state = {"v": 100_000}
+
+        async def slow_drift():
+            state["v"] -= 40
+            return state["v"]
+
+        value, elapsed = await quiesce_until_stable(
+            slow_drift, interval=1.0, stable_samples=3, rel_eps=0.001, max_seconds=8, sleep_fn=self._noop_sleep
+        )
+        assert elapsed >= 8.0  # ran to timeout -- never falsely declared stable
+        assert value < 100_000
+
+    @pytest.mark.asyncio
+    async def test_noisy_flat_converges(self):
+        from conductress.tasks.task_mem_efficiency import quiesce_until_stable
+
+        # Jitter within the epsilon band (spread ~60 on ~100k = 0.06% < 0.1%) must
+        # still be treated as settled rather than resetting forever.
+        vals = [100_000, 100_040, 99_990, 100_010, 100_020, 100_000, 100_030, 99_995]
+        value, elapsed = await quiesce_until_stable(
+            self._seq_sampler(vals),
+            interval=1.0,
+            stable_samples=3,
+            rel_eps=0.001,
+            max_seconds=100,
+            sleep_fn=self._noop_sleep,
+        )
+        assert 99_900 <= value <= 100_100  # converged to the noisy plateau
+        assert elapsed < 100.0  # did not time out
+
+    @pytest.mark.asyncio
+    async def test_stops_at_plateau(self):
+        from conductress.tasks.task_mem_efficiency import quiesce_until_stable
+
+        # declines then flattens; last 3 deltas are ~0 -> stable
+        sampler = self._seq_sampler([100_000, 90_000, 85_000, 84_000, 84_000, 84_000, 84_000])
+        value, elapsed = await quiesce_until_stable(
+            sampler, interval=1.0, stable_samples=3, rel_eps=0.001, max_seconds=100, sleep_fn=self._noop_sleep
+        )
+        assert value == 84_000
+        assert elapsed == 6.0  # 6 polls to reach 3 consecutive stable deltas
+
+    @pytest.mark.asyncio
+    async def test_immediate_stable(self):
+        from conductress.tasks.task_mem_efficiency import quiesce_until_stable
+
+        sampler = self._seq_sampler([500, 500, 500, 500])  # already flat
+        value, elapsed = await quiesce_until_stable(
+            sampler, interval=1.0, stable_samples=3, rel_eps=0.001, max_seconds=100, sleep_fn=self._noop_sleep
+        )
+        assert value == 500
+        assert elapsed == 3.0
+
+    @pytest.mark.asyncio
+    async def test_times_out_when_never_stable(self):
+        from conductress.tasks.task_mem_efficiency import quiesce_until_stable
+
+        state = {"v": 1000}
+
+        async def ever_changing():
+            state["v"] -= 7  # always changes by > rel_eps
+            return state["v"]
+
+        value, elapsed = await quiesce_until_stable(
+            ever_changing, interval=1.0, stable_samples=3, rel_eps=0.001, max_seconds=5, sleep_fn=self._noop_sleep
+        )
+        assert elapsed >= 5.0  # bounded by max_seconds, did not hang
+        assert value < 1000
+
+
+class TestSettleThreading:
+    """settle must default off and thread through to the runner + serialization."""
+
+    def test_settle_defaults_off(self):
+        task = MemTaskData(
+            source=MANUALLY_UPLOADED,
+            specifier="unstable",
+            replicas=0,
+            note="t",
+            requirements={},
+            make_args="",
+            type="zadd",
+            val_sizes=[20],
+            has_expire=False,
+        )
+        assert task.settle is False
+        runner = task.prepare_task_runner([ServerInfo(ip="127.0.0.1", username="u", name="s")])
+        assert runner.settle is False
+
+    def test_settle_threads_through(self):
+        task = MemTaskData(
+            source=MANUALLY_UPLOADED,
+            specifier="unstable",
+            replicas=0,
+            note="t",
+            requirements={},
+            make_args="",
+            type="zadd",
+            val_sizes=[20],
+            has_expire=False,
+            settle=True,
+        )
+        runner = task.prepare_task_runner([ServerInfo(ip="127.0.0.1", username="u", name="s")])
+        assert runner.settle is True
+
+    def test_settle_survives_serialization(self):
+        import dataclasses
+
+        task = MemTaskData(
+            source=MANUALLY_UPLOADED,
+            specifier="unstable",
+            replicas=0,
+            note="t",
+            requirements={},
+            make_args="",
+            type="zadd",
+            val_sizes=[20],
+            has_expire=False,
+            settle=True,
+        )
+        d = dataclasses.asdict(task)
+        assert d["settle"] is True
+        # Mirror TaskQueue deserialization: pop init=False fields, then reconstruct.
+        d.pop("task_type", None)
+        d.pop("timestamp", None)
+        restored = MemTaskData(**d)
+        assert restored.settle is True
