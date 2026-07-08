@@ -4,7 +4,8 @@ import asyncio
 import datetime
 import logging
 import time
-from collections.abc import Coroutine
+from collections import deque
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -29,6 +30,62 @@ from conductress.utility import HumanByte, port_generator, print_pretty_header
 logger = logging.getLogger(__name__)
 
 
+# --- Quiesce-until-stable (opt-in) -------------------------------------------
+# Some features reclaim memory asynchronously in the background (e.g. zset
+# load-factor compaction, active-defrag). Sampling used_memory the instant a
+# populate finishes measures a transient, not the steady state. When enabled,
+# the memory task polls used_memory until it plateaus before sampling.
+SETTLE_POLL_INTERVAL_S = 1.0
+SETTLE_STABLE_SAMPLES = 3
+SETTLE_REL_EPS = 0.001  # 0.1%: consecutive samples this close count as "stable"
+SETTLE_MAX_SECONDS = 180.0
+
+
+def _window_stable(samples: "list[int]", rel_eps: float) -> bool:
+    """True if the spread (max-min) across `samples` is within `rel_eps` of the mean.
+
+    A windowed criterion (rather than pairwise consecutive deltas) absorbs bounded
+    jitter *and* catches slow monotonic drift: a steady creep smaller than the
+    per-poll threshold still accumulates past `rel_eps` across the window.
+    """
+    if not samples:
+        return False
+    spread = max(samples) - min(samples)
+    mean = sum(samples) / len(samples)
+    return spread <= max(1.0, mean) * rel_eps
+
+
+async def quiesce_until_stable(
+    sample_fn: Callable[[], Awaitable[int]],
+    *,
+    interval: float = SETTLE_POLL_INTERVAL_S,
+    stable_samples: int = SETTLE_STABLE_SAMPLES,
+    rel_eps: float = SETTLE_REL_EPS,
+    max_seconds: float = SETTLE_MAX_SECONDS,
+    sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> tuple[int, float]:
+    """Poll `sample_fn` until its value plateaus, returning (final_value, elapsed_s).
+
+    Stops once the spread (max-min) across the last `stable_samples + 1` readings is
+    within `rel_eps` of their mean, or when `max_seconds` elapses (whichever first).
+    The windowed spread test absorbs bounded noise while still catching a slow drift
+    that a pairwise consecutive-delta test would miss. Injecting `sample_fn`/`sleep_fn`
+    keeps this pure and unit-testable without a server.
+    """
+    window: "deque[int]" = deque(maxlen=stable_samples + 1)
+    value = await sample_fn()
+    window.append(value)
+    elapsed = 0.0
+    while elapsed < max_seconds:
+        await sleep_fn(interval)
+        elapsed += interval
+        value = await sample_fn()
+        window.append(value)
+        if len(window) == window.maxlen and _window_stable(list(window), rel_eps):
+            break
+    return value, elapsed
+
+
 @dataclass
 class MemTaskData(BaseTaskData):
     """data class for memory efficiency task"""
@@ -42,6 +99,7 @@ class MemTaskData(BaseTaskData):
     field_size: int = 0  # field name size (HSET only)
     user_data_bytes: int = 0  # per-item user data for overhead calculation
     populate_mode: str = "random"  # zadd insertion pattern: random | sequential | churn
+    settle: bool = False  # opt-in: quiesce until used_memory plateaus before sampling
 
     def short_description(self) -> str:
         description = self.type
@@ -70,6 +128,7 @@ class MemTaskData(BaseTaskData):
             self.field_size,
             self.user_data_bytes,
             self.populate_mode,
+            self.settle,
         )
 
 
@@ -94,6 +153,7 @@ class MemTaskRunner(BaseTaskRunner):
         field_size: int = 0,
         user_data_bytes: int = 0,
         populate_mode: str = "random",
+        settle: bool = False,
     ):
         super().__init__(task_name)
 
@@ -118,6 +178,7 @@ class MemTaskRunner(BaseTaskRunner):
         self.field_size = field_size
         self.user_data_bytes = user_data_bytes
         self.populate_mode = populate_mode
+        self.settle = settle
 
         # test data
         self.commit_hash: Optional[str] = None
@@ -252,6 +313,22 @@ class MemTaskRunner(BaseTaskRunner):
                 populate_mode=self.populate_mode,
             )
             populate(valkey.ip, valkey.port, workload)
+
+            # Opt-in: let background memory reclamation (e.g. zset compaction) settle
+            # so we sample steady-state memory rather than the post-populate transient.
+            if self.settle:
+
+                async def _sample_used_memory() -> int:
+                    info = await valkey.info("memory")
+                    return int(info["used_memory"])
+
+                settled_bytes, settle_secs = await quiesce_until_stable(_sample_used_memory)
+                self.logger.info(
+                    "Quiesce: used_memory settled at %d bytes after %.0fs (port %d)",
+                    settled_bytes,
+                    settle_secs,
+                    port,
+                )
 
             after_memory: dict[str, str] = await valkey.info("memory")
 
