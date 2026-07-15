@@ -1,6 +1,7 @@
 """Exporter: generates series.json for the dashboard from sweep state."""
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -330,6 +331,7 @@ def _build_annotations(
             if abs(delta) >= ANNOTATION_THRESHOLD:
                 annotation: dict[str, Any] = {
                     "commit": right.commit,
+                    "date": right.date,
                     "delta": round(delta, 4),
                     "workload": workload,
                     "type": "increase" if delta > 0 else "decrease",
@@ -345,6 +347,53 @@ def _build_annotations(
                 annotations.append(annotation)
 
     return annotations
+
+
+@dataclass
+class NotableSource:
+    """One sweep series feeding the combined notable-changes export.
+
+    Attributes:
+        state: Sweep state holding the series' completed points.
+        workload: Workload identifier (as shown on the dashboard).
+        metric: Metric identifier the series tracks ("throughput" or "memory").
+        lower_is_better: Whether a decrease is an improvement (True for memory).
+    """
+
+    state: SweepState
+    workload: str
+    metric: str
+    lower_is_better: bool = False
+
+
+def export_notable(sources: list[NotableSource], output_path: Path, platform: str) -> None:
+    """Export a combined notable-changes feed across workloads and metrics.
+
+    Aggregates pinpointed annotations (bisected to a single commit, |delta| >=
+    ANNOTATION_THRESHOLD) from every source series into one platform-level file,
+    each entry tagged with its workload and metric. Entries are ordered newest
+    first by commit date so the dashboard can render a recency-ordered feed and
+    merge feeds from multiple platforms by commit.
+    """
+    annotations: list[dict[str, Any]] = []
+    for source in sources:
+        planner = SweepPlanner(source.state)
+        for annotation in _build_annotations(source.state, planner, source.workload, source.lower_is_better):
+            annotation["metric"] = source.metric
+            annotations.append(annotation)
+
+    # Newest first; dates are YYYY-MM-DD strings so lexicographic order is chronological.
+    annotations.sort(key=lambda a: (a.get("date") or "", a["commit"]), reverse=True)
+
+    payload: dict[str, Any] = {
+        "metadata": {
+            "platform": platform,
+            "generated": datetime.now(timezone.utc).isoformat(),
+        },
+        "annotations": annotations,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2))
 
 
 # =============================================================================

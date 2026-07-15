@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conductress.sweep.exporter import export_series
+from conductress.sweep.exporter import NotableSource, export_notable, export_series
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
 
 
@@ -132,6 +132,14 @@ class TestExporter:
         assert regression["delta"] < 0
         assert regression["pr"] == 1847
 
+    def test_export_annotations_include_commit_date(self, tmp_path):
+        state = make_state_with_results()
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        data = json.loads(output.read_text())
+        regression = next(a for a in data["annotations"] if a["commit"] == "b")
+        assert regression["date"] == "2024-04-15"
+
     def test_export_empty_state(self, tmp_path):
         state = SweepState()
         output = tmp_path / "series.json"
@@ -158,3 +166,88 @@ class TestExporter:
         data = json.loads(output.read_text())
         commits = [p["commit"] for p in data["points"]]
         assert "d" not in commits
+
+
+def make_memory_state() -> SweepState:
+    """Create a state whose adjacent-commit change is an increase (bad for memory)."""
+    state = SweepState(
+        merge_commits=["a", "b", "c"],
+        commit_dates={"a": "2024-05-01", "b": "2024-08-20", "c": "2024-09-01"},
+    )
+    state.points["a"] = BenchmarkPoint(
+        commit="a",
+        date="2024-05-01",
+        value=100.0,
+        status=PointStatus.COMPLETED,
+    )
+    state.points["b"] = BenchmarkPoint(
+        commit="b",
+        date="2024-08-20",
+        value=110.0,
+        pr=2001,
+        pr_title="Grow per-key metadata",
+        status=PointStatus.COMPLETED,
+    )
+    return state
+
+
+class TestExportNotable:
+    """Tests for the combined notable-changes export."""
+
+    def test_aggregates_across_workloads_and_metrics(self, tmp_path):
+        sources = [
+            NotableSource(state=make_state_with_results(), workload="get-16b", metric="throughput"),
+            NotableSource(state=make_memory_state(), workload="set-m20", metric="memory", lower_is_better=True),
+        ]
+        output = tmp_path / "notable.json"
+        export_notable(sources, output, platform="test-platform")
+        data = json.loads(output.read_text())
+        assert data["metadata"]["platform"] == "test-platform"
+        pairs = {(a["workload"], a["metric"]) for a in data["annotations"]}
+        assert ("get-16b", "throughput") in pairs
+        assert ("set-m20", "memory") in pairs
+
+    def test_entries_sorted_newest_first(self, tmp_path):
+        sources = [
+            NotableSource(state=make_state_with_results(), workload="get-16b", metric="throughput"),
+            NotableSource(state=make_memory_state(), workload="set-m20", metric="memory", lower_is_better=True),
+        ]
+        output = tmp_path / "notable.json"
+        export_notable(sources, output, platform="test-platform")
+        data = json.loads(output.read_text())
+        dates = [a["date"] for a in data["annotations"]]
+        assert dates == sorted(dates, reverse=True)
+        # Memory entry (2024-08-20) is newer than throughput entry (2024-04-15)
+        assert data["annotations"][0]["metric"] == "memory"
+
+    def test_lower_is_better_polarity(self, tmp_path):
+        sources = [
+            NotableSource(state=make_memory_state(), workload="set-m20", metric="memory", lower_is_better=True),
+        ]
+        output = tmp_path / "notable.json"
+        export_notable(sources, output, platform="test-platform")
+        data = json.loads(output.read_text())
+        entry = next(a for a in data["annotations"] if a["commit"] == "b")
+        # +10% memory is an increase and NOT good
+        assert entry["type"] == "increase"
+        assert entry["good"] is False
+        assert entry["pr"] == 2001
+
+    def test_empty_sources_produce_valid_file(self, tmp_path):
+        output = tmp_path / "notable.json"
+        export_notable([], output, platform="test-platform")
+        data = json.loads(output.read_text())
+        assert data["annotations"] == []
+        assert data["metadata"]["platform"] == "test-platform"
+
+    def test_source_without_pinpointed_changes_contributes_nothing(self, tmp_path):
+        state = SweepState(
+            merge_commits=["a", "b"],
+            commit_dates={"a": "2024-01-01", "b": "2024-02-01"},
+        )
+        # Only one completed point — no adjacent pair, no annotations
+        state.points["a"] = BenchmarkPoint(commit="a", date="2024-01-01", value=100.0, status=PointStatus.COMPLETED)
+        output = tmp_path / "notable.json"
+        export_notable([NotableSource(state=state, workload="w", metric="throughput")], output, platform="p")
+        data = json.loads(output.read_text())
+        assert data["annotations"] == []
