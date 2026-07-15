@@ -118,3 +118,44 @@ class TestDashboardPublisher:
         workload_ids = [call.args[3] for call in mock_perf.call_args_list]
         assert "get-k16-v16-t7-p10" in workload_ids
         assert "get-k16-v64-t7-p10" in workload_ids
+
+    @patch("conductress.utility.subprocess.run")
+    def test_notable_export_includes_valkey_throughput_and_memory_only(self, mock_run):
+        """Notable feed aggregates Valkey throughput+memory series; Redis and latency are excluded."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        def make_coord(workload_id, metric_id, engine):
+            coord = MagicMock()
+            coord.workload_id = workload_id
+            coord.metric_id = metric_id
+            coord.engine = engine
+            coord.lower_is_better = metric_id != "throughput"
+            coord.state = MagicMock()
+            coord.export.return_value = 1
+            return coord
+
+        valkey_engine = MagicMock()
+        valkey_engine.source = "valkey"
+        redis_engine = MagicMock()
+        redis_engine.source = "redis"
+
+        coords = [
+            make_coord("get-k16-v16-t7-p10", "throughput", valkey_engine),
+            make_coord("set-m20", "memory", None),  # legacy state, no engine -> Valkey
+            make_coord("redis-get-k16-v16-t7-p10", "throughput", redis_engine),
+            make_coord("get-lat", "latency", valkey_engine),
+        ]
+        pub = DashboardPublisher("user@host:/path", coords)
+
+        with patch("conductress.sweep.exporter.export_perf_metrics"):
+            with patch("conductress.sweep.exporter.export_manifest"):
+                with patch("conductress.sweep.exporter.export_notable") as mock_notable:
+                    pub.on_task_completed(MagicMock())
+
+        mock_notable.assert_called_once()
+        sources = mock_notable.call_args.args[0]
+        included = {(s.workload, s.metric) for s in sources}
+        assert included == {("get-k16-v16-t7-p10", "throughput"), ("set-m20", "memory")}
+        # Output filename is platform-scoped
+        output_path = mock_notable.call_args.args[1]
+        assert output_path.name == f"notable-{pub._platform_id}.json"

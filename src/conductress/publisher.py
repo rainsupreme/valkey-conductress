@@ -75,9 +75,11 @@ class DashboardPublisher:
     def _publish(self) -> None:
         """Export all coordinator data + perf metrics + manifest, then rsync."""
         from conductress.sweep.exporter import (
+            NotableSource,
             export_cpu_profile,
             export_cpu_stacks_raw,
             export_manifest,
+            export_notable,
             export_perf_metrics,
         )
 
@@ -115,6 +117,22 @@ class DashboardPublisher:
                             repo=repo,
                             branch=branch,
                         )
+
+            # Export combined notable-changes feed (Valkey only — the feed celebrates or
+            # flags Valkey commits; other engines' series are tracked but not surfaced here).
+            notable_sources = [
+                NotableSource(
+                    state=coord.state,
+                    workload=coord.workload_id,
+                    metric=coord.metric_id,
+                    lower_is_better=coord.lower_is_better,
+                )
+                for coord in self.coordinators
+                if coord.metric_id in ("throughput", "memory") and (not coord.engine or coord.engine.source == "valkey")
+            ]
+            export_notable(
+                notable_sources, self._export_dir / f"notable-{self._platform_id}.json", self._platform_label
+            )
 
             # Export manifest with all workload IDs, categorized by metric
             all_workloads = list(dict.fromkeys((c.workload_id, c.metric_id) for c in self.coordinators))
