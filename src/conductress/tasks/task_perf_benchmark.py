@@ -73,16 +73,28 @@ def compute_aggregated_stats(per_run_rps: list[float]) -> tuple[float, float]:
 def should_stop_adaptive(per_run_rps: list[float], rep: int, min_reps: int, target_cv: float) -> bool:
     """Return True if adaptive precision target is met and we can stop early.
 
+    The stop criterion is the 95% confidence interval half-width of the mean,
+    expressed as a percentage of the mean (t-distribution). This accounts for
+    small sample sizes: raw CV understates uncertainty at low rep counts (at
+    n=3 the t multiplier is 4.30x, so CV 0.5% is really a ±1.24% CI). On
+    platforms with a bimodal between-restart distribution (Intel Xeon — see
+    docs/benchmark-precision-guide.md), a few reps landing on the same mode
+    can produce a deceptively low CV; the CI criterion makes such
+    false-certainty early stops much harder.
+
     Args:
         per_run_rps: RPS values collected so far.
         rep: Current repetition index (0-based).
         min_reps: Minimum number of reps before early exit is allowed.
-        target_cv: Target CV% threshold. 0 = disabled.
+        target_cv: Target precision: 95% CI half-width as % of mean. 0 = disabled.
     """
     if target_cv <= 0 or rep < min_reps - 1 or len(per_run_rps) < 2:
         return False
-    cv = stdev(per_run_rps) / mean(per_run_rps) * 100
-    return cv <= target_cv
+    mean_rps, ci_95 = compute_aggregated_stats(per_run_rps)
+    if mean_rps == 0:
+        return False
+    # bool() because scipy's t.ppf yields a numpy float, making <= a numpy bool
+    return bool((ci_95 / mean_rps) * 100 <= target_cv)
 
 
 @dataclass
@@ -101,7 +113,8 @@ class PerfTaskData(BaseTaskData):
     key_size: int = 0  # target key size in bytes, 0 = standard keys
     repetitions: int = 1  # number of independent benchmark runs (min reps in adaptive mode)
     max_reps: int = 0  # 0 = fixed reps; >0 = adaptive mode upper limit
-    target_cv: float = 0.0  # adaptive: stop early when CV% <= this; 0 = disabled
+    target_cv: float = 0.0  # adaptive: stop early when 95% CI half-width (% of mean) <= this; 0 = disabled
+    # (field name kept as target_cv for queued-task schema compatibility)
     sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
@@ -537,7 +550,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 "preparing: %s %s",
                 self.title,
                 (
-                    f"({effective_reps} max repetitions, target CV {self.target_cv}%)"
+                    f"({effective_reps} max repetitions, target ±{self.target_cv}% CI95)"
                     if self.target_cv > 0
                     else f"({self.repetitions} repetitions)"
                 ),
@@ -647,9 +660,10 @@ class PerfTaskRunner(BaseTaskRunner):
 
                 # Adaptive early exit
                 if should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
+                    mean_rps, ci_95 = compute_aggregated_stats(per_run_rps)
                     self.logger.info(
-                        "Target CV reached: %.2f%% <= %.2f%% after %d reps",
-                        stdev(per_run_rps) / mean(per_run_rps) * 100,
+                        "Precision target reached: ±%.2f%% (95%% CI) <= %.2f%% after %d reps",
+                        ci_95 / mean_rps * 100,
                         self.target_cv,
                         rep + 1,
                     )
