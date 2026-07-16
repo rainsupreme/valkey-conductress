@@ -90,7 +90,13 @@ SWEEP_IO_THREADS = 7
 SWEEP_PIPELINING = 10
 SWEEP_WARMUP = 5
 SWEEP_DURATION = 30
-SWEEP_REPETITIONS = 3
+# Adaptive repetitions: run at least SWEEP_REPETITIONS reps, stop early once the
+# 95% CI half-width of the mean is <= SWEEP_TARGET_CV (% of mean), up to
+# SWEEP_MAX_REPS. Min is 5 (not 3) because Intel shows a bimodal
+# between-restart distribution (docs/benchmark-precision-guide.md): with 3 reps
+# there is a ~25% chance all land on one mode, freezing in a mean several % off
+# with a deceptively tight interval.
+SWEEP_REPETITIONS = 5
 SWEEP_MAX_REPS = 10
 SWEEP_TARGET_CV = 0.5
 # Minimum |delta| to annotate a pinpointed change as "notable" in exported data.
