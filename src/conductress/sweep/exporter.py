@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from conductress.config import ANNOTATION_THRESHOLD
 from conductress.heap_profiler import recategorize_from_stacks
-from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
+from conductress.sweep.planner import BenchmarkPoint, PointStatus, Segment, SweepPlanner, SweepState
 
 # =============================================================================
 # Perf metric definitions and normalization
@@ -329,6 +329,25 @@ def _build_annotations(
                 continue
             delta = (right.value - left.value) / left.value
             if abs(delta) >= ANNOTATION_THRESHOLD:
+                # Gate on statistical significance (Welch's t-test via Segment).
+                # With noisy points (e.g. bimodal Intel, CV 3-7%) adjacent-commit
+                # deltas exceed the threshold from noise alone; require the
+                # difference to also be significant given each point's CV and
+                # rep count. Legacy points without CV fall back to the
+                # threshold-only check inside is_significant.
+                segment = Segment(
+                    left_commit=left.commit,
+                    right_commit=right.commit,
+                    left_value=left.value,
+                    right_value=right.value,
+                    commit_count=0,
+                    left_cv=left.cv or 0.0,
+                    right_cv=right.cv or 0.0,
+                    left_reps=left.reps,
+                    right_reps=right.reps,
+                )
+                if not segment.is_significant:
+                    continue
                 annotation: dict[str, Any] = {
                     "commit": right.commit,
                     "date": right.date,
