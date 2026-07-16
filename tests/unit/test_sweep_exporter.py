@@ -140,6 +140,64 @@ class TestExporter:
         regression = next(a for a in data["annotations"] if a["commit"] == "b")
         assert regression["date"] == "2024-04-15"
 
+    def test_annotation_suppressed_when_not_significant(self, tmp_path):
+        """A >=4% delta between noisy points (high CV) must not be annotated.
+
+        Simulates the bimodal-Intel scenario: adjacent commits differ by 5%
+        but both points have CV 7% over 10 reps — the delta is noise, not a
+        pinpointed change (Welch's t-test fails at p<0.05).
+        """
+        state = SweepState(
+            merge_commits=["a", "b"],
+            commit_dates={"a": "2024-03-20", "b": "2024-04-15"},
+        )
+        state.points["a"] = BenchmarkPoint(
+            commit="a", date="2024-03-20", value=1_000_000, cv=7.0, reps=10, status=PointStatus.COMPLETED
+        )
+        state.points["b"] = BenchmarkPoint(
+            commit="b", date="2024-04-15", value=1_050_000, cv=7.0, reps=10, status=PointStatus.COMPLETED
+        )
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        data = json.loads(output.read_text())
+        assert data["annotations"] == []
+
+    def test_annotation_kept_when_significant(self, tmp_path):
+        """The same 5% delta with tight points (low CV) is annotated."""
+        state = SweepState(
+            merge_commits=["a", "b"],
+            commit_dates={"a": "2024-03-20", "b": "2024-04-15"},
+        )
+        state.points["a"] = BenchmarkPoint(
+            commit="a", date="2024-03-20", value=1_000_000, cv=0.5, reps=10, status=PointStatus.COMPLETED
+        )
+        state.points["b"] = BenchmarkPoint(
+            commit="b", date="2024-04-15", value=1_050_000, cv=0.5, reps=10, status=PointStatus.COMPLETED
+        )
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        data = json.loads(output.read_text())
+        assert len(data["annotations"]) == 1
+        assert data["annotations"][0]["commit"] == "b"
+
+    def test_annotation_legacy_points_without_cv_fall_back_to_threshold(self, tmp_path):
+        """Points with no CV (legacy data) keep the threshold-only behavior."""
+        state = SweepState(
+            merge_commits=["a", "b"],
+            commit_dates={"a": "2024-03-20", "b": "2024-04-15"},
+        )
+        state.points["a"] = BenchmarkPoint(
+            commit="a", date="2024-03-20", value=1_000_000, cv=None, status=PointStatus.COMPLETED
+        )
+        state.points["b"] = BenchmarkPoint(
+            commit="b", date="2024-04-15", value=1_050_000, cv=None, status=PointStatus.COMPLETED
+        )
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        data = json.loads(output.read_text())
+        assert len(data["annotations"]) == 1
+        assert data["annotations"][0]["commit"] == "b"
+
     def test_export_empty_state(self, tmp_path):
         state = SweepState()
         output = tmp_path / "series.json"
