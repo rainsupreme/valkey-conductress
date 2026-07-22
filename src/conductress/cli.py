@@ -4,12 +4,16 @@ import argparse
 import itertools
 import logging
 import sys
-from typing import List, Optional, Tuple
+from dataclasses import replace
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from . import config
 from .task_queue import TaskQueue
 from .tasks.task_perf_benchmark import PerfTaskData
 from .utility import HumanByte, HumanTime
+
+if TYPE_CHECKING:
+    from .sweep.memory_coordinator import MemoryWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +165,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--types",
         default="set,sadd,zadd,hset",
         help="Comma-separated data types (default: set,sadd,zadd,hset)",
+    )
+    mem_parser.add_argument(
+        "--sizes",
+        default="",
+        help="Comma-separated value/member sizes in bytes (e.g., 8,20,64). One task is queued per "
+        "type per size, with per-item user data derived per type (set: key+value, zadd: member+8 "
+        "score bytes, sadd: member, hset: field+value). Default: sizes from the standard workload "
+        "config (set v64, zadd m20, sadd m20, hset f64-v64).",
     )
     mem_parser.add_argument("--expire", action="store_true", help="Also test with expiration enabled")
     mem_parser.add_argument(
@@ -319,6 +331,22 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     return 0
 
 
+def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
+    """Per-item user data bytes for a memory workload at a custom value/member size.
+
+    set: key + value; zadd: member + score double; sadd: member; hset: field + value.
+    """
+    if workload.command == "set":
+        return workload.key_size + value_size
+    if workload.command == "zadd":
+        return value_size + config.MEM_TEST_SCORE_SIZE
+    if workload.command == "sadd":
+        return value_size
+    if workload.command == "hset":
+        return workload.field_size + value_size
+    raise ValueError(f"Unknown memory workload command: {workload.command}")
+
+
 def handle_queue_add_memory(args: argparse.Namespace) -> int:
     """Handle 'queue add-memory': submit memory efficiency tasks."""
     from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
@@ -344,6 +372,27 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
     if not workloads:
         print("Error: No matching workloads found.", file=sys.stderr)
         return 1
+
+    if args.sizes:
+        try:
+            sizes = _parse_comma_separated_bytes(args.sizes, "sizes")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        # Re-derive one workload per (type, size) pair, keeping each type's standard
+        # key/field sizes and expire variants, with per-item user data computed per size.
+        base_workloads = workloads
+        workloads = []
+        for wl in base_workloads:
+            for size in sizes:
+                workloads.append(
+                    replace(
+                        wl,
+                        value_size=size,
+                        label=f"{wl.command}-custom-{size}",
+                        user_data_bytes=_memory_user_data_bytes(wl, size),
+                    )
+                )
 
     queue = TaskQueue()
     for wl in workloads:
