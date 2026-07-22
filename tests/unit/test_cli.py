@@ -406,3 +406,97 @@ class TestQueueAddMemorySubcommand:
     def test_add_memory_invalid_type(self):
         exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "badtype"])
         assert exit_code == 1
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_custom_sizes_task_count(self, mock_queue_cls):
+        """--sizes queues one task per type per size."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add-memory",
+                "--source",
+                "repo1",
+                "--specifier",
+                "x",
+                "--types",
+                "zadd,sadd",
+                "--sizes",
+                "8,20,64",
+            ]
+        )
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 6
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_custom_sizes_user_data_bytes(self, mock_queue_cls):
+        """user_data_bytes is derived per type at each custom size (zadd adds score bytes)."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "zadd", "--sizes", "40"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.val_sizes == [40]
+        assert task.user_data_bytes == 40 + config.MEM_TEST_SCORE_SIZE
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_custom_sizes_set_includes_key(self, mock_queue_cls):
+        """set user data at a custom size includes the workload's key size."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set", "--sizes", "100"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.user_data_bytes == task.key_size + 100
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_custom_sizes_with_expire(self, mock_queue_cls):
+        """--sizes composes with --expire (expire variants also get each size)."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add-memory",
+                "--source",
+                "repo1",
+                "--specifier",
+                "x",
+                "--types",
+                "set",
+                "--sizes",
+                "16,64",
+                "--expire",
+            ]
+        )
+        assert exit_code == 0
+        assert mock_queue.submit_task.call_count == 4
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_custom_sizes_human_units(self, mock_queue_cls):
+        """--sizes accepts human-readable byte units like 1KB."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "sadd", "--sizes", "1KB"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.val_sizes == [1024]
+        assert task.user_data_bytes == 1024
+
+    def test_add_memory_invalid_sizes(self):
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "zadd", "--sizes", "abc"]
+        )
+        assert exit_code == 1
