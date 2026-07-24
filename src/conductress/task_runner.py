@@ -6,6 +6,8 @@ import json
 import logging
 import time
 import traceback
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Protocol
@@ -13,8 +15,16 @@ from typing import Optional, Protocol
 from conductress.sweep_config import load_sweep_config
 from conductress.task_queue import BaseTaskRunner
 
-from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, QUEUE_POLL_INTERVAL, get_servers
+from .config import (
+    CONDUCTRESS_FAILED_DIR,
+    CONDUCTRESS_FAILED_LOG,
+    CONDUCTRESS_LOG,
+    CONDUCTRESS_OUTPUT,
+    QUEUE_POLL_INTERVAL,
+    get_servers,
+)
 from .file_protocol import FileProtocol
+from .nudge_hook import NudgeHook
 from .server import Server
 from .task_queue import BaseTaskData, TaskQueue
 
@@ -38,6 +48,8 @@ class TaskRunner:
         memory_sweep: bool = False,
         repo_path: Optional[Path] = None,
         publish_target: Optional[str] = None,
+        nudge_url: Optional[str] = None,
+        nudge_on: Optional[set] = None,
     ) -> None:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
@@ -129,6 +141,8 @@ class TaskRunner:
             coordinators = [s for s in self._subscribers if isinstance(s, BaseSweepCoordinator)]
             publisher = DashboardPublisher(publish_target, coordinators)
             self._subscribers.append(publisher)
+        if nudge_url:
+            self._subscribers.append(NudgeHook(nudge_url, events=nudge_on))
 
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task, ensuring CPU allocations are released on failure."""
