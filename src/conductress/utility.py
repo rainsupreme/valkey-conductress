@@ -1,4 +1,5 @@
 import logging
+import re
 
 """Misc utility functions: Printing, formatting, command execution, etc."""
 
@@ -336,3 +337,33 @@ def datetime_to_task_id(dt) -> str:
 def task_id_to_datetime(task_id: str):
     """Convert task_id string to datetime (timestamp only, no suffix)."""
     return datetime.strptime(task_id, "%Y.%m.%d_%H.%M.%S.%f")
+
+
+_CPULIST_RE = re.compile(r"^[0-9]+(?:[-,][0-9]+)*$")
+
+
+def validate_cpulist(cpulist: str) -> None:
+    """Validate cpulist syntax (digits, commas, dashes only).
+
+    Raises ValueError on malformed input. Does NOT validate against host topology
+    (the tool trusts the expert user).
+    """
+    if not cpulist:
+        return
+    if not _CPULIST_RE.match(cpulist):
+        raise ValueError(
+            f"Invalid cpulist '{cpulist}': must contain only digits, commas, " f"and dashes (e.g. '0-3,8-11')"
+        )
+
+
+def parse_cpulist(cpulist: str) -> list[int]:
+    """Expand a cpulist string (e.g. '0-3,8,10-11') into a sorted list of CPU IDs."""
+    validate_cpulist(cpulist)
+    cpus: list[int] = []
+    for part in cpulist.split(","):
+        if "-" in part:
+            start, end = part.split("-", 1)
+            cpus.extend(range(int(start), int(end) + 1))
+        else:
+            cpus.append(int(part))
+    return sorted(cpus)

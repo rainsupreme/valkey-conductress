@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from . import config
 from .task_queue import TaskQueue
 from .tasks.task_perf_benchmark import PerfTaskData
-from .utility import HumanByte, HumanTime
+from .utility import HumanByte, HumanTime, validate_cpulist
 
 if TYPE_CHECKING:
     from .sweep.memory_coordinator import MemoryWorkload
@@ -136,6 +136,17 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         help="Enable perf stat hardware counter collection",
     )
     parser.add_argument("--no-preload", action="store_true", help="Disable key preloading")
+    parser.add_argument(
+        "--server-cpus",
+        default="",
+        help="Expert: explicit cpulist override for server (e.g. '0-3,8-11'), " "bypasses topology-aware allocation",
+    )
+    parser.add_argument(
+        "--client-cpus",
+        default="",
+        help="Expert: explicit cpulist override for benchmark client (e.g. '16-23'), "
+        "bypasses topology-aware allocation",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -268,6 +279,18 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
+    # Validate CPU override syntax (reject malformed, don't validate topology)
+    try:
+        validate_cpulist(args.server_cpus)
+    except ValueError as e:
+        print(f"Error (--server-cpus): {e}", file=sys.stderr)
+        return 1
+    try:
+        validate_cpulist(args.client_cpus)
+    except ValueError as e:
+        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+        return 1
+
     combinations = generate_task_combinations(tests, sizes, io_threads, pipelining, key_sizes)
 
     queue = TaskQueue()
@@ -290,6 +313,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             preload_keys=not args.no_preload,
             key_size=key_size,
             repetitions=args.repetitions,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
         )
         queue.submit_task(task)
 

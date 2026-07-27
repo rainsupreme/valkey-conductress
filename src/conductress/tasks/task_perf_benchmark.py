@@ -116,6 +116,8 @@ class PerfTaskData(BaseTaskData):
     target_cv: float = 0.0  # adaptive: stop early when 95% CI half-width (% of mean) <= this; 0 = disabled
     # (field name kept as target_cv for queued-task schema compatibility)
     sweep_commit: str = ""  # non-empty marks this as a sweep task
+    server_cpu_override: str = ""  # expert: explicit cpulist for server, bypasses topology-aware allocation
+    benchmark_cpu_override: str = ""  # expert: explicit cpulist for benchmark client, bypasses allocation
 
     def __post_init__(self):
         super().__post_init__()
@@ -152,6 +154,8 @@ class PerfTaskData(BaseTaskData):
             repetitions=self.repetitions,
             max_reps=self.max_reps,
             target_cv=self.target_cv,
+            server_cpu_override=self.server_cpu_override,
+            benchmark_cpu_override=self.benchmark_cpu_override,
         )
 
 
@@ -288,6 +292,8 @@ class PerfTaskRunner(BaseTaskRunner):
         repetitions: int = 1,
         max_reps: int = 0,
         target_cv: float = 0.0,
+        server_cpu_override: str = "",
+        benchmark_cpu_override: str = "",
     ):
         super().__init__(task_name)
 
@@ -315,6 +321,8 @@ class PerfTaskRunner(BaseTaskRunner):
         self.repetitions = repetitions
         self.max_reps = max_reps
         self.target_cv = target_cv
+        self.server_cpu_override = server_cpu_override
+        self.benchmark_cpu_override = benchmark_cpu_override
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
@@ -567,6 +575,7 @@ class PerfTaskRunner(BaseTaskRunner):
             self.specifier,
             self.io_threads,
             self.make_args,
+            server_cpu_override=self.server_cpu_override,
         )
 
         benchmark_alloc_tag = None
@@ -690,6 +699,10 @@ class PerfTaskRunner(BaseTaskRunner):
 
     def _allocate_benchmark_cpus(self, client: "Server", server: "Server") -> Optional[AllocationTag]:
         """Allocate CPUs for the benchmark client. Returns the tag or None."""
+        if self.benchmark_cpu_override:
+            self.logger.info("Using explicit benchmark CPU override: %s", self.benchmark_cpu_override)
+            return None
+
         target_ip = server.ip
         if not self._is_local_benchmark(target_ip):
             return None
@@ -729,7 +742,15 @@ class PerfTaskRunner(BaseTaskRunner):
         # PERF_BENCH_KEYSPACE); only zpop widens this today.
         keyspace = self.test.keyspace or PERF_BENCH_KEYSPACE
 
-        if benchmark_alloc_tag and self._is_local_benchmark(target_ip):
+        if self.benchmark_cpu_override:
+            # Expert override: use the explicit cpulist verbatim
+            return (
+                f"numactl --physcpubind={self.benchmark_cpu_override} --membind={net_numa} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
+                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+            )
+        elif benchmark_alloc_tag and self._is_local_benchmark(target_ip):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
             benchmark_cpu_list = ",".join(map(str, allocated)) if allocated else ""
             return (
