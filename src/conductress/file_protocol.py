@@ -142,6 +142,17 @@ class FileProtocol:
         if self.metrics_file.exists():
             shutil.copy2(self.metrics_file, result_dir / f"metrics_{self.role_id}.jsonl")
 
+        # Persist CPU profile stacks when present (ad-hoc tasks produce these
+        # but previously only sweep coordinator extracted them from output.jsonl)
+        cpu_stacks_main = results.data.get("cpu_stacks_main")
+        if cpu_stacks_main:
+            with open(result_dir / "cpu_stacks_main.json", "w", encoding="utf-8") as f:
+                json.dump(cpu_stacks_main, f)
+        cpu_stacks_io = results.data.get("cpu_stacks_io")
+        if cpu_stacks_io:
+            with open(result_dir / "cpu_stacks_io.json", "w", encoding="utf-8") as f:
+                json.dump(cpu_stacks_io, f)
+
         # Write to output file
         os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
         with open(CONDUCTRESS_OUTPUT, "a", encoding="utf-8") as f:
