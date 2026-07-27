@@ -294,3 +294,27 @@ class TestOverrideBypassesAllocator:
         runner = task.prepare_task_runner([config.ServerInfo(ip="127.0.0.1", username="")])
         assert runner.server_cpu_override == "0-8"
         assert runner.benchmark_cpu_override == "96-191"
+
+
+class TestOverrideMembindFollowsCpus:
+    """The benchmark membind must follow the override CPUs' NUMA node(s)."""
+
+    def test_numa_nodes_for_cpus(self):
+        from conductress.cpu_allocator import CpuAllocator
+
+        alloc = CpuAllocator()
+        alloc.register_host(
+            "127.0.0.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: [0, 1, 2, 3], 1: [4, 5, 6, 7]},
+        )
+        assert alloc.get_numa_nodes_for_cpus("127.0.0.1", [0, 1]) == [0]
+        assert alloc.get_numa_nodes_for_cpus("127.0.0.1", [5]) == [1]
+        assert alloc.get_numa_nodes_for_cpus("127.0.0.1", [1, 6]) == [0, 1]
+        assert alloc.get_numa_nodes_for_cpus("127.0.0.1", []) == []
+
+    def test_unknown_host_returns_empty(self):
+        from conductress.cpu_allocator import CpuAllocator
+
+        alloc = CpuAllocator()
+        assert alloc.get_numa_nodes_for_cpus("10.0.0.9", [0]) == []
