@@ -13,13 +13,7 @@ from typing import Optional, Protocol
 from conductress.sweep_config import load_sweep_config
 from conductress.task_queue import BaseTaskRunner
 
-from .config import (
-    CONDUCTRESS_FAILED_DIR,
-    CONDUCTRESS_FAILED_LOG,
-    CONDUCTRESS_LOG,
-    QUEUE_POLL_INTERVAL,
-    get_servers,
-)
+from .config import CONDUCTRESS_FAILED_DIR, CONDUCTRESS_FAILED_LOG, CONDUCTRESS_LOG, QUEUE_POLL_INTERVAL, get_servers
 from .file_protocol import FileProtocol
 from .nudge_hook import NudgeHook
 from .server import Server
