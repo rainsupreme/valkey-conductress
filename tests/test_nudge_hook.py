@@ -1,30 +1,35 @@
 """Tests for the NudgeHook HTTP webhook subscriber."""
 
 import json
-import os
 import threading
 import urllib.error
 import urllib.request
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from conductress.config import CONDUCTRESS_OUTPUT
+from conductress import nudge_hook
 from conductress.nudge_hook import NudgeHook
 from conductress.tasks.task_perf_benchmark import PerfTaskData
 
 
 @pytest.fixture(autouse=True)
-def isolate_config(monkeypatch):
-    """Ensure test_cli.py pollution (direct config.REPO_NAMES modification) doesn't affect our tests."""
+def isolate_config(monkeypatch, tmp_path):
+    """Isolate tests from real Conductress output data and config pollution.
+
+    Monkeypatches CONDUCTRESS_OUTPUT in the nudge_hook module to a tmp_path
+    file, preventing accidental deletion or modification of real output data.
+    Also isolates from config.REPO_NAMES pollution from other test modules.
+    """
     import conductress.config as cfg
 
     monkeypatch.setattr(cfg, "REPO_NAMES", ["valkey", "rainsupreme", "zuiderkwast", "JimB123"])
     monkeypatch.setattr(cfg, "MANUALLY_UPLOADED", "manually_uploaded")
-    Path(CONDUCTRESS_OUTPUT).unlink(missing_ok=True)
+    monkeypatch.setattr(
+        "conductress.nudge_hook.CONDUCTRESS_OUTPUT",
+        str(tmp_path / "output.jsonl"),
+    )
     yield
-    Path(CONDUCTRESS_OUTPUT).unlink(missing_ok=True)
 
 
 def _make_perf_task() -> PerfTaskData:
@@ -97,13 +102,12 @@ class TestNudgeHookPayload:
         assert payload["pipelining"] == 10
 
     @patch("conductress.nudge_hook.logger")
-    def test_payload_includes_results_from_output_log(self, mock_logger, tmp_path):
+    def test_payload_includes_results_from_output_log(self, mock_logger):
         """When a result exists in the output log, score and data are included."""
         hook = NudgeHook("http://example.com/nudge")
         task = _make_perf_task()
 
-        # Write a result line to the output log
-        os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
+        # Write a result line to the output log (now points to tmp_path via fixture)
         result_entry = {
             "task_id": task.task_id,
             "score": 3295847.0,
@@ -118,7 +122,7 @@ class TestNudgeHookPayload:
             "features": {},
             "task_type": "perf_runner",
         }
-        with open(CONDUCTRESS_OUTPUT, "a") as f:
+        with open(nudge_hook.CONDUCTRESS_OUTPUT, "a") as f:
             f.write(json.dumps(result_entry) + "\n")
 
         with patch.object(hook, "_send") as mock_send:
@@ -167,8 +171,7 @@ class TestNudgeHookReadResults:
             "features": {},
             "task_type": "perf_runner",
         }
-        os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
-        with open(CONDUCTRESS_OUTPUT, "w") as f:
+        with open(nudge_hook.CONDUCTRESS_OUTPUT, "w") as f:
             f.write(
                 json.dumps(
                     {
@@ -193,8 +196,7 @@ class TestNudgeHookReadResults:
         assert result["commit_hash"] == "def67890"
 
     def test_returns_none_when_no_match(self):
-        os.makedirs(os.path.dirname(CONDUCTRESS_OUTPUT), exist_ok=True)
-        with open(CONDUCTRESS_OUTPUT, "w") as f:
+        with open(nudge_hook.CONDUCTRESS_OUTPUT, "w") as f:
             f.write(
                 json.dumps(
                     {
@@ -354,6 +356,23 @@ class TestNudgeHookQueueEmptyDedupe:
             # Task failure resets the flag
             hook.on_task_failed(task)
             assert hook._empty_nudged is False
+
+    def test_empty_nudge_fires_twice_after_task_without_completed_subscription(self):
+        """When nudge-on is 'empty' only, on_task_completed must still reset
+        _empty_nudged so the second empty transition fires.
+
+        This is the regression test for the logic bug where _empty_nudged reset
+        was inside the 'completed' event-subscription guard. Without the fix,
+        the flag would remain True after the first idle period, and the second
+        on_queue_empty would be deduped (no send).
+        """
+        hook = NudgeHook("http://example.com/nudge", events={"empty"})
+        sends = []
+        with patch.object(hook, "_send", side_effect=lambda p: sends.append(p)):
+            hook.on_queue_empty()  # fires: send #1
+            hook.on_task_completed(_make_perf_task())  # no send (completed not subscribed)
+            hook.on_queue_empty()  # fires again: send #2
+        assert len(sends) == 2
 
 
 class TestNudgeHookTimestamp:

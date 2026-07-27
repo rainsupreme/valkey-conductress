@@ -39,13 +39,13 @@ def main() -> None:
         "--nudge-url",
         type=str,
         default=None,
-        help="HTTP endpoint to POST task-completion 'nudge' notifications to (e.g. https://openmesh.ai/api/nudge).",
+        help="HTTP endpoint to POST task-completion 'nudge' notifications to (e.g. http://localhost:8080/hooks/nudge).",
     )
     run_parser.add_argument(
         "--nudge-on",
         type=str,
         default="completed,failed,empty",
-        help="Comma-separated event types that trigger a nudge: completed, failed, empty (default: all).",
+        help="Comma-separated event types that trigger a nudge: completed, failed, empty (default: all). Unrecognized event names are silently ignored.",
     )
     subparsers.add_parser("setup", help="Run setup/bootstrap")
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")

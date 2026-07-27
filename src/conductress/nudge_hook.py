@@ -57,19 +57,21 @@ class NudgeHook:
 
     def on_task_completed(self, task: BaseTaskData) -> None:
         """Send an HTTP POST with results when a task completes successfully."""
+        # A task just ran — the queue was non-empty. Clear the empty-nudge flag
+        # unconditionally (even if "completed" is not in the subscribed events set)
+        # so that a subsequent on_queue_empty call can fire once.
+        self._empty_nudged = False
         if "completed" in self._events:
-            # A task just ran — the queue was non-empty. Clear the empty-nudge flag
-            # so that a subsequent on_queue_empty call can fire once.
-            self._empty_nudged = False
             payload = self._build_task_payload("completed", task)
             self._send(payload)
 
     def on_task_failed(self, task: BaseTaskData) -> None:
         """Send an HTTP POST with task info when a task fails."""
+        # A task just ran — the queue was non-empty. Clear the empty-nudge flag
+        # unconditionally (even if "failed" is not in the subscribed events set)
+        # so that a subsequent on_queue_empty call can fire once.
+        self._empty_nudged = False
         if "failed" in self._events:
-            # A task just ran — the queue was non-empty. Clear the empty-nudge flag
-            # so that a subsequent on_queue_empty call can fire once.
-            self._empty_nudged = False
             payload = self._build_task_payload("failed", task)
             self._send(payload)
 
