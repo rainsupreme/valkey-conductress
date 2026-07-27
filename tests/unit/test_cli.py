@@ -300,20 +300,36 @@ class TestQueueListSubcommand:
         exit_code = main(["queue", "list"])
         assert exit_code == 0
 
-    @patch("conductress.cli.TaskQueue")
-    def test_queue_no_subcommand_defaults_to_list(self, mock_queue_cls):
-        """main(["queue"]) with no subcommand should default to list."""
-        mock_queue = MagicMock()
-        mock_queue.get_all_tasks.return_value = []
-        mock_queue_cls.return_value = mock_queue
+    def test_queue_no_subcommand_defaults_to_list(self, monkeypatch):
+        """main(["queue"]) with no subcommand preserves default-to-list behavior."""
+        called = {}
+        import conductress.cli as cli_mod
 
+        def fake_list(args):
+            called["list"] = True
+            return 0
+
+        monkeypatch.setattr(cli_mod, "handle_queue_list", fake_list)
         exit_code = main(["queue"])
         assert exit_code == 0
+        assert called.get("list") is True
 
     def test_no_subcommand_returns_exit_code_1(self):
         """main([]) with no subcommand should return exit code 1."""
         exit_code = main([])
         assert exit_code == 1
+
+    def test_queue_help_shows_subcommands(self, capsys):
+        """build_parser() queue --help lists all subcommands with descriptions."""
+        from conductress.cli import build_parser
+
+        parser = build_parser()
+        # Simulate --help by formatting the queue subparser
+        queue_parser = parser._subparsers._actions[1].choices["queue"]
+        queue_parser.print_help()
+        captured = capsys.readouterr()
+        for subcmd in ("list", "add", "add-memory", "add-latency", "remove", "clear"):
+            assert subcmd in captured.out
 
 
 class TestQueueRemoveSubcommand:

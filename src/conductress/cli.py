@@ -159,7 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # queue subcommand with its own subcommands
     queue_parser = subparsers.add_parser("queue", help="Manage the task queue")
-    queue_sub = queue_parser.add_subparsers(dest="queue_command")
+    queue_sub = queue_parser.add_subparsers(dest="queue_command", title="commands")
 
     # queue list
     queue_sub.add_parser("list", help="List all pending tasks")
@@ -505,7 +505,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "queue":
         if args.queue_command is None:
-            # Default: list
+            # Bare 'conductress queue' defaults to list (preserves original
+            # behavior relied on by scripts/integration tests). The improved
+            # subcommand help remains available via 'conductress queue --help'.
             return handle_queue_list(args)
         elif args.queue_command == "list":
             return handle_queue_list(args)
