@@ -47,6 +47,7 @@ class MetricData:
     metrics: dict[str, Any]  # name-value pairs for flexible metrics
     timestamp: float = field(default_factory=time.time)
     source: str = "client"  # role identifier: "client", "server", "primary", "replica", etc.
+    rep: Optional[int] = None  # 1-based repetition index (None for legacy data)
 
 
 @dataclass

@@ -414,3 +414,44 @@ class TestFileProtocol:
         assert len(server_metrics) == 1
         assert client_metrics[0].metrics["client_rps"] == 1000.0
         assert server_metrics[0].metrics["server_cpu"] == 85.0
+
+    def test_metric_rep_field_written_and_read(self):
+        """Test that rep field is persisted in JSONL and read back correctly."""
+        protocol = FileProtocol("rep_test", role_id="client", base_dir=self.tmp_path)
+
+        # Simulate a 2-rep run: 3 samples in rep 1, 2 samples in rep 2
+        for i in range(3):
+            protocol.append_metric(MetricData(metrics={"rps": 1000.0 + i}, rep=1))
+        for i in range(2):
+            protocol.append_metric(MetricData(metrics={"rps": 2000.0 + i}, rep=2))
+
+        read_metrics = protocol.read_metrics()
+        assert len(read_metrics) == 5
+        assert all(m.rep == 1 for m in read_metrics[:3])
+        assert all(m.rep == 2 for m in read_metrics[3:])
+
+    def test_metric_rep_field_backward_compat(self):
+        """Test that legacy JSONL lines without rep load with rep=None."""
+        protocol = FileProtocol("compat_test", role_id="client", base_dir=self.tmp_path)
+
+        # Write a legacy line (no rep key) directly
+        import json as json_mod
+
+        with open(protocol.metrics_file, "w") as f:
+            f.write(json_mod.dumps({"metrics": {"rps": 500.0}, "timestamp": 1000.0, "source": "client"}) + "\n")
+
+        read_metrics = protocol.read_metrics()
+        assert len(read_metrics) == 1
+        assert read_metrics[0].rep is None
+        assert read_metrics[0].metrics["rps"] == 500.0
+
+    def test_metric_rep_field_in_jsonl_format(self):
+        """Test that the rep field appears in raw JSONL output."""
+        protocol = FileProtocol("format_rep_test", role_id="client", base_dir=self.tmp_path)
+
+        protocol.append_metric(MetricData(metrics={"rps": 42.0}, rep=3))
+
+        with open(protocol.metrics_file, "r") as f:
+            line = json.loads(f.readline())
+        assert line["rep"] == 3
+        assert line["metrics"]["rps"] == 42.0
