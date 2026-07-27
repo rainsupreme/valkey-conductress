@@ -252,9 +252,7 @@ class TestNudgeHookSend:
 
         with patch(
             "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError(
-                "http://example.com/nudge", 500, "Internal Server Error", {}, None
-            ),
+            side_effect=urllib.error.HTTPError("http://example.com/nudge", 500, "Internal Server Error", {}, None),
         ):
             hook._do_send(payload)
 
