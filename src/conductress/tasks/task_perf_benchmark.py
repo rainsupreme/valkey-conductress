@@ -743,9 +743,16 @@ class PerfTaskRunner(BaseTaskRunner):
         keyspace = self.test.keyspace or PERF_BENCH_KEYSPACE
 
         if self.benchmark_cpu_override:
-            # Expert override: use the explicit cpulist verbatim
+            # Expert override: use the explicit cpulist verbatim. Bind memory
+            # to the NUMA node(s) of the override CPUs (NOT the NIC node) so a
+            # cross-socket placement doesn't silently run with 100% remote memory.
+            from conductress.utility import parse_cpulist
+
+            override_cpus = parse_cpulist(self.benchmark_cpu_override)
+            override_nodes = client._cpu_allocator.get_numa_nodes_for_cpus(client.ip, override_cpus)
+            membind = ",".join(map(str, override_nodes)) if override_nodes else str(net_numa)
             return (
-                f"numactl --physcpubind={self.benchmark_cpu_override} --membind={net_numa} "
+                f"numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
                 f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
                 f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"

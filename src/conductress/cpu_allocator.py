@@ -303,6 +303,18 @@ class CpuAllocator:
             return {}
         return dict(self._allocations[host_ip])
 
+    def get_numa_nodes_for_cpus(self, host_ip: str, cpus: list[int]) -> list[int]:
+        """Return the NUMA node ids that contain any of the given CPUs.
+
+        Used to bind memory alongside an explicit CPU placement so an
+        override never silently runs with 100% remote memory.
+        """
+        nodes = []
+        for numa_node, node_cpus in self._numa_nodes.get(host_ip, {}).items():
+            if set(cpus) & set(node_cpus):
+                nodes.append(numa_node)
+        return sorted(nodes)
+
     def get_net_interface_numa(self, host_ip: str) -> Optional[int]:
         """Get the NUMA node for the network interface, or None if not set."""
         return self._net_interface_numa.get(host_ip)
