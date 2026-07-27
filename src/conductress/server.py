@@ -14,7 +14,7 @@ from conductress.cpu_allocator import AllocationTag, CpuAllocator
 from conductress.profiling_manager import ProfilingManager
 from conductress.ssh_host import SshHost
 from conductress.stabilization_manager import StabilizationManager
-from conductress.utility import async_run
+from conductress.utility import async_run, parse_cpulist
 
 from . import config
 
@@ -96,12 +96,13 @@ class Server:
         specifier: str,
         io_threads: int,
         make_args: str,
+        server_cpu_override: str = "",
     ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
         server = cls(ip, port, username)
 
         cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier, make_args)
-        await server.start(cached_binary_path, io_threads)
+        await server.start(cached_binary_path, io_threads, server_cpu_override=server_cpu_override)
         return server
 
     @classmethod
@@ -444,7 +445,9 @@ class Server:
         """Get number of CPUs allocated for server with specified io-threads parameter"""
         return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
-    async def start(self, cached_binary_path: Path, io_threads: int, env_prefix: str = "") -> None:
+    async def start(
+        self, cached_binary_path: Path, io_threads: int, env_prefix: str = "", server_cpu_override: str = ""
+    ) -> None:
         """Ensure specified build is running on the server.
 
         Args:
@@ -452,15 +455,26 @@ class Server:
             io_threads: Number of I/O threads to configure.
             env_prefix: Optional environment variable prefix for the command
                         (e.g. 'JE_MALLOC_CONF="prof:true"' for jemalloc profiling).
+            server_cpu_override: Expert cpulist override for server pinning, bypasses
+                                 topology-aware allocation when non-empty.
         """
         if io_threads < 1:
             io_threads = 1
         self.threads = io_threads
         await self.__pre_start()
 
-        # Allocate CPUs for this server
-        needed_cpus = Server.get_num_cpus(self.threads)
-        self.server_cpus = await self._allocate_server_cpus(needed_cpus)
+        # Allocate CPUs for this server (or use explicit override)
+        if server_cpu_override:
+            self.server_cpus = parse_cpulist(server_cpu_override)
+            logging.info(
+                "Using explicit CPU override %s for server on %s:%d",
+                self.server_cpus,
+                self.ip,
+                self.port,
+            )
+        else:
+            needed_cpus = Server.get_num_cpus(self.threads)
+            self.server_cpus = await self._allocate_server_cpus(needed_cpus)
 
         self.args = []
         if self.threads > 1:

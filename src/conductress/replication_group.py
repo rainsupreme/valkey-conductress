@@ -26,6 +26,7 @@ class ReplicationGroup:
         specifier: str,
         threads: int,
         make_args: str = "",
+        server_cpu_override: str = "",
     ) -> None:
         """Initialize a replication group with server configuration."""
         if len(server_infos) < 1:
@@ -36,6 +37,7 @@ class ReplicationGroup:
         self.specifier = specifier
         self.threads = threads
         self.make_args = make_args
+        self.server_cpu_override = server_cpu_override
 
         self.servers: list[Server] = []
         self.primary: Optional[Server] = None
@@ -62,6 +64,7 @@ class ReplicationGroup:
             self.specifier,
             self.threads,
             self.make_args,
+            server_cpu_override=self.server_cpu_override,
         )
         await server.replicate(None)
         await server.wait_until_ready()
