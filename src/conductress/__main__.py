@@ -48,7 +48,7 @@ def main() -> None:
         help="Comma-separated event types that trigger a nudge: completed, failed, empty (default: all). Unrecognized event names are silently ignored.",
     )
     subparsers.add_parser("setup", help="Run setup/bootstrap")
-    subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)")
+    subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)", add_help=False)
     subparsers.add_parser("compare", help="Run analysis/comparison")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
     status_export_parser = subparsers.add_parser("status-export", help="Export status to JSON for remote monitoring")
