@@ -2,8 +2,9 @@
 
 import json
 import os
+import threading
 import urllib.error
-from datetime import datetime
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -221,10 +222,11 @@ class TestNudgeHookReadResults:
 
 
 class TestNudgeHookSend:
-    """Test the _send HTTP method."""
+    """Test the _send / _do_send HTTP methods."""
 
     @patch("conductress.nudge_hook.logger")
     def test_successful_http_post(self, mock_logger):
+        """_do_send makes an HTTP POST to the endpoint."""
         hook = NudgeHook("http://example.com/nudge")
         payload = {"event": "completed", "task_id": "test_task"}
 
@@ -234,12 +236,13 @@ class TestNudgeHookSend:
         mock_response.__exit__ = MagicMock(return_value=False)
 
         with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
-            hook._send(payload)
+            hook._do_send(payload)
 
         mock_urlopen.assert_called_once()
         request = mock_urlopen.call_args[0][0]
-        assert isinstance(request, type(request))
         assert request.full_url == "http://example.com/nudge"
+        assert request.method == "POST"
+        assert mock_urlopen.call_args[1]["timeout"] == 3
 
     @patch("conductress.nudge_hook.logger")
     def test_handles_http_error(self, mock_logger):
@@ -249,11 +252,134 @@ class TestNudgeHookSend:
 
         with patch(
             "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError("http://example.com/nudge", 500, "Internal Server Error", {}, None),
+            side_effect=urllib.error.HTTPError(
+                "http://example.com/nudge", 500, "Internal Server Error", {}, None
+            ),
         ):
-            hook._send(payload)
+            hook._do_send(payload)
 
         mock_logger.warning.assert_called()
+
+    def test_send_delegates_to_thread(self):
+        """_send should delegate the HTTP request to a background daemon thread."""
+        hook = NudgeHook("http://example.com/nudge")
+        call_event = threading.Event()
+
+        def mock_do_send(payload):
+            call_event.set()
+
+        with patch.object(hook, "_do_send", side_effect=mock_do_send):
+            hook._send({"test": True})
+            assert call_event.wait(timeout=5), "Thread did not call _do_send within 5s"
+
+    def test_timeout_reduced_from_10(self):
+        """The inner HTTP request timeout should be 3s, not 10s."""
+        hook = NudgeHook("http://example.com/nudge")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            hook._do_send({"test": True})
+
+        assert mock_urlopen.call_args[1]["timeout"] == 3
+
+
+class TestNudgeHookQueueEmptyDedupe:
+    """Test the once-per-transition dedupe for on_queue_empty."""
+
+    def test_queue_empty_dedupe(self):
+        """on_queue_empty only sends once while idle (prevents spam)."""
+        hook = NudgeHook("http://example.com/nudge", events={"empty"})
+        with patch.object(hook, "_send") as mock_send:
+            hook.on_queue_empty()
+            hook.on_queue_empty()
+            hook.on_queue_empty()
+        mock_send.assert_called_once()
+
+    def test_queue_empty_fires_after_task(self):
+        """After a task completes, on_queue_empty fires again (reset)."""
+        hook = NudgeHook("http://example.com/nudge", events={"empty", "completed"})
+        task = _make_perf_task()
+
+        with patch.object(hook, "_send") as mock_send:
+            # First idle period: one empty nudge, then deduped
+            hook.on_queue_empty()
+            hook.on_queue_empty()  # Deduped
+            assert mock_send.call_count == 1  # Only the empty nudge
+
+            # Task completes: task payload nudge + reset _empty_nudged
+            hook.on_task_completed(task)
+            assert mock_send.call_count == 2  # + task payload nudge
+
+            # New idle period: one more empty nudge
+            hook.on_queue_empty()
+            hook.on_queue_empty()  # Deduped
+            assert mock_send.call_count == 3  # + one more empty nudge
+
+    def test_queue_empty_fires_after_failed_task(self):
+        """After a task fails, on_queue_empty fires again (reset)."""
+        hook = NudgeHook("http://example.com/nudge", events={"empty", "failed"})
+        task = _make_perf_task()
+
+        with patch.object(hook, "_send") as mock_send:
+            hook.on_queue_empty()
+            hook.on_queue_empty()  # Deduped
+            assert mock_send.call_count == 1
+
+            hook.on_task_failed(task)
+            assert mock_send.call_count == 2
+
+            hook.on_queue_empty()
+            hook.on_queue_empty()  # Deduped
+            assert mock_send.call_count == 3
+
+    def test_empty_nudged_flag_tracking(self):
+        """The _empty_nudged flag should be reset to False after task events."""
+        hook = NudgeHook("http://example.com/nudge", events={"empty", "completed", "failed"})
+        task = _make_perf_task()
+
+        with patch.object(hook, "_send"):
+            # First empty nudge sets the flag
+            hook.on_queue_empty()
+            assert hook._empty_nudged is True
+
+            # Duplicate call is deduped
+            hook.on_queue_empty()
+            assert hook._empty_nudged is True  # Still True
+
+            # Task completion resets the flag
+            hook.on_task_completed(task)
+            assert hook._empty_nudged is False
+
+            # Next empty nudge fires
+            hook.on_queue_empty()
+            assert hook._empty_nudged is True
+
+            # Task failure resets the flag
+            hook.on_task_failed(task)
+            assert hook._empty_nudged is False
+
+
+class TestNudgeHookTimestamp:
+    """Test timezone-aware timestamps."""
+
+    def test_timestamp_is_timezone_aware(self):
+        """Timestamps in nudges should be timezone-aware (ISO format with +00:00)."""
+        hook = NudgeHook("http://example.com/nudge", events={"empty"})
+        with patch.object(hook, "_send") as mock_send:
+            hook.on_queue_empty()
+        payload = mock_send.call_args[0][0]
+        timestamp = payload["timestamp"]
+        assert "+00:00" in timestamp
+
+    def test_task_payload_timestamp_is_timezone_aware(self):
+        """Timestamps in task payloads should also be timezone-aware."""
+        hook = NudgeHook("http://example.com/nudge")
+        task = _make_perf_task()
+
+        with patch.object(hook, "_send") as mock_send:
+            hook.on_task_completed(task)
+        payload = mock_send.call_args[0][0]
+        timestamp = payload["timestamp"]
+        assert "+00:00" in timestamp
 
 
 class TestPerfTaskDataCreation:

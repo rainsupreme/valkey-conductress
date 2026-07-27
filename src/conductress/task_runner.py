@@ -6,8 +6,6 @@ import json
 import logging
 import time
 import traceback
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Protocol
@@ -19,7 +17,6 @@ from .config import (
     CONDUCTRESS_FAILED_DIR,
     CONDUCTRESS_FAILED_LOG,
     CONDUCTRESS_LOG,
-    CONDUCTRESS_OUTPUT,
     QUEUE_POLL_INTERVAL,
     get_servers,
 )
@@ -49,7 +46,7 @@ class TaskRunner:
         repo_path: Optional[Path] = None,
         publish_target: Optional[str] = None,
         nudge_url: Optional[str] = None,
-        nudge_on: Optional[set] = None,
+        nudge_on: Optional[set[str]] = None,
     ) -> None:
         self.task: Optional[BaseTaskData] = None
         self._subscribers: list[TaskSubscriber] = []
