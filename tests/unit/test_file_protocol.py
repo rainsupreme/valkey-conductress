@@ -455,3 +455,82 @@ class TestFileProtocol:
             line = json.loads(f.readline())
         assert line["rep"] == 3
         assert line["metrics"]["rps"] == 42.0
+
+    def test_write_results_persists_cpu_stacks(self):
+        """Test that cpu_stacks_main/io are written to result dir when present."""
+        protocol = FileProtocol("stacks_test", role_id="client", base_dir=self.tmp_path)
+
+        stacks_main = [["main;funcA;funcB", 100], ["main;funcC", 50]]
+        stacks_io = [["io;reader;poll", 200]]
+
+        results = BenchmarkResults(
+            method="perf-get",
+            source="valkey",
+            specifier="unstable",
+            commit_hash="deadbeef",
+            score=2500000.0,
+            end_time=datetime(2024, 6, 1, 12, 0, 0),
+            data={
+                "cpu_stacks_main": stacks_main,
+                "cpu_stacks_io": stacks_io,
+                "warmup": 10,
+                "duration": 30,
+            },
+            make_args="-O3",
+        )
+
+        protocol.write_results(results)
+
+        result_dir = conductress.file_protocol.CONDUCTRESS_RESULTS / "stacks_test"
+        main_file = result_dir / "cpu_stacks_main.json"
+        io_file = result_dir / "cpu_stacks_io.json"
+
+        assert main_file.exists()
+        assert io_file.exists()
+
+        with open(main_file) as f:
+            assert json.load(f) == stacks_main
+        with open(io_file) as f:
+            assert json.load(f) == stacks_io
+
+    def test_write_results_no_stacks_no_files(self):
+        """Test that no stack files are written when stacks are absent."""
+        protocol = FileProtocol("nostacks_test", role_id="client", base_dir=self.tmp_path)
+
+        results = BenchmarkResults(
+            method="perf-get",
+            source="valkey",
+            specifier="unstable",
+            commit_hash="abcdef12",
+            score=1000000.0,
+            end_time=datetime(2024, 6, 1, 12, 0, 0),
+            data={"warmup": 10, "duration": 30},
+            make_args="-O3",
+        )
+
+        protocol.write_results(results)
+
+        result_dir = conductress.file_protocol.CONDUCTRESS_RESULTS / "nostacks_test"
+        assert not (result_dir / "cpu_stacks_main.json").exists()
+        assert not (result_dir / "cpu_stacks_io.json").exists()
+
+    def test_write_results_empty_stacks_no_files(self):
+        """Test that empty stack lists do not produce files."""
+        protocol = FileProtocol("empty_stacks_test", role_id="client", base_dir=self.tmp_path)
+
+        results = BenchmarkResults(
+            method="perf-get",
+            source="valkey",
+            specifier="unstable",
+            commit_hash="11223344",
+            score=500000.0,
+            end_time=datetime(2024, 6, 1, 12, 0, 0),
+            data={"cpu_stacks_main": [], "cpu_stacks_io": []},
+            make_args="-O3",
+        )
+
+        protocol.write_results(results)
+
+        result_dir = conductress.file_protocol.CONDUCTRESS_RESULTS / "empty_stacks_test"
+        assert not (result_dir / "cpu_stacks_main.json").exists()
+        assert not (result_dir / "cpu_stacks_io.json").exists()
