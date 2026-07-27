@@ -326,6 +326,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
+        self._current_rep = 0  # 0-indexed current repetition (set by _execute_benchmark_loop)
         self._cpu_stacks_main: list[list] = []
         self._cpu_stacks_io: list[list] = []
         self._perf_rep_count = 0  # reps whose perf counters were summed into perf_counters
@@ -423,7 +424,7 @@ class PerfTaskRunner(BaseTaskRunner):
             self.rps_data.append(rps)
 
             # Write metric to file protocol
-            metric = MetricData(metrics={"rps": rps})
+            metric = MetricData(metrics={"rps": rps}, rep=self._current_rep + 1)
             self.file_protocol.append_metric(metric)
 
             line, _ = command.poll_output()
@@ -777,6 +778,7 @@ class PerfTaskRunner(BaseTaskRunner):
     async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
         """Execute one benchmark run (warmup + measurement). Returns avg RPS."""
         benchmark_update_interval = BENCHMARK_UPDATE_INTERVAL
+        self._current_rep = rep
         self.rps_data = []
 
         command = RealtimeCommand(command_string)
