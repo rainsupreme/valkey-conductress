@@ -13,8 +13,8 @@ import asyncio
 import datetime
 import json
 import logging
+import random
 import re
-import shlex
 import time
 from dataclasses import dataclass
 from math import sqrt
@@ -44,6 +44,46 @@ OVERLAY_CLIENTS = 4  # per-thread
 def validate_scenario(name: str) -> bool:
     """Check whether a scenario name is recognized."""
     return name in SCENARIO_CHOICES
+
+
+def encode_resp_array(*args: str) -> bytes:
+    """Encode a single RESP command as an array of bulk strings.
+
+    Example: encode_resp_array("SET", "key:1", "val") ->
+        b"*3\r\n$3\r\nSET\r\n$5\r\nkey:1\r\n$3\r\nval\r\n"
+    """
+    parts = [f"*{len(args)}\r\n".encode()]
+    for arg in args:
+        encoded = arg.encode()
+        parts.append(f"${len(encoded)}\r\n".encode())
+        parts.append(encoded)
+        parts.append(b"\r\n")
+    return b"".join(parts)
+
+
+def generate_multi_exec_resp_payload(num_transactions: int, keyspace: int, val_size: int) -> bytes:
+    """Generate a RESP payload of real MULTI/GET/SET/EXEC transactions.
+
+    Each transaction is:
+        MULTI
+        GET memtier-<rand>
+        SET memtier-<rand> <value>
+        EXEC
+
+    Keys use memtier's default prefix format (memtier-<N>) to hit the same
+    prefilled keyspace as the background GET load.
+
+    Returns raw RESP bytes ready for `valkey-cli --pipe`.
+    """
+    value = "x" * val_size
+    payload_parts: List[bytes] = []
+    for _ in range(num_transactions):
+        key = f"memtier-{random.randint(1, keyspace)}"
+        payload_parts.append(encode_resp_array("MULTI"))
+        payload_parts.append(encode_resp_array("GET", key))
+        payload_parts.append(encode_resp_array("SET", key, value))
+        payload_parts.append(encode_resp_array("EXEC"))
+    return b"".join(payload_parts)
 
 
 def parse_memtier_json_intervals(json_path: str, json_content: str) -> List[float]:
@@ -155,17 +195,18 @@ def build_overlay_command(
         )
 
     elif scenario == "multi-exec":
-        # MULTI/GET/SET/EXEC transactions via valkey-benchmark pipeline mode.
-        # valkey-benchmark supports arbitrary command sequences when pipelining
-        # multiple commands. We use valkey-cli in pipe mode for MULTI/EXEC.
+        # Real MULTI/GET/SET/EXEC transactions via valkey-cli --pipe.
+        # Pre-generate a RESP payload file of ~1000 transactions, then loop-replay
+        # it until the overlay is terminated. This exercises true transaction
+        # serialization (Tier-3 exclusive-mode pathology).
+        payload_file = "/tmp/multi_exec_payload.resp"
         return (
             f"bash -c '"
             f"end=$((SECONDS + {duration})); "
             f"while [ $SECONDS -lt $end ]; do "
-            f"{bench} -h {server_ip} -p {port} "
-            f"-c {conns} -n 10000 --threads {OVERLAY_THREADS} -P 4 "
-            f"-r {keyspace} SET __rand_int__ value_payload; "
-            f"done'"
+            f"{cli} -h {server_ip} -p {port} --pipe < {payload_file} > /dev/null 2>&1; "
+            f"done; "
+            f"rm -f {payload_file}'"
         )
 
     elif scenario == "flushall-spike":
@@ -331,6 +372,33 @@ class ScenarioTaskRunner(BaseTaskRunner):
             )
         return overlay_output
 
+    async def _write_multi_exec_payload(self, server: Server) -> None:
+        """Generate and write MULTI/EXEC RESP payload to /tmp on the remote host.
+
+        Writes ~1000 transactions worth of RESP-encoded MULTI/GET/SET/EXEC
+        sequences to /tmp/multi_exec_payload.resp for valkey-cli --pipe replay.
+        """
+        payload = generate_multi_exec_resp_payload(
+            num_transactions=1000,
+            keyspace=MIXED_KEYSPACE,
+            val_size=self.val_size,
+        )
+        # Write payload via base64 to avoid shell quoting issues with binary RESP
+        import base64
+
+        encoded = base64.b64encode(payload).decode()
+        # Split into chunks to avoid argument-too-long (payload ~200KB base64)
+        chunk_size = 65536
+        chunks = [encoded[i : i + chunk_size] for i in range(0, len(encoded), chunk_size)]
+        # Write first chunk (truncate), append rest
+        await server.run_host_command(f"echo -n '{chunks[0]}' > /tmp/multi_exec_payload.b64", check=True)
+        for chunk in chunks[1:]:
+            await server.run_host_command(f"echo -n '{chunk}' >> /tmp/multi_exec_payload.b64", check=True)
+        await server.run_host_command(
+            "base64 -d /tmp/multi_exec_payload.b64 > /tmp/multi_exec_payload.resp && rm -f /tmp/multi_exec_payload.b64",
+            check=True,
+        )
+
     async def run(self) -> None:
         """Execute N repetitions of scenario benchmark."""
         logger.info(
@@ -397,6 +465,8 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         await server.perf_stat_start()
 
                     # Start overlay driver
+                    if self.scenario == "multi-exec":
+                        await self._write_multi_exec_payload(server)
                     overlay_cmd = build_overlay_command(
                         scenario=self.scenario,
                         server_ip=server.ip,
@@ -501,6 +571,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     # Ensure overlay is always killed
                     if overlay_pid:
                         await self._kill_overlay(server, overlay_pid)
+                    # Clean up multi-exec payload file if present
+                    if self.scenario == "multi-exec":
+                        await server.run_host_command("rm -f /tmp/multi_exec_payload.resp", check=False)
 
         finally:
             await replication_group.stop_all_servers()

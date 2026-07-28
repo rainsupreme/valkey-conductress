@@ -17,6 +17,8 @@ from conductress.tasks.task_scenario import (
     ScenarioTaskRunner,
     build_overlay_command,
     compute_dip_metrics,
+    encode_resp_array,
+    generate_multi_exec_resp_payload,
     parse_memtier_json_intervals,
     validate_scenario,
 )
@@ -108,8 +110,14 @@ class TestBuildOverlayCommand:
 
     def test_multi_exec(self):
         cmd = build_overlay_command("multi-exec", "127.0.0.1", 6379, 30, 3_000_000, 512)
-        assert "valkey-benchmark" in cmd
-        assert "SET" in cmd
+        assert "valkey-cli" in cmd
+        assert "--pipe" in cmd
+        assert "/tmp/multi_exec_payload.resp" in cmd
+        assert "valkey-benchmark" not in cmd
+        # Should loop-replay until duration expires
+        assert "SECONDS" in cmd
+        # Should clean up payload file at end of loop
+        assert "rm -f" in cmd
 
     def test_flushall_spike(self):
         cmd = build_overlay_command("flushall-spike", "127.0.0.1", 6379, 30, 3_000_000, 512)
@@ -132,6 +140,108 @@ class TestBuildOverlayCommand:
         cmd = build_overlay_command("eval-storm", "127.0.0.1", 6379, 30, 3_000_000, 512)
         expected_conns = OVERLAY_THREADS * OVERLAY_CLIENTS
         assert f"-c {expected_conns}" in cmd
+
+
+class TestEncodeRespArray:
+    """Tests for RESP array encoding."""
+
+    def test_single_arg(self):
+        result = encode_resp_array("PING")
+        assert result == b"*1\r\n$4\r\nPING\r\n"
+
+    def test_multi_arg(self):
+        result = encode_resp_array("SET", "mykey", "myvalue")
+        assert result == b"*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$7\r\nmyvalue\r\n"
+
+    def test_multi_command(self):
+        result = encode_resp_array("MULTI")
+        assert result == b"*1\r\n$5\r\nMULTI\r\n"
+
+    def test_exec_command(self):
+        result = encode_resp_array("EXEC")
+        assert result == b"*1\r\n$4\r\nEXEC\r\n"
+
+    def test_empty_value(self):
+        result = encode_resp_array("SET", "key", "")
+        assert result == b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$0\r\n\r\n"
+
+    def test_byte_exact_transaction(self):
+        """Verify a full MULTI/GET/SET/EXEC transaction is byte-correct."""
+        parts = []
+        parts.append(encode_resp_array("MULTI"))
+        parts.append(encode_resp_array("GET", "memtier-42"))
+        parts.append(encode_resp_array("SET", "memtier-42", "xx"))
+        parts.append(encode_resp_array("EXEC"))
+        full = b"".join(parts)
+        expected = (
+            b"*1\r\n$5\r\nMULTI\r\n"
+            b"*2\r\n$3\r\nGET\r\n$10\r\nmemtier-42\r\n"
+            b"*3\r\n$3\r\nSET\r\n$10\r\nmemtier-42\r\n$2\r\nxx\r\n"
+            b"*1\r\n$4\r\nEXEC\r\n"
+        )
+        assert full == expected
+
+
+class TestGenerateMultiExecRespPayload:
+    """Tests for MULTI/EXEC RESP payload generation."""
+
+    def test_basic_structure(self):
+        """Generated payload has correct number of commands (4 per transaction)."""
+        payload = generate_multi_exec_resp_payload(num_transactions=5, keyspace=100, val_size=8)
+        # Each transaction: MULTI + GET + SET + EXEC = 4 commands
+        # Count MULTI occurrences
+        assert payload.count(b"MULTI") == 5
+        assert payload.count(b"EXEC") == 5
+        assert payload.count(b"GET") == 5
+        assert payload.count(b"SET") == 5
+
+    def test_key_format(self):
+        """Keys use memtier-<N> format."""
+        payload = generate_multi_exec_resp_payload(num_transactions=10, keyspace=1000, val_size=4)
+        # All keys should have memtier- prefix
+        assert b"memtier-" in payload
+
+    def test_value_size(self):
+        """Value is exactly val_size bytes."""
+        payload = generate_multi_exec_resp_payload(num_transactions=1, keyspace=100, val_size=16)
+        # Value should be 16 'x' characters, encoded as $16\r\nxxxxxxxxxxxxxxxx\r\n
+        assert b"$16\r\n" + b"x" * 16 + b"\r\n" in payload
+
+    def test_keyspace_bounds(self):
+        """All keys should be within the specified keyspace."""
+        import random
+
+        random.seed(42)
+        payload = generate_multi_exec_resp_payload(num_transactions=100, keyspace=50, val_size=4)
+        # Extract key numbers from the payload
+        decoded = payload.decode()
+        import re
+
+        keys = re.findall(r"memtier-(\d+)", decoded)
+        for k in keys:
+            assert 1 <= int(k) <= 50
+
+    def test_valid_resp_format(self):
+        """Each line follows RESP protocol conventions."""
+        payload = generate_multi_exec_resp_payload(num_transactions=2, keyspace=100, val_size=4)
+        # Should start with *1\r\n (MULTI is a 1-arg command)
+        assert payload.startswith(b"*1\r\n$5\r\nMULTI\r\n")
+        # Should end with EXEC
+        assert payload.endswith(b"*1\r\n$4\r\nEXEC\r\n")
+
+    def test_payload_not_empty(self):
+        payload = generate_multi_exec_resp_payload(num_transactions=1, keyspace=10, val_size=1)
+        assert len(payload) > 0
+
+    def test_deterministic_with_seed(self):
+        """Same seed produces same payload."""
+        import random
+
+        random.seed(123)
+        p1 = generate_multi_exec_resp_payload(num_transactions=5, keyspace=100, val_size=8)
+        random.seed(123)
+        p2 = generate_multi_exec_resp_payload(num_transactions=5, keyspace=100, val_size=8)
+        assert p1 == p2
 
 
 class TestParseMemtierJsonIntervals:
