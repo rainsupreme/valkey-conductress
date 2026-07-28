@@ -42,7 +42,7 @@ def valkey_server():
 
     cli = os.path.join(os.path.dirname(binary), "valkey-cli")
     if not (os.path.isfile(cli) and os.access(cli, os.X_OK)):
-        pytest.skip("No valkey-cli binary next to the discovered valkey-server")
+        pytest.fail(f"valkey-server found at {binary} but no valkey-cli sibling — broken build?")
 
     proc = subprocess.Popen(
         [binary, "--port", "6399", "--save", "", "--daemonize", "no", "--loglevel", "warning"],
