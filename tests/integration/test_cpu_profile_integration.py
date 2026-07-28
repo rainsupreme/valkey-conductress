@@ -22,7 +22,11 @@ from conductress.ssh_host import SshHost
 
 @pytest.fixture
 def valkey_server():
-    """Start a valkey-server on port 6399 for testing, yield PID, then kill."""
+    """Start a valkey-server on port 6399 for testing, yield (PID, cli path), then kill.
+
+    The valkey-cli sibling of the discovered server binary is used for load
+    generation, guaranteeing server and client come from the same build.
+    """
     # Find a valkey-server binary
     candidates = [
         os.path.expanduser("~/valkey/src/valkey-server"),
@@ -36,6 +40,10 @@ def valkey_server():
     if not binary:
         pytest.skip("No valkey-server binary found")
 
+    cli = os.path.join(os.path.dirname(binary), "valkey-cli")
+    if not (os.path.isfile(cli) and os.access(cli, os.X_OK)):
+        pytest.fail(f"valkey-server found at {binary} but no valkey-cli sibling — broken build?")
+
     proc = subprocess.Popen(
         [binary, "--port", "6399", "--save", "", "--daemonize", "no", "--loglevel", "warning"],
         stdout=subprocess.DEVNULL,
@@ -45,7 +53,7 @@ def valkey_server():
     if proc.poll() is not None:
         pytest.skip("valkey-server failed to start")
 
-    yield proc.pid
+    yield proc.pid, cli
 
     proc.terminate()
     proc.wait(timeout=5)
@@ -61,9 +69,11 @@ def profiling_manager():
 class TestCpuProfileIntegration:
     """End-to-end test of CPU profiling pipeline on localhost."""
 
+    pytestmark = pytest.mark.requires_server
+
     def test_cpu_profile_collects_stacks(self, valkey_server, profiling_manager):
         """Full pipeline: start perf record, collect collapsed stacks, verify format."""
-        pid = valkey_server
+        pid, cli = valkey_server
         profiling_manager.target_pid = pid
 
         # Start CPU profile for 3 seconds
@@ -71,7 +81,7 @@ class TestCpuProfileIntegration:
 
         # Generate some load while profiling
         subprocess.run(
-            ["redis-cli", "-p", "6399", "DEBUG", "SLEEP", "0"],
+            [cli, "-p", "6399", "DEBUG", "SLEEP", "0"],
             capture_output=True,
             timeout=5,
         )
@@ -80,7 +90,7 @@ class TestCpuProfileIntegration:
         # Collect stacks
         async def collect():
             # Need SSH connection for run_host_command
-            await profiling_manager._host.connect()
+            await profiling_manager._host.ensure_ssh_connection()
             return await profiling_manager.cpu_profile_collect()
 
         main_stacks, io_stacks = asyncio.run(collect())

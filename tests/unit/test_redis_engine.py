@@ -1,3 +1,5 @@
+import subprocess
+
 """Tests for Redis engine support in Conductress sweep pipeline."""
 
 import json
@@ -176,27 +178,33 @@ class TestExporterEngineMetadata:
 class TestGitOpsResolveTag:
     """resolve_tag_to_commit for floor tag resolution."""
 
-    def test_resolve_existing_tag(self):
-        repo = Path.home() / "valkey"
-        if not repo.exists():
-            pytest.skip("valkey repo not available")
-        result = resolve_tag_to_commit(repo, "8.0.0")
+    @pytest.fixture
+    def tagged_repo(self, tmp_path):
+        """Create a throwaway git repo with two commits and tag 8.0.0 on the second."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env_git = ["git", "-C", str(repo), "-c", "user.name=test", "-c", "user.email=test@test"]
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        (repo / "a.txt").write_text("one")
+        subprocess.run(env_git + ["add", "a.txt"], check=True)
+        subprocess.run(env_git + ["commit", "-q", "-m", "first"], check=True)
+        (repo / "a.txt").write_text("two")
+        subprocess.run(env_git + ["commit", "-q", "-am", "second"], check=True)
+        subprocess.run(env_git + ["tag", "8.0.0"], check=True)
+        return repo
+
+    def test_resolve_existing_tag(self, tagged_repo):
+        result = resolve_tag_to_commit(tagged_repo, "8.0.0")
         assert result is not None
         assert len(result) == 40
 
-    def test_resolve_nonexistent_tag(self):
-        repo = Path.home() / "valkey"
-        if not repo.exists():
-            pytest.skip("valkey repo not available")
-        result = resolve_tag_to_commit(repo, "nonexistent-tag-xyz-99")
+    def test_resolve_nonexistent_tag(self, tagged_repo):
+        result = resolve_tag_to_commit(tagged_repo, "nonexistent-tag-xyz-99")
         assert result is None
 
-    def test_resolve_parent_syntax(self):
-        repo = Path.home() / "valkey"
-        if not repo.exists():
-            pytest.skip("valkey repo not available")
-        tag = resolve_tag_to_commit(repo, "8.0.0")
-        parent = resolve_tag_to_commit(repo, "8.0.0^")
+    def test_resolve_parent_syntax(self, tagged_repo):
+        tag = resolve_tag_to_commit(tagged_repo, "8.0.0")
+        parent = resolve_tag_to_commit(tagged_repo, "8.0.0^")
         assert tag is not None
         assert parent is not None
         assert tag != parent
