@@ -265,6 +265,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expert: explicit cpulist override for benchmark client",
     )
 
+    # queue add-scenario
+    scenario_parser = queue_sub.add_parser(
+        "add-scenario", help="Add a pathological-workload scenario task (background GET + overlay)"
+    )
+    scenario_parser.add_argument(
+        "--scenario",
+        required=True,
+        choices=["eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy"],
+        help="Pathological workload scenario to run",
+    )
+    scenario_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    scenario_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    scenario_parser.add_argument(
+        "--io-threads",
+        default=str(config.DEFAULT_IO_THREADS),
+        help=f"IO thread count. Default: {config.DEFAULT_IO_THREADS}",
+    )
+    scenario_parser.add_argument(
+        "--pipelining",
+        default=str(config.DEFAULT_PIPELINING),
+        help=f"Pipeline depth for background GET. Default: {config.DEFAULT_PIPELINING}",
+    )
+    scenario_parser.add_argument(
+        "--duration",
+        default=f"{config.DEFAULT_DURATION}s",
+        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
+    )
+    scenario_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
+    )
+    scenario_parser.add_argument("--note", default="", help="Optional note for the task")
+    scenario_parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+    scenario_parser.add_argument(
+        "--perf-stat", action="store_true", help="Enable perf stat hardware counter collection"
+    )
+    scenario_parser.add_argument(
+        "--server-cpus",
+        default="",
+        help="Expert: explicit cpulist override for server",
+    )
+    scenario_parser.add_argument(
+        "--client-cpus",
+        default="",
+        help="Expert: explicit cpulist override for benchmark client",
+    )
+
     # queue add-latency
     lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
     lat_parser.add_argument("source", help="Source repo name (e.g. 'valkey')")
@@ -509,6 +562,81 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_scenario(args: argparse.Namespace) -> int:
+    """Handle 'queue add-scenario': submit a pathological-workload scenario task."""
+    from conductress.tasks.task_scenario import SCENARIO_CHOICES, ScenarioTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    if args.scenario not in SCENARIO_CHOICES:
+        print(f"Error: Unknown scenario '{args.scenario}'. Valid: {', '.join(SCENARIO_CHOICES)}", file=sys.stderr)
+        return 1
+
+    try:
+        io_threads = int(args.io_threads)
+    except ValueError:
+        print(f"Error: --io-threads must be an integer, got '{args.io_threads}'", file=sys.stderr)
+        return 1
+
+    try:
+        pipelining = int(args.pipelining)
+    except ValueError:
+        print(f"Error: --pipelining must be an integer, got '{args.pipelining}'", file=sys.stderr)
+        return 1
+
+    try:
+        duration = _parse_human_time(args.duration, "duration")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.repetitions < 1:
+        print("Error: Repetitions must be at least 1", file=sys.stderr)
+        return 1
+
+    try:
+        validate_cpulist(args.server_cpus)
+    except ValueError as e:
+        print(f"Error (--server-cpus): {e}", file=sys.stderr)
+        return 1
+    try:
+        validate_cpulist(args.client_cpus)
+    except ValueError as e:
+        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+        return 1
+
+    queue = TaskQueue()
+    task = ScenarioTaskData(
+        source=args.source,
+        specifier=args.specifier,
+        make_args=args.make_args,
+        replicas=0,
+        note=args.note,
+        requirements={},
+        scenario=args.scenario,
+        val_size=config.DEFAULT_VAL_SIZE,
+        io_threads=io_threads,
+        pipelining=pipelining,
+        duration=duration,
+        repetitions=args.repetitions,
+        perf_stat_enabled=args.perf_stat,
+        server_cpu_override=args.server_cpus,
+        benchmark_cpu_override=args.client_cpus,
+    )
+    queue.submit_task(task)
+
+    print(f"Queued scenario task: {args.scenario}")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  io-threads={io_threads} pipeline={pipelining}")
+    print(f"  duration={duration}s reps={args.repetitions}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
+
+
 def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
     """Per-item user data bytes for a memory workload at a custom value/member size.
 
@@ -670,6 +798,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return handle_queue_add_memory(args)
         elif args.queue_command == "add-mixed":
             return handle_queue_add_mixed(args)
+        elif args.queue_command == "add-scenario":
+            return handle_queue_add_scenario(args)
         elif args.queue_command == "add-latency":
             return handle_queue_add_latency(args)
         elif args.queue_command == "remove":
