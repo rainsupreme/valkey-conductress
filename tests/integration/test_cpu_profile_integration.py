@@ -10,7 +10,6 @@ Run with: pytest tests/integration/test_cpu_profile_integration.py -v
 
 import asyncio
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -21,25 +20,13 @@ from conductress.profiling_manager import ProfilingManager
 from conductress.ssh_host import SshHost
 
 
-def _find_cli() -> str:
-    """Find a CLI binary for generating load (prefer valkey-cli, fall back to redis-cli)."""
-    candidates = [
-        os.path.expanduser("~/valkey/src/valkey-cli"),
-        os.path.expanduser("~/build_cache/valkey/latest/valkey-cli"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
-    for name in ("valkey-cli", "redis-cli"):
-        found = shutil.which(name)
-        if found:
-            return found
-    pytest.skip("No valkey-cli or redis-cli binary found")
-
-
 @pytest.fixture
 def valkey_server():
-    """Start a valkey-server on port 6399 for testing, yield PID, then kill."""
+    """Start a valkey-server on port 6399 for testing, yield (PID, cli path), then kill.
+
+    The valkey-cli sibling of the discovered server binary is used for load
+    generation, guaranteeing server and client come from the same build.
+    """
     # Find a valkey-server binary
     candidates = [
         os.path.expanduser("~/valkey/src/valkey-server"),
@@ -53,6 +40,10 @@ def valkey_server():
     if not binary:
         pytest.skip("No valkey-server binary found")
 
+    cli = os.path.join(os.path.dirname(binary), "valkey-cli")
+    if not (os.path.isfile(cli) and os.access(cli, os.X_OK)):
+        pytest.skip("No valkey-cli binary next to the discovered valkey-server")
+
     proc = subprocess.Popen(
         [binary, "--port", "6399", "--save", "", "--daemonize", "no", "--loglevel", "warning"],
         stdout=subprocess.DEVNULL,
@@ -62,7 +53,7 @@ def valkey_server():
     if proc.poll() is not None:
         pytest.skip("valkey-server failed to start")
 
-    yield proc.pid
+    yield proc.pid, cli
 
     proc.terminate()
     proc.wait(timeout=5)
@@ -82,7 +73,7 @@ class TestCpuProfileIntegration:
 
     def test_cpu_profile_collects_stacks(self, valkey_server, profiling_manager):
         """Full pipeline: start perf record, collect collapsed stacks, verify format."""
-        pid = valkey_server
+        pid, cli = valkey_server
         profiling_manager.target_pid = pid
 
         # Start CPU profile for 3 seconds
@@ -90,7 +81,7 @@ class TestCpuProfileIntegration:
 
         # Generate some load while profiling
         subprocess.run(
-            [_find_cli(), "-p", "6399", "DEBUG", "SLEEP", "0"],
+            [cli, "-p", "6399", "DEBUG", "SLEEP", "0"],
             capture_output=True,
             timeout=5,
         )
