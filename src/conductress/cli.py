@@ -206,6 +206,65 @@ def build_parser() -> argparse.ArgumentParser:
         "memory after background reclamation, e.g. zset compaction). Default off.",
     )
 
+    # queue add-mixed
+    mixed_parser = queue_sub.add_parser("add-mixed", help="Add a mixed GET/SET throughput task (memtier)")
+    mixed_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    mixed_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    mixed_parser.add_argument(
+        "--set-ratio",
+        type=int,
+        required=True,
+        help="Percentage of SET commands (0-100). E.g. 20 = 20%% SET / 80%% GET.",
+    )
+    mixed_parser.add_argument(
+        "--sizes",
+        default=str(config.DEFAULT_VAL_SIZE),
+        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.DEFAULT_VAL_SIZE}",
+    )
+    mixed_parser.add_argument(
+        "--key-sizes",
+        default=str(config.DEFAULT_KEY_SIZE),
+        help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}",
+    )
+    mixed_parser.add_argument(
+        "--io-threads",
+        default=str(config.DEFAULT_IO_THREADS),
+        help=f"Comma-separated IO thread counts. Default: {config.DEFAULT_IO_THREADS}",
+    )
+    mixed_parser.add_argument(
+        "--pipelining",
+        default=str(config.DEFAULT_PIPELINING),
+        help=f"Comma-separated pipelining values. Default: {config.DEFAULT_PIPELINING}",
+    )
+    mixed_parser.add_argument(
+        "--duration",
+        default=f"{config.DEFAULT_DURATION}s",
+        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
+    )
+    mixed_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
+    )
+    mixed_parser.add_argument("--note", default="", help="Optional note for the tasks")
+    mixed_parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+    mixed_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counter collection")
+    mixed_parser.add_argument(
+        "--server-cpus",
+        default="",
+        help="Expert: explicit cpulist override for server",
+    )
+    mixed_parser.add_argument(
+        "--client-cpus",
+        default="",
+        help="Expert: explicit cpulist override for benchmark client",
+    )
+
     # queue add-latency
     lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
     lat_parser.add_argument("source", help="Source repo name (e.g. 'valkey')")
@@ -353,6 +412,100 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     queue = TaskQueue()
     queue.submit_task(task)
     print(f"Queued latency task: {args.specifier[:8]} @ {args.target_rps} rps (id: {task.task_id})")
+    return 0
+
+
+def handle_queue_add_mixed(args: argparse.Namespace) -> int:
+    """Handle 'queue add-mixed': submit mixed GET/SET throughput tasks."""
+    from conductress.tasks.task_mixed import MixedTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    if not (0 <= args.set_ratio <= 100):
+        print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
+        return 1
+
+    try:
+        sizes = _parse_comma_separated_bytes(args.sizes, "sizes")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        key_sizes = _parse_comma_separated_bytes(args.key_sizes, "key-sizes")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        io_threads = _parse_comma_separated_ints(args.io_threads, "io-threads")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        pipelining = _parse_comma_separated_ints(args.pipelining, "pipelining")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        duration = _parse_human_time(args.duration, "duration")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.repetitions < 1:
+        print("Error: Repetitions must be at least 1", file=sys.stderr)
+        return 1
+
+    try:
+        validate_cpulist(args.server_cpus)
+    except ValueError as e:
+        print(f"Error (--server-cpus): {e}", file=sys.stderr)
+        return 1
+    try:
+        validate_cpulist(args.client_cpus)
+    except ValueError as e:
+        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+        return 1
+
+    import itertools
+
+    combinations = list(itertools.product(sizes, io_threads, pipelining, key_sizes))
+
+    queue = TaskQueue()
+    for val_size, io_thread, pipeline, key_size in combinations:
+        task = MixedTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=0,
+            note=args.note,
+            requirements={},
+            set_ratio=args.set_ratio,
+            val_size=val_size,
+            io_threads=io_thread,
+            pipelining=pipeline,
+            duration=duration,
+            repetitions=args.repetitions,
+            perf_stat_enabled=args.perf_stat,
+            key_size=key_size,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
+        )
+        queue.submit_task(task)
+
+    ratio_str = f"{args.set_ratio}%SET/{100-args.set_ratio}%GET"
+    print(f"Queued {len(combinations)} mixed task(s) ({ratio_str}):")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
+    print(f"  duration={duration}s reps={args.repetitions}")
+    if args.note:
+        print(f"  note: {args.note}")
     return 0
 
 
@@ -515,6 +668,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return handle_queue_add(args)
         elif args.queue_command == "add-memory":
             return handle_queue_add_memory(args)
+        elif args.queue_command == "add-mixed":
+            return handle_queue_add_mixed(args)
         elif args.queue_command == "add-latency":
             return handle_queue_add_latency(args)
         elif args.queue_command == "remove":
