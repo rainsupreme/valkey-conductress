@@ -10,6 +10,7 @@ Run with: pytest tests/integration/test_cpu_profile_integration.py -v
 
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -18,6 +19,22 @@ import pytest
 
 from conductress.profiling_manager import ProfilingManager
 from conductress.ssh_host import SshHost
+
+
+def _find_cli() -> str:
+    """Find a CLI binary for generating load (prefer valkey-cli, fall back to redis-cli)."""
+    candidates = [
+        os.path.expanduser("~/valkey/src/valkey-cli"),
+        os.path.expanduser("~/build_cache/valkey/latest/valkey-cli"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    for name in ("valkey-cli", "redis-cli"):
+        found = shutil.which(name)
+        if found:
+            return found
+    pytest.skip("No valkey-cli or redis-cli binary found")
 
 
 @pytest.fixture
@@ -61,6 +78,8 @@ def profiling_manager():
 class TestCpuProfileIntegration:
     """End-to-end test of CPU profiling pipeline on localhost."""
 
+    pytestmark = pytest.mark.requires_server
+
     def test_cpu_profile_collects_stacks(self, valkey_server, profiling_manager):
         """Full pipeline: start perf record, collect collapsed stacks, verify format."""
         pid = valkey_server
@@ -71,7 +90,7 @@ class TestCpuProfileIntegration:
 
         # Generate some load while profiling
         subprocess.run(
-            ["redis-cli", "-p", "6399", "DEBUG", "SLEEP", "0"],
+            [_find_cli(), "-p", "6399", "DEBUG", "SLEEP", "0"],
             capture_output=True,
             timeout=5,
         )
@@ -80,7 +99,7 @@ class TestCpuProfileIntegration:
         # Collect stacks
         async def collect():
             # Need SSH connection for run_host_command
-            await profiling_manager._host.connect()
+            await profiling_manager._host.ensure_ssh_connection()
             return await profiling_manager.cpu_profile_collect()
 
         main_stacks, io_stacks = asyncio.run(collect())
