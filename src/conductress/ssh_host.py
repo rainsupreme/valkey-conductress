@@ -41,7 +41,13 @@ class SshHost:
                 return
             # Open new connection
             if self.ip in ["127.0.0.1", "localhost"]:
-                self.ssh = await asyncssh.connect(self.ip, known_hosts=None)
+                # Use project keyfile if available (production hosts), otherwise
+                # fall back to agent/default keys (dev/test environments without
+                # the deployment keyfile provisioned).
+                kwargs = {"known_hosts": None}
+                if config.SSH_KEYFILE.is_file():
+                    kwargs["client_keys"] = [str(config.SSH_KEYFILE)]
+                self.ssh = await asyncssh.connect(self.ip, **kwargs)
             elif self.username:
                 self.ssh = await asyncssh.connect(
                     self.ip,
