@@ -44,10 +44,8 @@ class SshHost:
                 # Use project keyfile if available (production hosts), otherwise
                 # fall back to agent/default keys (dev/test environments without
                 # the deployment keyfile provisioned).
-                kwargs = {"known_hosts": None}
-                if config.SSH_KEYFILE.is_file():
-                    kwargs["client_keys"] = [str(config.SSH_KEYFILE)]
-                self.ssh = await asyncssh.connect(self.ip, **kwargs)
+                client_keys = [str(config.SSH_KEYFILE)] if config.SSH_KEYFILE.is_file() else None
+                self.ssh = await asyncssh.connect(self.ip, known_hosts=None, client_keys=client_keys)
             elif self.username:
                 self.ssh = await asyncssh.connect(
                     self.ip,
