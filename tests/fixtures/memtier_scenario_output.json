@@ -1,0 +1,78 @@
+{
+  "ALL STATS": {
+    "Second 1": {
+      "Ops/sec": 245832.4,
+      "Hits/sec": 245832.4,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.41023,
+      "p50 Latency": 0.391,
+      "p99 Latency": 0.879,
+      "p99.9 Latency": 1.535,
+      "KB/sec": 13657.89
+    },
+    "Second 2": {
+      "Ops/sec": 251044.7,
+      "Hits/sec": 251044.7,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.40112,
+      "p50 Latency": 0.383,
+      "p99 Latency": 0.855,
+      "p99.9 Latency": 1.487,
+      "KB/sec": 13947.12
+    },
+    "Second 3": {
+      "Ops/sec": 248915.2,
+      "Hits/sec": 248915.2,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.40567,
+      "p50 Latency": 0.387,
+      "p99 Latency": 0.863,
+      "p99.9 Latency": 1.511,
+      "KB/sec": 13828.93
+    },
+    "Second 4": {
+      "Ops/sec": 243201.8,
+      "Hits/sec": 243201.8,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.41489,
+      "p50 Latency": 0.399,
+      "p99 Latency": 0.891,
+      "p99.9 Latency": 1.567,
+      "KB/sec": 13511.67
+    },
+    "Second 5": {
+      "Ops/sec": 250117.3,
+      "Hits/sec": 250117.3,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.40278,
+      "p50 Latency": 0.385,
+      "p99 Latency": 0.859,
+      "p99.9 Latency": 1.495,
+      "KB/sec": 13895.44
+    },
+    "Totals": {
+      "Ops/sec": 247822.3,
+      "Hits/sec": 247822.3,
+      "Misses/sec": 0.0,
+      "Avg. Latency": 0.40694,
+      "p50 Latency": 0.389,
+      "p99 Latency": 0.869,
+      "p99.9 Latency": 1.519,
+      "KB/sec": 13768.21
+    }
+  },
+  "configuration": {
+    "server": "127.0.0.1",
+    "port": 7411,
+    "protocol": "redis",
+    "threads": 4,
+    "clients": 50,
+    "pipeline": 10,
+    "data-size": 128,
+    "ratio": "0:1",
+    "key-pattern": "R:R",
+    "key-minimum": 1,
+    "key-maximum": 1000000,
+    "test-time": 5
+  }
+}
