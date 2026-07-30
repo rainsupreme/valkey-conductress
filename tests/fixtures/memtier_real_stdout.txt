@@ -1,0 +1,21 @@
+Json file /tmp/memtier_5s.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 20%,   0 secs]  2 threads  4 conns:       90270 ops,   90271 (avg:   90271) ops/sec, 3.41MB/sec (avg: 3.41MB/sec),  0.88 (avg:  0.88) msec latency[RUN #1 40%,   2 secs]  2 threads  4 conns:      178350 ops,   88074 (avg:   89172) ops/sec, 3.33MB/sec (avg: 3.37MB/sec),  0.91 (avg:  0.90) msec latency[RUN #1 60%,   3 secs]  2 threads  4 conns:      266869 ops,   88513 (avg:   88953) ops/sec, 3.35MB/sec (avg: 3.36MB/sec),  0.90 (avg:  0.90) msec latency[RUN #1 80%,   4 secs]  2 threads  4 conns:      356870 ops,   89995 (avg:   89213) ops/sec, 3.40MB/sec (avg: 3.37MB/sec),  0.89 (avg:  0.90) msec latency[RUN #1 100%,   5 secs]  2 threads  4 conns:      446870 ops,   89995 (avg:   89370) ops/sec, 3.40MB/sec (avg: 3.38MB/sec),  0.89 (avg:  0.89) msec latency[RUN #1 100%,   5 secs]  0 threads  4 conns:      446930 ops,   89995 (avg:   89377) ops/sec, 3.40MB/sec (avg: 3.38MB/sec),  0.89 (avg:  0.89) msec latency
+
+Saving JSON output file: /tmp/memtier_5s.json
+Json file closed.
+2         Threads
+4         Connections per thread
+5         Seconds
+
+
+ALL STATS
+============================================================================================================================
+Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+----------------------------------------------------------------------------------------------------------------------------
+Sets            0.00          ---          ---             ---             ---             ---             ---         0.00 
+Gets        89377.76         0.00     89377.76         0.89393         0.77500         1.39100         1.50300      3459.10 
+Waits           0.00          ---          ---             ---             ---             ---             ---          --- 
+Totals      89377.76         0.00     89377.76         0.89393         0.77500         1.39100         1.50300      3459.10 

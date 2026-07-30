@@ -29,12 +29,18 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FilePro
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.tasks.task_mixed import MIXED_CLIENTS, MIXED_KEYSPACE, MIXED_THREADS, parse_memtier_total_rps
+from conductress.tasks.task_mixed import (
+    MIXED_CLIENTS,
+    MIXED_KEYSPACE,
+    MIXED_THREADS,
+    parse_memtier_total_rps,
+    set_ratio_to_memtier_ratio,
+)
 
 logger = logging.getLogger(__name__)
 
 # Valid scenario names
-SCENARIO_CHOICES = ("eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy")
+SCENARIO_CHOICES = ("eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy", "bgsave")
 
 # Overlay thread/connection counts (kept small to avoid dominating the load)
 OVERLAY_THREADS = 2
@@ -87,26 +93,68 @@ def generate_multi_exec_resp_payload(num_transactions: int, keyspace: int, val_s
 
 
 def parse_memtier_json_intervals(json_path: str, json_content: str) -> List[float]:
-    """Parse memtier --json-out-file for per-second ops/sec.
+    """Parse memtier --json-out-file for per-second ops/sec timeseries.
 
-    The JSON structure has ALL STATS -> <interval> -> Ops/sec.
-    Returns per-second RPS values for timeseries analysis.
+    Real memtier JSON (pinned build) structure:
+        {"ALL STATS": {"Totals": {"Time-Serie": {"0": {"Count": N}, "1": {"Count": N}, ...}}}}
+    Each Time-Serie key is a 0-indexed second; Count is total ops in that interval.
+    The last entry is often a partial second (run teardown) and is excluded.
+
+    Returns per-second RPS values (one per full second) for timeseries/dip analysis.
     """
     try:
         data = json.loads(json_content)
     except (json.JSONDecodeError, ValueError):
         return []
 
-    rps_values: List[float] = []
-    # memtier JSON: {"ALL STATS": {"Totals": {"Ops/sec": ...}, ...}}
-    # With --print-percentiles: each second has its own entry
     all_stats = data.get("ALL STATS", {})
-    # Check for per-second interval data
-    for key in sorted(all_stats.keys()):
-        if key.startswith("Second ") or key.replace(".", "", 1).isdigit():
-            interval = all_stats[key]
-            if isinstance(interval, dict) and "Ops/sec" in interval:
-                rps_values.append(float(interval["Ops/sec"]))
+    totals = all_stats.get("Totals", {})
+    time_serie: Dict[str, Any] = totals.get("Time-Serie", {})
+
+    if not time_serie:
+        return []
+
+    # Sort by numeric key, exclude last entry (partial second from run teardown)
+    sorted_keys = sorted(time_serie.keys(), key=lambda k: int(k))
+    if len(sorted_keys) <= 1:
+        # Only one interval — can't distinguish partial from full; return as-is
+        entry = time_serie[sorted_keys[0]]
+        count = entry.get("Count", 0)
+        return [float(count)] if count > 0 else []
+
+    # Exclude last entry (partial second) — its Count is typically much lower
+    full_keys = sorted_keys[:-1]
+    rps_values: List[float] = []
+    for key in full_keys:
+        entry = time_serie[key]
+        count = entry.get("Count", 0)
+        rps_values.append(float(count))
+
+    return rps_values
+
+
+def parse_memtier_stdout_intervals(stdout: str) -> List[float]:
+    """Parse memtier stdout progress lines for per-interval instantaneous ops/sec.
+
+    Memtier prints periodic progress to stdout (even with --hide-histogram):
+        [RUN #1 20%,   1 secs]  2 threads  8 conns:  180540 ops,  90271 (avg:  90271) ops/sec, ...
+
+    The first number before '(avg:' is the instantaneous ops/sec for that reporting interval.
+    Lines use \\r for in-place overwrite on a TTY; when captured to a string they appear
+    concatenated or \\r-separated.
+
+    Returns per-interval RPS values (one per progress report). Used as fallback when
+    JSON Time-Serie is unavailable.
+    """
+    rps_values: List[float] = []
+    # Split on both \n and \r to handle TTY-style output
+    lines = re.split(r"[\r\n]+", stdout)
+    # Pattern: "NNN (avg: NNN) ops/sec" — capture the first NNN (instantaneous)
+    pattern = re.compile(r"\[RUN #\d+.*?\]\s+.*?(\d+)\s+\(avg:\s*\d+\)\s+ops/sec")
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            rps_values.append(float(match.group(1)))
     return rps_values
 
 
@@ -238,6 +286,14 @@ def build_overlay_command(
             f"-r {keyspace} SET __rand_int__ value_payload EX 3"
         )
 
+    elif scenario == "bgsave":
+        # Single BGSAVE mid-measurement (at ~40% of duration).
+        # The fork()+COW impact shows up in the interval RPS timeseries as a dip.
+        # Dataset size drives the fork cost, so prefill size matters.
+        # Server runs with --save '' but explicit BGSAVE command works regardless.
+        bgsave_delay = max(2, duration * 2 // 5)
+        return f"bash -c 'sleep {bgsave_delay}; {cli} -h {server_ip} -p {port} BGSAVE'"
+
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
 
@@ -256,20 +312,25 @@ class ScenarioTaskData(BaseTaskData):
     repetitions: int = 3
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
+    background_set_ratio: int = 0
 
     def __post_init__(self):
         super().__post_init__()
         self.task_type = "ScenarioTaskData"
         if not validate_scenario(self.scenario):
             raise ValueError(f"Unknown scenario '{self.scenario}'. Valid: {', '.join(SCENARIO_CHOICES)}")
+        if not (0 <= self.background_set_ratio <= 100):
+            raise ValueError(f"background_set_ratio must be 0-100, got {self.background_set_ratio}")
 
     def short_description(self) -> str:
         from conductress.utility import HumanByte, HumanTime
 
+        ratio_str = f" SET={self.background_set_ratio}%" if self.background_set_ratio > 0 else ""
         return (
             f"scenario:{self.scenario} "
             f"v={HumanByte.to_human(self.val_size)} "
-            f"io={self.io_threads} P={self.pipelining} "
+            f"io={self.io_threads} P={self.pipelining}"
+            f"{ratio_str} "
             f"{HumanTime.to_human(self.duration)}"
             f"{' perf-stat' if self.perf_stat_enabled else ''}"
         )
@@ -292,6 +353,7 @@ class ScenarioTaskData(BaseTaskData):
             note=self.note,
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
+            background_set_ratio=self.background_set_ratio,
         )
 
 
@@ -316,6 +378,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         note: str = "",
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
+        background_set_ratio: int = 0,
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -333,6 +396,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.note = note
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
+        self.background_set_ratio = background_set_ratio
 
         self.commit_hash = ""
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -480,13 +544,14 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     # Brief delay to let overlay establish connections
                     await asyncio.sleep(1)
 
-                    # Run background GET load measurement (the baseline under pathology)
+                    # Run background load measurement (under pathology)
                     json_out = f"/tmp/memtier_scenario_rep{rep}.json"
+                    bg_ratio = set_ratio_to_memtier_ratio(self.background_set_ratio)
                     measure_cmd = (
                         f"~/conductress/memtier_benchmark "
                         f"--server {server.ip} --port {server.port} --protocol redis "
                         f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
-                        f"--ratio 0:1 --key-pattern R:R "
+                        f"--ratio {bg_ratio} --key-pattern R:R "
                         f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
                         f"--data-size {self.val_size} "
                         f"--pipeline {self.pipelining} "
@@ -509,7 +574,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if total_rps is None:
                         raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
 
-                    # Try to get interval RPS from JSON output
+                    # Try to get interval RPS from JSON output (Time-Serie)
                     interval_rps: List[float] = []
                     try:
                         json_stdout, _ = await server.run_host_command(f"cat {json_out}", check=False)
@@ -517,6 +582,10 @@ class ScenarioTaskRunner(BaseTaskRunner):
                             interval_rps = parse_memtier_json_intervals(json_out, json_stdout)
                     except Exception:
                         pass  # interval data is best-effort
+
+                    # Fallback: parse stdout progress lines if JSON had no timeseries
+                    if not interval_rps and stdout:
+                        interval_rps = parse_memtier_stdout_intervals(stdout)
 
                     per_run_rps.append(total_rps)
                     logger.info(
@@ -611,6 +680,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
             "threads": MIXED_THREADS,
             "clients": MIXED_CLIENTS,
             "repetitions": self.repetitions,
+            "background_set_ratio": self.background_set_ratio,
             "per_run_rps": per_run_rps,
             "mean_rps": mean_rps,
             "ci_95": ci_95,
