@@ -93,26 +93,68 @@ def generate_multi_exec_resp_payload(num_transactions: int, keyspace: int, val_s
 
 
 def parse_memtier_json_intervals(json_path: str, json_content: str) -> List[float]:
-    """Parse memtier --json-out-file for per-second ops/sec.
+    """Parse memtier --json-out-file for per-second ops/sec timeseries.
 
-    The JSON structure has ALL STATS -> <interval> -> Ops/sec.
-    Returns per-second RPS values for timeseries analysis.
+    Real memtier JSON (pinned build) structure:
+        {"ALL STATS": {"Totals": {"Time-Serie": {"0": {"Count": N}, "1": {"Count": N}, ...}}}}
+    Each Time-Serie key is a 0-indexed second; Count is total ops in that interval.
+    The last entry is often a partial second (run teardown) and is excluded.
+
+    Returns per-second RPS values (one per full second) for timeseries/dip analysis.
     """
     try:
         data = json.loads(json_content)
     except (json.JSONDecodeError, ValueError):
         return []
 
-    rps_values: List[float] = []
-    # memtier JSON: {"ALL STATS": {"Totals": {"Ops/sec": ...}, ...}}
-    # With --print-percentiles: each second has its own entry
     all_stats = data.get("ALL STATS", {})
-    # Check for per-second interval data
-    for key in sorted(all_stats.keys()):
-        if key.startswith("Second ") or key.replace(".", "", 1).isdigit():
-            interval = all_stats[key]
-            if isinstance(interval, dict) and "Ops/sec" in interval:
-                rps_values.append(float(interval["Ops/sec"]))
+    totals = all_stats.get("Totals", {})
+    time_serie: Dict[str, Any] = totals.get("Time-Serie", {})
+
+    if not time_serie:
+        return []
+
+    # Sort by numeric key, exclude last entry (partial second from run teardown)
+    sorted_keys = sorted(time_serie.keys(), key=lambda k: int(k))
+    if len(sorted_keys) <= 1:
+        # Only one interval — can't distinguish partial from full; return as-is
+        entry = time_serie[sorted_keys[0]]
+        count = entry.get("Count", 0)
+        return [float(count)] if count > 0 else []
+
+    # Exclude last entry (partial second) — its Count is typically much lower
+    full_keys = sorted_keys[:-1]
+    rps_values: List[float] = []
+    for key in full_keys:
+        entry = time_serie[key]
+        count = entry.get("Count", 0)
+        rps_values.append(float(count))
+
+    return rps_values
+
+
+def parse_memtier_stdout_intervals(stdout: str) -> List[float]:
+    """Parse memtier stdout progress lines for per-interval instantaneous ops/sec.
+
+    Memtier prints periodic progress to stdout (even with --hide-histogram):
+        [RUN #1 20%,   1 secs]  2 threads  8 conns:  180540 ops,  90271 (avg:  90271) ops/sec, ...
+
+    The first number before '(avg:' is the instantaneous ops/sec for that reporting interval.
+    Lines use \\r for in-place overwrite on a TTY; when captured to a string they appear
+    concatenated or \\r-separated.
+
+    Returns per-interval RPS values (one per progress report). Used as fallback when
+    JSON Time-Serie is unavailable.
+    """
+    rps_values: List[float] = []
+    # Split on both \n and \r to handle TTY-style output
+    lines = re.split(r"[\r\n]+", stdout)
+    # Pattern: "NNN (avg: NNN) ops/sec" — capture the first NNN (instantaneous)
+    pattern = re.compile(r"\[RUN #\d+.*?\]\s+.*?(\d+)\s+\(avg:\s*\d+\)\s+ops/sec")
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            rps_values.append(float(match.group(1)))
     return rps_values
 
 
@@ -532,7 +574,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if total_rps is None:
                         raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
 
-                    # Try to get interval RPS from JSON output
+                    # Try to get interval RPS from JSON output (Time-Serie)
                     interval_rps: List[float] = []
                     try:
                         json_stdout, _ = await server.run_host_command(f"cat {json_out}", check=False)
@@ -540,6 +582,10 @@ class ScenarioTaskRunner(BaseTaskRunner):
                             interval_rps = parse_memtier_json_intervals(json_out, json_stdout)
                     except Exception:
                         pass  # interval data is best-effort
+
+                    # Fallback: parse stdout progress lines if JSON had no timeseries
+                    if not interval_rps and stdout:
+                        interval_rps = parse_memtier_stdout_intervals(stdout)
 
                     per_run_rps.append(total_rps)
                     logger.info(

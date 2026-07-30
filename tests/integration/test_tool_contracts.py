@@ -116,9 +116,10 @@ class TestMemtierJsonContract:
             Path(json_path).unlink(missing_ok=True)
 
     def test_json_intervals_have_ops_sec(self, local_server):
-        """Each per-second interval entry must have 'Ops/sec' field.
+        """JSON Time-Serie entries must have 'Count' field for per-second ops.
 
-        Consumer: parse_memtier_json_intervals() -> interval["Ops/sec"]
+        Consumer: parse_memtier_json_intervals() -> Time-Serie -> entry["Count"]
+        Real memtier structure: ALL STATS -> Totals -> Time-Serie -> {"0": {"Count": N}, ...}
         """
         memtier = _find_binary("memtier_benchmark")
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -163,15 +164,24 @@ class TestMemtierJsonContract:
             data = json.loads(Path(json_path).read_text())
             all_stats = data["ALL STATS"]
 
-            # Find interval entries (keys starting with "Second " or numeric)
-            interval_keys = [k for k in all_stats if k.startswith("Second ") or k.replace(".", "", 1).isdigit()]
-            assert len(interval_keys) > 0, "No per-second interval entries found"
+            # Real contract: Totals has Time-Serie with numeric keys
+            assert "Totals" in all_stats, "Missing 'Totals' in ALL STATS"
+            totals = all_stats["Totals"]
+            assert "Time-Serie" in totals, (
+                "Missing 'Time-Serie' in Totals -- parse_memtier_json_intervals will return []. "
+                f"Totals keys: {list(totals.keys())}"
+            )
+            time_serie = totals["Time-Serie"]
+            assert len(time_serie) > 0, "Time-Serie is empty"
 
-            for key in interval_keys:
-                assert (
-                    "Ops/sec" in all_stats[key]
-                ), f"Missing 'Ops/sec' in interval '{key}' -- parse_memtier_json_intervals will skip it"
-                assert isinstance(all_stats[key]["Ops/sec"], (int, float))
+            # Each entry must have Count
+            for key, entry in time_serie.items():
+                assert key.isdigit(), f"Time-Serie key '{key}' is not a numeric second index"
+                assert "Count" in entry, (
+                    f"Missing 'Count' in Time-Serie[{key}] -- parse_memtier_json_intervals will skip it. "
+                    f"Entry keys: {list(entry.keys())}"
+                )
+                assert isinstance(entry["Count"], (int, float))
         finally:
             Path(json_path).unlink(missing_ok=True)
 
@@ -415,3 +425,53 @@ class TestMemtierStdoutContract:
         parts = totals_line.split()
         ops_sec = float(parts[1])  # Must not raise
         assert ops_sec > 0, f"Totals ops/sec is not positive: {ops_sec}"
+
+    def test_stdout_progress_lines(self, local_server):
+        """memtier stdout must emit periodic progress lines with ops/sec.
+
+        Consumer: parse_memtier_stdout_intervals() (fallback for timeseries)
+        Pattern: [RUN #N ...] ... NNN (avg: NNN) ops/sec ...
+        """
+        memtier = _find_binary("memtier_benchmark")
+        result = subprocess.run(
+            [
+                memtier,
+                "--server",
+                "127.0.0.1",
+                "--port",
+                "7499",
+                "--protocol",
+                "redis",
+                "--threads",
+                "1",
+                "--clients",
+                "5",
+                "--ratio",
+                "0:1",
+                "--key-pattern",
+                "R:R",
+                "--key-minimum",
+                "1",
+                "--key-maximum",
+                "1000",
+                "--data-size",
+                "64",
+                "--test-time",
+                "3",
+                "--hide-histogram",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"memtier failed: {result.stderr}"
+
+        from conductress.tasks.task_scenario import parse_memtier_stdout_intervals
+
+        intervals = parse_memtier_stdout_intervals(result.stdout)
+        assert len(intervals) >= 1, (
+            f"No progress lines parsed from stdout -- parse_memtier_stdout_intervals returned [].\n"
+            f"Output (first 500 chars):\n{result.stdout[:500]}"
+        )
+        for val in intervals:
+            assert val > 0, f"Progress line ops/sec not positive: {val}"
