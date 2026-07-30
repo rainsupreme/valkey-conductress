@@ -272,9 +272,10 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_parser.add_argument(
         "--scenario",
         required=True,
-        choices=["eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy"],
-        help="Pathological workload scenario to run. "
-        "Each scenario overlays a pathological pattern on a background throughput stream.",
+        choices=["eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy", "bgsave"],
+        help="Pathological workload scenario to run. 'bgsave' fires a single BGSAVE at ~40%% of "
+        "duration; fork+COW impact shows up in the interval timeseries. Dataset size (prefill) "
+        "drives the fork cost.",
     )
     scenario_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
     scenario_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")

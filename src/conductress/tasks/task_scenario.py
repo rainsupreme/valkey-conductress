@@ -40,7 +40,7 @@ from conductress.tasks.task_mixed import (
 logger = logging.getLogger(__name__)
 
 # Valid scenario names
-SCENARIO_CHOICES = ("eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy")
+SCENARIO_CHOICES = ("eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy", "bgsave")
 
 # Overlay thread/connection counts (kept small to avoid dominating the load)
 OVERLAY_THREADS = 2
@@ -243,6 +243,14 @@ def build_overlay_command(
             f"-c {conns} -n {n_requests} --threads {OVERLAY_THREADS} "
             f"-r {keyspace} SET __rand_int__ value_payload EX 3"
         )
+
+    elif scenario == "bgsave":
+        # Single BGSAVE mid-measurement (at ~40% of duration).
+        # The fork()+COW impact shows up in the interval RPS timeseries as a dip.
+        # Dataset size drives the fork cost, so prefill size matters.
+        # Server runs with --save '' but explicit BGSAVE command works regardless.
+        bgsave_delay = max(2, duration * 2 // 5)
+        return f"bash -c 'sleep {bgsave_delay}; {cli} -h {server_ip} -p {port} BGSAVE'"
 
     else:
         raise ValueError(f"Unknown scenario: {scenario}")

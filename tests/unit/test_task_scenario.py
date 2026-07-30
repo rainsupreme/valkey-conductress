@@ -823,3 +823,161 @@ class TestBackgroundSetRatioCli:
         assert exit_code == 1
         assert "background-set-ratio must be 0-100" in capsys.readouterr().err
 
+
+class TestBgsaveScenario:
+    """Tests for the bgsave scenario (Feature 2)."""
+
+    def test_bgsave_in_choices(self):
+        """bgsave is a valid scenario name."""
+        assert "bgsave" in SCENARIO_CHOICES
+        assert validate_scenario("bgsave") is True
+
+    def test_bgsave_overlay_command(self):
+        """bgsave overlay is a sleep-then-fire one-shot command."""
+        cmd = build_overlay_command("bgsave", "127.0.0.1", 6379, 30, 3_000_000, 512)
+        assert "BGSAVE" in cmd
+        assert "valkey-cli" in cmd
+        assert "sleep" in cmd
+        # Fire at ~40% of duration: 30 * 2/5 = 12
+        assert "sleep 12" in cmd
+
+    def test_bgsave_delay_calculation(self):
+        """bgsave fires at ~40% of duration (min 2s)."""
+        # Short duration: floor at 2s
+        cmd_short = build_overlay_command("bgsave", "127.0.0.1", 6379, 3, 3_000_000, 512)
+        assert "sleep 2" in cmd_short
+
+        # Long duration: 40% of 60 = 24
+        cmd_long = build_overlay_command("bgsave", "127.0.0.1", 6379, 60, 3_000_000, 512)
+        assert "sleep 24" in cmd_long
+
+    def test_bgsave_uses_correct_host_port(self):
+        """bgsave overlay targets the correct server."""
+        cmd = build_overlay_command("bgsave", "10.0.0.5", 7777, 30, 3_000_000, 512)
+        assert "-h 10.0.0.5" in cmd
+        assert "-p 7777" in cmd
+
+    def test_bgsave_is_one_shot(self):
+        """bgsave overlay doesn't loop -- it's a single BGSAVE command."""
+        cmd = build_overlay_command("bgsave", "127.0.0.1", 6379, 30, 3_000_000, 512)
+        # Should NOT have a while/until loop pattern
+        assert "while" not in cmd
+        assert "end=" not in cmd
+        # Just sleep + BGSAVE
+        assert cmd.count("BGSAVE") == 1
+
+    @pytest.fixture(autouse=True)
+    def patch_sources(self):
+        with (
+            patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+            patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+            patch("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+        ):
+            yield
+
+    def test_bgsave_task_data_accepted(self):
+        """ScenarioTaskData accepts bgsave scenario."""
+        task = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="bgsave",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+        )
+        assert task.scenario == "bgsave"
+
+    def test_bgsave_serialization_round_trip(self, tmp_path):
+        """bgsave scenario survives serialization."""
+        task = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="fork cost test",
+            requirements={},
+            scenario="bgsave",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=60,
+            background_set_ratio=10,
+        )
+        filepath = tmp_path / "task.json"
+        task.save_to_file(filepath)
+
+        from conductress.task_queue import BaseTaskData
+
+        loaded = BaseTaskData.from_file(filepath)
+        assert isinstance(loaded, ScenarioTaskData)
+        assert loaded.scenario == "bgsave"
+        assert loaded.background_set_ratio == 10
+        assert loaded.note == "fork cost test"
+
+
+class TestBgsaveCliScenario:
+    """CLI tests for bgsave scenario."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_queue(self, tmp_path):
+        queue_path = tmp_path / "queue"
+        queue_path.mkdir()
+        _OriginalTaskQueue = TaskQueue
+
+        class _IsolatedTaskQueue(_OriginalTaskQueue):
+            def __init__(self, queue_dir_override=None):
+                super().__init__(queue_dir=queue_path)
+
+        with patch("conductress.cli.TaskQueue", _IsolatedTaskQueue):
+            self.queue_path = queue_path
+            yield
+
+    @pytest.fixture(autouse=True)
+    def patch_sources(self):
+        with (
+            patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+            patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+            patch("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+        ):
+            yield
+
+    def test_cli_add_bgsave(self):
+        """CLI accepts bgsave scenario."""
+        exit_code = main(
+            ["queue", "add-scenario", "--scenario", "bgsave", "--source", "valkey", "--specifier", "unstable"]
+        )
+        assert exit_code == 0
+        tasks = list(self.queue_path.glob("task_*.json"))
+        assert len(tasks) == 1
+        data = json.loads(tasks[0].read_text())
+        assert data["scenario"] == "bgsave"
+        assert data["task_type"] == "ScenarioTaskData"
+
+    def test_cli_bgsave_with_ratio(self):
+        """bgsave + background-set-ratio together."""
+        exit_code = main(
+            [
+                "queue",
+                "add-scenario",
+                "--scenario",
+                "bgsave",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--background-set-ratio",
+                "50",
+            ]
+        )
+        assert exit_code == 0
+        tasks = list(self.queue_path.glob("task_*.json"))
+        data = json.loads(tasks[0].read_text())
+        assert data["scenario"] == "bgsave"
+        assert data["background_set_ratio"] == 50
