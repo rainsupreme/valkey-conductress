@@ -273,7 +273,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--scenario",
         required=True,
         choices=["eval-storm", "scan-churn", "multi-exec", "flushall-spike", "expiry-heavy"],
-        help="Pathological workload scenario to run",
+        help="Pathological workload scenario to run. "
+        "Each scenario overlays a pathological pattern on a background throughput stream.",
     )
     scenario_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
     scenario_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
@@ -316,6 +317,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--client-cpus",
         default="",
         help="Expert: explicit cpulist override for benchmark client",
+    )
+    scenario_parser.add_argument(
+        "--background-set-ratio",
+        type=int,
+        default=0,
+        help="Percentage of SET commands in background load (0-100, default 0 = pure GET). "
+        "Higher values add write pressure alongside the scenario overlay. "
+        "0 preserves comparability with existing pure-GET baselines.",
     )
 
     # queue add-latency
@@ -608,6 +617,13 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         print(f"Error (--client-cpus): {e}", file=sys.stderr)
         return 1
 
+    if not (0 <= args.background_set_ratio <= 100):
+        print(
+            f"Error: --background-set-ratio must be 0-100, got {args.background_set_ratio}",
+            file=sys.stderr,
+        )
+        return 1
+
     queue = TaskQueue()
     task = ScenarioTaskData(
         source=args.source,
@@ -625,6 +641,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         perf_stat_enabled=args.perf_stat,
         server_cpu_override=args.server_cpus,
         benchmark_cpu_override=args.client_cpus,
+        background_set_ratio=args.background_set_ratio,
     )
     queue.submit_task(task)
 
@@ -632,6 +649,8 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     print(f"  source={args.source} specifier={args.specifier}")
     print(f"  io-threads={io_threads} pipeline={pipelining}")
     print(f"  duration={duration}s reps={args.repetitions}")
+    if args.background_set_ratio > 0:
+        print(f"  background-set-ratio={args.background_set_ratio}%")
     if args.note:
         print(f"  note: {args.note}")
     return 0

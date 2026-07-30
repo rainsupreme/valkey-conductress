@@ -9,6 +9,7 @@ import pytest
 from conductress import config
 from conductress.cli import main
 from conductress.task_queue import TaskQueue
+from conductress.tasks.task_mixed import set_ratio_to_memtier_ratio
 from conductress.tasks.task_scenario import (
     OVERLAY_CLIENTS,
     OVERLAY_THREADS,
@@ -566,3 +567,259 @@ class TestCliAddScenario:
         data = json.loads(tasks[0].read_text())
         assert data["io_threads"] == 7
         assert data["pipelining"] == 50
+
+
+class TestBackgroundSetRatio:
+    """Tests for background_set_ratio feature (Feature 1)."""
+
+    @pytest.fixture(autouse=True)
+    def patch_sources(self):
+        with (
+            patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+            patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+            patch("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+        ):
+            yield
+
+    def test_default_ratio_zero(self):
+        """Default background_set_ratio is 0 (pure GET, backward compatible)."""
+        task = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="eval-storm",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+        )
+        assert task.background_set_ratio == 0
+
+    def test_valid_ratio_accepted(self):
+        """Ratios 0-100 are accepted."""
+        for ratio in (0, 1, 20, 50, 100):
+            task = ScenarioTaskData(
+                source="valkey",
+                specifier="unstable",
+                make_args="",
+                replicas=0,
+                note="",
+                requirements={},
+                scenario="eval-storm",
+                val_size=512,
+                io_threads=9,
+                pipelining=10,
+                duration=30,
+                background_set_ratio=ratio,
+            )
+            assert task.background_set_ratio == ratio
+
+    def test_invalid_ratio_rejected(self):
+        """Ratios outside 0-100 raise ValueError."""
+        for bad_ratio in (-1, 101, 200):
+            with pytest.raises(ValueError, match="background_set_ratio must be 0-100"):
+                ScenarioTaskData(
+                    source="valkey",
+                    specifier="unstable",
+                    make_args="",
+                    replicas=0,
+                    note="",
+                    requirements={},
+                    scenario="eval-storm",
+                    val_size=512,
+                    io_threads=9,
+                    pipelining=10,
+                    duration=30,
+                    background_set_ratio=bad_ratio,
+                )
+
+    def test_ratio_conversion_uses_set_ratio_to_memtier_ratio(self):
+        """Verify set_ratio_to_memtier_ratio converts correctly for scenario use."""
+        assert set_ratio_to_memtier_ratio(0) == "0:1"
+        assert set_ratio_to_memtier_ratio(20) == "1:4"
+        assert set_ratio_to_memtier_ratio(50) == "1:1"
+        assert set_ratio_to_memtier_ratio(100) == "1:0"
+
+    def test_short_description_shows_ratio_when_nonzero(self):
+        """short_description includes SET ratio only when > 0."""
+        task_zero = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="eval-storm",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+            background_set_ratio=0,
+        )
+        assert "SET=" not in task_zero.short_description()
+
+        task_20 = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="eval-storm",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+            background_set_ratio=20,
+        )
+        assert "SET=20%" in task_20.short_description()
+
+    def test_serialization_round_trip_with_ratio(self, tmp_path):
+        """background_set_ratio survives save/load cycle."""
+        task = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="flushall-spike",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+            background_set_ratio=35,
+        )
+        filepath = tmp_path / "task.json"
+        task.save_to_file(filepath)
+
+        from conductress.task_queue import BaseTaskData
+
+        loaded = BaseTaskData.from_file(filepath)
+        assert isinstance(loaded, ScenarioTaskData)
+        assert loaded.background_set_ratio == 35
+
+    def test_serialization_round_trip_default_ratio(self, tmp_path):
+        """Default ratio=0 survives round trip (backward compat with old tasks)."""
+        task = ScenarioTaskData(
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            scenario="eval-storm",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            duration=30,
+        )
+        filepath = tmp_path / "task.json"
+        task.save_to_file(filepath)
+
+        from conductress.task_queue import BaseTaskData
+
+        loaded = BaseTaskData.from_file(filepath)
+        assert loaded.background_set_ratio == 0
+
+
+class TestBackgroundSetRatioCli:
+    """CLI tests for --background-set-ratio."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_queue(self, tmp_path):
+        queue_path = tmp_path / "queue"
+        queue_path.mkdir()
+        _OriginalTaskQueue = TaskQueue
+
+        class _IsolatedTaskQueue(_OriginalTaskQueue):
+            def __init__(self, queue_dir_override=None):
+                super().__init__(queue_dir=queue_path)
+
+        with patch("conductress.cli.TaskQueue", _IsolatedTaskQueue):
+            self.queue_path = queue_path
+            yield
+
+    @pytest.fixture(autouse=True)
+    def patch_sources(self):
+        with (
+            patch.object(config, "REPO_NAMES", ["valkey", "testrepo"]),
+            patch("conductress.task_queue.config.REPO_NAMES", ["valkey", "testrepo"]),
+            patch.object(config, "MANUALLY_UPLOADED", "manually_uploaded"),
+            patch("conductress.task_queue.config.MANUALLY_UPLOADED", "manually_uploaded"),
+        ):
+            yield
+
+    def test_cli_default_ratio_zero(self):
+        """CLI without --background-set-ratio defaults to 0."""
+        exit_code = main(
+            ["queue", "add-scenario", "--scenario", "eval-storm", "--source", "valkey", "--specifier", "unstable"]
+        )
+        assert exit_code == 0
+        tasks = list(self.queue_path.glob("task_*.json"))
+        data = json.loads(tasks[0].read_text())
+        assert data["background_set_ratio"] == 0
+
+    def test_cli_explicit_ratio(self):
+        """CLI with --background-set-ratio stores the value."""
+        exit_code = main(
+            [
+                "queue",
+                "add-scenario",
+                "--scenario",
+                "eval-storm",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--background-set-ratio",
+                "20",
+            ]
+        )
+        assert exit_code == 0
+        tasks = list(self.queue_path.glob("task_*.json"))
+        data = json.loads(tasks[0].read_text())
+        assert data["background_set_ratio"] == 20
+
+    def test_cli_invalid_ratio_rejected(self, capsys):
+        """CLI rejects ratio outside 0-100."""
+        exit_code = main(
+            [
+                "queue",
+                "add-scenario",
+                "--scenario",
+                "eval-storm",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--background-set-ratio",
+                "150",
+            ]
+        )
+        assert exit_code == 1
+        assert "background-set-ratio must be 0-100" in capsys.readouterr().err
+
+    def test_cli_negative_ratio_rejected(self, capsys):
+        """CLI rejects negative ratio."""
+        exit_code = main(
+            [
+                "queue",
+                "add-scenario",
+                "--scenario",
+                "eval-storm",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--background-set-ratio",
+                "-5",
+            ]
+        )
+        assert exit_code == 1
+        assert "background-set-ratio must be 0-100" in capsys.readouterr().err
+

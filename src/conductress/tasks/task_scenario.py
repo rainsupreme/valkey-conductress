@@ -29,7 +29,13 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FilePro
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.tasks.task_mixed import MIXED_CLIENTS, MIXED_KEYSPACE, MIXED_THREADS, parse_memtier_total_rps
+from conductress.tasks.task_mixed import (
+    MIXED_CLIENTS,
+    MIXED_KEYSPACE,
+    MIXED_THREADS,
+    parse_memtier_total_rps,
+    set_ratio_to_memtier_ratio,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -256,20 +262,25 @@ class ScenarioTaskData(BaseTaskData):
     repetitions: int = 3
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
+    background_set_ratio: int = 0
 
     def __post_init__(self):
         super().__post_init__()
         self.task_type = "ScenarioTaskData"
         if not validate_scenario(self.scenario):
             raise ValueError(f"Unknown scenario '{self.scenario}'. Valid: {', '.join(SCENARIO_CHOICES)}")
+        if not (0 <= self.background_set_ratio <= 100):
+            raise ValueError(f"background_set_ratio must be 0-100, got {self.background_set_ratio}")
 
     def short_description(self) -> str:
         from conductress.utility import HumanByte, HumanTime
 
+        ratio_str = f" SET={self.background_set_ratio}%" if self.background_set_ratio > 0 else ""
         return (
             f"scenario:{self.scenario} "
             f"v={HumanByte.to_human(self.val_size)} "
-            f"io={self.io_threads} P={self.pipelining} "
+            f"io={self.io_threads} P={self.pipelining}"
+            f"{ratio_str} "
             f"{HumanTime.to_human(self.duration)}"
             f"{' perf-stat' if self.perf_stat_enabled else ''}"
         )
@@ -292,6 +303,7 @@ class ScenarioTaskData(BaseTaskData):
             note=self.note,
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
+            background_set_ratio=self.background_set_ratio,
         )
 
 
@@ -316,6 +328,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         note: str = "",
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
+        background_set_ratio: int = 0,
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -333,6 +346,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.note = note
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
+        self.background_set_ratio = background_set_ratio
 
         self.commit_hash = ""
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -480,13 +494,14 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     # Brief delay to let overlay establish connections
                     await asyncio.sleep(1)
 
-                    # Run background GET load measurement (the baseline under pathology)
+                    # Run background load measurement (under pathology)
                     json_out = f"/tmp/memtier_scenario_rep{rep}.json"
+                    bg_ratio = set_ratio_to_memtier_ratio(self.background_set_ratio)
                     measure_cmd = (
                         f"~/conductress/memtier_benchmark "
                         f"--server {server.ip} --port {server.port} --protocol redis "
                         f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
-                        f"--ratio 0:1 --key-pattern R:R "
+                        f"--ratio {bg_ratio} --key-pattern R:R "
                         f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
                         f"--data-size {self.val_size} "
                         f"--pipeline {self.pipelining} "
@@ -611,6 +626,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
             "threads": MIXED_THREADS,
             "clients": MIXED_CLIENTS,
             "repetitions": self.repetitions,
+            "background_set_ratio": self.background_set_ratio,
             "per_run_rps": per_run_rps,
             "mean_rps": mean_rps,
             "ci_95": ci_95,
