@@ -97,12 +97,15 @@ class Server:
         io_threads: int,
         make_args: str,
         server_cpu_override: str = "",
+        server_args: str = "",
     ) -> "Server":
         """Create a server instance and ensure it is running with the specified build."""
         server = cls(ip, port, username)
 
         cached_binary_path: Path = await server.ensure_binary_cached(binary_source, specifier, make_args)
-        await server.start(cached_binary_path, io_threads, server_cpu_override=server_cpu_override)
+        await server.start(
+            cached_binary_path, io_threads, server_cpu_override=server_cpu_override, server_args=server_args
+        )
         return server
 
     @classmethod
@@ -446,7 +449,12 @@ class Server:
         return io_threads + 2  # (io-threads + extra for bio threads, aof rewrite, and bgsave)
 
     async def start(
-        self, cached_binary_path: Path, io_threads: int, env_prefix: str = "", server_cpu_override: str = ""
+        self,
+        cached_binary_path: Path,
+        io_threads: int,
+        env_prefix: str = "",
+        server_cpu_override: str = "",
+        server_args: str = "",
     ) -> None:
         """Ensure specified build is running on the server.
 
@@ -457,6 +465,10 @@ class Server:
                         (e.g. 'JE_MALLOC_CONF="prof:true"' for jemalloc profiling).
             server_cpu_override: Expert cpulist override for server pinning, bypasses
                                  topology-aware allocation when non-empty.
+            server_args: Extra raw arguments appended to the server command line
+                         (e.g. '--io-threads-ownership yes'). Appended last, so they
+                         override any conductress-generated defaults. Passed through
+                         verbatim -- the caller is trusted to provide coherent flags.
         """
         if io_threads < 1:
             io_threads = 1
@@ -493,6 +505,11 @@ class Server:
         self.args += ["--bio-cpulist", bg_cpu_list]
         self.args += ["--aof-rewrite-cpulist", bg_cpu_list]
         self.args += ["--bgsave-cpulist", bg_cpu_list]
+
+        # User-supplied extra args go last so they override generated defaults
+        # (valkey applies later command-line config over earlier). Raw passthrough.
+        if server_args:
+            self.args.append(server_args)
 
         command = (
             f"{cached_binary_path} --port {self.port} "

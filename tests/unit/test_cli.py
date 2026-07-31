@@ -286,6 +286,41 @@ class TestQueueAddSubcommand:
         assert task.repetitions == 3
         assert task.make_args == ""
 
+    @patch("conductress.cli.TaskQueue")
+    def test_queue_add_server_args_passthrough(self, mock_queue_cls):
+        """--server-args flows verbatim into the queued task; default is empty."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add",
+                "--source",
+                "repo1",
+                "--tests",
+                "get",
+                "--server-args",
+                "--io-threads-ownership yes",
+            ]
+        )
+
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.server_args == "--io-threads-ownership yes"
+
+    @patch("conductress.cli.TaskQueue")
+    def test_queue_add_server_args_default_empty(self, mock_queue_cls):
+        """Without --server-args the task carries an empty string (schema-compatible default)."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add", "--source", "repo1", "--tests", "get"])
+
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.server_args == ""
+
 
 class TestQueueListSubcommand:
     """Unit tests for the 'queue list' subcommand via main()."""

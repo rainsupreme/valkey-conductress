@@ -313,6 +313,7 @@ class ScenarioTaskData(BaseTaskData):
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
     background_set_ratio: int = 0
+    server_args: str = ""  # extra raw args appended to the server command line (override defaults)
 
     def __post_init__(self):
         super().__post_init__()
@@ -354,6 +355,7 @@ class ScenarioTaskData(BaseTaskData):
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
             background_set_ratio=self.background_set_ratio,
+            server_args=self.server_args,
         )
 
 
@@ -379,6 +381,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
         background_set_ratio: int = 0,
+        server_args: str = "",
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -397,6 +400,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
         self.background_set_ratio = background_set_ratio
+        self.server_args = server_args
 
         self.commit_hash = ""
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -483,6 +487,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
             self.io_threads,
             self.make_args,
             server_cpu_override=self.server_cpu_override,
+            server_args=self.server_args,
         )
 
         per_run_rps: List[float] = []
