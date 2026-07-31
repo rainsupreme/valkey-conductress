@@ -118,6 +118,7 @@ class PerfTaskData(BaseTaskData):
     sweep_commit: str = ""  # non-empty marks this as a sweep task
     server_cpu_override: str = ""  # expert: explicit cpulist for server, bypasses topology-aware allocation
     benchmark_cpu_override: str = ""  # expert: explicit cpulist for benchmark client, bypasses allocation
+    server_args: str = ""  # extra raw args appended to the server command line (override defaults)
 
     def __post_init__(self):
         super().__post_init__()
@@ -156,6 +157,7 @@ class PerfTaskData(BaseTaskData):
             target_cv=self.target_cv,
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
+            server_args=self.server_args,
         )
 
 
@@ -294,6 +296,7 @@ class PerfTaskRunner(BaseTaskRunner):
         target_cv: float = 0.0,
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
+        server_args: str = "",
     ):
         super().__init__(task_name)
 
@@ -323,6 +326,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.target_cv = target_cv
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
+        self.server_args = server_args
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
@@ -577,6 +581,7 @@ class PerfTaskRunner(BaseTaskRunner):
             self.io_threads,
             self.make_args,
             server_cpu_override=self.server_cpu_override,
+            server_args=self.server_args,
         )
 
         benchmark_alloc_tag = None

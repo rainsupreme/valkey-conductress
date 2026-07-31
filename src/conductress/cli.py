@@ -147,6 +147,11 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         help="Expert: explicit cpulist override for benchmark client (e.g. '16-23'), "
         "bypasses topology-aware allocation",
     )
+    parser.add_argument(
+        "--server-args",
+        default="",
+        help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -264,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expert: explicit cpulist override for benchmark client",
     )
+    mixed_parser.add_argument(
+        "--server-args",
+        default="",
+        help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
+    )
 
     # queue add-scenario
     scenario_parser = queue_sub.add_parser(
@@ -318,6 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--client-cpus",
         default="",
         help="Expert: explicit cpulist override for benchmark client",
+    )
+    scenario_parser.add_argument(
+        "--server-args",
+        default="",
+        help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
     )
     scenario_parser.add_argument(
         "--background-set-ratio",
@@ -437,6 +452,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             repetitions=args.repetitions,
             server_cpu_override=args.server_cpus,
             benchmark_cpu_override=args.client_cpus,
+            server_args=args.server_args,
         )
         queue.submit_task(task)
 
@@ -446,6 +462,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.make_args:
         print(f"  make-args: {args.make_args}")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
     if args.note:
         print(f"  note: {args.note}")
     return 0
@@ -559,6 +577,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
             key_size=key_size,
             server_cpu_override=args.server_cpus,
             benchmark_cpu_override=args.client_cpus,
+            server_args=args.server_args,
         )
         queue.submit_task(task)
 
@@ -567,6 +586,8 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     print(f"  source={args.source} specifier={args.specifier}")
     print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
     print(f"  duration={duration}s reps={args.repetitions}")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
     if args.note:
         print(f"  note: {args.note}")
     return 0
@@ -642,6 +663,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         perf_stat_enabled=args.perf_stat,
         server_cpu_override=args.server_cpus,
         benchmark_cpu_override=args.client_cpus,
+        server_args=args.server_args,
         background_set_ratio=args.background_set_ratio,
     )
     queue.submit_task(task)
@@ -652,6 +674,8 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     print(f"  duration={duration}s reps={args.repetitions}")
     if args.background_set_ratio > 0:
         print(f"  background-set-ratio={args.background_set_ratio}%")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
     if args.note:
         print(f"  note: {args.note}")
     return 0

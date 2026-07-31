@@ -109,6 +109,7 @@ class MixedTaskData(BaseTaskData):
     repetitions: int = 3
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
+    server_args: str = ""  # extra raw args appended to the server command line (override defaults)
 
     def __post_init__(self):
         super().__post_init__()
@@ -146,6 +147,7 @@ class MixedTaskData(BaseTaskData):
             note=self.note,
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
+            server_args=self.server_args,
         )
 
 
@@ -171,6 +173,7 @@ class MixedTaskRunner(BaseTaskRunner):
         note: str = "",
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
+        server_args: str = "",
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -189,6 +192,7 @@ class MixedTaskRunner(BaseTaskRunner):
         self.note = note
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
+        self.server_args = server_args
 
         self.commit_hash = ""
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -219,6 +223,7 @@ class MixedTaskRunner(BaseTaskRunner):
             self.io_threads,
             self.make_args,
             server_cpu_override=self.server_cpu_override,
+            server_args=self.server_args,
         )
 
         per_run_rps: List[float] = []

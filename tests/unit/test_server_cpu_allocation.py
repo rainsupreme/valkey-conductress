@@ -1,5 +1,6 @@
 """Unit tests for Server CPU allocation integration with CpuAllocator."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -73,6 +74,57 @@ class TestServerCpuAllocation:
 
         assert server._allocation_tag is None
         assert server.server_cpus == []
+
+    @pytest.mark.asyncio
+    async def test_start_appends_server_args_last(self):
+        """server_args are appended verbatim after all generated args (so they override defaults)."""
+        server = Server("192.168.1.1", 9000)
+        server._Server__pre_start = AsyncMock()
+        server._allocate_server_cpus = AsyncMock(return_value=list(range(6)))
+        server.wait_until_ready = AsyncMock()
+        server._pin_valkey_threads = AsyncMock()
+
+        commands = []
+
+        async def mock_run(cmd, check=True):
+            commands.append(cmd)
+            if cmd.startswith("lsof"):
+                return ("12345", "")
+            return ("", "")
+
+        server.run_host_command = mock_run
+
+        await server.start(Path("/tmp/valkey-server"), 4, server_args="--io-threads-ownership yes")
+
+        launch = commands[0]
+        assert launch.rstrip().endswith("--io-threads-ownership yes")
+        # Generated args still present, and positioned before the user args
+        assert launch.index("--bgsave-cpulist") < launch.index("--io-threads-ownership")
+
+    @pytest.mark.asyncio
+    async def test_start_without_server_args_unchanged(self):
+        """Default (empty) server_args leaves the launch command untouched."""
+        server = Server("192.168.1.1", 9000)
+        server._Server__pre_start = AsyncMock()
+        server._allocate_server_cpus = AsyncMock(return_value=list(range(6)))
+        server.wait_until_ready = AsyncMock()
+        server._pin_valkey_threads = AsyncMock()
+
+        commands = []
+
+        async def mock_run(cmd, check=True):
+            commands.append(cmd)
+            if cmd.startswith("lsof"):
+                return ("12345", "")
+            return ("", "")
+
+        server.run_host_command = mock_run
+
+        await server.start(Path("/tmp/valkey-server"), 4)
+
+        launch = commands[0]
+        assert "--bgsave-cpulist" in launch
+        assert launch.rstrip().endswith("5")  # ends with the bgsave cpulist, nothing appended
 
     @pytest.mark.asyncio
     async def test_stop_releases_allocation(self):
