@@ -310,6 +310,34 @@ class TestQueueAddSubcommand:
         assert task.server_args == "--io-threads-ownership yes"
 
     @patch("conductress.cli.TaskQueue")
+    def test_queue_add_bench_params_passthrough(self, mock_queue_cls):
+        """--bench-threads/--bench-clients flow into the task; default 0."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add", "--source", "repo1", "--tests", "get", "--bench-threads", "32", "--bench-clients", "2400"]
+        )
+
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.bench_threads == 32
+        assert task.bench_clients == 2400
+
+    @patch("conductress.cli.TaskQueue")
+    def test_queue_add_bench_params_default_zero(self, mock_queue_cls):
+        """Without the flags the task carries 0 (= use config defaults)."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add", "--source", "repo1", "--tests", "get"])
+
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.bench_threads == 0
+        assert task.bench_clients == 0
+
+    @patch("conductress.cli.TaskQueue")
     def test_queue_add_server_args_default_empty(self, mock_queue_cls):
         """Without --server-args the task carries an empty string (schema-compatible default)."""
         mock_queue = MagicMock()
