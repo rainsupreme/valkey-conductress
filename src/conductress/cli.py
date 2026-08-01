@@ -148,6 +148,19 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         "bypasses topology-aware allocation",
     )
     parser.add_argument(
+        "--bench-threads",
+        type=int,
+        default=0,
+        help="Expert: valkey-benchmark --threads override (0 = default 16). "
+        "Also sizes the benchmark CPU allocation.",
+    )
+    parser.add_argument(
+        "--bench-clients",
+        type=int,
+        default=0,
+        help="Expert: valkey-benchmark total connections override (0 = default 1200)",
+    )
+    parser.add_argument(
         "--server-args",
         default="",
         help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
@@ -453,6 +466,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             server_cpu_override=args.server_cpus,
             benchmark_cpu_override=args.client_cpus,
             server_args=args.server_args,
+            bench_threads=args.bench_threads,
+            bench_clients=args.bench_clients,
         )
         queue.submit_task(task)
 
@@ -464,6 +479,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print(f"  make-args: {args.make_args}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
+    if args.bench_threads or args.bench_clients:
+        print(f"  bench-threads={args.bench_threads or 'default'} bench-clients={args.bench_clients or 'default'}")
     if args.note:
         print(f"  note: {args.note}")
     return 0

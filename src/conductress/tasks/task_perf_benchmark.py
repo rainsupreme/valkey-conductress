@@ -119,6 +119,8 @@ class PerfTaskData(BaseTaskData):
     server_cpu_override: str = ""  # expert: explicit cpulist for server, bypasses topology-aware allocation
     benchmark_cpu_override: str = ""  # expert: explicit cpulist for benchmark client, bypasses allocation
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
+    bench_threads: int = 0  # valkey-benchmark --threads override; 0 = PERF_BENCH_THREADS default
+    bench_clients: int = 0  # valkey-benchmark -c override; 0 = PERF_BENCH_CLIENTS default
 
     def __post_init__(self):
         super().__post_init__()
@@ -158,6 +160,8 @@ class PerfTaskData(BaseTaskData):
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
             server_args=self.server_args,
+            bench_threads=self.bench_threads,
+            bench_clients=self.bench_clients,
         )
 
 
@@ -297,6 +301,8 @@ class PerfTaskRunner(BaseTaskRunner):
         server_cpu_override: str = "",
         benchmark_cpu_override: str = "",
         server_args: str = "",
+        bench_threads: int = 0,
+        bench_clients: int = 0,
     ):
         super().__init__(task_name)
 
@@ -327,6 +333,8 @@ class PerfTaskRunner(BaseTaskRunner):
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
         self.server_args = server_args
+        self.bench_threads = bench_threads or PERF_BENCH_THREADS
+        self.bench_clients = bench_clients or PERF_BENCH_CLIENTS
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
@@ -722,7 +730,7 @@ class PerfTaskRunner(BaseTaskRunner):
         benchmark_cpus = client._cpu_allocator.allocate(
             client.ip,
             benchmark_alloc_tag,
-            count=PERF_BENCH_THREADS,
+            count=self.bench_threads,
             require_numa=net_numa,
             avoid_tags=[server_tag],
             prefer_different_cache=True,
@@ -760,8 +768,8 @@ class PerfTaskRunner(BaseTaskRunner):
             return (
                 f"numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
+                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         elif benchmark_alloc_tag and self._is_local_benchmark(target_ip):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
@@ -769,15 +777,15 @@ class PerfTaskRunner(BaseTaskRunner):
             return (
                 f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
+                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         else:
             return (
                 f"numactl --cpunodebind={net_numa} --membind={net_numa} "
                 f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
-                f"-r {keyspace} -c {PERF_BENCH_CLIENTS} -P {self.pipelining} "
-                f"--threads {PERF_BENCH_THREADS} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
+                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
 
     async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
