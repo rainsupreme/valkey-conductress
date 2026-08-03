@@ -29,7 +29,7 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FilePro
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.utility import HumanByte, HumanNumber, HumanTime, RealtimeCommand
+from conductress.utility import HumanByte, HumanNumber, HumanTime, RealtimeCommand, get_primary_interface_ip
 
 BASE_KEY_PATTERN = "key:__rand_int__"
 BASE_KEY_SIZE = len(BASE_KEY_PATTERN)  # 16 bytes
@@ -121,6 +121,8 @@ class PerfTaskData(BaseTaskData):
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
     bench_threads: int = 0  # valkey-benchmark --threads override; 0 = PERF_BENCH_THREADS default
     bench_clients: int = 0  # valkey-benchmark -c override; 0 = PERF_BENCH_CLIENTS default
+    client_netns: str = ""  # run the benchmark client inside this network namespace (dual-ENI
+    # real-NIC hairpin topology; see docs/real-nic-hairpin.md). Empty = default namespace.
 
     def __post_init__(self):
         super().__post_init__()
@@ -162,6 +164,7 @@ class PerfTaskData(BaseTaskData):
             server_args=self.server_args,
             bench_threads=self.bench_threads,
             bench_clients=self.bench_clients,
+            client_netns=self.client_netns,
         )
 
 
@@ -303,6 +306,7 @@ class PerfTaskRunner(BaseTaskRunner):
         server_args: str = "",
         bench_threads: int = 0,
         bench_clients: int = 0,
+        client_netns: str = "",
     ):
         super().__init__(task_name)
 
@@ -335,6 +339,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self.server_args = server_args
         self.bench_threads = bench_threads or PERF_BENCH_THREADS
         self.bench_clients = bench_clients or PERF_BENCH_CLIENTS
+        self.client_netns = client_netns
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
@@ -752,6 +757,21 @@ class PerfTaskRunner(BaseTaskRunner):
         """Build the numactl + valkey-benchmark command string."""
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
 
+        # Dual-ENI real-NIC hairpin (docs/real-nic-hairpin.md): run the client
+        # inside a network namespace holding the secondary ENI. The namespace
+        # has its own loopback, so a 127.0.0.1 target must be rewritten to the
+        # host's primary-interface IP — the request then exits the secondary
+        # ENI, traverses the VPC fabric, and re-enters via the primary ENI
+        # (real driver/IRQ/NAPI path both directions). Locality decisions
+        # (_is_local_benchmark, CPU allocation) still use the ORIGINAL
+        # target_ip: the client process runs on this host either way.
+        netns_prefix = ""
+        bench_target = target_ip
+        if self.client_netns:
+            netns_prefix = f"sudo ip netns exec {self.client_netns} "
+            if self._is_local_benchmark(target_ip):
+                bench_target = get_primary_interface_ip()
+
         # Per-test override for the timed -r keyspace (preload always uses
         # PERF_BENCH_KEYSPACE); only zpop widens this today.
         keyspace = self.test.keyspace or PERF_BENCH_KEYSPACE
@@ -766,8 +786,8 @@ class PerfTaskRunner(BaseTaskRunner):
             override_nodes = client._cpu_allocator.get_numa_nodes_for_cpus(client.ip, override_cpus)
             membind = ",".join(map(str, override_nodes)) if override_nodes else str(net_numa)
             return (
-                f"numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
-                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"{netns_prefix}numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
                 f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
@@ -775,15 +795,15 @@ class PerfTaskRunner(BaseTaskRunner):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
             benchmark_cpu_list = ",".join(map(str, allocated)) if allocated else ""
             return (
-                f"numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
-                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"{netns_prefix}numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
                 f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         else:
             return (
-                f"numactl --cpunodebind={net_numa} --membind={net_numa} "
-                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {target_ip} -d {self.valsize} "
+                f"{netns_prefix}numactl --cpunodebind={net_numa} --membind={net_numa} "
+                f"{PROJECT_ROOT / VALKEY_BENCHMARK} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
                 f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )

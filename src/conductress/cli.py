@@ -161,6 +161,14 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         help="Expert: valkey-benchmark total connections override (0 = default 1200)",
     )
     parser.add_argument(
+        "--client-netns",
+        type=str,
+        default="",
+        help="Expert: run the benchmark client inside this network namespace "
+        "(dual-ENI real-NIC hairpin; requires host setup per docs/real-nic-hairpin.md). "
+        "Empty = default namespace (loopback path).",
+    )
+    parser.add_argument(
         "--server-args",
         default="",
         help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
@@ -468,6 +476,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             server_args=args.server_args,
             bench_threads=args.bench_threads,
             bench_clients=args.bench_clients,
+            client_netns=args.client_netns,
         )
         queue.submit_task(task)
 
@@ -481,6 +490,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print(f"  server-args: {args.server_args}")
     if args.bench_threads or args.bench_clients:
         print(f"  bench-threads={args.bench_threads or 'default'} bench-clients={args.bench_clients or 'default'}")
+    if args.client_netns:
+        print(f"  client-netns: {args.client_netns} (real-NIC hairpin path)")
     if args.note:
         print(f"  note: {args.note}")
     return 0

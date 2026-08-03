@@ -367,3 +367,22 @@ def parse_cpulist(cpulist: str) -> list[int]:
         else:
             cpus.append(int(part))
     return sorted(cpus)
+
+
+def get_primary_interface_ip() -> str:
+    """IP of the interface that carries the default route (the primary ENI).
+
+    Used by the dual-ENI hairpin topology (docs/real-nic-hairpin.md): a
+    benchmark client running in the load-generator namespace cannot reach the
+    server via 127.0.0.1 (namespaces have separate loopbacks), so it targets
+    this address instead. The UDP connect never sends a packet — it only asks
+    the kernel which source address the default route would pick.
+    """
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
