@@ -369,6 +369,94 @@ def parse_cpulist(cpulist: str) -> list[int]:
     return sorted(cpus)
 
 
+def sample_process_tree_cpu(root_pid: int) -> Optional[float]:
+    """Total CPU seconds (utime + stime) consumed so far by a process and all
+    of its live descendants.
+
+    Used to measure the load generator's CPU consumption: the benchmark is
+    launched through wrappers (sudo/ip netns exec/numactl), so the interesting
+    process is a descendant of the PID we hold. Walks /proc once, builds the
+    parent->children map, and sums the subtree rooted at ``root_pid``.
+
+    Returns None when the root process no longer exists. CPU time of already
+    reaped children is not included (irrelevant for a generator that lives for
+    the whole measurement window).
+    """
+    clk_tck = os.sysconf("SC_CLK_TCK")
+    children: dict[int, list[int]] = {}
+    ticks: dict[int, int] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="ascii") as stat_file:
+                data = stat_file.read()
+        except OSError:
+            continue  # process exited between listdir and read
+        # comm (field 2) may contain spaces/parens; parse after the last ')'.
+        rest = data[data.rfind(")") + 2 :].split()
+        pid = int(entry)
+        ppid = int(rest[1])
+        utime, stime = int(rest[11]), int(rest[12])
+        children.setdefault(ppid, []).append(pid)
+        ticks[pid] = utime + stime
+    if root_pid not in ticks:
+        return None
+    total = 0
+    stack = [root_pid]
+    while stack:
+        pid = stack.pop()
+        total += ticks.get(pid, 0)
+        stack.extend(children.get(pid, []))
+    return total / clk_tck
+
+
+def count_cpu_list(spec: str) -> Optional[int]:
+    """Number of CPUs in a taskset/numactl-style list spec (e.g. '0-3,8' -> 5).
+
+    Returns None for a spec that cannot be parsed.
+    """
+    total = 0
+    try:
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                lo, hi = part.split("-", 1)
+                total += int(hi) - int(lo) + 1
+            else:
+                int(part)
+                total += 1
+    except ValueError:
+        return None
+    return total if total > 0 else None
+
+
+CLIENT_CPU_SATURATION_THRESHOLD = 0.9
+
+
+def summarize_client_cpu(cores_busy_per_rep: Sequence[float], allocated_cores: Optional[int]) -> dict:
+    """Build the client_cpu result-metadata block from per-rep samples.
+
+    ``cores_busy_per_rep`` holds the generator process tree's CPU-seconds per
+    wall-second for each measurement window (i.e. cores kept busy). When the
+    allocated core budget is known, also report utilization and a saturation
+    flag: a generator at >= 90% of its budget is (or is about to become) the
+    binding constraint, meaning the measured throughput reflects the CLIENT'S
+    capacity rather than the server's.
+    """
+    summary: dict = {
+        "cores_busy_per_rep": [round(v, 3) for v in cores_busy_per_rep],
+        "allocated_cores": allocated_cores,
+    }
+    if allocated_cores and cores_busy_per_rep:
+        utilization = max(cores_busy_per_rep) / allocated_cores
+        summary["utilization"] = round(utilization, 3)
+        summary["saturated"] = utilization >= CLIENT_CPU_SATURATION_THRESHOLD
+    return summary
+
+
 def get_primary_interface_ip() -> str:
     """IP of the interface that carries the default route (the primary ENI).
 
