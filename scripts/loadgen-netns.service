@@ -1,0 +1,26 @@
+# loadgen-netns.service — recreate the load-generator network namespace at
+# boot (network namespaces do not persist across reboots; the ENI does).
+#
+# Install (per host):
+#   1. sudo cp scripts/setup-loadgen-netns.sh /usr/local/sbin/
+#   2. sudo cp scripts/loadgen-netns.service /etc/systemd/system/
+#   3. Create /etc/loadgen-netns.conf with this host's values (see
+#      docs/real-nic-hairpin.md for the per-host table):
+#        ENI_MAC=0e:5c:94:9d:0e:73
+#        ENI_IPCIDR=172.31.45.237/20
+#        GATEWAY=172.31.32.1
+#   4. sudo systemctl daemon-reload && sudo systemctl enable --now loadgen-netns
+#
+[Unit]
+Description=Load-generator network namespace for dual-ENI benchmarking
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/loadgen-netns.conf
+ExecStart=/usr/local/sbin/setup-loadgen-netns.sh ${ENI_MAC} ${ENI_IPCIDR} ${GATEWAY}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
