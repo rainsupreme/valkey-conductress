@@ -645,6 +645,20 @@ class PerfTaskRunner(BaseTaskRunner):
                     client = Server("127.0.0.1")
                     await client.ensure_host_cpu_allocation()
                     benchmark_alloc_tag = self._allocate_benchmark_cpus(client, server)
+                    # Preflight for the dual-ENI hairpin: network namespaces do
+                    # NOT persist across reboots, so fail loudly and point at
+                    # the fix rather than dying later with a cryptic benchmark
+                    # error (docs/real-nic-hairpin.md).
+                    if self.client_netns:
+                        ns_list, _ = await client.run_host_command("ip netns list", check=False)
+                        ns_names = {line.split()[0] for line in ns_list.splitlines() if line.strip()}
+                        if self.client_netns not in ns_names:
+                            raise RuntimeError(
+                                f"client_netns '{self.client_netns}' does not exist on this host "
+                                f"(namespaces do not survive reboots). Run "
+                                f"scripts/setup-loadgen-netns.sh or install the "
+                                f"loadgen-netns systemd unit — see docs/real-nic-hairpin.md."
+                            )
 
                 # Build and execute benchmark command
                 command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)

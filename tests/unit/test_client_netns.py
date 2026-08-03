@@ -65,3 +65,16 @@ def test_netns_applies_to_cpu_override_branch(mock_ip):
     cmd = task._build_benchmark_command(client, "127.0.0.1", None)
     assert cmd.startswith("sudo ip netns exec loadgen numactl --physcpubind=4,5,6")
     assert "-h 172.31.34.114" in cmd
+
+
+def test_netns_preflight_message_mentions_setup_paths():
+    """The preflight failure must point at the fix (script + docs), since the
+    namespace silently vanishes on reboot."""
+    import inspect
+
+    from conductress.tasks.task_perf_benchmark import PerfTaskRunner
+
+    src = inspect.getsource(PerfTaskRunner)
+    assert "does not exist on this host" in src
+    assert "setup-loadgen-netns.sh" in src
+    assert "real-nic-hairpin.md" in src

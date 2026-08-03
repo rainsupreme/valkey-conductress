@@ -59,8 +59,16 @@ be a deliberate step-change with overlap cells.
    It finds the interface by MAC (kernel names differ per host), moves it into
    the `loadgen` namespace, assigns the IP, and sets the default route.
 
-3. **Reboot note: network namespaces do NOT persist.** Re-run the script after
-   any host reboot (the ENI stays attached; only the namespace config is lost).
+3. **Reboot note: network namespaces do NOT persist** (the ENI stays attached;
+   only the namespace config is lost). Two options:
+   - Install the systemd unit for automatic recreation at boot — see the
+     install steps in `scripts/loadgen-netns.service` (uses
+     `/etc/loadgen-netns.conf` for this host's MAC/IP/gateway).
+   - Or re-run `setup-loadgen-netns.sh` manually after reboots.
+
+   Either way, a hairpin task on a host whose namespace is missing fails
+   immediately at preflight with a pointer here — not with a cryptic
+   benchmark error mid-run.
 
 ## Provisioned hosts (Aug 2026)
 
