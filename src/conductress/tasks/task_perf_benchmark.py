@@ -29,7 +29,16 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FilePro
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.utility import HumanByte, HumanNumber, HumanTime, RealtimeCommand, get_primary_interface_ip
+from conductress.utility import (
+    HumanByte,
+    HumanNumber,
+    HumanTime,
+    RealtimeCommand,
+    count_cpu_list,
+    get_primary_interface_ip,
+    sample_process_tree_cpu,
+    summarize_client_cpu,
+)
 
 BASE_KEY_PATTERN = "key:__rand_int__"
 BASE_KEY_SIZE = len(BASE_KEY_PATTERN)  # 16 bytes
@@ -346,6 +355,12 @@ class PerfTaskRunner(BaseTaskRunner):
         self._current_rep = 0  # 0-indexed current repetition (set by _execute_benchmark_loop)
         self._cpu_stacks_main: list[list] = []
         self._cpu_stacks_io: list[list] = []
+        # Client (load generator) CPU telemetry: cores kept busy by the
+        # generator process tree during each measurement window, plus the
+        # core budget it was confined to (None when unknown, e.g. remote
+        # client without an explicit override).
+        self._client_cores_busy_per_rep: list[float] = []
+        self._client_allocated_cores: Optional[int] = None
         self._perf_rep_count = 0  # reps whose perf counters were summed into perf_counters
 
         # Build custom commands when key_size > 0
@@ -511,6 +526,10 @@ class PerfTaskRunner(BaseTaskRunner):
             if self._cpu_stacks_main:
                 detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
                 detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
+            if self._client_cores_busy_per_rep:
+                detailed_data["client_cpu"] = summarize_client_cpu(
+                    self._client_cores_busy_per_rep, self._client_allocated_cores
+                )
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -546,6 +565,10 @@ class PerfTaskRunner(BaseTaskRunner):
             if self._cpu_stacks_main:
                 detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
                 detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
+            if self._client_cores_busy_per_rep:
+                detailed_data["client_cpu"] = summarize_client_cpu(
+                    self._client_cores_busy_per_rep, self._client_allocated_cores
+                )
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -645,6 +668,12 @@ class PerfTaskRunner(BaseTaskRunner):
                     client = Server("127.0.0.1")
                     await client.ensure_host_cpu_allocation()
                     benchmark_alloc_tag = self._allocate_benchmark_cpus(client, server)
+                    # Record the client's core budget for generator-saturation
+                    # telemetry (None = unknown, e.g. cpunodebind fallback).
+                    if self.benchmark_cpu_override:
+                        self._client_allocated_cores = count_cpu_list(self.benchmark_cpu_override)
+                    elif benchmark_alloc_tag is not None:
+                        self._client_allocated_cores = self.bench_threads
                     # Preflight for the dual-ENI hairpin: network namespaces do
                     # NOT persist across reboots, so fail loudly and point at
                     # the fix rather than dying later with a cryptic benchmark
@@ -846,6 +875,8 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.logger.info(f"started rt cmd (rep {rep + 1}/{total_reps})")
         last_heartbeat = time.time()
+        client_cpu_start: Optional[float] = None
+        client_cpu_start_time = 0.0
         while command.is_running():
             await self.__collect_metrics(command)
             time.sleep(benchmark_update_interval)
@@ -859,12 +890,30 @@ class PerfTaskRunner(BaseTaskRunner):
                 last_heartbeat = time.time()
 
             if now > end_time:
+                # Close the generator CPU sample over the measurement window
+                # before killing the process tree.
+                if client_cpu_start is not None and command.p is not None:
+                    client_cpu_end = sample_process_tree_cpu(command.p.pid)
+                    elapsed = time.monotonic() - client_cpu_start_time
+                    if client_cpu_end is not None and elapsed > 0:
+                        cores_busy = (client_cpu_end - client_cpu_start) / elapsed
+                        self._client_cores_busy_per_rep.append(cores_busy)
+                        if self._client_allocated_cores and cores_busy / self._client_allocated_cores >= 0.9:
+                            self.logger.warning(
+                                "Load generator used %.2f of %d allocated cores (>=90%%): "
+                                "throughput may reflect CLIENT capacity, not the server's.",
+                                cores_busy,
+                                self._client_allocated_cores,
+                            )
                 if self.perf_stat_enabled:
                     await server.perf_stat_stop()
                 command.kill()
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 warming_up = False
+                if command.p is not None:
+                    client_cpu_start = sample_process_tree_cpu(command.p.pid)
+                    client_cpu_start_time = time.monotonic()
                 if self.perf_stat_enabled:
                     await server.perf_stat_start()
                 if self.perf_stat_enabled and self._profile_internals:
