@@ -379,6 +379,97 @@ def build_parser() -> argparse.ArgumentParser:
     lat_parser.add_argument("target_rps", type=int, help="Target requests/sec (use 70%% of max throughput)")
     lat_parser.add_argument("--note", default="", help="Optional note for the task")
 
+    # queue add-cachecannon
+    cc_parser = queue_sub.add_parser(
+        "add-cachecannon",
+        help="Add a cachecannon benchmark task (second-opinion generator, NOT sweep-comparable)",
+    )
+    cc_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    cc_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    cc_parser.add_argument(
+        "--test",
+        default="get",
+        choices=["get", "set"],
+        help="Command to bench (default: get)",
+    )
+    cc_parser.add_argument(
+        "--sizes",
+        default=str(config.DEFAULT_VAL_SIZE),
+        help=f"Value size in bytes (e.g., 512, 1KB). Default: {config.DEFAULT_VAL_SIZE}",
+    )
+    cc_parser.add_argument(
+        "--pipelining",
+        type=int,
+        default=config.DEFAULT_PIPELINING,
+        help=f"Pipeline depth. Default: {config.DEFAULT_PIPELINING}",
+    )
+    cc_parser.add_argument(
+        "--connections",
+        type=int,
+        default=1200,
+        help="Total connections (default: 1200)",
+    )
+    cc_parser.add_argument(
+        "--threads",
+        type=int,
+        default=config.PERF_BENCH_THREADS,
+        help=f"Worker threads (default: {config.PERF_BENCH_THREADS})",
+    )
+    cc_parser.add_argument(
+        "--io-threads",
+        type=int,
+        default=config.DEFAULT_IO_THREADS,
+        help=f"Server IO threads (default: {config.DEFAULT_IO_THREADS})",
+    )
+    cc_parser.add_argument(
+        "--warmup",
+        default=f"{config.DEFAULT_WARMUP}s",
+        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s",
+    )
+    cc_parser.add_argument(
+        "--duration",
+        default=f"{config.DEFAULT_DURATION}s",
+        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
+    )
+    cc_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
+    )
+    cc_parser.add_argument(
+        "--keyspace",
+        type=int,
+        default=config.PERF_BENCH_KEYSPACE,
+        help=f"Keyspace count (default: {config.PERF_BENCH_KEYSPACE})",
+    )
+    cc_parser.add_argument(
+        "--cachecannon-binary",
+        default="/home/ec2-user/cachecannon/target/release/cachecannon",
+        help="Path to cachecannon binary (default: /home/ec2-user/cachecannon/target/release/cachecannon)",
+    )
+    cc_parser.add_argument(
+        "--server-args",
+        default="",
+        help="Extra raw server arguments (e.g. '--io-threads-ownership yes')",
+    )
+    cc_parser.add_argument(
+        "--server-cpus",
+        default="",
+        help="Expert: explicit cpulist override for server",
+    )
+    cc_parser.add_argument(
+        "--client-cpus",
+        default="",
+        help="Expert: explicit cpulist override for cachecannon client",
+    )
+    cc_parser.add_argument("--note", default="", help="Optional note for the task")
+    cc_parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+
     # queue remove
     remove_parser = queue_sub.add_parser("remove", help="Remove a task from the queue")
     remove_parser.add_argument("task_id", help="Task ID to remove (from 'queue list' output)")
@@ -720,6 +811,91 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
+    """Handle 'queue add-cachecannon': submit a cachecannon benchmark task.
+
+    cachecannon is a second-opinion generator -- results are NOT comparable
+    with the valkey-benchmark sweep history.
+    """
+    from conductress.tasks.task_cachecannon import CachecannonTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    try:
+        warmup = _parse_human_time(args.warmup, "warmup")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        duration = _parse_human_time(args.duration, "duration")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        val_size = int(HumanByte.from_human(args.sizes))
+    except ValueError as e:
+        print(f"Error (--sizes): {e}", file=sys.stderr)
+        return 1
+
+    if args.repetitions < 1:
+        print("Error: Repetitions must be at least 1", file=sys.stderr)
+        return 1
+
+    try:
+        validate_cpulist(args.server_cpus)
+    except ValueError as e:
+        print(f"Error (--server-cpus): {e}", file=sys.stderr)
+        return 1
+    try:
+        validate_cpulist(args.client_cpus)
+    except ValueError as e:
+        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+        return 1
+
+    queue = TaskQueue()
+    task = CachecannonTaskData(
+        source=args.source,
+        specifier=args.specifier,
+        make_args=args.make_args,
+        replicas=0,
+        note=args.note,
+        requirements={},
+        test=args.test,
+        val_size=val_size,
+        pipelining=args.pipelining,
+        connections=args.connections,
+        threads=args.threads,
+        io_threads=args.io_threads,
+        warmup=warmup,
+        duration=duration,
+        repetitions=args.repetitions,
+        keyspace_count=args.keyspace,
+        cachecannon_binary=args.cachecannon_binary,
+        server_args=args.server_args,
+        server_cpu_override=args.server_cpus,
+        benchmark_cpu_override=args.client_cpus,
+    )
+    queue.submit_task(task)
+
+    print(f"Queued cachecannon task (NOT sweep-comparable):")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  test={args.test} size={val_size} pipeline={args.pipelining}")
+    print(f"  connections={args.connections} threads={args.threads}")
+    print(f"  io-threads={args.io_threads} duration={duration}s warmup={warmup}s reps={args.repetitions}")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
+    if args.cachecannon_binary != "/home/ec2-user/cachecannon/target/release/cachecannon":
+        print(f"  binary: {args.cachecannon_binary}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
+
+
 def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
     """Per-item user data bytes for a memory workload at a custom value/member size.
 
@@ -885,6 +1061,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return handle_queue_add_scenario(args)
         elif args.queue_command == "add-latency":
             return handle_queue_add_latency(args)
+        elif args.queue_command == "add-cachecannon":
+            return handle_queue_add_cachecannon(args)
         elif args.queue_command == "remove":
             return handle_queue_remove(args)
         elif args.queue_command == "clear":
