@@ -543,14 +543,24 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 command = RealtimeCommand(command_string)
                 command.start()
 
-                # Collect output (cachecannon runs to completion)
+                # Collect output (cachecannon runs to completion).
+                # CPU telemetry: sample_process_tree_cpu returns None once the
+                # root exits, so refresh the last-known sample each poll cycle.
                 output_lines: list[str] = []
-                client_cpu_start = time.monotonic()
+                client_cpu_t0 = time.monotonic()
+                client_cpu_s0 = sample_process_tree_cpu(command.p.pid) if command.p else None
+                client_cpu_t1: Optional[float] = None
+                client_cpu_s1: Optional[float] = None
                 while command.is_running():
                     line, _ = command.poll_output()
                     while line is not None and line != "":
                         output_lines.append(line)
                         line, _ = command.poll_output()
+                    if command.p:
+                        sample = sample_process_tree_cpu(command.p.pid)
+                        if sample is not None:
+                            client_cpu_s1 = sample
+                            client_cpu_t1 = time.monotonic()
                     time.sleep(1)
 
                 # Drain remaining output
@@ -559,10 +569,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     output_lines.append(line)
                     line, _ = command.poll_output()
 
-                client_cpu_end = time.monotonic()
-
-                # Check exit code
-                exit_code = command.get_exit_code()
+                # Check exit code (is_running() returned False, so p.poll() has run)
+                exit_code = command.p.returncode if command.p else None
                 if exit_code != 0:
                     full_output = "\n".join(output_lines)
                     raise RuntimeError(f"cachecannon exited with code {exit_code}. Output:\n{full_output[-2000:]}")
@@ -594,20 +602,17 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     parsed["hit_rate"]["percent"] if parsed["hit_rate"] else 0,
                 )
 
-                # Client CPU telemetry (approximate -- sample over full run)
-                if self._client_allocated_cores:
-                    elapsed = client_cpu_end - client_cpu_start
-                    if elapsed > 0:
-                        # Use process-tree sampling if available; otherwise skip
-                        try:
-                            cores_busy = await sample_process_tree_cpu(
-                                command._process.pid if hasattr(command, "_process") else None,
-                                elapsed,
-                            )
-                            if cores_busy is not None:
-                                self._client_cores_busy_per_rep.append(cores_busy)
-                        except Exception:
-                            pass
+                # Client CPU telemetry (approximate -- spans cachecannon's
+                # internal warmup as well as the measurement window)
+                if (
+                    self._client_allocated_cores
+                    and client_cpu_s0 is not None
+                    and client_cpu_s1 is not None
+                    and client_cpu_t1 is not None
+                    and client_cpu_t1 > client_cpu_t0
+                ):
+                    cores_busy = (client_cpu_s1 - client_cpu_s0) / (client_cpu_t1 - client_cpu_t0)
+                    self._client_cores_busy_per_rep.append(cores_busy)
 
             # Record aggregated results
             if server is None:
