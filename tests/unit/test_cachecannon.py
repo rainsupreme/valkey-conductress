@@ -51,8 +51,8 @@ def test_toml_generation_basic():
     assert "[timestamps]" in toml
 
     # Check key values
-    assert "duration = 30" in toml
-    assert "warmup = 5" in toml
+    assert 'duration = "30s"' in toml
+    assert 'warmup = "5s"' in toml
     assert "threads = 16" in toml
     assert 'cpu_list = "8,9,10,11,12,13,14,15"' in toml
     assert 'io_engine = "uring"' in toml
@@ -66,7 +66,41 @@ def test_toml_generation_basic():
     assert 'distribution = "uniform"' in toml
     assert "get = 100" in toml
     assert "length = 512" in toml
-    assert "userspace = true" in toml
+    assert "userspace = true" not in toml
+    assert "enabled = true" in toml
+    assert 'mode = "userspace"' in toml
+
+
+def test_toml_humantime_and_schema_shape():
+    """Regression for the Aug 5 production failure: cachecannon parses
+    [general] duration/warmup with humantime_serde (REQUIRES strings like
+    "300s"; bare integers are rejected at startup with 'invalid type:
+    integer, expected a string'), and [timestamps] has keys enabled/mode
+    (there is no 'userspace' key). Parse the generated TOML and verify the
+    actual types, not just substrings."""
+    try:
+        import tomllib  # Python 3.11+
+    except ModuleNotFoundError:
+        import tomli as tomllib  # Python <3.11 (pytest dependency chain)
+
+    toml = generate_toml_config(
+        duration=300,
+        warmup=30,
+        threads=16,
+        cpu_list="8,9",
+        endpoint="127.0.0.1:6379",
+        connections=1200,
+        pipeline_depth=10,
+        keyspace_count=3000000,
+        val_size=16,
+        test="get",
+    )
+    parsed = tomllib.loads(toml)
+    assert isinstance(parsed["general"]["duration"], str)
+    assert parsed["general"]["duration"] == "300s"
+    assert isinstance(parsed["general"]["warmup"], str)
+    assert parsed["general"]["warmup"] == "30s"
+    assert parsed["timestamps"] == {"enabled": True, "mode": "userspace"}
 
 
 def test_toml_generation_set_test():
