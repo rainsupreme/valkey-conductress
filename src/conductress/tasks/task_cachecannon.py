@@ -205,6 +205,8 @@ def generate_toml_config(
     keyspace_count: int,
     val_size: int,
     test: str = "get",
+    set_ratio: int = 0,
+    distribution: str = "uniform",
 ) -> str:
     """Generate a cachecannon TOML configuration file.
 
@@ -218,18 +220,30 @@ def generate_toml_config(
         pipeline_depth: Pipeline depth.
         keyspace_count: Number of keys in the keyspace.
         val_size: Value size in bytes.
-        test: Command to bench ('get' for now).
+        test: Command to bench ('get' or 'set'). Ignored when set_ratio > 0.
+        set_ratio: Percentage of SET commands (0-100). When > 0, overrides
+            'test' with a mixed GET/SET workload (get = 100 - set_ratio).
+        distribution: Key distribution ('uniform' or 'zipf').
 
     Returns:
         TOML configuration string.
     """
-    # Map test name to cachecannon command weights
-    if test == "get":
-        commands_section = "get = 100"
+    if not 0 <= set_ratio <= 100:
+        raise ValueError(f"set_ratio must be 0-100, got {set_ratio}")
+    if distribution not in ("uniform", "zipf"):
+        raise ValueError(f"distribution must be 'uniform' or 'zipf', got '{distribution}'")
+
+    # Map test name / set_ratio to cachecannon command weights. ALWAYS write
+    # all three weights explicitly: cachecannon applies serde per-field
+    # defaults (get=80, set=20, delete=0) to any weight omitted from the
+    # TOML, so a config with only 'set = 100' silently runs 80% GET.
+    if set_ratio > 0:
+        get_weight, set_weight = 100 - set_ratio, set_ratio
     elif test == "set":
-        commands_section = "set = 100"
-    else:
-        commands_section = f"{test} = 100"
+        get_weight, set_weight = 0, 100
+    else:  # 'get' (default)
+        get_weight, set_weight = 100, 0
+    commands_section = f"get = {get_weight}\nset = {set_weight}\ndelete = 0"
 
     toml = f"""[general]
 duration = {duration}
@@ -252,7 +266,7 @@ prefill = true
 [workload.keyspace]
 length = 16
 count = {keyspace_count}
-distribution = "uniform"
+distribution = "{distribution}"
 
 [workload.commands]
 {commands_section}
@@ -289,15 +303,24 @@ class CachecannonTaskData(BaseTaskData):
     server_args: str = ""
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
+    set_ratio: int = 0  # 0 = pure workload per 'test'; >0 = mixed GET/SET
+    distribution: str = "uniform"  # key distribution: 'uniform' or 'zipf'
 
     def __post_init__(self):
         super().__post_init__()
         self.warmup = int(self.warmup)
         self.duration = int(self.duration)
 
+    def workload_label(self) -> str:
+        """Human label for the workload: 'get', 'set', or 'mixed s<N>'."""
+        label = f"mixed s{self.set_ratio}" if self.set_ratio > 0 else self.test
+        if self.distribution != "uniform":
+            label += f" {self.distribution}"
+        return label
+
     def short_description(self) -> str:
         return (
-            f"cachecannon {self.test}, {HumanByte.to_human(self.val_size)} values, "
+            f"cachecannon {self.workload_label()}, {HumanByte.to_human(self.val_size)} values, "
             f"P{self.pipelining}, {self.connections}c, {self.threads}t, "
             f"{HumanTime.to_human(self.duration)} x{self.repetitions}"
         )
@@ -323,6 +346,8 @@ class CachecannonTaskData(BaseTaskData):
             server_args=self.server_args,
             server_cpu_override=self.server_cpu_override,
             benchmark_cpu_override=self.benchmark_cpu_override,
+            set_ratio=self.set_ratio,
+            distribution=self.distribution,
             note=self.note,
         )
 
@@ -357,6 +382,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
         server_cpu_override: str,
         benchmark_cpu_override: str,
         note: str,
+        set_ratio: int = 0,
+        distribution: str = "uniform",
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
@@ -379,14 +406,20 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.server_args = server_args
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
+        self.set_ratio = set_ratio
+        self.distribution = distribution
         self.note = note
 
         self.commit_hash = ""
         self._client_cores_busy_per_rep: list[float] = []
         self._client_allocated_cores: Optional[int] = None
 
+        workload = f"mixed s{set_ratio}" if set_ratio > 0 else test
+        if distribution != "uniform":
+            workload += f" {distribution}"
+        self.workload = workload
         self.title = (
-            f"cachecannon {test}, {source}:{specifier}, io-threads={io_threads}, "
+            f"cachecannon {workload}, {source}:{specifier}, io-threads={io_threads}, "
             f"P{pipelining}, {connections}c, {threads}t, "
             f"{HumanTime.to_human(duration)} x{repetitions}"
         )
@@ -394,7 +427,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # Status tracking
         self.status = BenchmarkStatus(
             steps_total=(warmup + duration) * repetitions,
-            task_type=f"cachecannon-{test}",
+            task_type=f"cachecannon-{workload.replace(' ', '-')}",
         )
 
     def _allocate_benchmark_cpus(self, client: "Server", server: "Server") -> Optional[AllocationTag]:
@@ -525,6 +558,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     keyspace_count=self.keyspace_count,
                     val_size=self.val_size,
                     test=self.test,
+                    set_ratio=self.set_ratio,
+                    distribution=self.distribution,
                 )
 
                 # Write TOML to result directory
@@ -658,6 +693,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
             "threads": self.threads,
             "size": self.val_size,
             "keyspace_count": self.keyspace_count,
+            "set_ratio": self.set_ratio,
+            "distribution": self.distribution,
             "cachecannon_binary": self.cachecannon_binary,
             "toml_config": toml_content,
             "lscpu": lscpu_output,
@@ -693,7 +730,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             )
 
         results = BenchmarkResults(
-            method=f"cachecannon-{self.test}",
+            method=f"cachecannon-{self.workload.replace(' ', '-')}",
             source=self.source,
             specifier=self.specifier,
             commit_hash=self.commit_hash,
