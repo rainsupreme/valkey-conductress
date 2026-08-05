@@ -246,8 +246,8 @@ def generate_toml_config(
     commands_section = f"get = {get_weight}\nset = {set_weight}\ndelete = 0"
 
     toml = f"""[general]
-duration = {duration}
-warmup = {warmup}
+duration = "{duration}s"
+warmup = "{warmup}s"
 threads = {threads}
 cpu_list = "{cpu_list}"
 io_engine = "uring"
@@ -275,7 +275,8 @@ distribution = "{distribution}"
 length = {val_size}
 
 [timestamps]
-userspace = true
+enabled = true
+mode = "userspace"
 """
     return toml
 
