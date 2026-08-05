@@ -85,6 +85,89 @@ def test_toml_generation_set_test():
     )
     assert "set = 100" in toml
     assert "get = 100" not in toml
+    # All three weights must be explicit: cachecannon serde-defaults omitted
+    # weights (get=80, set=20), so 'set = 100' alone would run 80% GET.
+    assert "get = 0" in toml
+    assert "delete = 0" in toml
+
+
+def test_toml_generation_mixed_ratio():
+    """set_ratio > 0 produces a mixed GET/SET workload overriding 'test'."""
+    toml = generate_toml_config(
+        duration=60,
+        warmup=10,
+        threads=8,
+        cpu_list="0,1,2,3",
+        endpoint="10.0.0.1:6379",
+        connections=600,
+        pipeline_depth=10,
+        keyspace_count=1000000,
+        val_size=64,
+        test="get",
+        set_ratio=30,
+    )
+    assert "get = 70" in toml
+    assert "set = 30" in toml
+    assert "delete = 0" in toml
+
+
+def test_toml_generation_zipf_distribution():
+    """distribution='zipf' is templated into the keyspace section."""
+    toml = generate_toml_config(
+        duration=60,
+        warmup=10,
+        threads=8,
+        cpu_list="0,1,2,3",
+        endpoint="10.0.0.1:6379",
+        connections=600,
+        pipeline_depth=10,
+        keyspace_count=1000000,
+        val_size=64,
+        test="get",
+        distribution="zipf",
+    )
+    assert 'distribution = "zipf"' in toml
+    assert 'distribution = "uniform"' not in toml
+
+
+def test_toml_generation_invalid_set_ratio_raises():
+    """set_ratio outside 0-100 raises ValueError."""
+    import pytest
+
+    with pytest.raises(ValueError, match="set_ratio"):
+        generate_toml_config(
+            duration=30,
+            warmup=5,
+            threads=4,
+            cpu_list="",
+            endpoint="127.0.0.1:6379",
+            connections=400,
+            pipeline_depth=10,
+            keyspace_count=1000000,
+            val_size=128,
+            test="get",
+            set_ratio=101,
+        )
+
+
+def test_toml_generation_invalid_distribution_raises():
+    """Unknown distribution raises ValueError."""
+    import pytest
+
+    with pytest.raises(ValueError, match="distribution"):
+        generate_toml_config(
+            duration=30,
+            warmup=5,
+            threads=4,
+            cpu_list="",
+            endpoint="127.0.0.1:6379",
+            connections=400,
+            pipeline_depth=10,
+            keyspace_count=1000000,
+            val_size=128,
+            test="get",
+            distribution="gaussian",
+        )
 
 
 def test_toml_generation_empty_cpu_list():
@@ -245,6 +328,31 @@ def test_task_data_short_description():
     assert "x3" in desc
 
 
+def test_task_data_short_description_mixed_zipf():
+    """Mixed/zipf workloads are reflected in the description."""
+    task = CachecannonTaskData(
+        source=_valid_source(),
+        specifier="unstable",
+        make_args="",
+        replicas=0,
+        note="test",
+        requirements={},
+        test="get",
+        val_size=16,
+        pipelining=10,
+        connections=1200,
+        threads=16,
+        warmup=5,
+        duration=30,
+        repetitions=3,
+        set_ratio=30,
+        distribution="zipf",
+    )
+    desc = task.short_description()
+    assert "mixed s30" in desc
+    assert "zipf" in desc
+
+
 def test_task_data_task_type_registration():
     """CachecannonTaskData should be registered in the task registry."""
     from conductress.task_queue import BaseTaskData
@@ -280,6 +388,8 @@ def test_task_data_serialization_roundtrip():
         keyspace_count=1000000,
         cachecannon_binary="/usr/local/bin/cachecannon",
         server_args="--io-threads-ownership yes",
+        set_ratio=50,
+        distribution="zipf",
     )
 
     # Save and reload
@@ -295,6 +405,8 @@ def test_task_data_serialization_roundtrip():
     assert loaded.threads == 8
     assert loaded.cachecannon_binary == "/usr/local/bin/cachecannon"
     assert loaded.server_args == "--io-threads-ownership yes"
+    assert loaded.set_ratio == 50
+    assert loaded.distribution == "zipf"
     assert loaded.note == "roundtrip test"
 
     import os

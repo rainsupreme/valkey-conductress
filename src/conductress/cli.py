@@ -444,6 +444,21 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Keyspace count (default: {config.PERF_BENCH_KEYSPACE})",
     )
     cc_parser.add_argument(
+        "--set-ratio",
+        type=int,
+        default=0,
+        help="Percentage of SET commands (0-100) for a mixed GET/SET workload. "
+        "0 (default) = pure workload per --test; >0 overrides --test "
+        "(e.g. 30 = 30%% SET / 70%% GET).",
+    )
+    cc_parser.add_argument(
+        "--distribution",
+        default="uniform",
+        choices=["uniform", "zipf"],
+        help="Key distribution (default: uniform). 'zipf' concentrates traffic "
+        "on hot keys (cachecannon-native zipf, no exponent knob).",
+    )
+    cc_parser.add_argument(
         "--cachecannon-binary",
         default="/home/ec2-user/cachecannon/target/release/cachecannon",
         help="Path to cachecannon binary (default: /home/ec2-user/cachecannon/target/release/cachecannon)",
@@ -846,6 +861,10 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
+    if not 0 <= args.set_ratio <= 100:
+        print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
+        return 1
+
     try:
         validate_cpulist(args.server_cpus)
     except ValueError as e:
@@ -879,12 +898,21 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         server_args=args.server_args,
         server_cpu_override=args.server_cpus,
         benchmark_cpu_override=args.client_cpus,
+        set_ratio=args.set_ratio,
+        distribution=args.distribution,
     )
     queue.submit_task(task)
 
     print(f"Queued cachecannon task (NOT sweep-comparable):")
     print(f"  source={args.source} specifier={args.specifier}")
-    print(f"  test={args.test} size={val_size} pipeline={args.pipelining}")
+    if args.set_ratio > 0:
+        print(
+            f"  workload=mixed {args.set_ratio}%SET/{100 - args.set_ratio}%GET size={val_size} pipeline={args.pipelining}"
+        )
+    else:
+        print(f"  test={args.test} size={val_size} pipeline={args.pipelining}")
+    if args.distribution != "uniform":
+        print(f"  distribution={args.distribution}")
     print(f"  connections={args.connections} threads={args.threads}")
     print(f"  io-threads={args.io_threads} duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.server_args:
