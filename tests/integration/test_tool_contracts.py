@@ -475,3 +475,89 @@ class TestMemtierStdoutContract:
         )
         for val in intervals:
             assert val > 0, f"Progress line ops/sec not positive: {val}"
+
+
+class TestCachecannonContract:
+    """Contract: cachecannon config input + results-block output.
+
+    Input side (would have caught the Aug 5 2026 production failure): the
+    TOML that generate_toml_config emits must be ACCEPTED by the real
+    cachecannon binary -- its humantime_serde fields reject bare integers
+    at startup, before any traffic is sent.
+    Output side: parse_results_block depends on the throughput/error/hit-rate
+    lines in cachecannon's stdout summary.
+    """
+
+    def _find_cachecannon(self) -> str:
+        """Locate cachecannon: cargo release path on bench hosts, local dev
+        clone, then the generic locations."""
+        candidates = [
+            Path.home() / "cachecannon" / "target" / "release" / "cachecannon",
+            Path.home() / "cachecannon-local" / "target" / "release" / "cachecannon",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return _find_binary("cachecannon")
+
+    def _run_cachecannon(self, local_server, **toml_kwargs):
+        from conductress.tasks.task_cachecannon import generate_toml_config
+
+        cc_bin = self._find_cachecannon()
+        defaults = dict(
+            duration=3,
+            warmup=1,
+            threads=2,
+            cpu_list="",
+            endpoint="127.0.0.1:7499",
+            connections=8,
+            pipeline_depth=4,
+            keyspace_count=1000,
+            val_size=16,
+            test="get",
+        )
+        defaults.update(toml_kwargs)
+        toml = generate_toml_config(**defaults)
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
+            f.write(toml)
+            toml_path = f.name
+        result = subprocess.run([cc_bin, toml_path], capture_output=True, text=True, timeout=60)
+        Path(toml_path).unlink()
+        return result
+
+    def test_generated_toml_accepted(self, local_server):
+        """cachecannon must parse and run our generated config (exit 0).
+
+        Regression: duration/warmup are humantime strings ('3s'), and
+        [timestamps] uses enabled/mode -- bare ints failed with
+        'invalid type: integer, expected a string' at startup."""
+        result = self._run_cachecannon(local_server)
+        assert (
+            result.returncode == 0
+        ), f"cachecannon rejected generated TOML:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
+        assert "Parse(" not in result.stderr
+
+    def test_results_block_output_contract(self, local_server):
+        """parse_results_block extracts throughput, errors, and hit rate
+        from a real run's stdout."""
+        from conductress.tasks.task_cachecannon import parse_results_block
+
+        result = self._run_cachecannon(local_server)
+        assert result.returncode == 0
+        parsed = parse_results_block(result.stdout)
+        assert parsed["throughput_rps"] > 0
+        assert parsed["error_pct"] == 0
+        assert parsed["hit_rate"] is not None
+        assert parsed["hit_rate"]["percent"] > 99.0  # prefill=true guarantees hits
+
+    def test_mixed_zipf_toml_accepted(self, local_server):
+        """The set_ratio/distribution extensions also produce accepted
+        configs and a parseable result (exercises get+set weights and
+        the zipf keyspace distribution end-to-end)."""
+        from conductress.tasks.task_cachecannon import parse_results_block
+
+        result = self._run_cachecannon(local_server, set_ratio=30, distribution="zipf")
+        assert result.returncode == 0, f"mixed/zipf TOML rejected:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
+        parsed = parse_results_block(result.stdout)
+        assert parsed["throughput_rps"] > 0
+        assert parsed["error_pct"] == 0
