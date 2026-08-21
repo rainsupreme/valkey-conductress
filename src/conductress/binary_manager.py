@@ -19,6 +19,17 @@ from .utility import async_run
 
 VALKEY_BINARY = "valkey-server"
 
+# Dynamic Lua engine module. Valkey commits between the Lua modularization
+# (valkey-io#2858, Dec 2025) and the static-module default (valkey-io#3392,
+# Apr 2026) dlopen this at startup and panic (SIGABRT + coredump) if it is
+# missing. The build bakes an absolute DT_RPATH into the *source tree*
+# (src/modules/lua), which `make distclean` wipes on the next different-commit
+# build -- so a cached binary must carry its own copy of the module and must
+# never resolve the module through the shared tree (wrong-commit .so loads
+# silently otherwise).
+LUA_MODULE = "libvalkeylua.so"
+LUA_MODULE_SRC_RELPATH = Path("modules/lua") / LUA_MODULE
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,6 +154,25 @@ class BinaryManager:
                 fallback = "redis-server" if self.binary_name == VALKEY_BINARY else VALKEY_BINARY
                 build_binary = source_path / fallback
             await self._host.run_host_command(f"mkdir -p {cached_build_path}")
+            # Module-mode builds produce a dynamic Lua engine the server
+            # dlopens at startup. Cache it next to the binary, then REMOVE it
+            # from the shared source tree: the binary's DT_RPATH points into
+            # the tree (and DT_RPATH beats LD_LIBRARY_PATH), so a leftover
+            # tree copy would let a later different-commit server silently
+            # load the wrong module. With the tree copy gone, the RPATH
+            # lookup misses and LD_LIBRARY_PATH (set at server launch to the
+            # cache dir) resolves the correct per-commit copy.
+            #
+            # ORDERING MATTERS: runtime artifacts are cached BEFORE the
+            # binary. The binary's presence is the cache-hit marker, so
+            # writing it last means an interrupted build leaves an entry
+            # that reads as a cache miss -- never a binary without its
+            # module (which would boot-crash on every future cache hit).
+            module_src = source_path / LUA_MODULE_SRC_RELPATH
+            if await self._host.check_file_exists(module_src):
+                await self._host.run_host_command(
+                    f"cp {module_src} {cached_build_path}/{LUA_MODULE} && rm -f {module_src}"
+                )
             await self._host.run_host_command(f"cp {build_binary} {cached_binary_path}")
 
         return cached_binary_path

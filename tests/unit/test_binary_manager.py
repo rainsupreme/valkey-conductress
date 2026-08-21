@@ -165,6 +165,77 @@ class TestEnsureBinaryCached:
         assert mgr.hash == "deadbeef"
 
 
+class TestLuaModuleCaching:
+    """Regression tests for the missing-libvalkeylua.so build-cache bug.
+
+    Module-era valkey commits (valkey-io#2858..#3392) dlopen libvalkeylua.so
+    at startup and SIGABRT if it is missing. The cache used to store only the
+    server binary, so every cached module-era commit boot-crashed in the
+    perf-sweep (280 coredumps, Jul-Aug 2026). Worse, the binary's DT_RPATH
+    points into the shared source tree, so a leftover tree .so from a
+    different commit would load silently.
+
+    Pre-existing half-cached entries are cleaned up eagerly at deploy time
+    (one-shot sweep); there is no lazy self-heal. Correctness going forward
+    relies on write ordering: runtime artifacts are cached before the binary,
+    whose presence is the cache-hit marker.
+    """
+
+    @pytest.mark.asyncio
+    async def test_module_artifact_cached_and_removed_from_tree(self, manager, mock_host):
+        """After a build that produced libvalkeylua.so, the module must be copied
+        into the cache dir and deleted from the shared source tree."""
+
+        async def check(path):
+            s = str(path)
+            if s.endswith("modules/lua/libvalkeylua.so"):
+                return True  # build produced the module in the tree
+            if "build_cache" in s:
+                return False  # nothing cached yet -> build
+            return True  # tree build output exists
+
+        mock_host.check_file_exists = AsyncMock(side_effect=check)
+        mock_host.run_host_command = AsyncMock(return_value=("abc123\n", ""))
+
+        await manager._ensure_build_cached()
+
+        commands = [call[0][0] for call in mock_host.run_host_command.call_args_list]
+        module_cmds = [cmd for cmd in commands if "libvalkeylua.so" in cmd and "cp " in cmd]
+        assert module_cmds, f"module artifact was not cached; commands: {commands}"
+        assert any("rm -f" in cmd for cmd in module_cmds), (
+            "tree copy of libvalkeylua.so must be removed after caching "
+            "(DT_RPATH would silently load a wrong-commit module otherwise)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_module_cached_before_binary(self, manager, mock_host):
+        """The binary must be the LAST artifact written to the cache entry.
+
+        Its presence is the cache-hit marker: writing it last guarantees an
+        interrupted build reads as a cache miss, never as a binary without
+        its module (which would boot-crash on every future cache hit)."""
+
+        async def check(path):
+            s = str(path)
+            if s.endswith("modules/lua/libvalkeylua.so"):
+                return True
+            if "build_cache" in s:
+                return False
+            return True
+
+        mock_host.check_file_exists = AsyncMock(side_effect=check)
+        mock_host.run_host_command = AsyncMock(return_value=("abc123\n", ""))
+
+        await manager._ensure_build_cached()
+
+        commands = [call[0][0] for call in mock_host.run_host_command.call_args_list]
+        module_idx = next(i for i, c in enumerate(commands) if "libvalkeylua.so" in c and "cp " in c)
+        binary_idx = next(i for i, c in enumerate(commands) if c.startswith("cp ") and "libvalkeylua.so" not in c)
+        assert module_idx < binary_idx, (
+            f"module must be cached before the binary (module at {module_idx}, " f"binary at {binary_idx}): {commands}"
+        )
+
+
 class TestMakeArgsAffectCacheKey:
     def test_different_make_args_produce_different_paths(self, mock_host):
         mgr1 = BinaryManager(mock_host)
