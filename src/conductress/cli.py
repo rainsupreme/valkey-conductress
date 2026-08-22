@@ -394,6 +394,25 @@ def build_parser() -> argparse.ArgumentParser:
     lat_parser.add_argument("specifier", help="Commit hash or branch to test")
     lat_parser.add_argument("target_rps", type=int, help="Target requests/sec (use 70%% of max throughput)")
     lat_parser.add_argument("--note", default="", help="Optional note for the task")
+    lat_parser.add_argument(
+        "--server-args",
+        default="",
+        help="Extra raw server arguments appended to the valkey-server command line "
+        "(e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
+    )
+    lat_parser.add_argument(
+        "--set-ratio",
+        type=int,
+        default=0,
+        help="Percentage of SET commands (0-100, default 0 = GET-only). "
+        "When >0, measurement uses --ratio SET:GET accordingly (e.g. 20 -> 1:4).",
+    )
+    lat_parser.add_argument(
+        "--value-size",
+        type=int,
+        default=config.LATENCY_VAL_SIZE,
+        help=f"Value size in bytes for populate and measure (default: {config.LATENCY_VAL_SIZE})",
+    )
 
     # queue add-cachecannon
     cc_parser = queue_sub.add_parser(
@@ -640,20 +659,41 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
         print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
         return 1
 
+    if not (0 <= args.set_ratio <= 100):
+        print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
+        return 1
+
+    if args.value_size < 1:
+        print(f"Error: --value-size must be >= 1, got {args.value_size}", file=sys.stderr)
+        return 1
+
+    ratio_note = f", SET={args.set_ratio}%" if args.set_ratio > 0 else ""
+    default_note = f"manual latency @ {args.target_rps} rps{ratio_note}"
+
     task = LatencyTaskData(
         source=args.source,
         specifier=args.specifier,
         make_args=LATENCY_MAKE_ARGS,
         replicas=0,
-        note=args.note or f"manual latency @ {args.target_rps} rps",
+        note=args.note or default_note,
         requirements={},
         target_rps=args.target_rps,
         io_threads=SWEEP_IO_THREADS,
+        server_args=args.server_args,
+        set_ratio=args.set_ratio,
+        value_size=args.value_size,
     )
 
     queue = TaskQueue()
     queue.submit_task(task)
+    desc = task.short_description()
     print(f"Queued latency task: {args.specifier[:8]} @ {args.target_rps} rps (id: {task.task_id})")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
+    if args.set_ratio > 0:
+        print(f"  set-ratio: {args.set_ratio}%")
+    if args.value_size != config.LATENCY_VAL_SIZE:
+        print(f"  value-size: {args.value_size}B")
     return 0
 
 
