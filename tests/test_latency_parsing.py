@@ -6,7 +6,15 @@ from pathlib import Path
 import pytest
 
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
-from conductress.tasks.task_latency import LatencyTaskRunner
+from conductress.tasks.task_latency import (
+    HISTOGRAM_PERCENTILES,
+    LatencyTaskData,
+    LatencyTaskRunner,
+    _parse_memtier_output,
+    _parse_memtier_output_mixed,
+    _parse_memtier_output_simple,
+    _parse_row_percentiles,
+)
 
 # Real memtier output captured from ARM experiment (rate-limited 500K, P=10)
 MEMTIER_OUTPUT_SAMPLE = """Writing results to stdout
@@ -27,6 +35,27 @@ Sets            0.00          ---          ---             ---             ---  
 Gets       499385.90    499385.90         0.00         0.33021         0.32700         0.51100         1.34300         6.36700     27742.22
 Waits           0.00          ---          ---             ---             ---             ---             ---             ---          ---
 Totals     499385.90    499385.90         0.00         0.33021         0.32700         0.51100         1.34300         6.36700     27742.22
+"""
+
+# Realistic memtier mixed output (20% SET / 80% GET with --print-percentiles 50,99,99.9,100)
+MEMTIER_MIXED_OUTPUT_SAMPLE = """Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 100%,  60 secs]  0 threads 64 conns:    29994382 ops,  499882 (avg:  499878) ops/sec, 31.44MB/sec (avg: 31.44MB/sec),  0.41 (avg:  0.41) msec latency
+
+4         Threads
+16        Connections per thread
+60        Seconds
+
+
+ALL STATS
+============================================================================================================================================
+Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency    p100 Latency       KB/sec
+--------------------------------------------------------------------------------------------------------------------------------------------
+Sets       100012.45          ---          ---         0.52100         0.47900         1.21500         2.87100         8.19100      5778.34
+Gets       399870.11    399870.11         0.00         0.38200         0.35100         0.89300         1.95500         7.42300     22217.89
+Waits           0.00          ---          ---             ---             ---             ---             ---             ---          ---
+Totals     499882.56    399870.11         0.00         0.40981         0.36700         0.95900         2.18700         8.19100     27996.23
 """
 
 # Real HDR histogram output captured from ARM experiment
@@ -53,14 +82,10 @@ HDR_HISTOGRAM_SAMPLE = """       Value   Percentile   TotalCount 1/(1-Percentile
 
 
 class TestMemtierOutputParsing:
-    """Test parsing of memtier_benchmark summary output."""
-
-    def setup_method(self):
-        # Create a minimal runner instance for testing parse methods
-        self.runner = LatencyTaskRunner.__new__(LatencyTaskRunner)
+    """Test parsing of memtier_benchmark summary output (GET-only, legacy mode)."""
 
     def test_parses_gets_line(self):
-        result = self.runner._parse_memtier_output(MEMTIER_OUTPUT_SAMPLE)
+        result = _parse_memtier_output(MEMTIER_OUTPUT_SAMPLE, mixed=False)
         assert result is not None
         assert result["actual_rps"] == pytest.approx(499385.90)
         assert result["p50_us"] == pytest.approx(327.0)  # 0.327ms * 1000
@@ -69,15 +94,15 @@ class TestMemtierOutputParsing:
         assert result["p100_us"] == pytest.approx(6367.0)
 
     def test_returns_none_on_empty_output(self):
-        assert self.runner._parse_memtier_output("") is None
+        assert _parse_memtier_output("", mixed=False) is None
 
     def test_returns_none_on_garbage(self):
-        assert self.runner._parse_memtier_output("some random text\nno data here") is None
+        assert _parse_memtier_output("some random text\nno data here", mixed=False) is None
 
     def test_handles_totals_line(self):
         # Output with only Totals line (no separate Gets)
         output = "Totals     1499174.26   1499174.26         0.00         1.69461         1.89500         2.11100         3.18300         7.45500     83283.89"
-        result = self.runner._parse_memtier_output(output)
+        result = _parse_memtier_output(output, mixed=False)
         assert result is not None
         assert result["actual_rps"] == pytest.approx(1499174.26)
         assert result["p50_us"] == pytest.approx(1895.0)
@@ -86,16 +111,86 @@ class TestMemtierOutputParsing:
         assert result["p100_us"] == pytest.approx(7455.0)
 
 
+class TestMixedMemtierOutputParsing:
+    """Test parsing of memtier output with separate Gets/Sets/Totals rows."""
+
+    def test_parses_all_classes(self):
+        result = _parse_memtier_output(MEMTIER_MIXED_OUTPUT_SAMPLE, mixed=True)
+        assert result is not None
+        assert "totals" in result
+        assert "gets" in result
+        assert "sets" in result
+
+    def test_totals_values(self):
+        result = _parse_memtier_output(MEMTIER_MIXED_OUTPUT_SAMPLE, mixed=True)
+        totals = result["totals"]
+        assert totals["actual_rps"] == pytest.approx(499882.56)
+        assert totals["p50_us"] == pytest.approx(367.0)
+        assert totals["p99_us"] == pytest.approx(959.0)
+        assert totals["p99_9_us"] == pytest.approx(2187.0)
+        assert totals["p100_us"] == pytest.approx(8191.0)
+
+    def test_gets_values(self):
+        result = _parse_memtier_output(MEMTIER_MIXED_OUTPUT_SAMPLE, mixed=True)
+        gets = result["gets"]
+        assert gets["actual_rps"] == pytest.approx(399870.11)
+        assert gets["p50_us"] == pytest.approx(351.0)
+        assert gets["p99_us"] == pytest.approx(893.0)
+        assert gets["p99_9_us"] == pytest.approx(1955.0)
+        assert gets["p100_us"] == pytest.approx(7423.0)
+
+    def test_sets_values(self):
+        result = _parse_memtier_output(MEMTIER_MIXED_OUTPUT_SAMPLE, mixed=True)
+        sets = result["sets"]
+        assert sets["actual_rps"] == pytest.approx(100012.45)
+        assert sets["p50_us"] == pytest.approx(479.0)
+        assert sets["p99_us"] == pytest.approx(1215.0)
+        assert sets["p99_9_us"] == pytest.approx(2871.0)
+        assert sets["p100_us"] == pytest.approx(8191.0)
+
+    def test_returns_none_on_empty(self):
+        assert _parse_memtier_output("", mixed=True) is None
+
+    def test_returns_none_without_totals_line(self):
+        # Only a Gets line but no Totals => None (Totals is required)
+        output = "Gets       100000.00    100000.00         0.00         0.33000         0.32000         0.50000         1.30000         6.00000     5000.00"
+        assert _parse_memtier_output(output, mixed=True) is None
+
+    def test_get_only_output_parsed_as_mixed(self):
+        """GET-only memtier output (Sets=0) still works in mixed mode -- just no 'sets' key."""
+        result = _parse_memtier_output(MEMTIER_OUTPUT_SAMPLE, mixed=True)
+        assert result is not None
+        assert "totals" in result
+        assert "gets" in result
+        # Sets row has 0.00 ops/sec and --- for latencies, so it shouldn't parse
+        assert "sets" not in result or result["sets"]["actual_rps"] == pytest.approx(0.0)
+
+
+class TestRowPercentilesParsing:
+    """Test the _parse_row_percentiles helper."""
+
+    def test_valid_row(self):
+        parts = "Gets 399870.11 399870.11 0.00 0.38200 0.35100 0.89300 1.95500 7.42300 22217.89".split()
+        result = _parse_row_percentiles(parts)
+        assert result is not None
+        assert result["actual_rps"] == pytest.approx(399870.11)
+        assert result["p50_us"] == pytest.approx(351.0)
+
+    def test_short_row_returns_none(self):
+        parts = "Gets 399870.11 399870.11".split()
+        assert _parse_row_percentiles(parts) is None
+
+    def test_non_numeric_returns_none(self):
+        parts = "Sets 0.00 --- --- --- --- --- --- --- 0.00".split()
+        result = _parse_row_percentiles(parts)
+        # '---' can't be parsed as float
+        assert result is None
+
+
 class TestHdrHistogramParsing:
     """Test parsing of HDR histogram .txt files."""
 
-    def setup_method(self):
-        self.runner = LatencyTaskRunner.__new__(LatencyTaskRunner)
-
     def test_parses_histogram_to_cdf_buckets(self):
-        # Simulate async method by calling the sync parsing logic directly
-        from conductress.tasks.task_latency import HISTOGRAM_PERCENTILES
-
         entries = []
         for line in HDR_HISTOGRAM_SAMPLE.splitlines():
             line = line.strip()
@@ -175,6 +270,37 @@ class TestAggregation:
         # Histogram from median rep (index 1)
         assert result["histogram"] == [[0.5, 330]]
 
+    def test_median_of_mixed_reps(self):
+        """Aggregation works with per-class data (mixed mode)."""
+        reps = [
+            {
+                "totals": {"actual_rps": 500000, "p50_us": 360, "p99_us": 950, "p99_9_us": 2100, "p100_us": 8000},
+                "gets": {"actual_rps": 400000, "p50_us": 340, "p99_us": 880, "p99_9_us": 1900, "p100_us": 7000},
+                "sets": {"actual_rps": 100000, "p50_us": 470, "p99_us": 1200, "p99_9_us": 2800, "p100_us": 8000},
+                "histogram": [[0.5, 360]],
+            },
+            {
+                "totals": {"actual_rps": 499000, "p50_us": 370, "p99_us": 960, "p99_9_us": 2200, "p100_us": 8200},
+                "gets": {"actual_rps": 399000, "p50_us": 350, "p99_us": 890, "p99_9_us": 1950, "p100_us": 7200},
+                "sets": {"actual_rps": 100000, "p50_us": 480, "p99_us": 1220, "p99_9_us": 2850, "p100_us": 8200},
+                "histogram": [[0.5, 370]],
+            },
+            {
+                "totals": {"actual_rps": 501000, "p50_us": 365, "p99_us": 955, "p99_9_us": 2150, "p100_us": 8100},
+                "gets": {"actual_rps": 401000, "p50_us": 345, "p99_us": 885, "p99_9_us": 1920, "p100_us": 7100},
+                "sets": {"actual_rps": 100000, "p50_us": 475, "p99_us": 1210, "p99_9_us": 2830, "p100_us": 8100},
+                "histogram": [[0.5, 365]],
+            },
+        ]
+        result = self.runner._aggregate_reps(reps)
+        # Top-level comes from totals median
+        assert result["actual_rps"] == 500000
+        assert result["p99_us"] == 955
+        # Per-class medians
+        assert result["gets"]["p50_us"] == 345
+        assert result["sets"]["p99_us"] == 1210
+        assert result["reps"] == 3
+
 
 class TestLatencyExport:
     """Test the latency export function."""
@@ -237,3 +363,184 @@ class TestLatencyExport:
         assert len(data["annotations"]) == 1
         assert data["annotations"][0]["type"] == "increase"
         assert data["annotations"][0]["commit"] == "bbb"
+
+
+class TestLatencyTaskDataExtensions:
+    """Test new LatencyTaskData fields: server_args, set_ratio, value_size."""
+
+    @pytest.fixture(autouse=True)
+    def patch_sources(self, monkeypatch):
+        monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey", "valkey-rainfall"])
+
+    def test_default_values(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+        )
+        assert task.server_args == ""
+        assert task.set_ratio == 0
+        assert task.value_size == 16  # LATENCY_VAL_SIZE default
+
+    def test_server_args_passthrough(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+            server_args="--io-threads-ownership yes",
+        )
+        assert task.server_args == "--io-threads-ownership yes"
+
+    def test_set_ratio_valid_range(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+            set_ratio=20,
+        )
+        assert task.set_ratio == 20
+
+    def test_set_ratio_invalid_negative(self):
+        with pytest.raises(ValueError, match="set_ratio must be 0-100"):
+            LatencyTaskData(
+                source="valkey",
+                specifier="abc123",
+                make_args="",
+                replicas=0,
+                note="",
+                requirements={},
+                target_rps=500000,
+                set_ratio=-1,
+            )
+
+    def test_set_ratio_invalid_over_100(self):
+        with pytest.raises(ValueError, match="set_ratio must be 0-100"):
+            LatencyTaskData(
+                source="valkey",
+                specifier="abc123",
+                make_args="",
+                replicas=0,
+                note="",
+                requirements={},
+                target_rps=500000,
+                set_ratio=101,
+            )
+
+    def test_value_size_custom(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+            value_size=512,
+        )
+        assert task.value_size == 512
+
+    def test_value_size_invalid(self):
+        with pytest.raises(ValueError, match="value_size must be >= 1"):
+            LatencyTaskData(
+                source="valkey",
+                specifier="abc123",
+                make_args="",
+                replicas=0,
+                note="",
+                requirements={},
+                target_rps=500000,
+                value_size=0,
+            )
+
+    def test_short_description_get_only(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+        )
+        desc = task.short_description()
+        assert "500000 rps" in desc
+        assert "P=1 flat" in desc
+        assert "SET" not in desc
+
+    def test_short_description_mixed(self):
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=500000,
+            set_ratio=20,
+        )
+        desc = task.short_description()
+        assert "500000 rps" in desc
+        assert "SET=20%" in desc
+
+    def test_serialization_round_trip(self, tmp_path):
+        """Task survives JSON save/load with all new fields."""
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123def456",
+            make_args="",
+            replicas=0,
+            note="ownership latency",
+            requirements={},
+            target_rps=500000,
+            io_threads=9,
+            server_args="--io-threads-ownership yes",
+            set_ratio=20,
+            value_size=512,
+        )
+        filepath = tmp_path / "task.json"
+        task.save_to_file(filepath)
+
+        from conductress.task_queue import BaseTaskData
+
+        loaded = BaseTaskData.from_file(filepath)
+        assert isinstance(loaded, LatencyTaskData)
+        assert loaded.server_args == "--io-threads-ownership yes"
+        assert loaded.set_ratio == 20
+        assert loaded.value_size == 512
+        assert loaded.target_rps == 500000
+        assert loaded.io_threads == 9
+        assert loaded.note == "ownership latency"
+
+    def test_serialization_backward_compat_defaults(self, tmp_path):
+        """Task without new fields (default values) also survives roundtrip."""
+        task = LatencyTaskData(
+            source="valkey",
+            specifier="abc123def456",
+            make_args="",
+            replicas=0,
+            note="",
+            requirements={},
+            target_rps=100000,
+        )
+        filepath = tmp_path / "task.json"
+        task.save_to_file(filepath)
+
+        from conductress.task_queue import BaseTaskData
+
+        loaded = BaseTaskData.from_file(filepath)
+        assert isinstance(loaded, LatencyTaskData)
+        assert loaded.server_args == ""
+        assert loaded.set_ratio == 0
+        assert loaded.value_size == 16
