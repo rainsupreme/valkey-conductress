@@ -66,6 +66,15 @@ class TestCategorizeStack:
             (["zcalloc", "hashtableExpandIfNeeded", "hashtableAdd", "dbAddInternal"], "hashtable"),
             (["zmalloc", "sdsnewlen", "sdsdup", "processMultibulkBuffer"], "sds"),
             (["zmalloc", "zslCreateNode", "zslInsert", "zsetAdd"], "skiplist"),
+            # Post-PR#4359: B+ tree replaced the skiplist for zsets
+            (["zcalloc", "fbtreeInsert", "orderedIndexInsert", "zsetAdd"], "fbtree"),
+            (["zmalloc", "fbtreeCreate", "orderedIndexCreate", "zsetTypeCreate"], "fbtree"),
+            # Non-inlined debug build: static node constructors visible as leaf frames
+            (["zcalloc", "leafNodeCreate", "fbtreeInsert", "zsetAdd"], "fbtree"),
+            (["zcalloc", "innerNodeCreate", "fbtreeInsert", "zsetAdd"], "fbtree"),
+            (["zmalloc", "innerNodeSetPrefix", "fbtreeInsert", "zsetAdd"], "fbtree"),
+            # Packed score+member items allocate via sdsnewlen — stay in "sds" by design
+            (["zmalloc", "sdsnewlen", "orderedIndexItemCreate", "zsetAdd"], "sds"),
             (["zmalloc", "dictExpand", "dictAdd", "dbAdd"], "dict"),
             (["zcalloc", "aeCreateEventLoop", "initServer", "main"], "server_infra"),
             (["zmalloc", "createObject", "createStringObject", "setCommand"], "robj"),
@@ -267,6 +276,7 @@ class TestCategoryNames:
             "hashtable",
             "hash_entry",
             "skiplist",
+            "fbtree",
             "robj",
             "listpack",
             "dict",
@@ -276,12 +286,12 @@ class TestCategoryNames:
         assert set(CATEGORY_NAMES) == expected
 
     def test_stacking_order(self):
-        """server_infra at bottom (first), skiplist at top (last)."""
+        """server_infra at bottom (first), fbtree at top (last)."""
         assert CATEGORY_NAMES[0] == "server_infra"
-        assert CATEGORY_NAMES[-1] == "skiplist"
+        assert CATEGORY_NAMES[-1] == "fbtree"
 
     def test_count(self):
-        assert len(CATEGORY_NAMES) == 11
+        assert len(CATEGORY_NAMES) == 12
 
     def test_categories_and_names_in_sync(self):
         """Every category in CATEGORIES must appear in CATEGORY_NAMES and vice versa."""
@@ -683,6 +693,42 @@ class TestRealStackCategorization:
                 "skiplist",
                 "ZADD dict-era: skiplist insert (level array allocation)",
                 id="zadd-skiplist-insert",
+            ),
+            pytest.param(
+                [
+                    "prof_backtrace_impl",
+                    "tsd_post_reentrancy_raw",
+                    "je_prof_tctx_create",
+                    "prof_alloc_prep",
+                    "ztrycalloc_usable_internal",
+                    "fbtreeInsert",
+                    "orderedIndexInsert",
+                    "zsetAdd",
+                    "zaddGenericCommand",
+                    "call",
+                    "processCommand",
+                ],
+                "fbtree",
+                "ZADD post-#4359: B+ tree node allocation (leaf/inner inlined into fbtreeInsert)",
+                id="zadd-fbtree-node",
+            ),
+            pytest.param(
+                [
+                    "prof_backtrace_impl",
+                    "tsd_post_reentrancy_raw",
+                    "je_prof_tctx_create",
+                    "prof_alloc_prep",
+                    "ztrymalloc_usable_internal",
+                    "sdsnewlen",
+                    "orderedIndexItemCreate",
+                    "zsetAdd",
+                    "zaddGenericCommand",
+                    "call",
+                    "processCommand",
+                ],
+                "sds",
+                "ZADD post-#4359: packed score+member item stays in sds (by design)",
+                id="zadd-fbtree-packed-item-is-sds",
             ),
             pytest.param(
                 [

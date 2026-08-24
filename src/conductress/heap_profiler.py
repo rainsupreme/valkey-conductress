@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # when walking the stack from leaf (allocator) toward root (main).
 #
 # ⚠️  ORDER MATTERS — first match wins. Ordering rationale:
-#   1. Type-specific structs (skiplist, listpack, hash_entry) — most specific,
+#   1. Type-specific structs (fbtree, skiplist, listpack, hash_entry) — most specific,
 #      their patterns would otherwise match broader categories below.
 #   2. robj_embval — "createEmbeddedString" would match robj's "createString" substring.
 #   3. sds — common allocator, must come before hashtable/dict because SDS allocations
@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 #   - robj_embkey: robj match + objectSetKey/objectSetKeyAndExpire in caller stack
 CATEGORIES: list[tuple[str, list[str]]] = [
     # Type-specific data structures — most specific patterns
+    # fbtree: B+ tree replacing the zset skiplist (valkey-io/valkey#4359, merged Aug 2026).
+    # "fbtree" catches all public entry points (fbtreeCreate/Insert/Delete/...).
+    # The static node constructors (leafNodeCreate/innerNodeCreate/innerNodeSetPrefix)
+    # are usually inlined into fbtree* callers (addr2line runs without -i), but are
+    # listed for non-inlined debug builds. Packed score+member items are allocated
+    # via sdsnewlen in ordered_index.c and intentionally remain in "sds" — consistent
+    # with the old skiplist design where member SDS strings were counted under "sds".
+    ("fbtree", ["fbtree", "leafNodeCreate", "innerNodeCreate", "innerNodeSetPrefix"]),
+    # skiplist: kept for pre-fbtree commits — sweeps span history, old builds still emit these.
     ("skiplist", ["zslCreateNode", "zslInsert", "zslUpdateScore", "zslDelete", "zslCreate"]),
     ("listpack", ["lpNew", "lpAppend", "lpInsert", "lpPrepend", "listpack"]),
     # hash_entry before hashtable: entryConstruct/hashTypeCreateEntry call into hashtable funcs
@@ -107,6 +116,7 @@ CATEGORY_NAMES: list[str] = [
     "hash_entry",
     "listpack",
     "skiplist",
+    "fbtree",
 ]
 
 # Patterns indicating the robj allocation has an embedded key (checked across full stack)
