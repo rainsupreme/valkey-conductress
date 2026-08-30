@@ -26,6 +26,10 @@ async def test_public_dashboard_feed_is_get_only_and_sanitized(api_client, auth_
     assert response.headers["Cache-Control"] == "public, max-age=5"
     body = await response.json()
     arm = next(runner for runner in body["runners"] if runner["runner_id"] == "armbench")
+    assert arm["total_count"] == 1
+    assert arm["returned_count"] == 1
+    assert arm["truncated"] is False
+    assert arm["expected_duration_complete"] is True
     assert arm["remote_tasks"][0]["note"] == "visible description"
     serialized = json.dumps(body)
     assert "submitted_by" not in serialized
