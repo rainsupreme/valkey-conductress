@@ -18,9 +18,11 @@ Each row stores:
 
 - **score**: benchmark throughput (RPS). Must be positive and finite for
   acceptance; NULL for rejected observations.
-- **phase**: `observation` (days 1-14), `calibrating` (15-27), `ready` (28+).
+- **phase**: `observation` (accepted 1–14), `calibrating` (15–27), `ready` (28+).
   Phase ordinal is computed from the total accepted count in the series,
-  independent of the current UTC date.
+  independent of the current UTC date. The summary phase uses `<=` for the
+  observation boundary (i.e., the 14th sample is still `observation`; the 15th
+  is the first `calibrating` sample).
 - **accepted**: 1 for valid scores, 0 for malformed/non-finite/non-positive.
 - **ref_median / ref_mad / delta_pct**: rolling statistics from *prior* window
   (strictly earlier UTC dates only).
@@ -294,15 +296,17 @@ and calibration report when available.
 
 **JSON output (--json):**
 
-Preserves all API fields exactly. Wraps in the standard CLI envelope:
+Preserves all API fields exactly. Wraps in the standard CLI envelope with
+distinct command values per scope:
 
 ```json
-{"schema_version": 1, "command": "canary.status", "data": { ... }}
+{"schema_version": 1, "command": "canary.status.fleet", "data": { ... }}
+{"schema_version": 1, "command": "canary.status.runner", "data": { ... }}
 ```
 
 ### Observation semantics
 
-- Phases: `no-data` -> `observation` (1-14) -> `calibrating` (15-27) -> `ready` (28+)
+- Phases: `no-data` -> `observation` (1-14, inclusive) -> `calibrating` (15-27) -> `ready` (28+)
 - `actionable` is always false -- no automated alerts
 - Candidate signals are informational only
 - Calibration reports require human review before enabling thresholds

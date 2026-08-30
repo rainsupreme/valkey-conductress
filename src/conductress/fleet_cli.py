@@ -233,14 +233,14 @@ def _canary_status(client: FleetClient, args: argparse.Namespace) -> int:
     if args.runner_id:
         document = client.canary_status_runner(args.runner_id)
         if args.json:
-            _json_output("canary.status", document)
+            _json_output("canary.status.runner", document)
             return 0
         _print_canary_runner_detail(document.get("runner", {}))
         return 0
 
     document = client.canary_status()
     if args.json:
-        _json_output("canary.status", document)
+        _json_output("canary.status.fleet", document)
         return 0
     _print_canary_fleet_summary(document.get("runners", []))
     return 0
@@ -250,27 +250,27 @@ def _print_canary_fleet_summary(runners: list[dict[str, Any]]) -> None:
     if not runners:
         print("No enabled runners with canary profiles.")
         return
-    print(f"{'RUNNER':<14} {'PROFILE':<24} {'PHASE':<16} {'PROGRESS':<14} {'SEMANTICS':<20} LATEST")
+    # Compact ~80-col table: RUNNER PROFILE STATE PROGRESS LATEST
+    hdr = f"{'RUNNER':<12} {'PROFILE':<18} {'STATE':<14} {'PROG':>7}  LATEST"
+    print(hdr)
     for r in runners:
-        profile_id = r.get("canary_profile") or "-"
+        rid = r.get("runner_id", "?")[:12]
+        profile_id = (r.get("canary_profile") or "-")[:18]
         series = r.get("series") or {}
-        phase = series.get("phase", "-")
-        progress = series.get("progress") or "-"
-        semantics = r.get("semantics", "-")
+        phase = series.get("phase", "-")[:14]
+        progress = (series.get("progress") or "-")[:7]
         latest = r.get("latest_observation")
         if latest:
-            date = latest.get("utc_date", "?")
             score = latest.get("score")
             delta = latest.get("delta_pct")
             signal = latest.get("candidate_signal", "")
-            score_str = f"{score:,.0f}" if isinstance(score, (int, float)) else "?"
-            delta_str = f"{delta:+.2f}%" if isinstance(delta, (int, float)) else "-"
-            latest_str = f"{date} {score_str} rps {delta_str}"
-            if signal and signal not in ("within", "insufficient-data"):
-                latest_str += f" [{signal}]"
+            score_str = f"{int(score):,}" if isinstance(score, (int, float)) else "?"
+            delta_str = f"{delta:+.1f}%" if isinstance(delta, (int, float)) else ""
+            sig_str = f" [{signal}]" if signal and signal not in ("within", "insufficient-data") else ""
+            latest_str = f"{score_str} rps {delta_str}{sig_str}"
         else:
             latest_str = "-"
-        print(f"{r['runner_id']:<14} {profile_id:<24} {phase:<16} {progress:<14} {semantics:<20} {latest_str}")
+        print(f"{rid:<12} {profile_id:<18} {phase:<14} {progress:>7}  {latest_str}")
 
 
 def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
@@ -281,15 +281,17 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
 
     profile = runner.get("profile")
     if not profile:
-        print(f"Canary:      no profile configured")
+        print("Canary:      no profile configured")
         return
     if profile.get("status") == "unknown":
         print(f"Canary:      profile {profile.get('profile_id', '?')} (unknown/not loaded)")
         return
 
+    pinned = profile.get("pinned_commit") or "none"
+    pinned_display = pinned[:12] if len(pinned) >= 12 else pinned
     print(f"Profile:     {profile['profile_id']} v{profile.get('profile_version', '?')}")
     print(f"Description: {profile.get('description') or '-'}")
-    print(f"Source:      {profile.get('source', '?')} @ {profile.get('pinned_commit', '?')[:12]}")
+    print(f"Source:      {profile.get('source', '?')} @ {pinned_display}")
     print(f"Semantics:   {runner.get('semantics', '?')}")
 
     # Series summary
@@ -302,7 +304,6 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
     print(f"  Phase:     {phase} ({progress})")
     print(f"  Accepted:  {accepted}")
     print(f"  Rejected:  {rejected}")
-    print(f"  Actionable: always false (non-actionable by design)")
 
     # Schedule
     schedule = runner.get("schedule") or []
@@ -310,7 +311,10 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
         print(f"\nRecent schedule ({len(schedule)} entries):")
         for s in schedule[:7]:
             task_state = s.get("task_state") or "-"
-            print(f"  {s['utc_date']}  {s['state']:<10} task={s.get('task_id') or '-':<40} task_state={task_state}")
+            tid = s.get("task_id") or "-"
+            # Truncate task_id for compact display
+            tid_display = tid[:36] if len(tid) > 36 else tid
+            print(f"  {s['utc_date']}  {s['state']:<10} task={tid_display:<36}  {task_state}")
 
     # Latest observation
     latest = runner.get("latest_observation")
@@ -318,11 +322,11 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
         print(f"\nLatest accepted observation:")
         print(f"  Date:      {latest.get('utc_date', '?')}")
         score = latest.get("score")
-        print(f"  Score:     {score:,.2f} rps" if isinstance(score, (int, float)) else f"  Score:     {score}")
+        print(f"  Score:     {int(score):,} rps" if isinstance(score, (int, float)) else f"  Score:     {score}")
         ref_median = latest.get("ref_median")
         ref_mad = latest.get("ref_mad")
         if ref_median is not None:
-            print(f"  Median:    {ref_median:,.2f} (prior rolling)")
+            print(f"  Median:    {int(ref_median):,} (prior rolling)")
         if ref_mad is not None:
             print(f"  MAD:       {ref_mad:,.2f}")
         delta = latest.get("delta_pct")
@@ -335,7 +339,12 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
         signal = latest.get("candidate_signal")
         if signal:
             print(f"  Signal:    {signal}")
-        print(f"  Actionable: false")
+
+        # Print actual actionable value from the API
+        actionable_val = latest.get("actionable")
+        print(f"  Actionable: {actionable_val}")
+        if not actionable_val:
+            print("  (non-actionable by design in current phase)")
 
         env = latest.get("environment")
         env_change = latest.get("env_change_annotation")
@@ -355,7 +364,7 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
         dr = cal.get("date_range", {})
         print(f"  Date range: {dr.get('start', '?')} - {dr.get('end', '?')}")
         ms = cal.get("median_score")
-        print(f"  Median:     {ms:,.2f}" if isinstance(ms, (int, float)) else f"  Median:     {ms}")
+        print(f"  Median:     {int(ms):,}" if isinstance(ms, (int, float)) else f"  Median:     {ms}")
         print(f"  MAD:        {cal.get('mad')}")
         print(f"  Robust sigma: {cal.get('robust_sigma')}")
         vf = cal.get("variability_floor_pct")
@@ -363,11 +372,10 @@ def _print_canary_runner_detail(runner: dict[str, Any]) -> None:
         rw = cal.get("recommended_warning_pct")
         ra = cal.get("recommended_alarm_pct")
         print(f"  Recommended: warning={rw}% alarm={ra}%")
-        print(f"  Review and accept before enabling drift alerts.")
+        print("  Review and accept before enabling drift alerts.")
     elif accepted > 0:
-        from conductress.control.drift_analyzer import CALIBRATION_WINDOW
-
-        remaining = max(0, CALIBRATION_WINDOW - accepted)
+        cal_needed = series.get("calibration_samples_required", 28)
+        remaining = max(0, cal_needed - accepted)
         print(f"\nCalibration: {remaining} more observations needed for report.")
 
 

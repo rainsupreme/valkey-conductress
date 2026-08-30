@@ -170,10 +170,10 @@ async def _canary_status_runner(request: web.Request) -> web.Response:
     _require_operator(request)
     runner_id = request.match_info["runner_id"]
     status = request.app[SERVICE_KEY].canary_status(runner_id)
-    runners = status.get("runners", [])
-    if not runners:
-        raise NotFoundError("RUNNER_NOT_FOUND", "unknown runner")
-    return _response(generated_at=status["generated_at"], runner=runners[0])
+    # Service raises NotFoundError for unknown runners; single-runner
+    # response always has exactly one entry.
+    runner = status["runners"][0]
+    return _response(generated_at=status["generated_at"], runner=runner)
 
 
 def _public_dashboard_headers(response: web.Response) -> web.Response:

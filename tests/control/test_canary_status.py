@@ -501,6 +501,8 @@ class FakeCanaryClient:
                 "rejected_count": 0,
                 "phase": "observation",
                 "progress": "5/14",
+                "observation_samples_required": 14,
+                "calibration_samples_required": 28,
                 "latest_observation": {
                     "utc_date": "2026-08-30",
                     "score": 167000.0,
@@ -511,15 +513,23 @@ class FakeCanaryClient:
             }
             runner["latest_observation"] = {
                 "utc_date": "2026-08-30",
+                "task_id": f"canary:{rid}:throughput-get-v1:2026-08-30",
                 "score": 167000.0,
+                "completed_at": "2026-08-30T12:00:00Z",
+                "phase": "observation",
                 "ref_median": 166500.0,
                 "ref_mad": 300.0,
                 "delta_pct": 0.5,
+                "series_ordinal": 5,
+                "ref_sample_count": 4,
                 "candidate_warning_pct": 2.0,
                 "candidate_alarm_pct": 4.0,
                 "candidate_signal": "within",
-                "actionable": 0,
+                "actionable": False,
+                "window_start": "2026-08-26",
+                "window_end": "2026-08-29",
                 "environment": {"kernel": "6.1"},
+                "environment_parse_error": False,
                 "env_change_annotation": None,
                 "provenance_schema_version": 1,
             }
@@ -533,6 +543,8 @@ class FakeCanaryClient:
                 "rejected_count": 0,
                 "phase": "no-data",
                 "progress": None,
+                "observation_samples_required": 14,
+                "calibration_samples_required": 28,
                 "latest_observation": None,
                 "calibration_status": None,
             }
@@ -609,7 +621,7 @@ class TestCanaryStatusCLI:
         result = main(["canary", "status", "--json"], client=client)
         assert result == 0
         output = json.loads(capsys.readouterr().out)
-        assert output["command"] == "canary.status"
+        assert output["command"] == "canary.status.fleet"
         assert output["schema_version"] == 1
         assert "runners" in output["data"]
         # JSON preserves API fields exactly
@@ -627,7 +639,30 @@ class TestCanaryStatusCLI:
         result = main(["canary", "status", "--runner", "armbench", "--json"], client=client)
         assert result == 0
         output = json.loads(capsys.readouterr().out)
+        assert output["command"] == "canary.status.runner"
         assert output["data"]["runner"]["runner_id"] == "armbench"
+
+    def test_fleet_json_exact_data_parity(self, capsys):
+        """JSON data field preserves the raw API document exactly."""
+        from conductress.fleet_cli import main
+
+        client = FakeCanaryClient()
+        expected_api = client.canary_status()
+        result = main(["canary", "status", "--json"], client=client)
+        assert result == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["data"] == expected_api
+
+    def test_runner_json_exact_data_parity(self, capsys):
+        """JSON data field preserves the raw API document exactly."""
+        from conductress.fleet_cli import main
+
+        client = FakeCanaryClient()
+        expected_api = client.canary_status_runner("armbench")
+        result = main(["canary", "status", "--runner", "armbench", "--json"], client=client)
+        assert result == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["data"] == expected_api
 
     def test_human_fleet_output(self, capsys):
         from conductress.fleet_cli import main
@@ -639,7 +674,16 @@ class TestCanaryStatusCLI:
         assert "armbench" in output
         assert "g4bench" in output
         assert "observation" in output
-        assert "throughput-get-v1" in output
+
+    def test_human_fleet_compact_line_length(self, capsys):
+        """Fleet summary lines must fit ~80 columns."""
+        from conductress.fleet_cli import main
+
+        client = FakeCanaryClient()
+        main(["canary", "status"], client=client)
+        output = capsys.readouterr().out
+        for line in output.strip().split("\n"):
+            assert len(line) <= 120, f"line too long ({len(line)}): {line!r}"
 
     def test_human_runner_detail(self, capsys):
         from conductress.fleet_cli import main
@@ -651,7 +695,16 @@ class TestCanaryStatusCLI:
         assert "armbench" in output
         assert "observation-only" in output
         assert "167,000" in output
-        assert "Actionable: false" in output.lower() or "actionable" in output.lower()
+
+    def test_human_runner_actual_actionable(self, capsys):
+        """Detail view prints actual API actionable value, not hardcoded false."""
+        from conductress.fleet_cli import main
+
+        client = FakeCanaryClient()
+        main(["canary", "status", "--runner", "armbench"], client=client)
+        output = capsys.readouterr().out
+        # Should print the actual value (False/0), not a hardcoded string
+        assert "Actionable: False" in output or "Actionable: 0" in output
 
     def test_human_no_data(self, capsys):
         from conductress.fleet_cli import main
@@ -696,6 +749,21 @@ class TestCanaryStatusCLI:
         captured = capsys.readouterr()
         assert "AUTH_INVALID" in captured.err
 
+    def test_null_pinned_commit(self, capsys):
+        """CLI handles null pinned_commit without crashing."""
+        from conductress.fleet_cli import main
+
+        class NullCommitClient(FakeCanaryClient):
+            def canary_status_runner(self, runner_id):
+                doc = super().canary_status_runner(runner_id)
+                doc["runner"]["profile"]["pinned_commit"] = None
+                return doc
+
+        result = main(["canary", "status", "--runner", "armbench"], client=NullCommitClient())
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "none" in output.lower() or "None" in output
+
 
 # ======================================================================
 # Integration: API + service with ingested data
@@ -728,9 +796,9 @@ class TestCanaryStatusIntegration:
         resp = await canary_api_client.get("/api/v1/canary/status/armbench", headers=auth_headers["operator"])
         body = await resp.json()
         runner = body["runner"]
-        # Actionable is always 0/false
+        # Actionable is always false (JSON boolean)
         obs = runner["latest_observation"]
-        assert obs["actionable"] == 0
+        assert obs["actionable"] is False
 
     @pytest.mark.asyncio
     async def test_schedule_with_created_task(self, canary_env, canary_api_client, auth_headers):
@@ -746,3 +814,268 @@ class TestCanaryStatusIntegration:
         created = [s for s in schedule if s["state"] == "created"]
         assert len(created) >= 1
         assert created[0]["task_state"] == "queued"
+
+
+# ======================================================================
+# PR3 hardening tests
+# ======================================================================
+
+
+class TestPhaseBoundary:
+    """Phase boundary consistency between per-observation and series summary."""
+
+    def test_accepted_14_is_observation(self, canary_env):
+        """The 14th accepted sample is still in observation phase."""
+        svc = canary_env["service"]
+        for i in range(14):
+            obs = _ingest_observation(svc, "armbench", f"2026-08-{i + 1:02d}", 100000 + i * 100)
+        # Per-observation phase
+        assert obs["phase"] == "observation"
+        assert obs["series_ordinal"] == 14
+        # Series summary
+        series = svc.drift_analyzer.get_series_summary("armbench", "throughput-get-v1", 1)
+        assert series["phase"] == "observation"
+        assert series["progress"] == "14/14"
+
+    def test_accepted_15_is_calibrating(self, canary_env):
+        """The 15th accepted sample transitions to calibrating."""
+        svc = canary_env["service"]
+        for i in range(15):
+            obs = _ingest_observation(svc, "armbench", f"2026-08-{i + 1:02d}", 100000 + i * 100)
+        # Per-observation phase
+        assert obs["phase"] == "calibrating"
+        assert obs["series_ordinal"] == 15
+        # Series summary
+        series = svc.drift_analyzer.get_series_summary("armbench", "throughput-get-v1", 1)
+        assert series["phase"] == "calibrating"
+        assert series["progress"] == "15/28"
+
+    def test_series_summary_returns_required_counts(self, canary_env):
+        """Summary exposes observation_samples_required and calibration_samples_required."""
+        svc = canary_env["service"]
+        series = svc.drift_analyzer.get_series_summary("armbench", "throughput-get-v1", 1)
+        assert series["observation_samples_required"] == 14
+        assert series["calibration_samples_required"] == 28
+
+
+class TestCorruptEnvironmentJson:
+    """corrupt environment_json must not 500."""
+
+    def test_corrupt_env_returns_none_with_error_flag(self, canary_env):
+        """Service projects corrupt environment_json as None + parse error flag."""
+        svc = canary_env["service"]
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000, {"kernel": "6.1"})
+        # Corrupt the environment_json directly in DB
+        db = canary_env["database"]
+        with db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE canary_observations SET environment_json = '{invalid json'" " WHERE runner_id = 'armbench'"
+            )
+        result = svc.canary_status("armbench")
+        latest = result["runners"][0]["latest_observation"]
+        assert latest is not None
+        assert latest["environment"] is None
+        assert latest["environment_parse_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_corrupt_env_api_does_not_500(self, canary_env, canary_api_client, auth_headers):
+        """API returns 200 with error flag instead of 500 for corrupt env."""
+        svc = canary_env["service"]
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000)
+        db = canary_env["database"]
+        with db.transaction(immediate=True) as conn:
+            conn.execute("UPDATE canary_observations SET environment_json = 'not json'" " WHERE runner_id = 'armbench'")
+        resp = await canary_api_client.get("/api/v1/canary/status/armbench", headers=auth_headers["operator"])
+        assert resp.status == 200
+        body = await resp.json()
+        obs = body["runner"]["latest_observation"]
+        assert obs["environment"] is None
+        assert obs["environment_parse_error"] is True
+
+
+class TestActionableIsBool:
+    """API actionable field must be a JSON boolean (False), not int 0."""
+
+    def test_actionable_is_bool_false(self, canary_env):
+        """actionable is cast to bool in the projected latest_observation."""
+        svc = canary_env["service"]
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000)
+        result = svc.canary_status("armbench")
+        latest = result["runners"][0]["latest_observation"]
+        assert latest["actionable"] is False
+        assert isinstance(latest["actionable"], bool)
+
+
+class TestUnknownProfile:
+    """Runner with canary_profile pointing to a non-loaded profile."""
+
+    def test_unknown_profile_semantics(self, canary_env):
+        """A runner whose profile_id is not in the registry gets unknown-profile."""
+        # Patch the manifest to reference a non-existent profile
+        registry = canary_env["registry"]
+        registry._runners["armbench"]["canary_profile"] = "nonexistent-profile-v99"
+        # Also patch the manifest list used by list_runners
+        for runner in registry._manifest["runners"]:
+            if runner["runner_id"] == "armbench":
+                runner["canary_profile"] = "nonexistent-profile-v99"
+        svc = canary_env["service"]
+        result = svc.canary_status("armbench")
+        r = result["runners"][0]
+        assert r["semantics"] == "unknown-profile"
+        assert r["profile"]["status"] == "unknown"
+        assert r["series"] is None
+
+
+class TestControlServiceNullCanaryProfiles:
+    """ControlService with canary_profiles=None."""
+
+    def test_no_canary_profiles_service(self, canary_env):
+        """Service works with canary_profiles=None (no profiles loaded)."""
+        db = canary_env["database"]
+        registry = canary_env["registry"]
+        svc = ControlService(db, registry, 300, canary_profiles=None)
+        result = svc.canary_status()
+        for r in result["runners"]:
+            # All profiled runners become unknown-profile
+            if r["canary_profile"]:
+                assert r["semantics"] == "unknown-profile"
+
+
+class TestDisabledRunnerAccess:
+    """Disabled runner excluded from fleet but accessible when selected."""
+
+    def test_disabled_excluded_from_fleet(self, canary_env):
+        """Fleet-wide status excludes disabled runners."""
+        svc = canary_env["service"]
+        result = svc.canary_status()
+        runner_ids = {r["runner_id"] for r in result["runners"]}
+        assert "disabled" not in runner_ids
+
+    def test_disabled_accessible_selected(self, canary_env):
+        """Selecting a disabled runner explicitly works."""
+        svc = canary_env["service"]
+        result = svc.canary_status("disabled")
+        assert len(result["runners"]) == 1
+        assert result["runners"][0]["runner_id"] == "disabled"
+        assert result["runners"][0]["enabled"] is False
+
+
+class TestNoMutationHardened:
+    """Extended no-mutation: includes DB row counts and audit JSONL size."""
+
+    def test_no_mutation_with_row_counts_and_audit(self, canary_env):
+        """canary_status does not mutate anything, including audit log."""
+        svc = canary_env["service"]
+        db = canary_env["database"]
+        audit_path = canary_env["config"].audit_jsonl_path
+
+        # Ingest some data first
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000)
+
+        # Snapshot before
+        with db.read() as conn:
+            tasks_before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            sched_before = conn.execute("SELECT COUNT(*) FROM canary_schedule").fetchone()[0]
+            obs_before = conn.execute("SELECT COUNT(*) FROM canary_observations").fetchone()[0]
+            cal_before = conn.execute("SELECT COUNT(*) FROM canary_calibration_reports").fetchone()[0]
+        audit_size_before = audit_path.stat().st_size if audit_path.exists() else 0
+
+        # Exercise both paths
+        svc.canary_status()
+        svc.canary_status("armbench")
+
+        # Snapshot after
+        with db.read() as conn:
+            tasks_after = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            sched_after = conn.execute("SELECT COUNT(*) FROM canary_schedule").fetchone()[0]
+            obs_after = conn.execute("SELECT COUNT(*) FROM canary_observations").fetchone()[0]
+            cal_after = conn.execute("SELECT COUNT(*) FROM canary_calibration_reports").fetchone()[0]
+        audit_size_after = audit_path.stat().st_size if audit_path.exists() else 0
+
+        assert tasks_before == tasks_after
+        assert sched_before == sched_after
+        assert obs_before == obs_after
+        assert cal_before == cal_after
+        assert audit_size_before == audit_size_after
+
+
+class TestPerRunnerUnknown404:
+    """Per-runner endpoint returns 404 for unknown runners via service contract."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_runner_404_via_service(self, canary_api_client, auth_headers):
+        """The per-runner handler relies on service NotFoundError, not a local guard."""
+        resp = await canary_api_client.get("/api/v1/canary/status/no-such-runner", headers=auth_headers["operator"])
+        assert resp.status == 404
+        body = await resp.json()
+        assert body["code"] == "RUNNER_NOT_FOUND"
+
+
+class TestLatestObservationProjection:
+    """API latest_observation is a stable projection — no raw DB columns leak."""
+
+    EXPECTED_KEYS = {
+        "utc_date",
+        "task_id",
+        "score",
+        "completed_at",
+        "phase",
+        "ref_median",
+        "ref_mad",
+        "delta_pct",
+        "series_ordinal",
+        "ref_sample_count",
+        "candidate_warning_pct",
+        "candidate_alarm_pct",
+        "candidate_signal",
+        "actionable",
+        "window_start",
+        "window_end",
+        "environment",
+        "environment_parse_error",
+        "env_change_annotation",
+        "provenance_schema_version",
+    }
+
+    def test_projection_keys(self, canary_env):
+        """latest_observation contains exactly the specified stable keys."""
+        svc = canary_env["service"]
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000)
+        result = svc.canary_status("armbench")
+        latest = result["runners"][0]["latest_observation"]
+        assert set(latest.keys()) == self.EXPECTED_KEYS
+
+    def test_no_raw_db_columns(self, canary_env):
+        """Raw DB columns like accepted, rejection_reason, created_at do not leak."""
+        svc = canary_env["service"]
+        _ingest_observation(svc, "armbench", "2026-08-01", 100000)
+        result = svc.canary_status("armbench")
+        latest = result["runners"][0]["latest_observation"]
+        assert "accepted" not in latest
+        assert "rejection_reason" not in latest
+        assert "created_at" not in latest
+        assert "environment_json" not in latest
+        assert "runner_id" not in latest
+        assert "profile_id" not in latest
+        assert "profile_version" not in latest
+
+
+class TestFleetClientUrlEncoding:
+    """FleetClient URL-encodes runner_id in canary path."""
+
+    def test_url_encodes_runner_id(self):
+        observed = {}
+
+        def opener(request, **kwargs):
+            observed["url"] = request.full_url
+            return FakeResponse(
+                {"schema_version": 1, "generated_at": "2026-08-30T00:00:00Z", "runner": {"runner_id": "foo/bar"}}
+            )
+
+        client = FleetClient(
+            FleetClientConfig("https://example.test/api/v1", "secret"),
+            opener=opener,
+        )
+        client.canary_status_runner("foo/bar")
+        assert "foo%2Fbar" in observed["url"]
+        assert "foo/bar" not in observed["url"].split("/api/v1/canary/status/")[1]

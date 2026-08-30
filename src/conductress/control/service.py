@@ -578,6 +578,48 @@ class ControlService:
     # Canary status (read-only, no mutations)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _project_latest_observation(raw: dict[str, Any]) -> dict[str, Any]:
+        """Project a raw DB observation row into a stable API shape.
+
+        Only the explicitly listed fields are exposed — no raw DB columns leak.
+        ``environment_json`` is parsed with a corrupt-guard (log + None + parse
+        error flag).  ``actionable`` is always cast to ``bool``.
+        """
+        # Parse environment safely
+        env_json = raw.get("environment_json")
+        environment = None
+        env_parse_error = False
+        if env_json:
+            try:
+                environment = json.loads(env_json)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("corrupt environment_json for task %s", raw.get("task_id"))
+                env_parse_error = True
+
+        return {
+            "utc_date": raw.get("utc_date"),
+            "task_id": raw.get("task_id"),
+            "score": raw.get("score"),
+            "completed_at": raw.get("completed_at"),
+            "phase": raw.get("phase"),
+            "ref_median": raw.get("ref_median"),
+            "ref_mad": raw.get("ref_mad"),
+            "delta_pct": raw.get("delta_pct"),
+            "series_ordinal": raw.get("series_ordinal"),
+            "ref_sample_count": raw.get("ref_sample_count"),
+            "candidate_warning_pct": raw.get("candidate_warning_pct"),
+            "candidate_alarm_pct": raw.get("candidate_alarm_pct"),
+            "candidate_signal": raw.get("candidate_signal"),
+            "actionable": bool(raw.get("actionable")),
+            "window_start": raw.get("window_start"),
+            "window_end": raw.get("window_end"),
+            "environment": environment,
+            "environment_parse_error": env_parse_error,
+            "env_change_annotation": raw.get("env_change_annotation"),
+            "provenance_schema_version": raw.get("provenance_schema_version"),
+        }
+
     def canary_status(self, runner_id: Optional[str] = None) -> dict[str, Any]:
         """Return read-only canary status for all enabled runners (or one).
 
@@ -646,15 +688,10 @@ class ControlService:
             )
             entry["series"] = series
 
-            # Latest accepted observation (bounded to 1)
-            latest = series.get("latest_observation")
-            if latest is not None:
-                # Clean up sqlite Row artifacts -- ensure plain dict
-                obs = dict(latest)
-                # Parse environment_json back for display
-                env_json = obs.pop("environment_json", None)
-                obs["environment"] = json.loads(env_json) if env_json else None
-                entry["latest_observation"] = obs
+            # Latest accepted observation — stable projection, no raw DB columns
+            raw_latest = series.get("latest_observation")
+            if raw_latest is not None:
+                entry["latest_observation"] = self._project_latest_observation(raw_latest)
             else:
                 entry["latest_observation"] = None
 

@@ -748,7 +748,17 @@ class DriftAnalyzer:
         profile_id: str,
         profile_version: int,
     ) -> Dict[str, Any]:
-        """Summary for CLI status display."""
+        """Summary for CLI status display.
+
+        Phase boundaries match per-observation ingestion and docs:
+        - accepted 1–14 → observation
+        - accepted 15–27 → calibrating  (ordinal <= OBSERVATION_WINDOW is observation)
+        - accepted 28+ → ready
+
+        Returns ``observation_samples_required`` and
+        ``calibration_samples_required`` so CLI callers can display
+        progress without importing control-internal constants.
+        """
         with self.database.read() as conn:
             accepted_count = conn.execute(
                 "SELECT COUNT(*) FROM canary_observations "
@@ -777,11 +787,14 @@ class DriftAnalyzer:
                 (runner_id, profile_id, profile_version),
             ).fetchone()
 
-        # Determine overall phase
+        # Determine overall phase — consistent with per-observation ordinal logic:
+        #   ordinal <= OBSERVATION_WINDOW  → observation   (1..14)
+        #   ordinal <  CALIBRATION_WINDOW  → calibrating   (15..27)
+        #   ordinal >= CALIBRATION_WINDOW  → ready         (28+)
         progress: Optional[str] = None
         if accepted_count == 0:
             phase = "no-data"
-        elif accepted_count < OBSERVATION_WINDOW:
+        elif accepted_count <= OBSERVATION_WINDOW:
             phase = PHASE_OBSERVATION
             progress = f"{accepted_count}/{OBSERVATION_WINDOW}"
         elif accepted_count < CALIBRATION_WINDOW:
@@ -799,6 +812,8 @@ class DriftAnalyzer:
             "rejected_count": rejected_count,
             "phase": phase,
             "progress": progress,
+            "observation_samples_required": OBSERVATION_WINDOW,
+            "calibration_samples_required": CALIBRATION_WINDOW,
             "latest_observation": dict(latest) if latest else None,
             "calibration_status": cal["status"] if cal else None,
         }

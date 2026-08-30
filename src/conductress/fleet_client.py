@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 DEFAULT_CONTROL_URL = "https://data.conductress.rainsupreme.net/api/v1"
@@ -299,4 +299,4 @@ class FleetClient:
         return self._request("GET", "canary/status") or {}
 
     def canary_status_runner(self, runner_id: str) -> dict[str, Any]:
-        return self._request("GET", f"canary/status/{runner_id}") or {}
+        return self._request("GET", f"canary/status/{quote(runner_id, safe='')}") or {}
