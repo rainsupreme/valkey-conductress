@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conductress.dev/schemas/canary-profile-v1.json",
+  "title": "Conductress canary profile",
+  "description": "Versioned, immutable benchmark profile for daily drift canary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "description",
+    "source",
+    "pinned_commit",
+    "build",
+    "workload",
+    "schedule",
+    "thresholds"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "description": "Stable identifier, e.g. throughput-get-v1"
+    },
+    "profile_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic version; changing any parameter requires a new version"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository source name from REPOSITORIES config"
+    },
+    "pinned_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Full 40-char SHA-1; mutable refs (branches/tags) are rejected"
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["make_args"],
+      "properties": {
+        "make_args": {
+          "type": "string",
+          "description": "Exact make arguments, empty string for default"
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test",
+        "val_size",
+        "key_size",
+        "io_threads",
+        "pipelining",
+        "clients",
+        "threads",
+        "keyspace",
+        "warmup_seconds",
+        "duration_seconds",
+        "repetitions",
+        "seed"
+      ],
+      "properties": {
+        "test": {"type": "string", "minLength": 1},
+        "val_size": {"type": "integer", "minimum": 1},
+        "key_size": {"type": "integer", "minimum": 0},
+        "io_threads": {"type": "integer", "minimum": 1},
+        "pipelining": {"type": "integer", "minimum": 1},
+        "clients": {"type": "integer", "minimum": 1},
+        "threads": {"type": "integer", "minimum": 1},
+        "keyspace": {"type": "integer", "minimum": 1},
+        "warmup_seconds": {"type": "integer", "minimum": 0},
+        "duration_seconds": {"type": "integer", "minimum": 1},
+        "repetitions": {"type": "integer", "minimum": 1},
+        "seed": {"type": "integer", "description": "Fixed RNG seed for deterministic key generation"}
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utc_hour", "freshness_hours"],
+      "properties": {
+        "utc_hour": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "description": "Earliest UTC hour the canary becomes due"
+        },
+        "freshness_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Hours after utc_hour before the canary expires for this UTC day"
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platforms"],
+      "properties": {
+        "platforms": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["warning_pct", "alarm_pct"],
+            "properties": {
+              "warning_pct": {"type": "number", "exclusiveMinimum": 0},
+              "alarm_pct": {"type": "number", "exclusiveMinimum": 0}
+            }
+          },
+          "description": "Platform alias to candidate drift thresholds (observation-only until calibrated)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile_id": "throughput-get-v1",
+  "profile_version": 1,
+  "description": "Daily GET throughput canary: 512B values, 3M keys, pipeline 10, pinned to Valkey 8.1.1 release.",
+  "source": "valkey",
+  "pinned_commit": "fcd8bc3ee40f5d7841b7d5a8f3cd12252fec14e4",
+  "build": {
+    "make_args": ""
+  },
+  "workload": {
+    "test": "get",
+    "val_size": 512,
+    "key_size": 0,
+    "io_threads": 9,
+    "pipelining": 10,
+    "clients": 1200,
+    "threads": 16,
+    "keyspace": 3000000,
+    "warmup_seconds": 30,
+    "duration_seconds": 300,
+    "repetitions": 5,
+    "seed": 20260830
+  },
+  "schedule": {
+    "utc_hour": 6,
+    "freshness_hours": 18
+  },
+  "thresholds": {
+    "platforms": {
+      "amd": {"warning_pct": 0.5, "alarm_pct": 1.0},
+      "graviton3": {"warning_pct": 2.0, "alarm_pct": 4.0},
+      "graviton4": {"warning_pct": 2.0, "alarm_pct": 4.0},
+      "intel": {"warning_pct": 5.0, "alarm_pct": 10.0}
+    }
+  }
+}

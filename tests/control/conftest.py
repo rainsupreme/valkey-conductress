@@ -6,6 +6,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from conductress.control.app import create_app
 from conductress.control.auth import TokenStore, hash_token
+from conductress.control.canary_profiles import CanaryProfileRegistry
+from conductress.control.canary_scheduler import CanaryScheduler
 from conductress.control.config import ControlConfig
 from conductress.control.db import ControlDatabase
 from conductress.control.fleet_registry import FleetRegistry
@@ -51,11 +53,16 @@ def control_env(tmp_path):
         ),
         encoding="utf-8",
     )
+    # Create a minimal canary profiles directory for tests
+    canary_dir = tmp_path / "canary_profiles"
+    canary_dir.mkdir()
+
     config = ControlConfig(
         database_path=tmp_path / "control.db",
         fleet_manifest_path=manifest_path,
         tokens_path=tokens_path,
         audit_jsonl_path=tmp_path / "audit.jsonl",
+        canary_profiles_dir=canary_dir,
         claim_lease_seconds=300,
         max_body_bytes=4096,
     )
@@ -63,13 +70,18 @@ def control_env(tmp_path):
     database.initialize()
     registry = FleetRegistry.from_file(manifest_path)
     token_store = TokenStore(tokens_path)
+    canary_profiles = CanaryProfileRegistry.from_directory(canary_dir)
     service = ControlService(database, registry, config.claim_lease_seconds)
+    scheduler = CanaryScheduler(database, registry, canary_profiles)
     return {
         "config": config,
         "database": database,
         "registry": registry,
         "token_store": token_store,
         "service": service,
+        "canary_profiles": canary_profiles,
+        "scheduler": scheduler,
+        "canary_dir": canary_dir,
     }
 
 
@@ -80,6 +92,7 @@ async def api_client(control_env):
         database=control_env["database"],
         registry=control_env["registry"],
         token_store=control_env["token_store"],
+        canary_profiles=control_env["canary_profiles"],
     )
     client = TestClient(TestServer(app))
     await client.start_server()

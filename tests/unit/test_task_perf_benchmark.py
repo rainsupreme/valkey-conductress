@@ -2,6 +2,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import given, settings
@@ -11,6 +12,7 @@ from conductress import config
 from conductress.tasks.task_perf_benchmark import (
     BASE_KEY_PATTERN,
     BASE_KEY_SIZE,
+    CanaryPerfTaskData,
     PerfTaskData,
     PerfTaskRunner,
     compute_aggregated_stats,
@@ -57,6 +59,37 @@ def temp_dir():
 
 class TestPerfTaskData:
     """Tests for PerfTaskData class."""
+
+    def test_keyspace_and_seed_propagate_to_runner(self):
+        task = CanaryPerfTaskData(
+            source="manual",
+            specifier="test",
+            make_args="",
+            replicas=0,
+            note="canary",
+            requirements={},
+            test="get",
+            val_size=512,
+            io_threads=9,
+            pipelining=10,
+            warmup=30,
+            duration=300,
+            perf_stat_enabled=False,
+            has_expire=False,
+            preload_keys=True,
+            keyspace=12345,
+            seed=42,
+        )
+        runner = task.prepare_task_runner([])
+        assert runner.keyspace == 12345
+        assert runner.seed == 42
+
+        client = MagicMock()
+        client.ip = "127.0.0.1"
+        client._cpu_allocator.get_net_interface_numa.return_value = 0
+        command = runner._build_benchmark_command(client, "127.0.0.1", None)
+        assert "-r 12345" in command
+        assert "--seed 42" in command
 
     def test_converts_float_to_int(self):
         """Test that warmup and duration floats are converted to ints."""

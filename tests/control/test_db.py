@@ -11,9 +11,9 @@ def test_database_initializes_wal_schema_and_reopens(control_env):
     database = control_env["database"]
     with database.read() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"tasks", "runner_status", "audit_log", "schema_migrations"} <= tables
+    assert {"tasks", "runner_status", "audit_log", "schema_migrations", "canary_schedule"} <= tables
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
 
     ControlDatabase(database.path, database.audit_jsonl_path).initialize()

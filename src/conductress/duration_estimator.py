@@ -17,6 +17,7 @@ def task_family(task_type: str) -> str:
     """Map a serialized task type to a stable calibration family."""
     return {
         "PerfTaskData": "perf",
+        "CanaryPerfTaskData": "perf",
         "CachecannonTaskData": "cachecannon",
         "MixedTaskData": "mixed",
         "ScenarioTaskData": "scenario",
@@ -42,7 +43,7 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
     warmup = max(0, int(document.get("warmup") or 0))
     duration = max(0, int(document.get("duration") or 0))
 
-    if task_type == "PerfTaskData":
+    if task_type in {"PerfTaskData", "CanaryPerfTaskData"}:
         max_reps = max(0, int(document.get("max_reps") or 0))
         if max_reps > repetitions and float(document.get("target_cv") or 0) > 0:
             repetitions = min(max_reps, repetitions + 2)

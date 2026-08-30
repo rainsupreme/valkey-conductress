@@ -181,6 +181,20 @@ class PerfTaskData(BaseTaskData):
         )
 
 
+@dataclass
+class CanaryPerfTaskData(PerfTaskData):
+    """Pinned performance task with reproducible key selection."""
+
+    keyspace: int = PERF_BENCH_KEYSPACE
+    seed: int = 1
+
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "PerfTaskRunner":
+        runner = super().prepare_task_runner(server_infos)
+        runner.keyspace = self.keyspace
+        runner.seed = self.seed
+        return runner
+
+
 class PerfTaskRunner(BaseTaskRunner):
     """Benchmark the throughput of a Valkey server."""
 
@@ -319,6 +333,8 @@ class PerfTaskRunner(BaseTaskRunner):
         server_args: str = "",
         bench_threads: int = 0,
         bench_clients: int = 0,
+        keyspace: int = 0,
+        seed: int = 0,
         client_netns: str = "",
         bench_binary: str = "",
     ):
@@ -353,6 +369,8 @@ class PerfTaskRunner(BaseTaskRunner):
         self.server_args = server_args
         self.bench_threads = bench_threads or PERF_BENCH_THREADS
         self.bench_clients = bench_clients or PERF_BENCH_CLIENTS
+        self.keyspace = keyspace or PERF_BENCH_KEYSPACE
+        self.seed = seed
         self.client_netns = client_netns
         # Expert override for the benchmark binary (generator A/Bs). The
         # client is part of the workload definition: overridden results are
@@ -521,6 +539,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 "has_expire": self.has_expire,
                 "size": self.valsize,
                 "key_size": self.key_size,
+                "keyspace": self.keyspace,
+                "seed": self.seed,
                 "preload_keys": self.preload_keys,
                 "perf_stat_enabled": self.perf_stat_enabled,
                 "lscpu": lscpu_output,
@@ -565,6 +585,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 "has_expire": self.has_expire,
                 "size": self.valsize,
                 "key_size": self.key_size,
+                "keyspace": self.keyspace,
+                "seed": self.seed,
                 "preload_keys": self.preload_keys,
                 "perf_stat_enabled": self.perf_stat_enabled,
                 "avg_rps": avg_rps,
@@ -668,13 +690,13 @@ class PerfTaskRunner(BaseTaskRunner):
                 # Preload data
                 if self.preload_keys and self.preload_command is not None:
                     await server.run_valkey_command_over_keyspace(
-                        PERF_BENCH_KEYSPACE, f"-d {self.valsize} {self.preload_command}"
+                        self.keyspace, f"-d {self.valsize} {self.preload_command}"
                     )
                     if self.has_expire:
                         if not self.test.expire_command:
                             self.logger.warning("Expire command not available, skipping expiration")
                         else:
-                            await server.run_valkey_command_over_keyspace(PERF_BENCH_KEYSPACE, self.test.expire_command)
+                            await server.run_valkey_command_over_keyspace(self.keyspace, self.test.expire_command)
 
                 # Setup client CPU allocation (once)
                 if client is None:
@@ -829,9 +851,11 @@ class PerfTaskRunner(BaseTaskRunner):
             if self._is_local_benchmark(target_ip):
                 bench_target = get_primary_interface_ip()
 
-        # Per-test override for the timed -r keyspace (preload always uses
-        # PERF_BENCH_KEYSPACE); only zpop widens this today.
-        keyspace = self.test.keyspace or PERF_BENCH_KEYSPACE
+        # Per-test overrides (currently zpop) take precedence over the
+        # task-level keyspace. A nonzero seed freezes random key selection.
+        keyspace = self.test.keyspace or getattr(self, "keyspace", PERF_BENCH_KEYSPACE)
+        seed = getattr(self, "seed", 0)
+        seed_arg = f" --seed {seed}" if seed else ""
 
         if self.benchmark_cpu_override:
             # Expert override: use the explicit cpulist verbatim. Bind memory
@@ -846,7 +870,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"{netns_prefix}numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         elif benchmark_alloc_tag and self._is_local_benchmark(target_ip):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
@@ -855,14 +879,14 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"{netns_prefix}numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
         else:
             return (
                 f"{netns_prefix}numactl --cpunodebind={net_numa} --membind={net_numa} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
             )
 
     async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
