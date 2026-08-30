@@ -83,7 +83,10 @@ class RunnerMailbox:
             return None
 
         task_document = active["envelope"]["task"]
-        task = BaseTaskData.from_dict(task_document)
+        # Supply the trusted envelope task_id so that the deserialized task
+        # carries the authoritative identity (e.g. deterministic canary IDs)
+        # rather than the timestamp-derived default from the inner document.
+        task = BaseTaskData.from_dict(task_document, envelope_task_id=task_id)
         if task.task_id != task_id:
             raise ValueError(f"journal task ID mismatch: {task_id} != {task.task_id}")
 
@@ -102,7 +105,7 @@ class RunnerMailbox:
 
         if stage == "claimed":
             if not queue.has_task(task_id):
-                queue.import_task(task_document)
+                queue.import_task(task_document, envelope_task_id=task_id)
             self.journal.update_active(stage="imported", imported_at=_utc_text())
             self.journal.record_import(task_id)
             stage = "imported"

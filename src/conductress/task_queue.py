@@ -53,6 +53,11 @@ class BaseTaskData(ABC):
 
     def __post_init__(self):
         self.task_type = self.__class__.__name__
+        # Explicit task-ID override set by the trusted remote envelope.
+        # Initialised here (not as a dataclass field) so it never appears in
+        # __init__(), asdict(), or subclass constructors.
+        if not hasattr(self, "_override_task_id"):
+            self._override_task_id: Optional[str] = None
         if self.source != config.MANUALLY_UPLOADED and self.source not in config.REPO_NAMES:
             raise ValueError(f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}")
 
@@ -63,7 +68,14 @@ class BaseTaskData(ABC):
 
     @property
     def task_id(self) -> str:
-        """Return the canonical task_id (timestamp in standard format)."""
+        """Return the canonical task_id.
+
+        When a trusted remote envelope supplies an explicit ID (e.g. canary
+        scheduler's deterministic ``canary:<runner>:<profile>:<date>``), that
+        override takes precedence over the timestamp-derived default.
+        """
+        if self._override_task_id is not None:
+            return self._override_task_id
         return datetime_to_task_id(self.timestamp)
 
     @abstractmethod
@@ -80,16 +92,30 @@ class BaseTaskData(ABC):
         """Save the task to a JSON file"""
         data = asdict(self)
         data["timestamp"] = self.timestamp.isoformat()
+        # Persist the envelope-supplied override alongside the task body so it
+        # survives restart / from_file reload.  The key is prefixed with "__"
+        # to avoid collisions with task-type fields.
+        if self._override_task_id is not None:
+            data["__envelope_task_id"] = self._override_task_id
 
         with filepath.open("w") as f:
             json.dump(data, f, indent=2)
 
     @classmethod
-    def from_dict(cls, document: dict) -> "BaseTaskData":
-        """Deserialize a task from an in-memory task document."""
+    def from_dict(cls, document: dict, *, envelope_task_id: Optional[str] = None) -> "BaseTaskData":
+        """Deserialize a task from an in-memory task document.
+
+        ``envelope_task_id`` is the **trusted** task_id from the remote
+        envelope.  When provided it takes precedence over any value embedded
+        in the document itself (defence-in-depth: the inner document is
+        untrusted wire data).  If absent, the ``__envelope_task_id`` sidecar
+        key written by :meth:`save_to_file` is honoured for restart recovery.
+        """
         if not isinstance(document, dict):
             raise ValueError("Invalid task data: expected object")
         data = dict(document)
+        # Extract sidecar key if present (written by save_to_file)
+        persisted_override = data.pop("__envelope_task_id", None)
         try:
             timestamp = datetime.fromisoformat(data.pop("timestamp"))
             task_type = data.pop("task_type")
@@ -99,6 +125,10 @@ class BaseTaskData(ABC):
             raise ValueError(f"Unknown task type: {task_type}")
         result = BaseTaskData.__task_registry[task_type](**data)
         result.timestamp = timestamp
+        # Explicit envelope_task_id (from trusted caller) wins, then persisted sidecar.
+        override = envelope_task_id or persisted_override
+        if override is not None:
+            result._override_task_id = override
         return result
 
     @classmethod
@@ -114,6 +144,7 @@ class BaseTaskData(ABC):
         if not isinstance(data, dict):
             raise ValueError(f"Invalid task data in file: {filepath}")
 
+        # from_dict handles __envelope_task_id extraction internally
         return cls.from_dict(data)
 
 
@@ -148,14 +179,26 @@ class TaskQueue:
     def has_task(self, task_id: str) -> bool:
         return self.task_path(task_id).exists()
 
-    def import_task(self, document: dict) -> BaseTaskData:
-        """Validate and atomically install a serialized task document."""
-        task = BaseTaskData.from_dict(document)
+    def import_task(self, document: dict, *, envelope_task_id: Optional[str] = None) -> BaseTaskData:
+        """Validate and atomically install a serialized task document.
+
+        ``envelope_task_id`` is the **trusted** identity from the remote
+        envelope.  When supplied, the task is filed under that ID (both
+        in-memory and on disk) regardless of the timestamp-derived ID
+        inside the untrusted document body.  It is persisted as a sidecar
+        ``__envelope_task_id`` key so that :meth:`from_file` restores it
+        after a restart.
+        """
+        task = BaseTaskData.from_dict(document, envelope_task_id=envelope_task_id)
+        # Build the on-disk document: original body + sidecar override
+        persisted = dict(document)
+        if envelope_task_id is not None:
+            persisted["__envelope_task_id"] = envelope_task_id
         task_file = self.queue_dir / f"task_{task.task_id}.json"
-        serialized = json.dumps(document, indent=2)
+        serialized = json.dumps(persisted, indent=2)
         if task_file.exists():
             existing = json.loads(task_file.read_text(encoding="utf-8"))
-            if existing != document:
+            if existing != persisted:
                 raise ValueError(f"task file already exists with different content: {task.task_id}")
             return task
 
