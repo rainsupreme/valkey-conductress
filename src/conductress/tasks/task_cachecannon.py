@@ -113,33 +113,70 @@ def parse_latency_row(text: str) -> dict:
     """Parse a latency percentile row like:
     'GET          7.24 ms   7.34 ms   8.12 ms   9.45 ms   12.3 ms   15.6 ms'
 
-    Returns dict with keys: command, p50, p90, p99, p999, p9999, max (all in ms).
+    cachecannon formats EACH value independently (format_latency_us): values
+    under 1ms get a microsecond suffix (U+00B5 'µs'), 1ms-1s get 'ms', and
+    >=1s get 's' -- so a single row can legitimately mix units, e.g.
+    'GET   938 µs   958 µs   975 µs   1.88 ms   1.91 ms   2.21 ms'.
+    Each value is converted using ITS OWN unit token and normalized to ms.
+
+    Command names may span multiple tokens (e.g. 'GET TTFB').
+
+    Returns dict with keys: command, p50_ms, p90_ms, p99_ms, p999_ms,
+    p9999_ms, max_ms (all normalized to milliseconds).
     """
-    # The row format is: COMMAND  p50  p90  p99  p999  p9999  max (all in ms or us)
+    _UNIT_TO_MS = {
+        "\u00b5s": 0.001,  # µs (U+00B5 MICRO SIGN)
+        "\u03bcs": 0.001,  # μs (U+03BC GREEK SMALL LETTER MU)
+        "us": 0.001,
+        "ms": 1.0,
+        "s": 1000.0,
+    }
     parts = text.split()
     if len(parts) < 7:
         raise ValueError(f"Cannot parse latency row (too few fields): {text!r}")
 
-    command = parts[0]
-    # Extract numeric values - skip 'ms' or 'us' unit tokens
-    values = []
-    for part in parts[1:]:
+    # Command name = leading tokens until the first numeric value.
+    command_tokens = []
+    idx = 0
+    while idx < len(parts):
         try:
-            values.append(float(part))
+            float(parts[idx])
+            break
         except ValueError:
-            continue  # skip unit labels like 'ms', 'us'
+            command_tokens.append(parts[idx])
+            idx += 1
+    if not command_tokens or idx >= len(parts):
+        raise ValueError(f"Cannot parse latency row (no command/values): {text!r}")
+    command = " ".join(command_tokens)
 
-    if len(values) < 6:
-        raise ValueError(f"Cannot parse latency row (found {len(values)} numeric values, need 6): {text!r}")
+    # Consume (value, unit) pairs, converting each by its own unit.
+    values_ms = []
+    while idx < len(parts):
+        try:
+            value = float(parts[idx])
+        except ValueError:
+            raise ValueError(f"Cannot parse latency row (expected number at {parts[idx]!r}): {text!r}")
+        idx += 1
+        if idx >= len(parts):
+            raise ValueError(f"Cannot parse latency row (value {value} missing unit): {text!r}")
+        unit = parts[idx].lower()
+        factor = _UNIT_TO_MS.get(unit)
+        if factor is None:
+            raise ValueError(f"Cannot parse latency row (unknown unit {parts[idx]!r}): {text!r}")
+        idx += 1
+        values_ms.append(value * factor)
+
+    if len(values_ms) < 6:
+        raise ValueError(f"Cannot parse latency row (found {len(values_ms)} values, need 6): {text!r}")
 
     return {
         "command": command,
-        "p50_ms": values[0],
-        "p90_ms": values[1],
-        "p99_ms": values[2],
-        "p999_ms": values[3],
-        "p9999_ms": values[4],
-        "max_ms": values[5],
+        "p50_ms": values_ms[0],
+        "p90_ms": values_ms[1],
+        "p99_ms": values_ms[2],
+        "p999_ms": values_ms[3],
+        "p9999_ms": values_ms[4],
+        "max_ms": values_ms[5],
     }
 
 

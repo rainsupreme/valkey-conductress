@@ -305,6 +305,46 @@ def test_parse_latency_row_set():
     assert result["max_ms"] == 8.00
 
 
+def test_parse_latency_row_mixed_units():
+    # Regression: exact shape from g4bench i6-cc cells (2026-08-30) --
+    # cachecannon formats each value independently, so sub-ms percentiles
+    # get a µs suffix while tails get ms. Old parser dropped the units and
+    # recorded p50_ms=938.0 (> p999_ms=1.88).
+    import pytest
+    row = "GET           938 \u00b5s   958 \u00b5s   975 \u00b5s   1.88 ms   1.91 ms   2.21 ms"
+    result = parse_latency_row(row)
+    assert result["command"] == "GET"
+    assert result["p50_ms"] == pytest.approx(0.938)
+    assert result["p90_ms"] == pytest.approx(0.958)
+    assert result["p99_ms"] == pytest.approx(0.975)
+    assert result["p999_ms"] == pytest.approx(1.88)
+    assert result["p9999_ms"] == pytest.approx(1.91)
+    assert result["max_ms"] == pytest.approx(2.21)
+    assert result["p50_ms"] < result["p999_ms"]  # monotonic sanity
+
+
+def test_parse_latency_row_multiword_command():
+    import pytest
+    row = "GET TTFB      512 \u00b5s   600 \u00b5s   700 \u00b5s   1.10 ms   1.20 ms   1.50 ms"
+    result = parse_latency_row(row)
+    assert result["command"] == "GET TTFB"
+    assert result["p50_ms"] == pytest.approx(0.512)
+
+
+def test_parse_latency_row_seconds_unit():
+    row = "SET          800 ms   900 ms   950 ms   1.20 s   1.50 s   2.00 s"
+    result = parse_latency_row(row)
+    assert result["p999_ms"] == 1200.0
+    assert result["max_ms"] == 2000.0
+
+
+def test_parse_latency_row_unknown_unit_rejected():
+    import pytest
+    row = "GET          7.24 xx   7.34 ms   8.12 ms   9.45 ms   12.3 ms   15.6 ms"
+    with pytest.raises(ValueError):
+        parse_latency_row(row)
+
+
 # --- Full RESULTS block parsing ---
 
 SAMPLE_OUTPUT = """
