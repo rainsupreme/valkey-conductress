@@ -76,6 +76,14 @@ The production data host uses local XFS storage, which supports SQLite WAL mode.
 
 All routes are under `/api/v1/` and all JSON responses include `schema_version: 1`.
 
+Public read-only route:
+
+```text
+GET    /api/v1/public/dashboard
+```
+
+This route is intentionally unauthenticated for the public status page. It returns only nonterminal mailbox task summaries: runner ID, task ID, state, class, priority, submitted time, type, source, specifier, note, and expected duration. It never returns submitter identity, full envelopes, claim tokens, leases, outcomes, credentials, or mutation controls. Disabled runners are omitted. Responses allow cross-origin `GET`/`OPTIONS` reads and permit five seconds of shared caching. The reverse proxy MUST rate-limit this route; the provided `/api/v1/` rate limit applies to it.
+
 Operator routes:
 
 ```text

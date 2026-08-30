@@ -140,6 +140,42 @@ def test_status_and_fleet_counts(control_env):
     assert arm["task_counts"] == {"queued": 1}
 
 
+def test_dashboard_status_exposes_only_sanitized_nonterminal_tasks(control_env):
+    service = control_env["service"]
+    queued = task_envelope()
+    queued["task"]["note"] = "descriptive benchmark note"
+    queued["task"]["secret_field"] = "must not be public"
+    service.submit_task(queued, actor="operator:test")
+    service.submit_task(task_envelope("completed", runner_id="g4bench"), actor="operator:test")
+    claim = service.claim_task("g4bench", actor="runner:g4bench")
+    service.accept_task("g4bench", "completed", claim["claim_token"], actor="runner:g4bench")
+    service.record_outcome("g4bench", "completed", task_outcome("completed", "g4bench"), actor="runner:g4bench")
+
+    document = service.dashboard_status()
+    assert "disabled" not in {runner["runner_id"] for runner in document["runners"]}
+    arm = next(runner for runner in document["runners"] if runner["runner_id"] == "armbench")
+    assert arm["expected_duration_sec"] == 78
+    assert arm["remote_tasks"] == [
+        {
+            "id": "task-1",
+            "type": "PerfTaskData",
+            "note": "descriptive benchmark note",
+            "source": "valkey",
+            "specifier": "abc123",
+            "state": "queued",
+            "task_class": "manual",
+            "priority": 100,
+            "submitted_at": "2026-08-29T00:00:00Z",
+            "expected_duration_sec": 78,
+        }
+    ]
+    assert all(task["id"] != "completed" for runner in document["runners"] for task in runner["remote_tasks"])
+    assert "submitted_by" not in arm["remote_tasks"][0]
+    assert "envelope" not in arm["remote_tasks"][0]
+    assert "outcome" not in arm["remote_tasks"][0]
+    assert "secret_field" not in arm["remote_tasks"][0]
+
+
 def test_concurrent_claims_produce_one_transition_and_one_token(control_env):
     service = control_env["service"]
     database = control_env["database"]

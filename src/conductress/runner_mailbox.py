@@ -169,7 +169,16 @@ class RunnerMailbox:
         result = result or self._find_result(task.task_id) or {"task_id": task.task_id}
         summary = {
             key: result.get(key)
-            for key in ("task_id", "method", "score", "commit_hash", "end_time", "note")
+            for key in (
+                "task_id",
+                "method",
+                "score",
+                "commit_hash",
+                "end_time",
+                "note",
+                "expected_duration_sec",
+                "observed_duration_sec",
+            )
             if result.get(key) is not None
         }
         outcome = {

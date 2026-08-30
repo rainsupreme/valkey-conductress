@@ -11,6 +11,7 @@ from typing import Any, Optional
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from ..duration_estimator import estimate_task_duration_seconds
 from .db import ControlDatabase, parse_utc, utc_now, utc_text
 from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
@@ -171,6 +172,43 @@ class ControlService:
                 f"SELECT * FROM tasks{where} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
             ).fetchall()
         return [self._task_from_row(row, include_envelope=False) for row in rows]
+
+    def dashboard_status(self) -> dict[str, Any]:
+        """Return the sanitized, read-only mailbox summary used by the public dashboard."""
+        runners = []
+        with self.database.read() as connection:
+            for runner in self.registry.list_runners(enabled_only=True):
+                rows = connection.execute(
+                    "SELECT task_id, task_class, priority, state, submitted_at, envelope_json "
+                    "FROM tasks WHERE runner_id=? AND state IN ('queued', 'claimed', 'accepted') "
+                    "ORDER BY priority DESC, submitted_at ASC, task_id ASC LIMIT 50",
+                    (runner["runner_id"],),
+                ).fetchall()
+                remote_tasks = []
+                for row in rows:
+                    task = json.loads(row["envelope_json"])["task"]
+                    remote_tasks.append(
+                        {
+                            "id": row["task_id"],
+                            "type": task.get("task_type"),
+                            "note": task.get("note"),
+                            "source": task.get("source"),
+                            "specifier": task.get("specifier"),
+                            "state": row["state"],
+                            "task_class": row["task_class"],
+                            "priority": row["priority"],
+                            "submitted_at": row["submitted_at"],
+                            "expected_duration_sec": estimate_task_duration_seconds(task),
+                        }
+                    )
+                runners.append(
+                    {
+                        "runner_id": runner["runner_id"],
+                        "expected_duration_sec": sum(task["expected_duration_sec"] for task in remote_tasks),
+                        "remote_tasks": remote_tasks,
+                    }
+                )
+        return {"generated_at": utc_text(), "runners": runners}
 
     def cancel_task(self, task_id: str, *, actor: str) -> tuple[dict[str, Any], bool]:
         audit = None
