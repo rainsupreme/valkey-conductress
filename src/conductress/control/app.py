@@ -1,4 +1,4 @@
-"""Authenticated HTTP API for the Conductress fleet control service."""
+"""HTTP API for the Conductress fleet control service."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .service import ControlService
 logger = logging.getLogger(__name__)
 SERVICE_KEY = web.AppKey("service", ControlService)
 TOKEN_STORE_KEY = web.AppKey("token_store", TokenStore)
+PUBLIC_DASHBOARD_PATH = "/api/v1/public/dashboard"
 
 
 def _actor(identity: AuthIdentity) -> str:
@@ -104,6 +105,8 @@ async def error_middleware(request: web.Request, handler):
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
+    if request.method in {"GET", "OPTIONS"} and request.path == PUBLIC_DASHBOARD_PATH:
+        return await handler(request)
     token_store: TokenStore = request.app[TOKEN_STORE_KEY]
     request["auth"] = token_store.authenticate(request.headers.get("Authorization"))
     return await handler(request)
@@ -131,6 +134,8 @@ def create_app(
     app[SERVICE_KEY] = service
     app[TOKEN_STORE_KEY] = token_store
 
+    app.router.add_get(PUBLIC_DASHBOARD_PATH, _public_dashboard)
+    app.router.add_options(PUBLIC_DASHBOARD_PATH, _public_dashboard_options)
     app.router.add_get("/api/v1/health", _health)
     app.router.add_post("/api/v1/tasks", _submit_task)
     app.router.add_get("/api/v1/tasks", _list_tasks)
@@ -144,6 +149,22 @@ def create_app(
     app.router.add_post("/api/v1/tasks/{task_id}/complete", _complete_task)
     app.router.add_post("/api/v1/tasks/{task_id}/fail", _fail_task)
     return app
+
+
+def _public_dashboard_headers(response: web.Response) -> web.Response:
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Accept"
+    response.headers["Cache-Control"] = "public, max-age=5"
+    return response
+
+
+async def _public_dashboard(request: web.Request) -> web.Response:
+    return _public_dashboard_headers(_response(**request.app[SERVICE_KEY].dashboard_status()))
+
+
+async def _public_dashboard_options(_request: web.Request) -> web.Response:
+    return _public_dashboard_headers(web.Response(status=204))
 
 
 async def _health(request: web.Request) -> web.Response:

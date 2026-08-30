@@ -13,6 +13,34 @@ async def test_api_requires_authentication(api_client):
 
 
 @pytest.mark.asyncio
+async def test_public_dashboard_feed_is_get_only_and_sanitized(api_client, auth_headers):
+    envelope = task_envelope()
+    envelope["task"]["note"] = "visible description"
+    await api_client.post("/api/v1/tasks", json=envelope, headers=auth_headers["operator"])
+
+    response = await api_client.get("/api/v1/public/dashboard")
+    assert response.status == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
+    assert response.headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+    assert response.headers["Access-Control-Allow-Headers"] == "Accept"
+    assert response.headers["Cache-Control"] == "public, max-age=5"
+    body = await response.json()
+    arm = next(runner for runner in body["runners"] if runner["runner_id"] == "armbench")
+    assert arm["remote_tasks"][0]["note"] == "visible description"
+    serialized = json.dumps(body)
+    assert "submitted_by" not in serialized
+    assert "claim_token" not in serialized
+    assert "outcome" not in serialized
+
+    preflight = await api_client.options("/api/v1/public/dashboard")
+    assert preflight.status == 204
+    assert preflight.headers["Access-Control-Allow-Origin"] == "*"
+
+    post = await api_client.post("/api/v1/public/dashboard")
+    assert post.status == 401
+
+
+@pytest.mark.asyncio
 async def test_api_enforces_operator_and_runner_roles(api_client, auth_headers):
     response = await api_client.post("/api/v1/tasks", json=task_envelope(), headers=auth_headers["arm"])
     assert response.status == 403
