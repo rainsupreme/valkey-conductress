@@ -268,6 +268,20 @@ def test_parse_hit_rate_partial():
     assert result["misses"] == 6_000.0
 
 
+def test_parse_hit_rate_billions():
+    # Regression: exact line from g4bench i6-cc failure 2026-08-29 --
+    # 5-minute runs at multi-M req/s cross 1e9 hits and cachecannon
+    # format_count() switches to the 'B' suffix.
+    result = parse_hit_rate("hit rate     100% (2.0B hit, 0 miss)")
+    assert result["percent"] == 100.0
+    assert result["hits"] == 2_000_000_000.0
+    assert result["misses"] == 0.0
+
+
+def test_parse_throughput_billions():
+    assert parse_throughput("throughput   1.2B req/s, 0.00% errors") == 1_200_000_000.0
+
+
 # --- Latency row parsing tests ---
 
 

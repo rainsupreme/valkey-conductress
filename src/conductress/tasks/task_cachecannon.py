@@ -59,12 +59,14 @@ def parse_throughput(text: str) -> float:
 
     Returns requests per second as a float.
     """
-    match = re.search(r"([\d.]+)\s*([MKk])?\s*req/s", text)
+    match = re.search(r"([\d.]+)\s*([BMKk])?\s*req/s", text)
     if not match:
         raise ValueError(f"Cannot parse throughput from: {text!r}")
     value = float(match.group(1))
     suffix = match.group(2)
-    if suffix == "M":
+    if suffix == "B":
+        return value * 1_000_000_000
+    elif suffix == "M":
         return value * 1_000_000
     elif suffix in ("K", "k"):
         return value * 1_000
@@ -87,14 +89,16 @@ def parse_hit_rate(text: str) -> dict:
 
     Returns dict with 'percent', 'hits', 'misses'.
     """
-    match = re.search(r"([\d.]+)%\s*\(([\d.]+)([MKk])?\s*hit,\s*([\d.]+)([MKk])?\s*miss\)", text)
+    match = re.search(r"([\d.]+)%\s*\(([\d.]+)([BMKk])?\s*hit,\s*([\d.]+)([BMKk])?\s*miss\)", text)
     if not match:
         raise ValueError(f"Cannot parse hit rate from: {text!r}")
     percent = float(match.group(1))
 
     def _parse_count(val_str, suffix):
         val = float(val_str)
-        if suffix == "M":
+        if suffix == "B":
+            return val * 1_000_000_000
+        elif suffix == "M":
             return val * 1_000_000
         elif suffix in ("K", "k"):
             return val * 1_000
