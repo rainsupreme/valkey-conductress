@@ -11,7 +11,16 @@ Design invariants:
 - Profile version changes start a fresh series.
 - Missed days create gaps -- no interpolation or backfill.
 - Out-of-order completions are accepted and slotted by UTC date.
+- At most one accepted observation per (runner, profile, version, UTC date);
+  a different task for an already-accepted date returns the existing one.
 - No notifications, no runner traffic, no threshold mutation.
+
+Statistical formulas:
+- Median: average of two middle values for even-length lists.
+- Robust sigma estimate: 1.4826 * MAD (consistent estimator of σ for normal).
+- Variability floor: 3 * robust_sigma / |median| * 100  (≈99.7% of normal).
+- Recommended warning: max(candidate_warning, variability_floor).
+- Recommended alarm: max(candidate_alarm, 2 * variability_floor, recommended_warning).
 """
 
 from __future__ import annotations
@@ -20,7 +29,7 @@ import json
 import logging
 import math
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .db import ControlDatabase, utc_text
 
@@ -39,9 +48,12 @@ ROLLING_WINDOW = 28
 # Minimum samples for any statistical computation
 MIN_SAMPLES_FOR_STATS = 1
 
+# MAD-to-sigma consistency constant for normal distributions
+MAD_SIGMA_SCALE = 1.4826
+
 
 def _median(values: List[float]) -> float:
-    """Deterministic median (lower-middle for even counts)."""
+    """Deterministic median: average of two middle values for even counts."""
     s = sorted(values)
     n = len(s)
     if n == 0:
@@ -61,11 +73,50 @@ def _mad(values: List[float]) -> float:
     return _median(deviations) if deviations else 0.0
 
 
+def _robust_sigma(mad_value: float) -> float:
+    """Convert MAD to a robust estimate of standard deviation (σ).
+
+    For normally distributed data, σ ≈ 1.4826 * MAD.
+    """
+    return MAD_SIGMA_SCALE * mad_value
+
+
+def _variability_floor_pct(mad_value: float, median_value: float) -> float:
+    """3-sigma variability floor as a percentage of |median|.
+
+    variability_floor = 3 * 1.4826 * MAD / |median| * 100
+
+    Returns 0.0 when median is zero (handled as review-required upstream).
+    """
+    if median_value == 0.0:
+        return 0.0
+    return 3.0 * _robust_sigma(mad_value) / abs(median_value) * 100.0
+
+
 def _is_finite(value: Any) -> bool:
     """Check if a value is a finite number."""
     if not isinstance(value, (int, float)):
         return False
     return math.isfinite(value)
+
+
+def _candidate_signal(
+    delta_pct: Optional[float],
+    candidate_warning_pct: Optional[float],
+    candidate_alarm_pct: Optional[float],
+) -> str:
+    """Classify observation against candidate thresholds (informational only).
+
+    Returns one of: 'insufficient-data', 'within', 'warning', 'alarm'.
+    """
+    if delta_pct is None or candidate_warning_pct is None or candidate_alarm_pct is None:
+        return "insufficient-data"
+    abs_delta = abs(delta_pct)
+    if abs_delta >= candidate_alarm_pct:
+        return "alarm"
+    if abs_delta >= candidate_warning_pct:
+        return "warning"
+    return "within"
 
 
 class DriftAnalyzer:
@@ -76,8 +127,53 @@ class DriftAnalyzer:
     :meth:`get_calibration_report` from query/CLI paths.
     """
 
-    def __init__(self, database: ControlDatabase) -> None:
+    def __init__(
+        self,
+        database: ControlDatabase,
+        *,
+        canary_profiles: Any = None,
+        fleet_registry: Any = None,
+    ) -> None:
         self.database = database
+        self._canary_profiles = canary_profiles  # CanaryProfileRegistry or None
+        self._fleet_registry = fleet_registry  # FleetRegistry or None
+
+    def _resolve_candidate_thresholds(
+        self,
+        profile_id: str,
+        profile_version: int,
+        runner_id: str,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Resolve candidate warning/alarm thresholds from profile + runner platform.
+
+        Returns (candidate_warning_pct, candidate_alarm_pct) or (None, None).
+        """
+        if self._canary_profiles is None or self._fleet_registry is None:
+            return None, None
+
+        profile = self._canary_profiles.get(profile_id)
+        if profile is None:
+            return None, None
+
+        # Structural version match
+        if profile.profile_version != profile_version:
+            return None, None
+
+        # Resolve runner platform from fleet registry
+        try:
+            runner = self._fleet_registry.get_runner(runner_id, require_enabled=False)
+        except Exception:
+            return None, None
+
+        # Match platform_aliases against profile threshold keys
+        platforms_thresholds = profile.thresholds.get("platforms", {})
+        aliases = runner.get("platform_aliases", [])
+        for alias in aliases:
+            if alias in platforms_thresholds:
+                t = platforms_thresholds[alias]
+                return t.get("warning_pct"), t.get("alarm_pct")
+
+        return None, None
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -99,7 +195,19 @@ class DriftAnalyzer:
         Returns the observation dict if accepted, None if rejected.
         Idempotent: replaying the same (runner, profile, version, date, task_id)
         returns the existing observation unchanged.
+
+        At most one accepted observation per (runner, profile, version, UTC date).
+        A different task_id for an already-accepted date returns the existing
+        accepted observation without alteration.
         """
+        # Validate profile_id and utc_date are non-empty
+        if not profile_id or not isinstance(profile_id, str):
+            logger.warning("canary outcome %s has empty/invalid profile_id; skipping", task_id)
+            return None
+        if not utc_date or not isinstance(utc_date, str):
+            logger.warning("canary outcome %s has empty/invalid utc_date; skipping", task_id)
+            return None
+
         # Extract and validate score
         result = outcome.get("result") or {}
         score = result.get("score")
@@ -121,11 +229,33 @@ class DriftAnalyzer:
             )
             return None
 
-        score_val = float(score)  # type: ignore[arg-type]  # guarded by _is_finite above
+        if not isinstance(score, (int, float)) or score <= 0:
+            logger.warning(
+                "canary outcome %s has non-positive score %r; recording rejection",
+                task_id,
+                score,
+            )
+            self._record_rejected_observation(
+                task_id=task_id,
+                runner_id=runner_id,
+                profile_id=profile_id,
+                profile_version=profile_version,
+                utc_date=utc_date,
+                reason=f"non-positive score: {score!r}",
+                environment=environment,
+            )
+            return None
+
+        score_val = float(score)
         completed_at = outcome.get("completed_at", utc_text())
 
+        # Resolve candidate thresholds from profile + runner platform
+        candidate_warning_pct, candidate_alarm_pct = self._resolve_candidate_thresholds(
+            profile_id, profile_version, runner_id
+        )
+
         with self.database.transaction(immediate=True) as conn:
-            # Idempotency: check for existing observation with same key
+            # Idempotency: check for existing observation with same exact key
             existing = conn.execute(
                 "SELECT * FROM canary_observations "
                 "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
@@ -135,15 +265,40 @@ class DriftAnalyzer:
             if existing is not None:
                 return dict(existing)
 
-            # Compute rolling statistics from PRIOR accepted observations only
-            prior_scores = self._prior_accepted_scores(
-                conn, runner_id, profile_id, profile_version, utc_date
-            )
+            # At-most-one accepted per (runner, profile, version, date):
+            # if a different task already claimed this date, return it unchanged
+            existing_accepted = conn.execute(
+                "SELECT * FROM canary_observations "
+                "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
+                "AND utc_date = ? AND accepted = 1",
+                (runner_id, profile_id, profile_version, utc_date),
+            ).fetchone()
+            if existing_accepted is not None:
+                return dict(existing_accepted)
 
-            # Determine phase
-            sample_count = len(prior_scores)
-            # This will be the (sample_count + 1)-th observation
-            ordinal = sample_count + 1
+            # Compute rolling statistics from PRIOR accepted observations only.
+            # "Prior" means strictly earlier UTC dates, regardless of arrival order.
+            prior_rows = conn.execute(
+                "SELECT score, utc_date FROM canary_observations "
+                "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
+                "AND utc_date < ? AND accepted = 1 "
+                "ORDER BY utc_date ASC, task_id ASC",
+                (runner_id, profile_id, profile_version, utc_date),
+            ).fetchall()
+            prior_scores = [row["score"] for row in prior_rows]
+            prior_dates = [row["utc_date"] for row in prior_rows]
+
+            # Count total accepted in the ENTIRE series (before this insert)
+            # for ordinal/phase computation — independent of current utc_date
+            total_accepted = conn.execute(
+                "SELECT COUNT(*) FROM canary_observations "
+                "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
+                "AND accepted = 1",
+                (runner_id, profile_id, profile_version),
+            ).fetchone()[0]
+
+            # This will be the (total_accepted + 1)-th observation
+            ordinal = total_accepted + 1
 
             if ordinal <= OBSERVATION_WINDOW:
                 phase = PHASE_OBSERVATION
@@ -158,8 +313,9 @@ class DriftAnalyzer:
             delta_pct = None
             window_start = None
             window_end = None
+            ref_sample_count = len(prior_scores)
 
-            if len(prior_scores) >= MIN_SAMPLES_FOR_STATS:
+            if ref_sample_count >= MIN_SAMPLES_FOR_STATS:
                 # Use at most ROLLING_WINDOW most recent prior observations
                 window_scores = prior_scores[-ROLLING_WINDOW:]
                 ref_median = _median(window_scores)
@@ -178,24 +334,55 @@ class DriftAnalyzer:
                     delta_pct = 999999.0 if delta_pct > 0 else -999999.0
 
                 # Window date range from prior observations
-                prior_dates = self._prior_accepted_dates(
-                    conn, runner_id, profile_id, profile_version, utc_date
-                )
-                if prior_dates:
-                    recent_dates = prior_dates[-ROLLING_WINDOW:]
+                recent_dates = prior_dates[-ROLLING_WINDOW:]
+                if recent_dates:
                     window_start = recent_dates[0]
                     window_end = recent_dates[-1]
 
-            now = utc_text()
+            # Compute candidate signal (informational only)
+            cand_signal = _candidate_signal(delta_pct, candidate_warning_pct, candidate_alarm_pct)
+
+            # Environment fingerprint and change annotation
             env_json = json.dumps(environment, sort_keys=True) if environment else None
+            env_change_annotation = None
+            if environment is not None:
+                prev_env_row = conn.execute(
+                    "SELECT environment_json FROM canary_observations "
+                    "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
+                    "AND utc_date < ? AND accepted = 1 "
+                    "ORDER BY utc_date DESC, task_id DESC LIMIT 1",
+                    (runner_id, profile_id, profile_version, utc_date),
+                ).fetchone()
+                if prev_env_row is not None and prev_env_row["environment_json"] is not None:
+                    prev_env = json.loads(prev_env_row["environment_json"])
+                    if prev_env != environment:
+                        changes = []
+                        all_keys = sorted(set(list(prev_env.keys()) + list(environment.keys())))
+                        for k in all_keys:
+                            old_v = prev_env.get(k)
+                            new_v = environment.get(k)
+                            if old_v != new_v:
+                                changes.append(f"{k}: {old_v!r} -> {new_v!r}")
+                        env_change_annotation = "; ".join(changes) if changes else None
+
+            # Extract provenance fields from outcome
+            provenance_schema_version = outcome.get("provenance_schema_version") or outcome.get("schema_version")
+            result_obj = outcome.get("result") or {}
+            outcome_environment = result_obj.get("environment")
+
+            now = utc_text()
 
             conn.execute(
                 "INSERT INTO canary_observations "
                 "(runner_id, profile_id, profile_version, utc_date, task_id, "
                 "score, completed_at, phase, accepted, rejection_reason, "
-                "ref_median, ref_mad, delta_pct, sample_count, "
-                "window_start, window_end, environment_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "ref_median, ref_mad, delta_pct, "
+                "series_ordinal, ref_sample_count, "
+                "candidate_warning_pct, candidate_alarm_pct, candidate_signal, actionable, "
+                "window_start, window_end, "
+                "environment_json, env_change_annotation, "
+                "provenance_schema_version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
                 (
                     runner_id,
                     profile_id,
@@ -208,10 +395,16 @@ class DriftAnalyzer:
                     ref_median,
                     ref_mad,
                     delta_pct,
-                    sample_count,  # count of PRIOR observations
+                    ordinal,
+                    ref_sample_count,
+                    candidate_warning_pct,
+                    candidate_alarm_pct,
+                    cand_signal,
                     window_start,
                     window_end,
                     env_json,
+                    env_change_annotation,
+                    provenance_schema_version,
                     now,
                 ),
             )
@@ -228,10 +421,12 @@ class DriftAnalyzer:
                     "utc_date": utc_date,
                     "score": score_val,
                     "phase": phase,
-                    "ordinal": ordinal,
+                    "series_ordinal": ordinal,
+                    "ref_sample_count": ref_sample_count,
                     "ref_median": ref_median,
                     "ref_mad": ref_mad,
                     "delta_pct": delta_pct,
+                    "candidate_signal": cand_signal,
                 },
             )
 
@@ -242,10 +437,16 @@ class DriftAnalyzer:
                 (runner_id, profile_id, profile_version, utc_date, task_id),
             ).fetchone()
 
-            # Check if we should generate a calibration report
+            # Check if we should generate a calibration report.
+            # Use the total accepted count AFTER this insert for the trigger.
             if ordinal == CALIBRATION_WINDOW and phase == PHASE_READY:
                 self._generate_calibration_report(
-                    conn, runner_id, profile_id, profile_version
+                    conn,
+                    runner_id,
+                    profile_id,
+                    profile_version,
+                    candidate_warning_pct=candidate_warning_pct,
+                    candidate_alarm_pct=candidate_alarm_pct,
                 )
 
         return dict(obs) if obs else None
@@ -278,10 +479,15 @@ class DriftAnalyzer:
                 "INSERT INTO canary_observations "
                 "(runner_id, profile_id, profile_version, utc_date, task_id, "
                 "score, completed_at, phase, accepted, rejection_reason, "
-                "ref_median, ref_mad, delta_pct, sample_count, "
-                "window_start, window_end, environment_json, created_at) "
+                "ref_median, ref_mad, delta_pct, "
+                "series_ordinal, ref_sample_count, "
+                "candidate_warning_pct, candidate_alarm_pct, candidate_signal, actionable, "
+                "window_start, window_end, "
+                "environment_json, env_change_annotation, "
+                "provenance_schema_version, created_at) "
                 "VALUES (?, ?, ?, ?, ?, NULL, ?, 'observation', 0, ?, "
-                "NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+                "NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'insufficient-data', 0, "
+                "NULL, NULL, ?, NULL, NULL, ?)",
                 (
                     runner_id,
                     profile_id,
@@ -310,46 +516,6 @@ class DriftAnalyzer:
         return None
 
     # ------------------------------------------------------------------
-    # Rolling window helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _prior_accepted_scores(
-        conn: sqlite3.Connection,
-        runner_id: str,
-        profile_id: str,
-        profile_version: int,
-        before_date: str,
-    ) -> List[float]:
-        """Return accepted scores BEFORE the given date, ordered by date ASC."""
-        rows = conn.execute(
-            "SELECT score FROM canary_observations "
-            "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
-            "AND utc_date < ? AND accepted = 1 "
-            "ORDER BY utc_date ASC",
-            (runner_id, profile_id, profile_version, before_date),
-        ).fetchall()
-        return [row["score"] for row in rows]
-
-    @staticmethod
-    def _prior_accepted_dates(
-        conn: sqlite3.Connection,
-        runner_id: str,
-        profile_id: str,
-        profile_version: int,
-        before_date: str,
-    ) -> List[str]:
-        """Return accepted observation dates BEFORE the given date, ordered ASC."""
-        rows = conn.execute(
-            "SELECT utc_date FROM canary_observations "
-            "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
-            "AND utc_date < ? AND accepted = 1 "
-            "ORDER BY utc_date ASC",
-            (runner_id, profile_id, profile_version, before_date),
-        ).fetchall()
-        return [row["utc_date"] for row in rows]
-
-    # ------------------------------------------------------------------
     # Calibration report
     # ------------------------------------------------------------------
 
@@ -359,8 +525,15 @@ class DriftAnalyzer:
         runner_id: str,
         profile_id: str,
         profile_version: int,
+        *,
+        candidate_warning_pct: Optional[float] = None,
+        candidate_alarm_pct: Optional[float] = None,
     ) -> None:
-        """Generate and store a calibration report at the 28-sample mark."""
+        """Generate and store a calibration report at the 28-sample mark.
+
+        Uses exactly the first 28 accepted observations sorted deterministically
+        by (utc_date, task_id).
+        """
         # Check if report already exists
         existing = conn.execute(
             "SELECT report_id FROM canary_calibration_reports "
@@ -370,12 +543,12 @@ class DriftAnalyzer:
         if existing:
             return  # Already generated
 
-        # Collect all accepted observations for this series
+        # Collect exactly the first 28 accepted observations, deterministically ordered
         rows = conn.execute(
             "SELECT score, utc_date FROM canary_observations "
             "WHERE runner_id = ? AND profile_id = ? AND profile_version = ? "
-            "AND accepted = 1 ORDER BY utc_date ASC",
-            (runner_id, profile_id, profile_version),
+            "AND accepted = 1 ORDER BY utc_date ASC, task_id ASC LIMIT ?",
+            (runner_id, profile_id, profile_version, CALIBRATION_WINDOW),
         ).fetchall()
 
         scores = [row["score"] for row in rows]
@@ -386,13 +559,27 @@ class DriftAnalyzer:
 
         med = _median(scores)
         mad = _mad(scores)
+        r_sigma = _robust_sigma(mad)
 
-        # Coefficient of variation proxy: MAD / median * 100
-        cv_pct = (mad / abs(med) * 100.0) if med != 0.0 else 0.0
+        # Variability floor: 3 * robust_sigma / |median| * 100
+        # Handle zero median explicitly
+        if med == 0.0:
+            variability_floor = 0.0
+            zero_median_warning = True
+        else:
+            variability_floor = _variability_floor_pct(mad, med)
+            zero_median_warning = False
 
-        # Conservative recommended thresholds: max(candidate, 3*MAD/median*100)
-        # The 3x MAD factor provides ~99% coverage for normal-like distributions
-        mad_threshold = (3.0 * mad / abs(med) * 100.0) if med != 0.0 else 0.0
+        # Recommended thresholds: merge candidate + variability floor
+        if candidate_warning_pct is not None:
+            rec_warning = max(candidate_warning_pct, variability_floor)
+        else:
+            rec_warning = variability_floor
+
+        if candidate_alarm_pct is not None:
+            rec_alarm = max(candidate_alarm_pct, 2.0 * variability_floor, rec_warning)
+        else:
+            rec_alarm = max(2.0 * variability_floor, rec_warning)
 
         report = {
             "runner_id": runner_id,
@@ -402,16 +589,27 @@ class DriftAnalyzer:
             "date_range": {"start": dates[0], "end": dates[-1]},
             "median_score": med,
             "mad": mad,
-            "cv_pct": round(cv_pct, 4),
+            "robust_sigma": round(r_sigma, 4),
+            "variability_floor_pct": round(variability_floor, 4),
             "min_score": min(scores),
             "max_score": max(scores),
             "spread_pct": round(((max(scores) - min(scores)) / abs(med) * 100.0) if med != 0 else 0.0, 4),
-            "mad_based_threshold_pct": round(mad_threshold, 4),
+            "candidate_warning_pct": candidate_warning_pct,
+            "candidate_alarm_pct": candidate_alarm_pct,
+            "recommended_warning_pct": round(rec_warning, 4),
+            "recommended_alarm_pct": round(rec_alarm, 4),
             "status": "ready-for-review",
+            "zero_median_warning": zero_median_warning,
             "note": (
                 "Calibration report generated from first 28 observations. "
-                "Recommended thresholds are derived from observed variability (3x MAD). "
+                "Variability floor derived from 3 * 1.4826 * MAD / |median| (robust 3-sigma). "
+                "Recommended thresholds are max(candidate, variability_floor). "
                 "Review and accept before enabling drift alerts."
+                + (
+                    " WARNING: median is zero; variability floor is 0% by definition — manual review required."
+                    if zero_median_warning
+                    else ""
+                )
             ),
         }
 
@@ -419,9 +617,12 @@ class DriftAnalyzer:
         conn.execute(
             "INSERT INTO canary_calibration_reports "
             "(runner_id, profile_id, profile_version, sample_count, "
-            "date_range_start, date_range_end, median_score, mad, cv_pct, "
-            "mad_based_threshold_pct, status, report_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "date_range_start, date_range_end, median_score, mad, "
+            "robust_sigma, variability_floor_pct, "
+            "candidate_warning_pct, candidate_alarm_pct, "
+            "recommended_warning_pct, recommended_alarm_pct, "
+            "status, report_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 runner_id,
                 profile_id,
@@ -431,8 +632,12 @@ class DriftAnalyzer:
                 dates[-1],
                 med,
                 mad,
-                round(cv_pct, 4),
-                round(mad_threshold, 4),
+                round(r_sigma, 4),
+                round(variability_floor, 4),
+                candidate_warning_pct,
+                candidate_alarm_pct,
+                round(rec_warning, 4),
+                round(rec_alarm, 4),
                 "ready-for-review",
                 json.dumps(report, sort_keys=True),
                 now,
@@ -448,18 +653,18 @@ class DriftAnalyzer:
                 "profile_id": profile_id,
                 "profile_version": profile_version,
                 "sample_count": len(scores),
-                "cv_pct": round(cv_pct, 4),
+                "robust_sigma": round(r_sigma, 4),
+                "variability_floor_pct": round(variability_floor, 4),
             },
         )
 
         logger.info(
-            "calibration report generated for %s/%s v%d: cv=%.4f%%, "
-            "mad_threshold=%.4f%%",
+            "calibration report generated for %s/%s v%d: robust_sigma=%.4f, " "variability_floor=%.4f%%",
             runner_id,
             profile_id,
             profile_version,
-            cv_pct,
-            mad_threshold,
+            r_sigma,
+            variability_floor,
         )
 
     # ------------------------------------------------------------------
@@ -473,7 +678,7 @@ class DriftAnalyzer:
         profile_version: int,
         utc_date: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get a single observation, or None."""
+        """Get a single accepted observation, or None. Deterministic: accepted-only."""
         with self.database.read() as conn:
             row = conn.execute(
                 "SELECT * FROM canary_observations "
@@ -574,6 +779,7 @@ class DriftAnalyzer:
             ).fetchone()
 
         # Determine overall phase
+        progress: Optional[str] = None
         if accepted_count == 0:
             phase = "no-data"
         elif accepted_count < OBSERVATION_WINDOW:
@@ -593,7 +799,7 @@ class DriftAnalyzer:
             "accepted_count": accepted_count,
             "rejected_count": rejected_count,
             "phase": phase,
-            "progress": progress if accepted_count > 0 else None,
+            "progress": progress,
             "latest_observation": dict(latest) if latest else None,
             "calibration_status": cal["status"] if cal else None,
         }

@@ -71,7 +71,7 @@ def control_env(tmp_path):
     registry = FleetRegistry.from_file(manifest_path)
     token_store = TokenStore(tokens_path)
     canary_profiles = CanaryProfileRegistry.from_directory(canary_dir)
-    service = ControlService(database, registry, config.claim_lease_seconds)
+    service = ControlService(database, registry, config.claim_lease_seconds, canary_profiles=canary_profiles)
     scheduler = CanaryScheduler(database, registry, canary_profiles)
     return {
         "config": config,

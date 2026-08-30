@@ -19,6 +19,11 @@ from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
 
+try:
+    from .canary_profiles import CanaryProfileRegistry
+except ImportError:
+    CanaryProfileRegistry = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 PUBLIC_DASHBOARD_TASK_LIMIT = 50
@@ -29,14 +34,26 @@ def _validator(name: str) -> Draft202012Validator:
 
 
 class ControlService:
-    def __init__(self, database: ControlDatabase, registry: FleetRegistry, claim_lease_seconds: int = 300):
+    def __init__(
+        self,
+        database: ControlDatabase,
+        registry: FleetRegistry,
+        claim_lease_seconds: int = 300,
+        *,
+        canary_profiles: Optional["CanaryProfileRegistry"] = None,
+    ):
         self.database = database
         self.registry = registry
         self.claim_lease_seconds = claim_lease_seconds
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")
-        self.drift_analyzer = DriftAnalyzer(database)
+        self._canary_profiles = canary_profiles
+        self.drift_analyzer = DriftAnalyzer(
+            database,
+            canary_profiles=canary_profiles,
+            fleet_registry=registry,
+        )
 
     @staticmethod
     def _validate(validator: Draft202012Validator, document: dict[str, Any], kind: str) -> None:
@@ -438,9 +455,7 @@ class ControlService:
             self.database.append_audit_jsonl(audit)
         # Ingest canary observation outside the main transaction
         if canary_metadata:
-            self._ingest_canary_observation(
-                task_id, runner_id, outcome, canary_metadata
-            )
+            self._ingest_canary_observation(task_id, runner_id, outcome, canary_metadata)
         return self._task_from_row(updated), True
 
     def _ingest_canary_observation(
@@ -459,25 +474,48 @@ class ControlService:
             # canary_id format: "profile_id:utc_date"
             parts = canary_id.rsplit(":", 1)
             if len(parts) != 2:
-                logger.warning("malformed canary_id %r on task %s", canary_id, task_id)
+                logger.warning("malformed canary_id %r on task %s: expected 'profile:date'", canary_id, task_id)
                 return
             profile_id, utc_date = parts
 
-            # Extract profile_version from envelope
-            envelope = json.loads(canary_metadata["envelope_json"])
-            note = envelope.get("task", {}).get("note", "")
-            # Note format: "canary {profile_id} v{version} ({date})"
-            profile_version = 1  # default
-            if " v" in note:
-                try:
-                    version_str = note.split(" v")[1].split(" ")[0].split(")")[0]
-                    profile_version = int(version_str)
-                except (IndexError, ValueError):
-                    pass
+            # Validate non-empty after split
+            if not profile_id:
+                logger.warning("empty profile_id from canary_id %r on task %s", canary_id, task_id)
+                return
+            if not utc_date:
+                logger.warning("empty utc_date from canary_id %r on task %s", canary_id, task_id)
+                return
 
-            # Extract environment fingerprint from outcome
+            # Resolve profile_version structurally from the CanaryProfileRegistry.
+            # Fall back to regex on the note field for legacy/test compatibility.
+            profile_version = 1  # final fallback default
+            if self._canary_profiles is not None:
+                profile = self._canary_profiles.get(profile_id)
+                if profile is not None:
+                    profile_version = profile.profile_version
+                else:
+                    # Profile not in registry; try regex on note as legacy fallback
+                    profile_version = self._parse_version_from_note(canary_metadata)
+            else:
+                # No registry available; use regex fallback
+                profile_version = self._parse_version_from_note(canary_metadata)
+
+            # Extract environment fingerprint from outcome result
             result = outcome.get("result") or {}
             environment = result.get("environment")
+
+            # Build provenance-enriched environment including available outcome fields
+            enriched_env = dict(environment) if environment else {}
+            provenance_sv = outcome.get("provenance_schema_version") or outcome.get("schema_version")
+            if provenance_sv is not None:
+                enriched_env["provenance_schema_version"] = provenance_sv
+            enriched_env["runner_id"] = runner_id
+            # Resolve platform from fleet registry
+            try:
+                runner = self.registry.get_runner(runner_id, require_enabled=False)
+                enriched_env["platform"] = runner.get("platform", "")
+            except Exception:
+                pass
 
             self.drift_analyzer.ingest_outcome(
                 task_id=task_id,
@@ -486,7 +524,7 @@ class ControlService:
                 profile_id=profile_id,
                 profile_version=profile_version,
                 utc_date=utc_date,
-                environment=environment,
+                environment=enriched_env if enriched_env else None,
             )
         except Exception:
             logger.warning(
@@ -494,6 +532,20 @@ class ControlService:
                 task_id,
                 exc_info=True,
             )
+
+    @staticmethod
+    def _parse_version_from_note(canary_metadata: dict[str, Any]) -> int:
+        """Regex fallback: extract version from note field for tests/legacy."""
+        envelope = json.loads(canary_metadata.get("envelope_json", "{}"))
+        note = envelope.get("task", {}).get("note", "")
+        # Note format: "canary {profile_id} v{version} ({date})"
+        if " v" in note:
+            try:
+                version_str = note.split(" v")[1].split(" ")[0].split(")")[0]
+                return int(version_str)
+            except (IndexError, ValueError):
+                pass
+        return 1
 
     @staticmethod
     def _verify_task_runner(row: sqlite3.Row, runner_id: str) -> None:
