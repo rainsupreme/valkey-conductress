@@ -311,6 +311,7 @@ def test_parse_latency_row_mixed_units():
     # get a µs suffix while tails get ms. Old parser dropped the units and
     # recorded p50_ms=938.0 (> p999_ms=1.88).
     import pytest
+
     row = "GET           938 \u00b5s   958 \u00b5s   975 \u00b5s   1.88 ms   1.91 ms   2.21 ms"
     result = parse_latency_row(row)
     assert result["command"] == "GET"
@@ -325,6 +326,7 @@ def test_parse_latency_row_mixed_units():
 
 def test_parse_latency_row_multiword_command():
     import pytest
+
     row = "GET TTFB      512 \u00b5s   600 \u00b5s   700 \u00b5s   1.10 ms   1.20 ms   1.50 ms"
     result = parse_latency_row(row)
     assert result["command"] == "GET TTFB"
@@ -340,6 +342,7 @@ def test_parse_latency_row_seconds_unit():
 
 def test_parse_latency_row_unknown_unit_rejected():
     import pytest
+
     row = "GET          7.24 xx   7.34 ms   8.12 ms   9.45 ms   12.3 ms   15.6 ms"
     with pytest.raises(ValueError):
         parse_latency_row(row)
