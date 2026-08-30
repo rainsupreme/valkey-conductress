@@ -203,17 +203,15 @@ class TaskRunner:
         else:
             export_doc = status
 
-        export_status(publish_target=self._publish_target or "", status=export_doc)
-
-        # Retry a failed rsync exactly once for STARTING boundaries — a stale
-        # "starting" on the dashboard masks the entire measurement window.
-        # No retry for other states: they are not pre-measurement.
-        if state == "starting" and self._publish_target:
-            import conductress.status_export as _se
-
-            if not _se.last_publish_ok:
-                logger.info("Retrying STARTING status publish to %s", self._publish_target)
-                export_status(publish_target=self._publish_target, status=export_doc)
+        # A stale STARTING snapshot masks the entire measurement window, so
+        # permit one checked retry before measurement begins. Other boundaries
+        # remain single-attempt. export_status keeps its Path return contract.
+        publish_attempts = 2 if state == "starting" and self._publish_target else 1
+        export_status(
+            publish_target=self._publish_target or "",
+            status=export_doc,
+            publish_attempts=publish_attempts,
+        )
 
     def _choose_next(self, queue: TaskQueue) -> Optional[BaseTaskData]:
         if self._mailbox and self._mailbox.journal.active is not None:

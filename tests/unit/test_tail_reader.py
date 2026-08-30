@@ -20,6 +20,18 @@ class TestTailLinesBasic:
         f.write_bytes(b"")
         assert tail_lines(f, 10) == []
 
+    def test_zero_or_negative_line_count_returns_empty(self, tmp_path):
+        f = tmp_path / "lines.jsonl"
+        f.write_text("a\nb\n")
+        assert tail_lines(f, 0) == []
+        assert tail_lines(f, -1) == []
+
+    def test_nonpositive_chunk_size_is_rejected(self, tmp_path):
+        f = tmp_path / "lines.jsonl"
+        f.write_text("a\n")
+        with pytest.raises(ValueError, match="chunk_size"):
+            tail_lines(f, 1, chunk_size=0)
+
     def test_single_line_no_newline(self, tmp_path):
         f = tmp_path / "one.jsonl"
         f.write_bytes(b'{"x": 1}')

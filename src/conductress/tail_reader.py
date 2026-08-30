@@ -46,6 +46,11 @@ def tail_lines(
         avg_line ~1 KiB, chunk 64 KiB) this is 4-5 read syscalls vs
         reading the entire (often 50-200 MiB) file.
     """
+    if n <= 0:
+        return []
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
     path = Path(path)
     try:
         file_size = path.stat().st_size

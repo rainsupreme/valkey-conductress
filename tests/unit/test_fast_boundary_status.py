@@ -109,7 +109,6 @@ class TestSingleBuildPerBoundary:
             patch("conductress.status_export.TaskQueue") as MockQueue,
             patch("conductress.status_export._get_disk_info", return_value={}),
             patch("conductress.status_export.tail_lines", return_value=[]),
-            patch("conductress.status_export.last_publish_ok", True),
         ):
             MockQueue.return_value.get_all_tasks.return_value = []
             runner._publish_boundary("completed", None)
@@ -148,10 +147,10 @@ class TestSingleBuildPerBoundary:
 
 
 # ---------------------------------------------------------------------------
-# Contract 3: Rsync retry only for STARTING on failure
+# Contract 3: Checked rsync retry only for STARTING
 # ---------------------------------------------------------------------------
 class TestStartingRsyncRetry:
-    """Retry fires exactly once for STARTING when first publish fails."""
+    """STARTING requests two attempts; export_status retries only on failure."""
 
     def _make_runner_with_target(self):
         from conductress.task_runner import TaskRunner
@@ -160,79 +159,65 @@ class TestStartingRsyncRetry:
         runner._publish_target = "user@host:/data"
         return runner
 
-    def test_starting_retries_on_publish_failure(self):
-        import conductress.status_export as se
-
+    def test_starting_requests_two_publish_attempts(self):
         runner = self._make_runner_with_target()
-        call_count = 0
-
-        def export_side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                se.last_publish_ok = False  # first call fails
-            else:
-                se.last_publish_ok = True
-            return Path("/tmp/status.json")
-
         with (
-            patch("conductress.task_runner.build_status") as mock_bs,
-            patch("conductress.task_runner.export_status", side_effect=export_side_effect) as mock_export,
+            patch("conductress.task_runner.build_status", return_value={"boundary": {"state": "starting"}}),
+            patch("conductress.task_runner.export_status") as mock_export,
         ):
-            mock_bs.return_value = {"boundary": {"state": "starting"}}
             runner._publish_boundary("starting", None)
 
-        # export_status called twice: initial + retry
-        assert mock_export.call_count == 2
+        mock_export.assert_called_once()
+        assert mock_export.call_args.kwargs["publish_attempts"] == 2
 
-    def test_starting_no_retry_on_publish_success(self):
-        import conductress.status_export as se
-
+    @pytest.mark.parametrize("state", ["completed", "failed", "idle"])
+    def test_nonstarting_requests_one_publish_attempt(self, state):
         runner = self._make_runner_with_target()
-        se.last_publish_ok = True
-
         with (
-            patch("conductress.task_runner.build_status") as mock_bs,
+            patch("conductress.task_runner.build_status", return_value={"boundary": {"state": state}}),
             patch("conductress.task_runner.export_status") as mock_export,
         ):
-            mock_bs.return_value = {"boundary": {"state": "starting"}}
-            mock_export.return_value = Path("/tmp/status.json")
-            runner._publish_boundary("starting", None)
+            runner._publish_boundary(state, None)
 
-        # Only one call — no retry needed
         mock_export.assert_called_once()
+        assert mock_export.call_args.kwargs["publish_attempts"] == 1
 
-    def test_completed_never_retries_even_on_failure(self):
-        import conductress.status_export as se
-
-        runner = self._make_runner_with_target()
-        se.last_publish_ok = False
-
+    def test_export_retries_once_after_failure(self, tmp_path):
+        status_dir = tmp_path / "status"
+        status_file = status_dir / "status.json"
         with (
-            patch("conductress.task_runner.build_status") as mock_bs,
-            patch("conductress.task_runner.export_status") as mock_export,
+            patch("conductress.status_export.STATUS_EXPORT_DIR", status_dir),
+            patch("conductress.status_export.STATUS_EXPORT_FILE", status_file),
+            patch("conductress.status_export._publish_status", side_effect=[False, True]) as publish,
         ):
-            mock_bs.return_value = {"boundary": {"state": "completed"}}
-            mock_export.return_value = Path("/tmp/status.json")
-            runner._publish_boundary("completed", None)
+            path = export_status(
+                "user@host:/data",
+                status={"schema_version": 1},
+                publish_attempts=2,
+            )
 
-        mock_export.assert_called_once()
+        assert path == status_file
+        assert publish.call_count == 2
 
-    def test_failed_never_retries(self):
-        import conductress.status_export as se
-
-        runner = self._make_runner_with_target()
-        se.last_publish_ok = False
-
+    def test_export_does_not_retry_after_success(self, tmp_path):
+        status_dir = tmp_path / "status"
+        status_file = status_dir / "status.json"
         with (
-            patch("conductress.task_runner.build_status") as mock_bs,
-            patch("conductress.task_runner.export_status") as mock_export,
+            patch("conductress.status_export.STATUS_EXPORT_DIR", status_dir),
+            patch("conductress.status_export.STATUS_EXPORT_FILE", status_file),
+            patch("conductress.status_export._publish_status", return_value=True) as publish,
         ):
-            mock_bs.return_value = {"boundary": {"state": "failed"}}
-            mock_export.return_value = Path("/tmp/status.json")
-            runner._publish_boundary("failed", None)
+            export_status(
+                "user@host:/data",
+                status={"schema_version": 1},
+                publish_attempts=2,
+            )
 
-        mock_export.assert_called_once()
+        publish.assert_called_once()
+
+    def test_publish_attempts_must_be_positive(self):
+        with pytest.raises(ValueError, match="publish_attempts"):
+            export_status(status={"schema_version": 1}, publish_attempts=0)
 
 
 # ---------------------------------------------------------------------------

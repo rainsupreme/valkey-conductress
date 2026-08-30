@@ -35,9 +35,6 @@ STATUS_EXPORT_FILE = STATUS_EXPORT_DIR / "status.json"
 # How many recent results to include
 RECENT_RESULTS_COUNT = 5
 
-# Track last publish outcome so callers can implement retry logic.
-last_publish_ok: bool = True
-
 # Tail read budget: enough for calibration (max_records*2 = 400) and recent
 # results (RECENT_RESULTS_COUNT*2 = 10). A single tail_lines call satisfying
 # both avoids any whole-file I/O.
@@ -97,12 +94,17 @@ def export_status(
     status: Optional[dict[str, Any]] = None,
     fleet_control: Optional[dict[str, Any]] = None,
     boundary: Optional[dict[str, Any]] = None,
+    publish_attempts: int = 1,
 ) -> Path:
     """Write and optionally publish a status snapshot.
 
     The local write uses atomic rename to avoid serving a partial file to
-    concurrent rsync pulls.
+    concurrent rsync pulls. ``publish_attempts`` permits a bounded checked
+    retry while preserving the historical ``Path`` return contract.
     """
+    if publish_attempts < 1:
+        raise ValueError("publish_attempts must be at least 1")
+
     status = status or build_status(fleet_control=fleet_control, boundary=boundary)
     STATUS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -121,12 +123,16 @@ def export_status(
         raise
 
     if publish_target:
-        publish_ok = _publish_status(publish_target)
-    else:
-        publish_ok = True
-
-    global last_publish_ok
-    last_publish_ok = publish_ok
+        for attempt in range(1, publish_attempts + 1):
+            if _publish_status(publish_target):
+                break
+            if attempt < publish_attempts:
+                logger.warning(
+                    "Status publish to %s failed; retrying (%d/%d)",
+                    publish_target,
+                    attempt + 1,
+                    publish_attempts,
+                )
 
     return STATUS_EXPORT_FILE
 
