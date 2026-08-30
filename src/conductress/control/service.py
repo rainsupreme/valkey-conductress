@@ -574,6 +574,149 @@ class ControlService:
             )
         self.database.append_audit_jsonl(audit)
 
+    # ------------------------------------------------------------------
+    # Canary status (read-only, no mutations)
+    # ------------------------------------------------------------------
+
+    def canary_status(self, runner_id: Optional[str] = None) -> dict[str, Any]:
+        """Return read-only canary status for all enabled runners (or one).
+
+        Composes manifest/profile info, schedule state, drift series summary,
+        latest accepted observation, and calibration report when available.
+        No mutations, no scheduler ticks, no runner traffic.
+        """
+        if runner_id:
+            runners = [self.registry.get_runner(runner_id, require_enabled=False)]
+        else:
+            runners = self.registry.list_runners(enabled_only=True)
+
+        result = []
+        for runner in runners:
+            rid = runner["runner_id"]
+            profile_id = runner.get("canary_profile")
+
+            entry: dict[str, Any] = {
+                "runner_id": rid,
+                "display_name": runner.get("display_name"),
+                "platform": runner.get("platform"),
+                "enabled": runner.get("enabled", False),
+                "canary_profile": profile_id,
+            }
+
+            if not profile_id:
+                entry["profile"] = None
+                entry["schedule"] = None
+                entry["series"] = None
+                entry["latest_observation"] = None
+                entry["calibration_report"] = None
+                entry["semantics"] = "no-profile"
+                result.append(entry)
+                continue
+
+            # Resolve profile metadata
+            profile = self._canary_profiles.get(profile_id) if self._canary_profiles is not None else None
+            if profile is None:
+                entry["profile"] = {"profile_id": profile_id, "status": "unknown"}
+                entry["schedule"] = None
+                entry["series"] = None
+                entry["latest_observation"] = None
+                entry["calibration_report"] = None
+                entry["semantics"] = "unknown-profile"
+                result.append(entry)
+                continue
+
+            entry["profile"] = {
+                "profile_id": profile.profile_id,
+                "profile_version": profile.profile_version,
+                "description": profile.data.get("description"),
+                "source": profile.source,
+                "pinned_commit": profile.pinned_commit,
+                "status": "active",
+            }
+
+            # Recent schedule entries (bounded)
+            schedule_entries = self._canary_schedule_entries(rid, profile.profile_id)
+            entry["schedule"] = schedule_entries
+
+            # Drift series summary
+            series = self.drift_analyzer.get_series_summary(
+                rid,
+                profile.profile_id,
+                profile.profile_version,
+            )
+            entry["series"] = series
+
+            # Latest accepted observation (bounded to 1)
+            latest = series.get("latest_observation")
+            if latest is not None:
+                # Clean up sqlite Row artifacts -- ensure plain dict
+                obs = dict(latest)
+                # Parse environment_json back for display
+                env_json = obs.pop("environment_json", None)
+                obs["environment"] = json.loads(env_json) if env_json else None
+                entry["latest_observation"] = obs
+            else:
+                entry["latest_observation"] = None
+
+            # Calibration report
+            cal_report = self.drift_analyzer.get_calibration_report(
+                rid,
+                profile.profile_id,
+                profile.profile_version,
+            )
+            if cal_report is not None:
+                # Return the structured report, not the raw row
+                entry["calibration_report"] = cal_report.get("report")
+            else:
+                entry["calibration_report"] = None
+
+            # Determine human-readable semantics
+            phase = series.get("phase", "no-data")
+            if phase == "no-data":
+                entry["semantics"] = "observation-only"
+            elif phase == "observation":
+                entry["semantics"] = "observation-only"
+            elif phase == "calibrating":
+                entry["semantics"] = "calibrating"
+            elif phase == "ready":
+                if cal_report and cal_report.get("report", {}).get("status") == "ready-for-review":
+                    entry["semantics"] = "ready-for-review"
+                else:
+                    entry["semantics"] = "non-actionable"
+            else:
+                entry["semantics"] = "non-actionable"
+
+            result.append(entry)
+
+        return {"generated_at": utc_text(), "runners": result}
+
+    def _canary_schedule_entries(self, runner_id: str, profile_id: str, *, limit: int = 7) -> list[dict[str, Any]]:
+        """Return recent canary_schedule rows with task state annotation."""
+        with self.database.read() as conn:
+            rows = conn.execute(
+                "SELECT cs.runner_id, cs.profile_id, cs.utc_date, cs.state, "
+                "cs.task_id, cs.created_at, cs.updated_at, "
+                "t.state AS task_state "
+                "FROM canary_schedule cs "
+                "LEFT JOIN tasks t ON cs.task_id = t.task_id "
+                "WHERE cs.runner_id = ? AND cs.profile_id = ? "
+                "ORDER BY cs.utc_date DESC LIMIT ?",
+                (runner_id, profile_id, limit),
+            ).fetchall()
+        entries = []
+        for row in rows:
+            entries.append(
+                {
+                    "utc_date": row["utc_date"],
+                    "state": row["state"],
+                    "task_id": row["task_id"],
+                    "task_state": row["task_state"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return entries
+
     def fleet_status(self, runner_id: Optional[str] = None) -> list[dict[str, Any]]:
         runners = (
             [self.registry.get_runner(runner_id, require_enabled=False)] if runner_id else self.registry.list_runners()

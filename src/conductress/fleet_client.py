@@ -294,3 +294,9 @@ class FleetClient:
             )
             or {}
         )
+
+    def canary_status(self) -> dict[str, Any]:
+        return self._request("GET", "canary/status") or {}
+
+    def canary_status_runner(self, runner_id: str) -> dict[str, Any]:
+        return self._request("GET", f"canary/status/{runner_id}") or {}

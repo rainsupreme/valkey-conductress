@@ -44,6 +44,7 @@ python -m src <subcommand>
 | `queue`    | Manage local or remotely routed benchmark tasks |
 | `fleet`    | Discover runners and inspect fleet status |
 | `remote`   | Inspect or cancel tasks in the control-service queue |
+| `canary`   | Show canary drift monitoring status |
 | `compare`  | Run statistical comparison between two specifiers |
 | `runner-info` | Show stable runner identity and environment (`--json` for automation) |
 | `status`   | Show runner and task status (non-blocking) |

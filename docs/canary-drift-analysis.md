@@ -182,3 +182,127 @@ Schema v3 adds `canary_observations` and `canary_calibration_reports` tables.
 The `canary_observations` table includes a partial unique index enforcing at
 most one accepted observation per `(runner, profile, version, date)`.
 Migration is forward-compatible and idempotent (safe to run multiple times).
+
+## Operator API (PR3)
+
+Authenticated read-only endpoints for canary status. Operator token required.
+Not exposed on the public dashboard endpoint.
+
+### GET /api/v1/canary/status
+
+Fleet-wide canary status for all enabled runners.
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-30T21:00:00Z",
+  "runners": [
+    {
+      "runner_id": "armbench",
+      "display_name": "Graviton 3",
+      "platform": "arm64/c7g.metal/graviton3",
+      "enabled": true,
+      "canary_profile": "throughput-get-v1",
+      "profile": {
+        "profile_id": "throughput-get-v1",
+        "profile_version": 1,
+        "description": "Daily GET throughput canary",
+        "source": "valkey",
+        "pinned_commit": "fcd8bc3e...",
+        "status": "active"
+      },
+      "schedule": [
+        {"utc_date": "2026-08-30", "state": "created", "task_id": "...", "task_state": "completed"}
+      ],
+      "series": {
+        "phase": "observation",
+        "progress": "5/14",
+        "accepted_count": 5,
+        "rejected_count": 0
+      },
+      "latest_observation": {
+        "utc_date": "2026-08-30",
+        "score": 167000.0,
+        "ref_median": 166500.0,
+        "ref_mad": 300.0,
+        "delta_pct": 0.5,
+        "candidate_signal": "within",
+        "actionable": 0
+      },
+      "calibration_report": null,
+      "semantics": "observation-only"
+    }
+  ]
+}
+```
+
+### GET /api/v1/canary/status/{runner_id}
+
+Detailed canary status for one runner. Returns 404 for unknown runners.
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "...",
+  "runner": { ... }
+}
+```
+
+### Semantics field
+
+| Value | Meaning |
+|---|---|
+| `no-profile` | Runner has no canary profile configured |
+| `unknown-profile` | Profile ID in manifest not found in registry |
+| `observation-only` | Series in observation/no-data phase |
+| `calibrating` | Series collecting calibration samples |
+| `ready-for-review` | Calibration report generated, awaiting human review |
+| `non-actionable` | Ready phase, no review-pending report |
+
+### No mutations
+
+These endpoints perform no writes: no scheduler ticks, no task creation,
+no observation ingestion. They are purely read-only aggregations.
+
+## CLI (PR3)
+
+### conductress canary status
+
+Show canary drift monitoring status for all enabled runners.
+
+```bash
+conductress canary status [--runner ID] [--json]
+```
+
+**Fleet summary (default):**
+
+```
+RUNNER         PROFILE                  PHASE            PROGRESS       SEMANTICS            LATEST
+armbench       throughput-get-v1        observation      5/14           observation-only     2026-08-30 167,000 rps +0.50%
+g4bench        throughput-get-v1        calibrating      20/28          calibrating          2026-08-30 209,000 rps -0.12%
+```
+
+**Detailed runner (--runner):**
+
+Shows profile, series, schedule history, latest observation with
+median/MAD/delta/thresholds/signal, environment provenance,
+and calibration report when available.
+
+**JSON output (--json):**
+
+Preserves all API fields exactly. Wraps in the standard CLI envelope:
+
+```json
+{"schema_version": 1, "command": "canary.status", "data": { ... }}
+```
+
+### Observation semantics
+
+- Phases: `no-data` -> `observation` (1-14) -> `calibrating` (15-27) -> `ready` (28+)
+- `actionable` is always false -- no automated alerts
+- Candidate signals are informational only
+- Calibration reports require human review before enabling thresholds
