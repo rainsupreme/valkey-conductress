@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_TMP, PROJECT_ROOT
+from .duration_estimator import estimate_task_duration_seconds, load_duration_calibration
 from .file_protocol import FileProtocol
 from .runner_identity import get_runner_info
 from .status import _find_runner_pid, _format_elapsed
@@ -28,9 +29,6 @@ STATUS_EXPORT_FILE = STATUS_EXPORT_DIR / "status.json"
 
 # How many recent results to include
 RECENT_RESULTS_COUNT = 5
-
-# Average task duration for ETA estimation (seconds). Updated dynamically from recent results.
-DEFAULT_TASK_DURATION = 150  # 2.5 min (build + benchmark on AMD)
 
 
 def build_status(
@@ -54,10 +52,7 @@ def build_status(
         "disk": _get_disk_info(),
     }
 
-    avg_duration = _estimate_task_duration()
-    queue_depth = status["queue"]["depth"]
-    current_remaining = _estimate_current_remaining(status["current_task"])
-    status["eta_minutes"] = round((current_remaining + queue_depth * avg_duration) / 60, 1)
+    status["eta_minutes"] = round(status["queue"]["expected_duration_sec"] / 60, 1)
     if fleet_control is not None:
         status["fleet_control"] = fleet_control
     if boundary is not None:
@@ -190,11 +185,21 @@ def _get_current_task() -> Optional[dict[str, Any]]:
 def _get_queue_info() -> dict[str, Any]:
     queue = TaskQueue()
     tasks = queue.get_all_tasks()
+    calibration = load_duration_calibration(CONDUCTRESS_OUTPUT)
+    expected = {task.task_id: estimate_task_duration_seconds(task, calibration) for task in tasks}
     return {
         "depth": len(tasks),
+        "expected_duration_sec": sum(expected.values()),
         "tasks": [
-            {"id": t.task_id, "type": t.task_type, "note": t.note or "", "source": t.source, "specifier": t.specifier}
-            for t in tasks[:10]
+            {
+                "id": task.task_id,
+                "type": task.task_type,
+                "note": task.note or "",
+                "source": task.source,
+                "specifier": task.specifier,
+                "expected_duration_sec": expected[task.task_id],
+            }
+            for task in tasks[:10]
         ],
     }
 
@@ -221,27 +226,10 @@ def _get_recent_results() -> list[dict[str, Any]]:
                     "specifier": entry.get("specifier", ""),
                     "note": entry.get("note", ""),
                     "completed": entry.get("end_time", ""),
+                    "expected_duration_sec": entry.get("expected_duration_sec"),
+                    "observed_duration_sec": entry.get("observed_duration_sec"),
                 }
             )
         except (json.JSONDecodeError, KeyError):
             continue
     return results
-
-
-def _estimate_task_duration() -> float:
-    """Estimate average task duration from recent results."""
-    # Simple heuristic: use DEFAULT_TASK_DURATION
-    # Could be improved by reading timestamps from output.jsonl
-    return DEFAULT_TASK_DURATION
-
-
-def _estimate_current_remaining(current_task: Optional[dict]) -> float:
-    """Estimate seconds remaining for current task."""
-    if not current_task:
-        return 0
-    progress = current_task.get("progress_pct", 0)
-    elapsed = current_task.get("elapsed_sec", 0)
-    if progress > 5 and elapsed > 0:
-        total_estimated = elapsed / (progress / 100)
-        return max(0, total_estimated - elapsed)
-    return DEFAULT_TASK_DURATION  # fallback

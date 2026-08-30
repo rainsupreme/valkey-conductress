@@ -13,7 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP, get_all_features
+from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_QUEUE, CONDUCTRESS_RESULTS, CONDUCTRESS_TMP, get_all_features
+from .duration_estimator import estimate_task_duration_seconds, task_family
 from .runner_identity import get_result_provenance
 from .utility import datetime_to_task_id
 
@@ -160,6 +161,17 @@ class FileProtocol:
             data = asdict(results)
             data["task_id"] = self.task_id
             data["end_time"] = datetime_to_task_id(results.end_time)
+            status = self.read_status()
+            if status and status.start_time:
+                data["observed_duration_sec"] = round(max(0.0, time.time() - status.start_time), 1)
+            task_path = CONDUCTRESS_QUEUE / f"task_{self.task_id}.json"
+            try:
+                task_document = json.loads(task_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                task_document = None
+            if task_document:
+                data["duration_family"] = task_family(task_document.get("task_type", ""))
+                data["expected_duration_sec"] = estimate_task_duration_seconds(task_document)
             data.update(get_result_provenance())
             f.write(json.dumps(data))
             f.write("\n")

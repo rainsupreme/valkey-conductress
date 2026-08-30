@@ -4,6 +4,7 @@ import json
 import time
 from datetime import datetime
 from threading import Thread
+from unittest.mock import patch
 
 import pytest
 
@@ -23,10 +24,13 @@ class TestFileProtocol:
         # Store originals
         original_results = conductress.file_protocol.CONDUCTRESS_RESULTS
         original_output = conductress.file_protocol.CONDUCTRESS_OUTPUT
+        original_queue = conductress.file_protocol.CONDUCTRESS_QUEUE
 
         # Apply mocks
         conductress.file_protocol.CONDUCTRESS_RESULTS = results_dir
         conductress.file_protocol.CONDUCTRESS_OUTPUT = output_file
+        conductress.file_protocol.CONDUCTRESS_QUEUE = tmp_path / "queue"
+        conductress.file_protocol.CONDUCTRESS_QUEUE.mkdir()
 
         # Make tmp_path available to test methods
         self.tmp_path = tmp_path
@@ -36,6 +40,7 @@ class TestFileProtocol:
         # Restore originals
         conductress.file_protocol.CONDUCTRESS_RESULTS = original_results
         conductress.file_protocol.CONDUCTRESS_OUTPUT = original_output
+        conductress.file_protocol.CONDUCTRESS_QUEUE = original_queue
 
     def test_status_write_read(self):
         """Test status file operations."""
@@ -88,7 +93,21 @@ class TestFileProtocol:
             note="test note",
         )
 
-        protocol.write_results(results)
+        status = BenchmarkStatus(steps_total=35, task_type="perf-set", start_time=1000.0)
+        protocol.write_status(status)
+        task_document = {
+            "task_type": "PerfTaskData",
+            "warmup": 5,
+            "duration": 30,
+            "repetitions": 1,
+            "max_reps": 1,
+            "target_cv": 0,
+            "perf_stat_enabled": False,
+        }
+        task_path = conductress.file_protocol.CONDUCTRESS_QUEUE / "task_test_task.json"
+        task_path.write_text(json.dumps(task_document), encoding="utf-8")
+        with patch("conductress.file_protocol.time.time", return_value=1123.0):
+            protocol.write_results(results)
 
         # Verify legacy output was written
         output_file = conductress.file_protocol.CONDUCTRESS_OUTPUT
@@ -104,6 +123,9 @@ class TestFileProtocol:
             assert data["environment"]["host_fingerprint"]
             assert data["note"] == "test note"
             assert data["make_args"] == "-O2 -g"
+            assert data["duration_family"] == "perf"
+            assert data["expected_duration_sec"] == 113
+            assert data["observed_duration_sec"] == 123.0
 
     def test_multiple_readers(self):
         """Test multiple readers can access metrics simultaneously."""

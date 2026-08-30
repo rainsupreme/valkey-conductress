@@ -109,12 +109,16 @@ def test_live_claim_import_accept_and_complete(tmp_path):
         "score": 123,
         "commit_hash": "abc123",
         "end_time": "2026.08.29_00.01.00.000000",
+        "expected_duration_sec": 300,
+        "observed_duration_sec": 275.5,
     }
     mailbox.stage_success(task, result=result)
     queue.finish_task(task)
     assert mailbox.flush_pending_outcome() is True
     assert mailbox.journal.active is None
     assert client.outcomes[0][1]["state"] == "completed"
+    assert client.outcomes[0][1]["result"]["expected_duration_sec"] == 300
+    assert client.outcomes[0][1]["result"]["observed_duration_sec"] == 275.5
     assert mailbox.status()["imported_count_total"] == 1
 
 

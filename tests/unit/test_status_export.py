@@ -7,42 +7,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conductress.status_export import (
-    DEFAULT_TASK_DURATION,
-    _estimate_current_remaining,
     _get_current_task,
     _get_queue_info,
     _get_recent_results,
     _publish_status,
     export_status,
 )
-
-
-class TestEstimateCurrentRemaining:
-    """Pure math — no mocking needed."""
-
-    def test_no_task_returns_zero(self):
-        assert _estimate_current_remaining(None) == 0
-
-    def test_low_progress_returns_default(self):
-        # Progress < 5% — not enough data to extrapolate
-        task = {"progress_pct": 3.0, "elapsed_sec": 10}
-        assert _estimate_current_remaining(task) == DEFAULT_TASK_DURATION
-
-    def test_extrapolates_from_progress(self):
-        # 50% done in 60s → 60s remaining
-        task = {"progress_pct": 50.0, "elapsed_sec": 60}
-        result = _estimate_current_remaining(task)
-        assert abs(result - 60.0) < 1.0
-
-    def test_nearly_complete_returns_small_value(self):
-        # 90% done in 90s → ~10s remaining
-        task = {"progress_pct": 90.0, "elapsed_sec": 90}
-        result = _estimate_current_remaining(task)
-        assert result < 15.0
-
-    def test_zero_elapsed_returns_default(self):
-        task = {"progress_pct": 50.0, "elapsed_sec": 0}
-        assert _estimate_current_remaining(task) == DEFAULT_TASK_DURATION
 
 
 class TestGetRecentResults:
@@ -72,6 +42,8 @@ class TestGetRecentResults:
                 "specifier": "unstable",
                 "note": "",
                 "end_time": "2026-05-23",
+                "expected_duration_sec": 300,
+                "observed_duration_sec": 280.5,
             },
         ]
         output.write_text("\n".join(json.dumps(e) for e in entries))
@@ -84,6 +56,8 @@ class TestGetRecentResults:
         assert results[0]["task_id"] == "t2"
         assert results[0]["score"] == 1960000
         assert results[0]["commit"] == "def789ab"  # truncated to 8 chars
+        assert results[0]["expected_duration_sec"] == 300
+        assert results[0]["observed_duration_sec"] == 280.5
 
     def test_skips_malformed_lines(self, tmp_path):
         output = tmp_path / "output.jsonl"
@@ -137,6 +111,7 @@ class TestGetQueueInfo:
             result = _get_queue_info()
 
         assert result["depth"] == 0
+        assert result["expected_duration_sec"] == 0
         assert result["tasks"] == []
 
     def test_queue_with_tasks(self):
@@ -147,12 +122,18 @@ class TestGetQueueInfo:
         task.source = "valkey"
         task.specifier = "main"
 
-        with patch("conductress.status_export.TaskQueue") as MockQueue:
+        with (
+            patch("conductress.status_export.TaskQueue") as MockQueue,
+            patch("conductress.status_export.load_duration_calibration", return_value={}),
+            patch("conductress.status_export.estimate_task_duration_seconds", return_value=420),
+        ):
             MockQueue.return_value.get_all_tasks.return_value = [task]
             result = _get_queue_info()
 
         assert result["depth"] == 1
+        assert result["expected_duration_sec"] == 420
         assert result["tasks"][0]["id"] == "t1"
+        assert result["tasks"][0]["expected_duration_sec"] == 420
 
 
 class TestExportStatus:
@@ -172,7 +153,10 @@ class TestExportStatus:
                 return_value={"pid": None, "state": "stopped", "uptime_hours": None},
             ),
             patch("conductress.status_export._get_current_task", return_value=None),
-            patch("conductress.status_export._get_queue_info", return_value={"depth": 0, "tasks": []}),
+            patch(
+                "conductress.status_export._get_queue_info",
+                return_value={"depth": 0, "expected_duration_sec": 0, "tasks": []},
+            ),
             patch("conductress.status_export._get_recent_results", return_value=[]),
         ):
             path = export_status()
@@ -244,7 +228,10 @@ class TestFleetBoundaryStatus:
                 return_value={"pid": 1, "state": "running", "uptime_hours": 1},
             ),
             patch("conductress.status_export._get_current_task", return_value=None),
-            patch("conductress.status_export._get_queue_info", return_value={"depth": 0, "tasks": []}),
+            patch(
+                "conductress.status_export._get_queue_info",
+                return_value={"depth": 0, "expected_duration_sec": 0, "tasks": []},
+            ),
             patch("conductress.status_export._get_recent_results", return_value=[]),
             patch("conductress.status_export._get_disk_info", return_value={}),
         ):
