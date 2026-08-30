@@ -149,6 +149,8 @@ def create_app(
     app.router.add_get("/api/v1/tasks", _list_tasks)
     app.router.add_get("/api/v1/tasks/{task_id}", _get_task)
     app.router.add_delete("/api/v1/tasks/{task_id}", _cancel_task)
+    app.router.add_get("/api/v1/canary/status", _canary_status)
+    app.router.add_get("/api/v1/canary/status/{runner_id}", _canary_status_runner)
     app.router.add_get("/api/v1/fleet", _fleet)
     app.router.add_get("/api/v1/fleet/{runner_id}", _fleet_runner)
     app.router.add_put("/api/v1/runners/{runner_id}/status", _push_status)
@@ -157,6 +159,21 @@ def create_app(
     app.router.add_post("/api/v1/tasks/{task_id}/complete", _complete_task)
     app.router.add_post("/api/v1/tasks/{task_id}/fail", _fail_task)
     return app
+
+
+async def _canary_status(request: web.Request) -> web.Response:
+    _require_operator(request)
+    return _response(**request.app[SERVICE_KEY].canary_status())
+
+
+async def _canary_status_runner(request: web.Request) -> web.Response:
+    _require_operator(request)
+    runner_id = request.match_info["runner_id"]
+    status = request.app[SERVICE_KEY].canary_status(runner_id)
+    # Service raises NotFoundError for unknown runners; single-runner
+    # response always has exactly one entry.
+    runner = status["runners"][0]
+    return _response(generated_at=status["generated_at"], runner=runner)
 
 
 def _public_dashboard_headers(response: web.Response) -> web.Response:

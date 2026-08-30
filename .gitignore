@@ -18,7 +18,7 @@ __pycache__/
 .mypy_cache/
 .hypothesis/
 .coverage
-.kiro/specs/
+.kiro/
 *.egg-info/
 dist/
 build/

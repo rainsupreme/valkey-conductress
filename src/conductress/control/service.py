@@ -574,6 +574,186 @@ class ControlService:
             )
         self.database.append_audit_jsonl(audit)
 
+    # ------------------------------------------------------------------
+    # Canary status (read-only, no mutations)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _project_latest_observation(raw: dict[str, Any]) -> dict[str, Any]:
+        """Project a raw DB observation row into a stable API shape.
+
+        Only the explicitly listed fields are exposed — no raw DB columns leak.
+        ``environment_json`` is parsed with a corrupt-guard (log + None + parse
+        error flag).  ``actionable`` is always cast to ``bool``.
+        """
+        # Parse environment safely
+        env_json = raw.get("environment_json")
+        environment = None
+        env_parse_error = False
+        if env_json:
+            try:
+                environment = json.loads(env_json)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("corrupt environment_json for task %s", raw.get("task_id"))
+                env_parse_error = True
+
+        return {
+            "utc_date": raw.get("utc_date"),
+            "task_id": raw.get("task_id"),
+            "score": raw.get("score"),
+            "completed_at": raw.get("completed_at"),
+            "phase": raw.get("phase"),
+            "ref_median": raw.get("ref_median"),
+            "ref_mad": raw.get("ref_mad"),
+            "delta_pct": raw.get("delta_pct"),
+            "series_ordinal": raw.get("series_ordinal"),
+            "ref_sample_count": raw.get("ref_sample_count"),
+            "candidate_warning_pct": raw.get("candidate_warning_pct"),
+            "candidate_alarm_pct": raw.get("candidate_alarm_pct"),
+            "candidate_signal": raw.get("candidate_signal"),
+            "actionable": bool(raw.get("actionable")),
+            "window_start": raw.get("window_start"),
+            "window_end": raw.get("window_end"),
+            "environment": environment,
+            "environment_parse_error": env_parse_error,
+            "env_change_annotation": raw.get("env_change_annotation"),
+            "provenance_schema_version": raw.get("provenance_schema_version"),
+        }
+
+    def canary_status(self, runner_id: Optional[str] = None) -> dict[str, Any]:
+        """Return read-only canary status for all enabled runners (or one).
+
+        Composes manifest/profile info, schedule state, drift series summary,
+        latest accepted observation, and calibration report when available.
+        No mutations, no scheduler ticks, no runner traffic.
+        """
+        if runner_id:
+            runners = [self.registry.get_runner(runner_id, require_enabled=False)]
+        else:
+            runners = self.registry.list_runners(enabled_only=True)
+
+        result = []
+        for runner in runners:
+            rid = runner["runner_id"]
+            profile_id = runner.get("canary_profile")
+
+            entry: dict[str, Any] = {
+                "runner_id": rid,
+                "display_name": runner.get("display_name"),
+                "platform": runner.get("platform"),
+                "enabled": runner.get("enabled", False),
+                "canary_profile": profile_id,
+            }
+
+            if not profile_id:
+                entry["profile"] = None
+                entry["schedule"] = None
+                entry["series"] = None
+                entry["latest_observation"] = None
+                entry["calibration_report"] = None
+                entry["semantics"] = "no-profile"
+                result.append(entry)
+                continue
+
+            # Resolve profile metadata
+            profile = self._canary_profiles.get(profile_id) if self._canary_profiles is not None else None
+            if profile is None:
+                entry["profile"] = {"profile_id": profile_id, "status": "unknown"}
+                entry["schedule"] = None
+                entry["series"] = None
+                entry["latest_observation"] = None
+                entry["calibration_report"] = None
+                entry["semantics"] = "unknown-profile"
+                result.append(entry)
+                continue
+
+            entry["profile"] = {
+                "profile_id": profile.profile_id,
+                "profile_version": profile.profile_version,
+                "description": profile.data.get("description"),
+                "source": profile.source,
+                "pinned_commit": profile.pinned_commit,
+                "status": "active",
+            }
+
+            # Recent schedule entries (bounded)
+            schedule_entries = self._canary_schedule_entries(rid, profile.profile_id)
+            entry["schedule"] = schedule_entries
+
+            # Drift series summary
+            series = self.drift_analyzer.get_series_summary(
+                rid,
+                profile.profile_id,
+                profile.profile_version,
+            )
+            entry["series"] = series
+
+            # Latest accepted observation — stable projection, no raw DB columns
+            raw_latest = series.get("latest_observation")
+            if raw_latest is not None:
+                entry["latest_observation"] = self._project_latest_observation(raw_latest)
+            else:
+                entry["latest_observation"] = None
+
+            # Calibration report
+            cal_report = self.drift_analyzer.get_calibration_report(
+                rid,
+                profile.profile_id,
+                profile.profile_version,
+            )
+            if cal_report is not None:
+                # Return the structured report, not the raw row
+                entry["calibration_report"] = cal_report.get("report")
+            else:
+                entry["calibration_report"] = None
+
+            # Determine human-readable semantics
+            phase = series.get("phase", "no-data")
+            if phase == "no-data":
+                entry["semantics"] = "observation-only"
+            elif phase == "observation":
+                entry["semantics"] = "observation-only"
+            elif phase == "calibrating":
+                entry["semantics"] = "calibrating"
+            elif phase == "ready":
+                if cal_report and cal_report.get("report", {}).get("status") == "ready-for-review":
+                    entry["semantics"] = "ready-for-review"
+                else:
+                    entry["semantics"] = "non-actionable"
+            else:
+                entry["semantics"] = "non-actionable"
+
+            result.append(entry)
+
+        return {"generated_at": utc_text(), "runners": result}
+
+    def _canary_schedule_entries(self, runner_id: str, profile_id: str, *, limit: int = 7) -> list[dict[str, Any]]:
+        """Return recent canary_schedule rows with task state annotation."""
+        with self.database.read() as conn:
+            rows = conn.execute(
+                "SELECT cs.runner_id, cs.profile_id, cs.utc_date, cs.state, "
+                "cs.task_id, cs.created_at, cs.updated_at, "
+                "t.state AS task_state "
+                "FROM canary_schedule cs "
+                "LEFT JOIN tasks t ON cs.task_id = t.task_id "
+                "WHERE cs.runner_id = ? AND cs.profile_id = ? "
+                "ORDER BY cs.utc_date DESC LIMIT ?",
+                (runner_id, profile_id, limit),
+            ).fetchall()
+        entries = []
+        for row in rows:
+            entries.append(
+                {
+                    "utc_date": row["utc_date"],
+                    "state": row["state"],
+                    "task_id": row["task_id"],
+                    "task_state": row["task_state"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return entries
+
     def fleet_status(self, runner_id: Optional[str] = None) -> list[dict[str, Any]]:
         runners = (
             [self.registry.get_runner(runner_id, require_enabled=False)] if runner_id else self.registry.list_runners()
