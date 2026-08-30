@@ -69,12 +69,26 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
 
 
 def load_duration_calibration(path: Path, *, max_records: int = 200) -> dict[str, float]:
-    """Return median observed/expected factors by task family from recent unique tasks."""
+    """Return median observed/expected factors by task family from recent unique tasks.
+
+    Reads the entire file. Prefer :func:`load_duration_calibration_from_lines`
+    with a pre-read tail for hot paths that also need recent results.
+    """
     if not path.exists():
         return {}
-    ratios: dict[str, list[float]] = defaultdict(list)
-    seen = set()
     lines = path.read_text(encoding="utf-8").splitlines()
+    return load_duration_calibration_from_lines(lines, max_records=max_records)
+
+
+def load_duration_calibration_from_lines(lines: list[str], *, max_records: int = 200) -> dict[str, float]:
+    """Compute calibration factors from already-loaded JSONL lines.
+
+    Same semantics as :func:`load_duration_calibration` but operates on
+    an in-memory line list so the caller can share a single tail read
+    between calibration and recent-results extraction.
+    """
+    ratios: dict[str, list[float]] = defaultdict(list)
+    seen: set[str] = set()
     for line in reversed(lines[-max_records * 2 :]):
         try:
             record = json.loads(line)

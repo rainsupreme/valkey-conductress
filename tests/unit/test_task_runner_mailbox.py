@@ -65,14 +65,21 @@ def test_boundary_status_is_pushed_to_control_and_static_dashboard():
         management_settle_seconds=0,
     )
     with (
-        patch("conductress.task_runner.build_status", side_effect=[{"version": 1}, {"version": 2}]) as build,
+        patch("conductress.task_runner.build_status", return_value={"version": 1}) as build,
         patch("conductress.task_runner.export_status") as export,
     ):
         runner._publish_boundary("starting", task)
 
+    # build_status called exactly once (single-build optimization)
+    build.assert_called_once()
+    # push_status gets the original build result
     mailbox.push_status.assert_called_once_with({"version": 1})
-    export.assert_called_once_with(publish_target="user@data:/var/www/data", status={"version": 2})
-    assert build.call_count == 2
+    # export_status gets the shallow copy with refreshed fleet_control
+    export_call = export.call_args
+    assert export_call.kwargs["publish_target"] == "user@data:/var/www/data"
+    export_doc = export_call.kwargs["status"]
+    assert export_doc["version"] == 1
+    assert export_doc["fleet_control"] == {"mode": "live"}
 
 
 @pytest.mark.asyncio

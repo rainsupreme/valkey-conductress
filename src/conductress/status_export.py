@@ -3,6 +3,10 @@
 Writes a machine-readable status.json containing runner state, current task,
 queue contents, and recent results. Designed to be pulled via SSH by an
 aggregator on benchdev.
+
+Performance: ``build_status`` reads output.jsonl at most **once** per call
+via a bounded tail reader (last ~400 lines) and derives both duration
+calibration and recent results from that shared snapshot.
 """
 
 import json
@@ -16,10 +20,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import CONDUCTRESS_OUTPUT, CONDUCTRESS_TMP, PROJECT_ROOT
-from .duration_estimator import estimate_task_duration_seconds, load_duration_calibration
+from .duration_estimator import estimate_task_duration_seconds, load_duration_calibration_from_lines
 from .file_protocol import FileProtocol
 from .runner_identity import get_runner_info
 from .status import _find_runner_pid, _format_elapsed
+from .tail_reader import tail_lines
 from .task_queue import TaskQueue
 
 logger = logging.getLogger(__name__)
@@ -30,13 +35,35 @@ STATUS_EXPORT_FILE = STATUS_EXPORT_DIR / "status.json"
 # How many recent results to include
 RECENT_RESULTS_COUNT = 5
 
+# Track last publish outcome so callers can implement retry logic.
+last_publish_ok: bool = True
+
+# Tail read budget: enough for calibration (max_records*2 = 400) and recent
+# results (RECENT_RESULTS_COUNT*2 = 10). A single tail_lines call satisfying
+# both avoids any whole-file I/O.
+_TAIL_BUDGET = 410
+
+
+def _read_result_snapshot() -> list[str]:
+    """One bounded tail read of output.jsonl shared by all build_status consumers."""
+    return tail_lines(CONDUCTRESS_OUTPUT, _TAIL_BUDGET)
+
 
 def build_status(
     *,
     fleet_control: Optional[dict[str, Any]] = None,
     boundary: Optional[dict[str, Any]] = None,
+    _result_snapshot: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Build a local status snapshot without performing network activity."""
+    """Build a local status snapshot without performing network activity.
+
+    When *_result_snapshot* is provided, calibration and recent results are
+    derived from those pre-read lines instead of touching the filesystem.
+    This allows callers (``_publish_boundary``) to share one tail read
+    across both build_status and export_status.
+    """
+    snapshot = _result_snapshot if _result_snapshot is not None else _read_result_snapshot()
+
     identity = get_runner_info()
     status: dict[str, Any] = {
         "schema_version": 1,
@@ -47,8 +74,8 @@ def build_status(
         "host": _get_hostname(),
         "runner": _get_runner_info(),
         "current_task": _get_current_task(),
-        "queue": _get_queue_info(),
-        "recent_results": _get_recent_results(),
+        "queue": _get_queue_info(snapshot),
+        "recent_results": _get_recent_results(snapshot),
         "disk": _get_disk_info(),
     }
 
@@ -71,19 +98,44 @@ def export_status(
     fleet_control: Optional[dict[str, Any]] = None,
     boundary: Optional[dict[str, Any]] = None,
 ) -> Path:
-    """Write and optionally publish a status snapshot."""
+    """Write and optionally publish a status snapshot.
+
+    The local write uses atomic rename to avoid serving a partial file to
+    concurrent rsync pulls.
+    """
     status = status or build_status(fleet_control=fleet_control, boundary=boundary)
     STATUS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    STATUS_EXPORT_FILE.write_text(json.dumps(status, indent=2))
+
+    # Atomic write: write to a temp file in the same directory, then rename.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=STATUS_EXPORT_DIR, prefix=".status-", suffix=".json")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(status, f, indent=2)
+        os.replace(tmp_path, STATUS_EXPORT_FILE)
+    except BaseException:
+        # Clean up temp file on any failure (including KeyboardInterrupt).
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     if publish_target:
-        _publish_status(publish_target)
+        publish_ok = _publish_status(publish_target)
+    else:
+        publish_ok = True
+
+    global last_publish_ok
+    last_publish_ok = publish_ok
 
     return STATUS_EXPORT_FILE
 
 
-def _publish_status(target: str) -> None:
-    """Publish canonical runner status and its legacy platform alias."""
+def _publish_status(target: str) -> bool:
+    """Publish canonical runner status and its legacy platform alias.
+
+    Returns True if rsync succeeds, False on failure (logged at ERROR).
+    """
     from conductress.publisher import detect_platform
     from conductress.utility import run_rsync
 
@@ -111,7 +163,7 @@ def _publish_status(target: str) -> None:
         shutil.copy2(STATUS_EXPORT_FILE, canonical)
 
         destination = target.rstrip("/") + "/"
-        run_rsync(
+        return run_rsync(
             ["rsync", "-az", "--chmod=D755,F644", "-e", ssh_cmd, f"{root}/", destination],
             destination,
             timeout=15,
@@ -182,10 +234,16 @@ def _get_current_task() -> Optional[dict[str, Any]]:
     }
 
 
-def _get_queue_info() -> dict[str, Any]:
+def _get_queue_info(snapshot: Optional[list[str]] = None) -> dict[str, Any]:
+    """Build queue info using shared snapshot lines for calibration."""
     queue = TaskQueue()
     tasks = queue.get_all_tasks()
-    calibration = load_duration_calibration(CONDUCTRESS_OUTPUT)
+    if snapshot is not None:
+        calibration = load_duration_calibration_from_lines(snapshot)
+    else:
+        from .duration_estimator import load_duration_calibration
+
+        calibration = load_duration_calibration(CONDUCTRESS_OUTPUT)
     expected = {task.task_id: estimate_task_duration_seconds(task, calibration) for task in tasks}
     return {
         "depth": len(tasks),
@@ -204,14 +262,17 @@ def _get_queue_info() -> dict[str, Any]:
     }
 
 
-def _get_recent_results() -> list[dict[str, Any]]:
-    """Read the last N results from output.jsonl."""
-    if not CONDUCTRESS_OUTPUT.exists():
-        return []
+def _get_recent_results(snapshot: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    """Read the last N results, preferring the shared snapshot."""
+    if snapshot is not None:
+        lines = snapshot
+    else:
+        if not CONDUCTRESS_OUTPUT.exists():
+            return []
+        lines = tail_lines(CONDUCTRESS_OUTPUT, RECENT_RESULTS_COUNT * 2)
 
-    lines = CONDUCTRESS_OUTPUT.read_text().strip().splitlines()
     results: list[dict[str, Any]] = []
-    for line in reversed(lines[-RECENT_RESULTS_COUNT * 2 :]):  # read extra in case of parse errors
+    for line in reversed(lines[-RECENT_RESULTS_COUNT * 2 :]):
         if len(results) >= RECENT_RESULTS_COUNT:
             break
         try:
