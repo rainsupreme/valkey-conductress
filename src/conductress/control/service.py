@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import timedelta
@@ -13,9 +14,12 @@ from jsonschema.exceptions import ValidationError
 
 from ..duration_estimator import estimate_task_duration_seconds
 from .db import ControlDatabase, parse_utc, utc_now, utc_text
+from .drift_analyzer import DriftAnalyzer
 from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
+
+logger = logging.getLogger(__name__)
 
 PUBLIC_DASHBOARD_TASK_LIMIT = 50
 
@@ -32,6 +36,7 @@ class ControlService:
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")
+        self.drift_analyzer = DriftAnalyzer(database)
 
     @staticmethod
     def _validate(validator: Draft202012Validator, document: dict[str, Any], kind: str) -> None:
@@ -396,6 +401,7 @@ class ControlService:
         terminal = outcome["state"]
         canonical = self._canonical(outcome)
         audit = None
+        canary_metadata = None
         with self.database.transaction(immediate=True) as connection:
             row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
@@ -421,10 +427,73 @@ class ControlService:
                 old_state=row["state"],
                 new_state=terminal,
             )
+            # Capture canary metadata for post-transaction ingestion
+            if row["task_class"] == "canary" and terminal == "completed" and row["canary_id"]:
+                canary_metadata = {
+                    "canary_id": row["canary_id"],
+                    "envelope_json": row["envelope_json"],
+                }
             updated = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         if audit:
             self.database.append_audit_jsonl(audit)
+        # Ingest canary observation outside the main transaction
+        if canary_metadata:
+            self._ingest_canary_observation(
+                task_id, runner_id, outcome, canary_metadata
+            )
         return self._task_from_row(updated), True
+
+    def _ingest_canary_observation(
+        self,
+        task_id: str,
+        runner_id: str,
+        outcome: dict[str, Any],
+        canary_metadata: dict[str, Any],
+    ) -> None:
+        """Best-effort canary drift analysis ingestion after outcome recording.
+
+        Failures here are logged but do not affect the task completion path.
+        """
+        try:
+            canary_id = canary_metadata["canary_id"]
+            # canary_id format: "profile_id:utc_date"
+            parts = canary_id.rsplit(":", 1)
+            if len(parts) != 2:
+                logger.warning("malformed canary_id %r on task %s", canary_id, task_id)
+                return
+            profile_id, utc_date = parts
+
+            # Extract profile_version from envelope
+            envelope = json.loads(canary_metadata["envelope_json"])
+            note = envelope.get("task", {}).get("note", "")
+            # Note format: "canary {profile_id} v{version} ({date})"
+            profile_version = 1  # default
+            if " v" in note:
+                try:
+                    version_str = note.split(" v")[1].split(" ")[0].split(")")[0]
+                    profile_version = int(version_str)
+                except (IndexError, ValueError):
+                    pass
+
+            # Extract environment fingerprint from outcome
+            result = outcome.get("result") or {}
+            environment = result.get("environment")
+
+            self.drift_analyzer.ingest_outcome(
+                task_id=task_id,
+                runner_id=runner_id,
+                outcome=outcome,
+                profile_id=profile_id,
+                profile_version=profile_version,
+                utc_date=utc_date,
+                environment=environment,
+            )
+        except Exception:
+            logger.warning(
+                "canary drift analysis ingestion failed for task %s",
+                task_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _verify_task_runner(row: sqlite3.Row, runner_id: str) -> None:

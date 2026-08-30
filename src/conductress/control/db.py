@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -79,6 +79,57 @@ CREATE TABLE IF NOT EXISTS canary_schedule (
 """
 
 
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS canary_observations (
+    runner_id        TEXT    NOT NULL,
+    profile_id       TEXT    NOT NULL,
+    profile_version  INTEGER NOT NULL,
+    utc_date         TEXT    NOT NULL,
+    task_id          TEXT    NOT NULL,
+    score            REAL,
+    completed_at     TEXT,
+    phase            TEXT    NOT NULL CHECK (
+        phase IN ('observation', 'calibrating', 'ready')
+    ),
+    accepted         INTEGER NOT NULL DEFAULT 1 CHECK (accepted IN (0, 1)),
+    rejection_reason TEXT,
+    ref_median       REAL,
+    ref_mad          REAL,
+    delta_pct        REAL,
+    sample_count     INTEGER,
+    window_start     TEXT,
+    window_end       TEXT,
+    environment_json TEXT,
+    created_at       TEXT    NOT NULL,
+    PRIMARY KEY (runner_id, profile_id, profile_version, utc_date, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_canary_obs_series
+    ON canary_observations(runner_id, profile_id, profile_version, utc_date);
+CREATE INDEX IF NOT EXISTS idx_canary_obs_accepted
+    ON canary_observations(runner_id, profile_id, profile_version, accepted, utc_date);
+
+CREATE TABLE IF NOT EXISTS canary_calibration_reports (
+    report_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    runner_id             TEXT    NOT NULL,
+    profile_id            TEXT    NOT NULL,
+    profile_version       INTEGER NOT NULL,
+    sample_count          INTEGER NOT NULL,
+    date_range_start      TEXT    NOT NULL,
+    date_range_end        TEXT    NOT NULL,
+    median_score          REAL    NOT NULL,
+    mad                   REAL    NOT NULL,
+    cv_pct                REAL    NOT NULL,
+    mad_based_threshold_pct REAL  NOT NULL,
+    status                TEXT    NOT NULL CHECK (
+        status IN ('ready-for-review', 'accepted', 'rejected')
+    ),
+    report_json           TEXT    NOT NULL,
+    created_at            TEXT    NOT NULL,
+    UNIQUE (runner_id, profile_id, profile_version)
+);
+"""
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -129,6 +180,12 @@ class ControlDatabase:
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (2, utc_text()),
+                )
+            if version < 3:
+                connection.executescript(_SCHEMA_V3)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (3, utc_text()),
                 )
             connection.commit()
         except Exception:
