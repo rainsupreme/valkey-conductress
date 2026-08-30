@@ -82,7 +82,7 @@ Public read-only route:
 GET    /api/v1/public/dashboard
 ```
 
-This route is intentionally unauthenticated for the public status page. It returns only nonterminal mailbox task summaries: runner ID, task ID, state, class, priority, submitted time, type, source, specifier, note, and expected duration. It never returns submitter identity, full envelopes, claim tokens, leases, outcomes, credentials, or mutation controls. Disabled runners are omitted. Responses allow cross-origin `GET`/`OPTIONS` reads and permit five seconds of shared caching. The reverse proxy MUST rate-limit this route; the provided `/api/v1/` rate limit applies to it.
+This route is intentionally unauthenticated for the public status page. It returns only nonterminal mailbox task summaries: runner ID, task ID, state, class, priority, submitted time, type, source, specifier, note, and expected duration. Each runner always includes the authoritative `total_count`, plus `returned_count`, `truncated`, and `expected_duration_complete`; task details remain capped at 50 per runner. It never returns submitter identity, full envelopes, claim tokens, leases, outcomes, credentials, or mutation controls. Disabled runners are omitted. Responses allow cross-origin `GET`/`OPTIONS` reads and permit five seconds of shared caching. The reverse proxy MUST rate-limit this route; the provided `/api/v1/` rate limit applies to it.
 
 Operator routes:
 

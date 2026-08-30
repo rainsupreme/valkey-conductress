@@ -17,6 +17,8 @@ from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
 
+PUBLIC_DASHBOARD_TASK_LIMIT = 50
+
 
 def _validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(load_schema(name), format_checker=FormatChecker())
@@ -178,11 +180,15 @@ class ControlService:
         runners = []
         with self.database.read() as connection:
             for runner in self.registry.list_runners(enabled_only=True):
+                total_count = connection.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE runner_id=? " "AND state IN ('queued', 'claimed', 'accepted')",
+                    (runner["runner_id"],),
+                ).fetchone()[0]
                 rows = connection.execute(
                     "SELECT task_id, task_class, priority, state, submitted_at, envelope_json "
                     "FROM tasks WHERE runner_id=? AND state IN ('queued', 'claimed', 'accepted') "
-                    "ORDER BY priority DESC, submitted_at ASC, task_id ASC LIMIT 50",
-                    (runner["runner_id"],),
+                    "ORDER BY priority DESC, submitted_at ASC, task_id ASC LIMIT ?",
+                    (runner["runner_id"], PUBLIC_DASHBOARD_TASK_LIMIT),
                 ).fetchall()
                 remote_tasks = []
                 for row in rows:
@@ -204,6 +210,10 @@ class ControlService:
                 runners.append(
                     {
                         "runner_id": runner["runner_id"],
+                        "total_count": total_count,
+                        "returned_count": len(remote_tasks),
+                        "truncated": total_count > len(remote_tasks),
+                        "expected_duration_complete": total_count == len(remote_tasks),
                         "expected_duration_sec": sum(task["expected_duration_sec"] for task in remote_tasks),
                         "remote_tasks": remote_tasks,
                     }

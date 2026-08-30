@@ -154,6 +154,10 @@ def test_dashboard_status_exposes_only_sanitized_nonterminal_tasks(control_env):
     document = service.dashboard_status()
     assert "disabled" not in {runner["runner_id"] for runner in document["runners"]}
     arm = next(runner for runner in document["runners"] if runner["runner_id"] == "armbench")
+    assert arm["total_count"] == 1
+    assert arm["returned_count"] == 1
+    assert arm["truncated"] is False
+    assert arm["expected_duration_complete"] is True
     assert arm["expected_duration_sec"] == 78
     assert arm["remote_tasks"] == [
         {
@@ -174,6 +178,20 @@ def test_dashboard_status_exposes_only_sanitized_nonterminal_tasks(control_env):
     assert "envelope" not in arm["remote_tasks"][0]
     assert "outcome" not in arm["remote_tasks"][0]
     assert "secret_field" not in arm["remote_tasks"][0]
+
+
+def test_dashboard_status_reports_full_count_when_task_details_are_capped(control_env):
+    service = control_env["service"]
+    for index in range(55):
+        service.submit_task(task_envelope(f"task-{index:02d}"), actor="operator:test")
+
+    document = service.dashboard_status()
+    arm = next(runner for runner in document["runners"] if runner["runner_id"] == "armbench")
+    assert arm["total_count"] == 55
+    assert arm["returned_count"] == 50
+    assert arm["truncated"] is True
+    assert arm["expected_duration_complete"] is False
+    assert len(arm["remote_tasks"]) == 50
 
 
 def test_concurrent_claims_produce_one_transition_and_one_token(control_env):
