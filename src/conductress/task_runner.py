@@ -189,12 +189,29 @@ class TaskRunner:
             "task_type": task.task_type if task else None,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
+
+        # One tail read, one build_status — shared across fleet push and export.
         fleet_control = self._mailbox.status() if self._mailbox else None
         status = build_status(fleet_control=fleet_control, boundary=boundary)
+
         if self._mailbox:
             self._mailbox.push_status(status)
-            status = build_status(fleet_control=self._mailbox.status(), boundary=boundary)
-        export_status(publish_target=self._publish_target or "", status=status)
+            # Refresh fleet_control stats after the push (round-trip latency, etc.)
+            # without re-reading output.jsonl or recomputing queue/results.
+            updated_fc = self._mailbox.status()
+            export_doc = {**status, "fleet_control": updated_fc}
+        else:
+            export_doc = status
+
+        # A stale STARTING snapshot masks the entire measurement window, so
+        # permit one checked retry before measurement begins. Other boundaries
+        # remain single-attempt. export_status keeps its Path return contract.
+        publish_attempts = 2 if state == "starting" and self._publish_target else 1
+        export_status(
+            publish_target=self._publish_target or "",
+            status=export_doc,
+            publish_attempts=publish_attempts,
+        )
 
     def _choose_next(self, queue: TaskQueue) -> Optional[BaseTaskData]:
         if self._mailbox and self._mailbox.journal.active is not None:

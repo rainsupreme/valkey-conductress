@@ -124,7 +124,7 @@ class TestGetQueueInfo:
 
         with (
             patch("conductress.status_export.TaskQueue") as MockQueue,
-            patch("conductress.status_export.load_duration_calibration", return_value={}),
+            patch("conductress.status_export.load_duration_calibration_from_lines", return_value={}),
             patch("conductress.status_export.estimate_task_duration_seconds", return_value=420),
         ):
             MockQueue.return_value.get_all_tasks.return_value = [task]
