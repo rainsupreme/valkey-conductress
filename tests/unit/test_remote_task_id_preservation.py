@@ -130,15 +130,20 @@ class TestOverrideTaskId:
         assert task.task_id == CANARY_TASK_ID
 
     def test_untrusted_document_cannot_inject_override_without_caller(self):
-        """An untrusted document with __envelope_task_id is honoured only
-        because it was written by our own save_to_file.  There's no way
-        for a remote attacker to supply it via the envelope because
-        RunnerMailbox always passes the explicit envelope_task_id kwarg."""
+        """Persistence metadata in an arbitrary wire dictionary is ignored."""
         doc = _golden_task_doc()
         doc["__envelope_task_id"] = "injected:attack"
         task = BaseTaskData.from_dict(doc)
-        # Persisted sidecar is honoured for restart recovery
-        assert task.task_id == "injected:attack"
+        assert task.task_id == datetime_to_task_id(task.timestamp)
+        assert task._override_task_id is None
+
+    @pytest.mark.parametrize(
+        "unsafe_id",
+        ["", "../escape", "contains/slash", "contains space", "x" * 201, 123],
+    )
+    def test_invalid_explicit_envelope_task_id_is_rejected(self, unsafe_id):
+        with pytest.raises(ValueError, match="envelope task ID"):
+            BaseTaskData.from_dict(_golden_task_doc(), envelope_task_id=unsafe_id)
 
     def test_serialize_task_strips_override(self):
         """The wire-format task body never contains internal fields."""
@@ -178,6 +183,13 @@ class TestTaskQueueOverride:
         all_tasks = queue.get_all_tasks()
         assert len(all_tasks) == 1
         assert all_tasks[0].task_id == CANARY_TASK_ID
+
+    def test_import_rejects_reserved_sidecar_from_wire_document(self, tmp_path):
+        queue = TaskQueue(tmp_path / "queue")
+        doc = _canary_task_doc()
+        doc["__envelope_task_id"] = "injected:attack"
+        with pytest.raises(ValueError, match="reserved task field"):
+            queue.import_task(doc, envelope_task_id=CANARY_TASK_ID)
 
     def test_import_idempotent_with_override(self, tmp_path):
         queue = TaskQueue(tmp_path / "queue")

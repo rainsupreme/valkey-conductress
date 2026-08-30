@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
@@ -14,6 +15,22 @@ from typing import ClassVar, Dict, Optional, Type
 from . import config
 from .file_protocol import FileProtocol
 from .utility import datetime_to_task_id
+
+_ENVELOPE_TASK_ID_KEY = "__envelope_task_id"
+_ENVELOPE_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+_ENVELOPE_TASK_ID_MAX_LENGTH = 200
+
+
+def _validate_envelope_task_id(task_id: str) -> str:
+    """Validate an authenticated or locally persisted envelope task ID."""
+    if not isinstance(task_id, str) or not task_id:
+        raise ValueError("envelope task ID must be a non-empty string")
+    if len(task_id) > _ENVELOPE_TASK_ID_MAX_LENGTH:
+        raise ValueError(f"envelope task ID exceeds {_ENVELOPE_TASK_ID_MAX_LENGTH} characters")
+    if _ENVELOPE_TASK_ID_PATTERN.fullmatch(task_id) is None:
+        raise ValueError("envelope task ID contains unsafe characters")
+    return task_id
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,26 +113,24 @@ class BaseTaskData(ABC):
         # survives restart / from_file reload.  The key is prefixed with "__"
         # to avoid collisions with task-type fields.
         if self._override_task_id is not None:
-            data["__envelope_task_id"] = self._override_task_id
+            data[_ENVELOPE_TASK_ID_KEY] = self._override_task_id
 
-        with filepath.open("w") as f:
+        with filepath.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     @classmethod
     def from_dict(cls, document: dict, *, envelope_task_id: Optional[str] = None) -> "BaseTaskData":
         """Deserialize a task from an in-memory task document.
 
-        ``envelope_task_id`` is the **trusted** task_id from the remote
-        envelope.  When provided it takes precedence over any value embedded
-        in the document itself (defence-in-depth: the inner document is
-        untrusted wire data).  If absent, the ``__envelope_task_id`` sidecar
-        key written by :meth:`save_to_file` is honoured for restart recovery.
+        ``envelope_task_id`` is the authenticated identity supplied by the
+        caller. The reserved persistence sidecar in ``document`` is always
+        ignored here; only :meth:`from_file` may restore it from trusted local
+        queue storage.
         """
         if not isinstance(document, dict):
             raise ValueError("Invalid task data: expected object")
         data = dict(document)
-        # Extract sidecar key if present (written by save_to_file)
-        persisted_override = data.pop("__envelope_task_id", None)
+        data.pop(_ENVELOPE_TASK_ID_KEY, None)
         try:
             timestamp = datetime.fromisoformat(data.pop("timestamp"))
             task_type = data.pop("task_type")
@@ -125,17 +140,15 @@ class BaseTaskData(ABC):
             raise ValueError(f"Unknown task type: {task_type}")
         result = BaseTaskData.__task_registry[task_type](**data)
         result.timestamp = timestamp
-        # Explicit envelope_task_id (from trusted caller) wins, then persisted sidecar.
-        override = envelope_task_id or persisted_override
-        if override is not None:
-            result._override_task_id = override
+        if envelope_task_id is not None:
+            result._override_task_id = _validate_envelope_task_id(envelope_task_id)
         return result
 
     @classmethod
     def from_file(cls, filepath: Path) -> "BaseTaskData":
         """Load a task from a JSON file"""
         try:
-            with filepath.open("r") as f:
+            with filepath.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"Task file not found: {filepath}") from exc
@@ -144,8 +157,8 @@ class BaseTaskData(ABC):
         if not isinstance(data, dict):
             raise ValueError(f"Invalid task data in file: {filepath}")
 
-        # from_dict handles __envelope_task_id extraction internally
-        return cls.from_dict(data)
+        persisted_override = data.get(_ENVELOPE_TASK_ID_KEY)
+        return cls.from_dict(data, envelope_task_id=persisted_override)
 
 
 class BaseTaskRunner(ABC):
@@ -189,11 +202,13 @@ class TaskQueue:
         ``__envelope_task_id`` key so that :meth:`from_file` restores it
         after a restart.
         """
+        if _ENVELOPE_TASK_ID_KEY in document:
+            raise ValueError(f"reserved task field is not allowed: {_ENVELOPE_TASK_ID_KEY}")
         task = BaseTaskData.from_dict(document, envelope_task_id=envelope_task_id)
-        # Build the on-disk document: original body + sidecar override
+        # Build the on-disk document: original body + authenticated sidecar.
         persisted = dict(document)
         if envelope_task_id is not None:
-            persisted["__envelope_task_id"] = envelope_task_id
+            persisted[_ENVELOPE_TASK_ID_KEY] = task.task_id
         task_file = self.queue_dir / f"task_{task.task_id}.json"
         serialized = json.dumps(persisted, indent=2)
         if task_file.exists():
