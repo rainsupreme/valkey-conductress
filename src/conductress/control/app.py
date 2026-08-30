@@ -132,7 +132,6 @@ def create_app(
     service = ControlService(database, registry, config.claim_lease_seconds)
     service.expire_stale_claims(actor="system:startup")
     scheduler = CanaryScheduler(database, registry, canary_profiles)
-    scheduler.ensure_schema()
     scheduler.tick()
 
     app = web.Application(

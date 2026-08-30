@@ -73,7 +73,6 @@ def control_env(tmp_path):
     canary_profiles = CanaryProfileRegistry.from_directory(canary_dir)
     service = ControlService(database, registry, config.claim_lease_seconds)
     scheduler = CanaryScheduler(database, registry, canary_profiles)
-    scheduler.ensure_schema()
     return {
         "config": config,
         "database": database,

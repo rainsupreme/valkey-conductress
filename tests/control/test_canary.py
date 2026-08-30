@@ -20,7 +20,6 @@ from conductress.control.canary_profiles import CanaryProfileRegistry
 from conductress.control.canary_scheduler import (
     CANARY_TASK_CLASS,
     PRIORITY_CANARY,
-    PRIORITY_MANUAL_DEFAULT,
     PRIORITY_SWEEP,
     CanaryScheduler,
     _canary_task_id,
@@ -29,6 +28,7 @@ from conductress.control.db import ControlDatabase
 from conductress.control.errors import ControlError
 from conductress.control.fleet_registry import FleetRegistry
 from conductress.control.service import ControlService
+from conductress.task_queue import BaseTaskData
 
 from .helpers import fleet_manifest, task_envelope
 
@@ -220,7 +220,7 @@ class TestCanaryProfileValidation:
 class TestCheckedInProfile:
     """Validate the actual throughput-get-v1.json checked into the repo."""
 
-    PROFILE_DIR = Path(__file__).resolve().parents[2] / "canary_profiles"
+    PROFILE_DIR = Path(__file__).resolve().parents[2] / "src" / "conductress" / "canary_profiles"
 
     def test_throughput_get_v1_validates(self):
         registry = CanaryProfileRegistry.from_directory(self.PROFILE_DIR)
@@ -260,7 +260,6 @@ def _make_scheduler(
     profiles = CanaryProfileRegistry.from_directory(canary_dir)
 
     scheduler = CanaryScheduler(db, registry, profiles)
-    scheduler.ensure_schema()
     return scheduler, db, registry
 
 
@@ -300,7 +299,6 @@ class TestCanaryScheduler:
         canary_dir = tmp_path / "canary_profiles"
         profiles = CanaryProfileRegistry.from_directory(canary_dir)
         scheduler2 = CanaryScheduler(db, registry, profiles)
-        scheduler2.ensure_schema()  # idempotent
         actions = scheduler2.tick(now=now)
         assert actions == []
 
@@ -339,8 +337,7 @@ class TestCanaryScheduler:
         scheduler.tick(now=now)
         with db.read() as conn:
             dates = {
-                row["utc_date"]
-                for row in conn.execute("SELECT DISTINCT utc_date FROM canary_schedule").fetchall()
+                row["utc_date"] for row in conn.execute("SELECT DISTINCT utc_date FROM canary_schedule").fetchall()
             }
         # Only yesterday (missed) and today (created) -- never Sept 1-3
         assert "2026-09-01" not in dates
@@ -360,6 +357,9 @@ class TestCanaryScheduler:
         actions = scheduler.tick(now=past)
         expired = [a for a in actions if a["action"] == "expired" and a["utc_date"] == "2026-09-01"]
         assert len(expired) == 2  # armbench + g4bench
+        with scheduler.database.read() as conn:
+            stale = conn.execute("SELECT state FROM tasks WHERE task_class = 'canary'").fetchall()
+        assert {row["state"] for row in stale} == {"cancelled"}
 
     def test_disabled_runner_gets_no_canary(self, tmp_path):
         scheduler, db, _ = _make_scheduler(tmp_path)
@@ -367,8 +367,7 @@ class TestCanaryScheduler:
         scheduler.tick(now=now)
         with db.read() as conn:
             runners = {
-                row["runner_id"]
-                for row in conn.execute("SELECT DISTINCT runner_id FROM canary_schedule").fetchall()
+                row["runner_id"] for row in conn.execute("SELECT DISTINCT runner_id FROM canary_schedule").fetchall()
             }
         assert "disabled" not in runners
 
@@ -390,7 +389,6 @@ class TestCanaryScheduler:
         profiles = CanaryProfileRegistry.from_directory(canary_dir)
 
         scheduler = CanaryScheduler(db, registry, profiles)
-        scheduler.ensure_schema()
         now = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
         assert scheduler.tick(now=now) == []
 
@@ -417,9 +415,7 @@ class TestCanaryScheduler:
         scheduler.tick(now=day2)
         with db.read() as conn:
             # Count unique (runner_id, utc_date) created canary tasks
-            canary_tasks = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE task_class = 'canary'"
-            ).fetchone()[0]
+            canary_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE task_class = 'canary'").fetchone()[0]
         # 2 runners x 2 days = 4 canary tasks
         assert canary_tasks == 4
 
@@ -437,12 +433,12 @@ class TestPriorityOrdering:
         service = ControlService(db, registry)
 
         # Submit a manual task and a sweep task
-        manual = task_envelope("manual-1", runner_id="armbench", priority=PRIORITY_MANUAL_DEFAULT, task_class="manual")
+        manual = task_envelope("manual-1", runner_id="armbench", priority=1, task_class="manual")
         sweep = task_envelope("sweep-1", runner_id="armbench", priority=PRIORITY_SWEEP, task_class="sweep")
         service.submit_task(manual, actor="test")
         service.submit_task(sweep, actor="test")
 
-        # First claim should be manual (priority 100)
+        # First claim should be manual even with a lower numeric priority
         claim1 = service.claim_task("armbench", actor="test")
         assert claim1["task"]["task_id"] == "manual-1"
         assert claim1["task"]["task_class"] == "manual"
@@ -505,11 +501,13 @@ class TestPriorityOrdering:
 class TestEnvelopeCompatibility:
     """Verify canary task envelopes pass existing task-envelope schema validation."""
 
-    def test_canary_envelope_validates_against_schema(self, tmp_path):
+    def test_canary_envelope_validates_against_schema(self, tmp_path, monkeypatch):
         from jsonschema import Draft202012Validator
 
+        from conductress import task_queue
         from conductress.control.schema import load_schema
 
+        monkeypatch.setattr(task_queue.config, "REPO_NAMES", ["valkey"])
         scheduler, db, _ = _make_scheduler(tmp_path)
         now = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
         scheduler.tick(now=now)
@@ -518,17 +516,21 @@ class TestEnvelopeCompatibility:
         validator = Draft202012Validator(schema)
 
         with db.read() as conn:
-            rows = conn.execute(
-                "SELECT envelope_json FROM tasks WHERE task_class = 'canary'"
-            ).fetchall()
+            rows = conn.execute("SELECT envelope_json FROM tasks WHERE task_class = 'canary'").fetchall()
         assert len(rows) >= 1
         for row in rows:
             envelope = json.loads(row["envelope_json"])
             validator.validate(envelope)
             assert envelope["task_class"] == "canary"
             assert envelope["canary_id"] is not None
-            assert envelope["task"]["canary_profile_id"] == "throughput-get-v1"
-            assert envelope["task"]["canary_profile_version"] == 1
+            task = BaseTaskData.from_dict(envelope["task"])
+            assert task.task_type == "CanaryPerfTaskData"
+            assert task.specifier == "a" * 40
+            assert task.bench_clients == 1200
+            assert task.bench_threads == 16
+            assert task.keyspace == 3000000
+            assert task.seed == 42
+            assert task.preload_keys is True
 
     def test_canary_task_id_is_deterministic(self, tmp_path):
         tid = _canary_task_id("armbench", "throughput-get-v1", "2026-09-01")
@@ -559,34 +561,20 @@ class TestConcurrentTicks:
 
         # DB should have exactly 2 canary tasks for today
         with db.read() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE task_class = 'canary'"
-            ).fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM tasks WHERE task_class = 'canary'").fetchone()[0]
         assert count == 2
 
 
 class TestDBMigration:
     def test_migration_v2_is_idempotent(self, tmp_path):
-        manifest_path = tmp_path / "fleet.json"
-        manifest_path.write_text(json.dumps(fleet_manifest()), encoding="utf-8")
         db = ControlDatabase(tmp_path / "control.db", tmp_path / "audit.jsonl")
+
         db.initialize()
-        registry = FleetRegistry.from_file(manifest_path)
-
-        canary_dir = tmp_path / "canary_profiles"
-        canary_dir.mkdir()
-        profiles = CanaryProfileRegistry.from_directory(canary_dir)
-
-        # Call ensure_schema multiple times
-        s1 = CanaryScheduler(db, registry, profiles)
-        s1.ensure_schema()
-        s1.ensure_schema()
-        s1.ensure_schema()
+        db.initialize()
+        db.initialize()
 
         with db.read() as conn:
-            v2_count = conn.execute(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 2"
-            ).fetchone()[0]
+            v2_count = conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version = 2").fetchone()[0]
         assert v2_count == 1
 
     def test_v1_db_upgraded_to_v2(self, tmp_path):
@@ -596,12 +584,7 @@ class TestDBMigration:
 
         with db.read() as conn:
             max_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert max_version == 2
         assert "canary_schedule" in tables
         assert "tasks" in tables

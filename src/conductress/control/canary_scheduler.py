@@ -65,43 +65,6 @@ class CanaryScheduler:
         self.profiles = profiles
 
     # ------------------------------------------------------------------
-    # DB migration (forward-compatible, idempotent)
-    # ------------------------------------------------------------------
-
-    def ensure_schema(self) -> None:
-        """Create the canary_schedule table if it does not exist.
-
-        Safe to call on every startup -- ``CREATE TABLE IF NOT EXISTS``
-        plus an idempotent migration record.
-        """
-        with self.database.transaction(immediate=True) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS canary_schedule (
-                    runner_id   TEXT    NOT NULL,
-                    profile_id  TEXT    NOT NULL,
-                    utc_date    TEXT    NOT NULL,
-                    state       TEXT    NOT NULL CHECK (
-                        state IN ('created', 'missed', 'expired')
-                    ),
-                    task_id     TEXT,
-                    created_at  TEXT    NOT NULL,
-                    updated_at  TEXT    NOT NULL,
-                    PRIMARY KEY (runner_id, profile_id, utc_date)
-                );
-                """
-            )
-            # Record migration idempotently
-            existing = conn.execute(
-                "SELECT version FROM schema_migrations WHERE version = 2"
-            ).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (2, utc_text()),
-                )
-
-    # ------------------------------------------------------------------
     # Core scheduling
     # ------------------------------------------------------------------
 
@@ -133,16 +96,12 @@ class CanaryScheduler:
                 continue
 
             # Check yesterday for missed/expired
-            action = self._evaluate_runner(
-                runner["runner_id"], profile, yesterday, now
-            )
+            action = self._evaluate_runner(runner["runner_id"], profile, yesterday, now)
             if action:
                 actions.append(action)
 
             # Check today
-            action = self._evaluate_runner(
-                runner["runner_id"], profile, today, now
-            )
+            action = self._evaluate_runner(runner["runner_id"], profile, today, now)
             if action:
                 actions.append(action)
 
@@ -159,22 +118,22 @@ class CanaryScheduler:
         task_id = _canary_task_id(runner_id, profile.profile_id, utc_date)
 
         # Compute the freshness window
-        due_start = datetime.strptime(utc_date, "%Y-%m-%d").replace(
-            hour=profile.utc_hour, tzinfo=timezone.utc
-        )
+        due_start = datetime.strptime(utc_date, "%Y-%m-%d").replace(hour=profile.utc_hour, tzinfo=timezone.utc)
         deadline = due_start + timedelta(hours=profile.freshness_hours)
 
         with self.database.transaction(immediate=True) as conn:
             row = conn.execute(
-                "SELECT state FROM canary_schedule "
-                "WHERE runner_id = ? AND profile_id = ? AND utc_date = ?",
+                "SELECT state, task_id FROM canary_schedule " "WHERE runner_id = ? AND profile_id = ? AND utc_date = ?",
                 (runner_id, profile.profile_id, utc_date),
             ).fetchone()
 
             if row is not None:
-                # Already processed: maybe expire if still 'created' and past deadline
-                if row["state"] == "created" and now >= deadline:
-                    return self._mark_expired(conn, runner_id, profile.profile_id, utc_date, task_id)
+                # Freshness applies to queued work. Once claimed, accepted, or
+                # completed, the boundary decision has already been made.
+                if row["state"] == "created" and now >= deadline and row["task_id"]:
+                    task = conn.execute("SELECT state FROM tasks WHERE task_id = ?", (row["task_id"],)).fetchone()
+                    if task is not None and task["state"] == "queued":
+                        return self._mark_expired(conn, runner_id, profile.profile_id, utc_date, row["task_id"])
                 return None
 
             # Not yet in schedule table
@@ -204,9 +163,7 @@ class CanaryScheduler:
         canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
 
         # Idempotent: if the task already exists (from a concurrent tick), skip
-        existing_task = conn.execute(
-            "SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)
-        ).fetchone()
+        existing_task = conn.execute("SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         if existing_task is not None:
             # Task exists but schedule row doesn't -- fix up schedule
             conn.execute(
@@ -275,9 +232,7 @@ class CanaryScheduler:
             "task_id": task_id,
         }
 
-    def _mark_missed(
-        self, conn: Any, runner_id: str, profile_id: str, utc_date: str
-    ) -> dict[str, Any]:
+    def _mark_missed(self, conn: Any, runner_id: str, profile_id: str, utc_date: str) -> dict[str, Any]:
         now_text = utc_text()
         conn.execute(
             "INSERT OR IGNORE INTO canary_schedule "
@@ -309,6 +264,12 @@ class CanaryScheduler:
         task_id: str,
     ) -> dict[str, Any]:
         now_text = utc_text()
+        cancelled = conn.execute(
+            "UPDATE tasks SET state = 'cancelled', updated_at = ? " "WHERE task_id = ? AND state = 'queued'",
+            (now_text, task_id),
+        )
+        if cancelled.rowcount != 1:
+            raise RuntimeError(f"canary task {task_id} was no longer queued during expiry")
         conn.execute(
             "UPDATE canary_schedule SET state = 'expired', updated_at = ? "
             "WHERE runner_id = ? AND profile_id = ? AND utc_date = ?",
@@ -320,6 +281,8 @@ class CanaryScheduler:
             action="canary.expired",
             runner_id=runner_id,
             task_id=task_id,
+            old_state="queued",
+            new_state="cancelled",
             detail={"profile_id": profile_id, "utc_date": utc_date},
         )
         logger.info("canary expired for %s/%s on %s", runner_id, profile_id, utc_date)
@@ -354,26 +317,29 @@ class CanaryScheduler:
             "submitted_by": CANARY_SUBMITTER,
             "canary_id": f"{profile.profile_id}:{utc_date}",
             "task": {
-                "task_type": "PerfTaskData",
+                "task_type": "CanaryPerfTaskData",
                 "source": profile.source,
                 "specifier": profile.pinned_commit,
-                "timestamp": submitted_at.replace("Z", ".000000").replace("+00:00", ".000000"),
+                "timestamp": submitted_at.removesuffix("Z").removesuffix("+00:00"),
+                "replicas": 0,
+                "requirements": {},
+                "make_args": profile.build["make_args"],
+                "note": f"canary {profile.profile_id} v{profile.profile_version} ({utc_date})",
                 "test": wl["test"],
                 "val_size": wl["val_size"],
                 "key_size": wl["key_size"],
                 "io_threads": wl["io_threads"],
                 "pipelining": wl["pipelining"],
-                "clients": wl["clients"],
-                "threads": wl["threads"],
-                "keyspace": wl["keyspace"],
                 "warmup": wl["warmup_seconds"],
                 "duration": wl["duration_seconds"],
+                "perf_stat_enabled": False,
+                "has_expire": False,
+                "preload_keys": True,
                 "repetitions": wl["repetitions"],
+                "bench_clients": wl["clients"],
+                "bench_threads": wl["threads"],
+                "keyspace": wl["keyspace"],
                 "seed": wl["seed"],
-                "make_args": profile.build["make_args"],
-                "note": f"canary {profile.profile_id} v{profile.profile_version} ({utc_date})",
-                "canary_profile_id": profile.profile_id,
-                "canary_profile_version": profile.profile_version,
             },
         }
 
@@ -381,14 +347,11 @@ class CanaryScheduler:
     # Query helpers
     # ------------------------------------------------------------------
 
-    def schedule_for_runner(
-        self, runner_id: str, *, limit: int = 30
-    ) -> list[dict[str, Any]]:
+    def schedule_for_runner(self, runner_id: str, *, limit: int = 30) -> list[dict[str, Any]]:
         """Return recent canary schedule entries for a runner."""
         with self.database.read() as conn:
             rows = conn.execute(
-                "SELECT * FROM canary_schedule WHERE runner_id = ? "
-                "ORDER BY utc_date DESC LIMIT ?",
+                "SELECT * FROM canary_schedule WHERE runner_id = ? " "ORDER BY utc_date DESC LIMIT ?",
                 (runner_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]

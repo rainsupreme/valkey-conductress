@@ -4,7 +4,7 @@
   "profile_version": 1,
   "description": "Daily GET throughput canary: 512B values, 3M keys, pipeline 10, pinned to Valkey 8.1.1 release.",
   "source": "valkey",
-  "pinned_commit": "94f61e449b06590ce77b5649e7c4d0d7fc9eec29",
+  "pinned_commit": "fcd8bc3ee40f5d7841b7d5a8f3cd12252fec14e4",
   "build": {
     "make_args": ""
   },

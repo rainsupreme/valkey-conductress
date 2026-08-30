@@ -13,13 +13,13 @@ class ControlConfig:
     fleet_manifest_path: Path
     tokens_path: Path
     audit_jsonl_path: Path
-    canary_profiles_dir: Path = Path(__file__).resolve().parent.parent.parent.parent / "canary_profiles"
+    canary_profiles_dir: Path = Path(__file__).resolve().parent.parent / "canary_profiles"
     claim_lease_seconds: int = 300
     max_body_bytes: int = 64 * 1024
 
     @classmethod
     def from_env(cls) -> "ControlConfig":
-        default_profiles = Path(__file__).resolve().parent.parent.parent.parent / "canary_profiles"
+        default_profiles = Path(__file__).resolve().parent.parent / "canary_profiles"
         return cls(
             database_path=Path(os.environ.get("CONTROL_DB_PATH", "/var/lib/conductress-control/control.db")),
             fleet_manifest_path=Path(os.environ.get("FLEET_MANIFEST_PATH", "/etc/conductress-control/fleet.json")),

@@ -187,7 +187,8 @@ class ControlService:
                 rows = connection.execute(
                     "SELECT task_id, task_class, priority, state, submitted_at, envelope_json "
                     "FROM tasks WHERE runner_id=? AND state IN ('queued', 'claimed', 'accepted') "
-                    "ORDER BY priority DESC, submitted_at ASC, task_id ASC LIMIT ?",
+                    "ORDER BY CASE task_class WHEN 'manual' THEN 3 WHEN 'canary' THEN 2 ELSE 1 END DESC, "
+                    "priority DESC, submitted_at ASC, task_id ASC LIMIT ?",
                     (runner["runner_id"], PUBLIC_DASHBOARD_TASK_LIMIT),
                 ).fetchall()
                 remote_tasks = []
@@ -310,7 +311,8 @@ class ControlService:
             else:
                 row = connection.execute(
                     "SELECT * FROM tasks WHERE runner_id=? AND state='queued' "
-                    "ORDER BY priority DESC, submitted_at ASC, task_id ASC LIMIT 1",
+                    "ORDER BY CASE task_class WHEN 'manual' THEN 3 WHEN 'canary' THEN 2 ELSE 1 END DESC, "
+                    "priority DESC, submitted_at ASC, task_id ASC LIMIT 1",
                     (runner_id,),
                 ).fetchone()
                 if row:
