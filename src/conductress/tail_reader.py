@@ -10,7 +10,6 @@ caused 45-77s latency per ``build_status`` on large output.jsonl files.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Union
 

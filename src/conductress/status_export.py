@@ -111,7 +111,7 @@ def export_status(
     # Atomic write: write to a temp file in the same directory, then rename.
     tmp_fd, tmp_path = tempfile.mkstemp(dir=STATUS_EXPORT_DIR, prefix=".status-", suffix=".json")
     try:
-        with os.fdopen(tmp_fd, "w") as f:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(status, f, indent=2)
         os.replace(tmp_path, STATUS_EXPORT_FILE)
     except BaseException:
