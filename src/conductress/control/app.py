@@ -129,7 +129,7 @@ def create_app(
     registry = registry or FleetRegistry.from_file(config.fleet_manifest_path)
     token_store = token_store or TokenStore(config.tokens_path)
     canary_profiles = canary_profiles or CanaryProfileRegistry.from_directory(config.canary_profiles_dir)
-    service = ControlService(database, registry, config.claim_lease_seconds)
+    service = ControlService(database, registry, config.claim_lease_seconds, canary_profiles=canary_profiles)
     service.expire_stale_claims(actor="system:startup")
     scheduler = CanaryScheduler(database, registry, canary_profiles)
     scheduler.tick()

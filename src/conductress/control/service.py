@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import timedelta
@@ -12,10 +13,14 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from ..duration_estimator import estimate_task_duration_seconds
+from .canary_profiles import CanaryProfileRegistry
 from .db import ControlDatabase, parse_utc, utc_now, utc_text
+from .drift_analyzer import DriftAnalyzer
 from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
+
+logger = logging.getLogger(__name__)
 
 PUBLIC_DASHBOARD_TASK_LIMIT = 50
 
@@ -25,13 +30,26 @@ def _validator(name: str) -> Draft202012Validator:
 
 
 class ControlService:
-    def __init__(self, database: ControlDatabase, registry: FleetRegistry, claim_lease_seconds: int = 300):
+    def __init__(
+        self,
+        database: ControlDatabase,
+        registry: FleetRegistry,
+        claim_lease_seconds: int = 300,
+        *,
+        canary_profiles: Optional[CanaryProfileRegistry] = None,
+    ):
         self.database = database
         self.registry = registry
         self.claim_lease_seconds = claim_lease_seconds
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")
+        self._canary_profiles = canary_profiles
+        self.drift_analyzer = DriftAnalyzer(
+            database,
+            canary_profiles=canary_profiles,
+            fleet_registry=registry,
+        )
 
     @staticmethod
     def _validate(validator: Draft202012Validator, document: dict[str, Any], kind: str) -> None:
@@ -396,6 +414,7 @@ class ControlService:
         terminal = outcome["state"]
         canonical = self._canonical(outcome)
         audit = None
+        canary_metadata = None
         with self.database.transaction(immediate=True) as connection:
             row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
@@ -421,10 +440,112 @@ class ControlService:
                 old_state=row["state"],
                 new_state=terminal,
             )
+            # Capture canary metadata for post-transaction ingestion
+            if row["task_class"] == "canary" and terminal == "completed" and row["canary_id"]:
+                canary_metadata = {
+                    "canary_id": row["canary_id"],
+                    "envelope_json": row["envelope_json"],
+                }
             updated = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         if audit:
             self.database.append_audit_jsonl(audit)
+        # Ingest canary observation outside the main transaction
+        if canary_metadata:
+            self._ingest_canary_observation(task_id, runner_id, outcome, canary_metadata)
         return self._task_from_row(updated), True
+
+    def _ingest_canary_observation(
+        self,
+        task_id: str,
+        runner_id: str,
+        outcome: dict[str, Any],
+        canary_metadata: dict[str, Any],
+    ) -> None:
+        """Best-effort canary drift analysis ingestion after outcome recording.
+
+        Failures here are logged but do not affect the task completion path.
+        """
+        try:
+            canary_id = canary_metadata["canary_id"]
+            # canary_id format: "profile_id:utc_date"
+            parts = canary_id.rsplit(":", 1)
+            if len(parts) != 2:
+                logger.warning("malformed canary_id %r on task %s: expected 'profile:date'", canary_id, task_id)
+                return
+            profile_id, utc_date = parts
+
+            # Validate non-empty after split
+            if not profile_id:
+                logger.warning("empty profile_id from canary_id %r on task %s", canary_id, task_id)
+                return
+            if not utc_date:
+                logger.warning("empty utc_date from canary_id %r on task %s", canary_id, task_id)
+                return
+
+            # Resolve profile_version structurally from the CanaryProfileRegistry.
+            # Fall back to regex on the note field for legacy/test compatibility.
+            profile_version = 1  # final fallback default
+            if self._canary_profiles is not None:
+                profile = self._canary_profiles.get(profile_id)
+                if profile is not None:
+                    profile_version = profile.profile_version
+                else:
+                    # Profile not in registry; try regex on note as legacy fallback
+                    profile_version = self._parse_version_from_note(canary_metadata)
+            else:
+                # No registry available; use regex fallback
+                profile_version = self._parse_version_from_note(canary_metadata)
+
+            # Extract environment fingerprint from outcome result
+            result = outcome.get("result") or {}
+            environment = result.get("environment")
+
+            # Build provenance-enriched environment including available outcome fields
+            enriched_env = dict(environment) if environment else {}
+            provenance_sv = result.get("provenance_schema_version")
+            if provenance_sv is not None:
+                enriched_env["provenance_schema_version"] = provenance_sv
+            enriched_env["runner_id"] = result.get("runner_id", runner_id)
+            # Prefer result provenance; fall back to the fleet manifest.
+            platform_id = result.get("platform")
+            if not platform_id:
+                try:
+                    runner = self.registry.get_runner(runner_id, require_enabled=False)
+                    platform_id = runner.get("platform")
+                except (KeyError, ValueError):
+                    platform_id = None
+            if platform_id:
+                enriched_env["platform"] = platform_id
+
+            self.drift_analyzer.ingest_outcome(
+                task_id=task_id,
+                runner_id=runner_id,
+                outcome=outcome,
+                profile_id=profile_id,
+                profile_version=profile_version,
+                utc_date=utc_date,
+                environment=enriched_env if enriched_env else None,
+            )
+        except Exception:
+            logger.warning(
+                "canary drift analysis ingestion failed for task %s",
+                task_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _parse_version_from_note(canary_metadata: dict[str, Any]) -> int:
+        """Regex fallback: extract version from note field for tests/legacy."""
+        envelope = json.loads(canary_metadata.get("envelope_json", "{}"))
+        note = envelope.get("task", {}).get("note", "")
+        # Note format: "canary {profile_id} v{version} ({date})"
+        if " v" in note:
+            try:
+                version_str = note.split(" v")[1].split(" ")[0].split(")")[0]
+                return int(version_str)
+            except (IndexError, ValueError):
+                pass
+        return 1
 
     @staticmethod
     def _verify_task_runner(row: sqlite3.Row, runner_id: str) -> None:

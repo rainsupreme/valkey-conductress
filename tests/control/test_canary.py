@@ -24,7 +24,7 @@ from conductress.control.canary_scheduler import (
     CanaryScheduler,
     _canary_task_id,
 )
-from conductress.control.db import ControlDatabase
+from conductress.control.db import DATABASE_SCHEMA_VERSION, ControlDatabase
 from conductress.control.errors import ControlError
 from conductress.control.fleet_registry import FleetRegistry
 from conductress.control.service import ControlService
@@ -578,16 +578,18 @@ class TestDBMigration:
         assert v2_count == 1
 
     def test_v1_db_upgraded_to_v2(self, tmp_path):
-        """A fresh DB starts at v2 with both tasks and canary_schedule tables."""
+        """A fresh DB starts at v3 with tasks, canary_schedule, and observation tables."""
         db = ControlDatabase(tmp_path / "control.db", tmp_path / "audit.jsonl")
         db.initialize()
 
         with db.read() as conn:
             max_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert max_version == 2
+        assert max_version == DATABASE_SCHEMA_VERSION
         assert "canary_schedule" in tables
         assert "tasks" in tables
+        assert "canary_observations" in tables
+        assert "canary_calibration_reports" in tables
 
 
 class TestScheduleQueries:

@@ -111,6 +111,10 @@ def test_live_claim_import_accept_and_complete(tmp_path):
         "end_time": "2026.08.29_00.01.00.000000",
         "expected_duration_sec": 300,
         "observed_duration_sec": 275.5,
+        "provenance_schema_version": 1,
+        "runner_id": "armbench",
+        "platform": "AWS Graviton 3",
+        "environment": {"kernel_release": "6.1", "conductress_revision": "abc123"},
     }
     mailbox.stage_success(task, result=result)
     queue.finish_task(task)
@@ -119,6 +123,10 @@ def test_live_claim_import_accept_and_complete(tmp_path):
     assert client.outcomes[0][1]["state"] == "completed"
     assert client.outcomes[0][1]["result"]["expected_duration_sec"] == 300
     assert client.outcomes[0][1]["result"]["observed_duration_sec"] == 275.5
+    assert client.outcomes[0][1]["result"]["provenance_schema_version"] == 1
+    assert client.outcomes[0][1]["result"]["runner_id"] == "armbench"
+    assert client.outcomes[0][1]["result"]["platform"] == "AWS Graviton 3"
+    assert client.outcomes[0][1]["result"]["environment"]["conductress_revision"] == "abc123"
     assert mailbox.status()["imported_count_total"] == 1
 
 
