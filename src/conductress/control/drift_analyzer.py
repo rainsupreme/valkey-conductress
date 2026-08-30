@@ -165,13 +165,13 @@ class DriftAnalyzer:
         except Exception:
             return None, None
 
-        # Match platform_aliases against profile threshold keys
+        # Prefer the canonical platform id, then aliases.
         platforms_thresholds = profile.thresholds.get("platforms", {})
-        aliases = runner.get("platform_aliases", [])
-        for alias in aliases:
-            if alias in platforms_thresholds:
-                t = platforms_thresholds[alias]
-                return t.get("warning_pct"), t.get("alarm_pct")
+        platform_ids = [runner.get("platform"), *runner.get("platform_aliases", [])]
+        for platform_id in platform_ids:
+            if platform_id in platforms_thresholds:
+                thresholds = platforms_thresholds[platform_id]
+                return thresholds.get("warning_pct"), thresholds.get("alarm_pct")
 
         return None, None
 
@@ -366,9 +366,8 @@ class DriftAnalyzer:
                         env_change_annotation = "; ".join(changes) if changes else None
 
             # Extract provenance fields from outcome
-            provenance_schema_version = outcome.get("provenance_schema_version") or outcome.get("schema_version")
             result_obj = outcome.get("result") or {}
-            outcome_environment = result_obj.get("environment")
+            provenance_schema_version = result_obj.get("provenance_schema_version")
 
             now = utc_text()
 

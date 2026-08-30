@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS canary_observations (
     candidate_signal      TEXT    CHECK (
         candidate_signal IN ('insufficient-data', 'within', 'warning', 'alarm')
     ),
-    actionable            INTEGER NOT NULL DEFAULT 0 CHECK (actionable IN (0, 1)),
+    actionable            INTEGER NOT NULL DEFAULT 0 CHECK (actionable = 0),
     window_start     TEXT,
     window_end       TEXT,
     environment_json TEXT,

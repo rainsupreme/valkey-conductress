@@ -1496,14 +1496,14 @@ class TestEnvironmentFingerprint:
                 "runner_id": "armbench",
                 "state": "completed",
                 "completed_at": "2026-09-01T12:00:00Z",
-                "result": {"score": 100000.0},
+                "result": {"score": 100000.0, "provenance_schema_version": 2},
                 "error": None,
             },
             profile_id="throughput-get-v1",
             profile_version=1,
             utc_date="2026-09-01",
         )
-        assert obs["provenance_schema_version"] == 1
+        assert obs["provenance_schema_version"] == 2
 
     def test_service_enriches_environment_with_provenance(self, tmp_path):
         """Service integration passes enriched environment with runner_id and platform."""

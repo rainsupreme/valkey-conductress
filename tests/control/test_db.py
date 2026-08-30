@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from conductress.control.db import ControlDatabase, DATABASE_SCHEMA_VERSION
+from conductress.control.db import DATABASE_SCHEMA_VERSION, ControlDatabase
 
 
 def test_database_initializes_wal_schema_and_reopens(control_env):
@@ -13,8 +13,15 @@ def test_database_initializes_wal_schema_and_reopens(control_env):
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == DATABASE_SCHEMA_VERSION
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"tasks", "runner_status", "audit_log", "schema_migrations", "canary_schedule",
-            "canary_observations", "canary_calibration_reports"} <= tables
+    assert {
+        "tasks",
+        "runner_status",
+        "audit_log",
+        "schema_migrations",
+        "canary_schedule",
+        "canary_observations",
+        "canary_calibration_reports",
+    } <= tables
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
 
     ControlDatabase(database.path, database.audit_jsonl_path).initialize()

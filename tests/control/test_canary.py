@@ -24,7 +24,7 @@ from conductress.control.canary_scheduler import (
     CanaryScheduler,
     _canary_task_id,
 )
-from conductress.control.db import ControlDatabase, DATABASE_SCHEMA_VERSION
+from conductress.control.db import DATABASE_SCHEMA_VERSION, ControlDatabase
 from conductress.control.errors import ControlError
 from conductress.control.fleet_registry import FleetRegistry
 from conductress.control.service import ControlService

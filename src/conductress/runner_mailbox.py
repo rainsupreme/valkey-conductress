@@ -178,6 +178,10 @@ class RunnerMailbox:
                 "note",
                 "expected_duration_sec",
                 "observed_duration_sec",
+                "provenance_schema_version",
+                "runner_id",
+                "platform",
+                "environment",
             )
             if result.get(key) is not None
         }

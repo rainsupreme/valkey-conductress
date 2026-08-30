@@ -13,16 +13,12 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from ..duration_estimator import estimate_task_duration_seconds
+from .canary_profiles import CanaryProfileRegistry
 from .db import ControlDatabase, parse_utc, utc_now, utc_text
 from .drift_analyzer import DriftAnalyzer
 from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
-
-try:
-    from .canary_profiles import CanaryProfileRegistry
-except ImportError:
-    CanaryProfileRegistry = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +36,7 @@ class ControlService:
         registry: FleetRegistry,
         claim_lease_seconds: int = 300,
         *,
-        canary_profiles: Optional["CanaryProfileRegistry"] = None,
+        canary_profiles: Optional[CanaryProfileRegistry] = None,
     ):
         self.database = database
         self.registry = registry
@@ -506,16 +502,20 @@ class ControlService:
 
             # Build provenance-enriched environment including available outcome fields
             enriched_env = dict(environment) if environment else {}
-            provenance_sv = outcome.get("provenance_schema_version") or outcome.get("schema_version")
+            provenance_sv = result.get("provenance_schema_version")
             if provenance_sv is not None:
                 enriched_env["provenance_schema_version"] = provenance_sv
-            enriched_env["runner_id"] = runner_id
-            # Resolve platform from fleet registry
-            try:
-                runner = self.registry.get_runner(runner_id, require_enabled=False)
-                enriched_env["platform"] = runner.get("platform", "")
-            except Exception:
-                pass
+            enriched_env["runner_id"] = result.get("runner_id", runner_id)
+            # Prefer result provenance; fall back to the fleet manifest.
+            platform_id = result.get("platform")
+            if not platform_id:
+                try:
+                    runner = self.registry.get_runner(runner_id, require_enabled=False)
+                    platform_id = runner.get("platform")
+                except (KeyError, ValueError):
+                    platform_id = None
+            if platform_id:
+                enriched_env["platform"] = platform_id
 
             self.drift_analyzer.ingest_outcome(
                 task_id=task_id,
