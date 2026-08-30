@@ -10,6 +10,8 @@ from aiohttp import web
 
 from . import CONTROL_API_SCHEMA_VERSION
 from .auth import AuthIdentity, TokenStore
+from .canary_profiles import CanaryProfileRegistry
+from .canary_scheduler import CanaryScheduler
 from .config import ControlConfig
 from .db import ControlDatabase
 from .errors import AuthorizationError, ControlError, NotFoundError
@@ -19,6 +21,7 @@ from .service import ControlService
 logger = logging.getLogger(__name__)
 SERVICE_KEY = web.AppKey("service", ControlService)
 TOKEN_STORE_KEY = web.AppKey("token_store", TokenStore)
+SCHEDULER_KEY = web.AppKey("scheduler", CanaryScheduler)
 PUBLIC_DASHBOARD_PATH = "/api/v1/public/dashboard"
 
 
@@ -118,14 +121,19 @@ def create_app(
     database: Optional[ControlDatabase] = None,
     registry: Optional[FleetRegistry] = None,
     token_store: Optional[TokenStore] = None,
+    canary_profiles: Optional[CanaryProfileRegistry] = None,
 ) -> web.Application:
     config.validate()
     database = database or ControlDatabase(config.database_path, config.audit_jsonl_path)
     database.initialize()
     registry = registry or FleetRegistry.from_file(config.fleet_manifest_path)
     token_store = token_store or TokenStore(config.tokens_path)
+    canary_profiles = canary_profiles or CanaryProfileRegistry.from_directory(config.canary_profiles_dir)
     service = ControlService(database, registry, config.claim_lease_seconds)
     service.expire_stale_claims(actor="system:startup")
+    scheduler = CanaryScheduler(database, registry, canary_profiles)
+    scheduler.ensure_schema()
+    scheduler.tick()
 
     app = web.Application(
         middlewares=[error_middleware, auth_middleware],
@@ -133,6 +141,7 @@ def create_app(
     )
     app[SERVICE_KEY] = service
     app[TOKEN_STORE_KEY] = token_store
+    app[SCHEDULER_KEY] = scheduler
 
     app.router.add_get(PUBLIC_DASHBOARD_PATH, _public_dashboard)
     app.router.add_options(PUBLIC_DASHBOARD_PATH, _public_dashboard_options)
@@ -226,6 +235,11 @@ async def _push_status(request: web.Request) -> web.Response:
     runner_id = request.match_info["runner_id"]
     identity = _require_runner(request, runner_id)
     request.app[SERVICE_KEY].push_status(runner_id, await _json_body(request), actor=_actor(identity))
+    # Evaluate canary scheduling on each boundary status push
+    try:
+        request.app[SCHEDULER_KEY].tick()
+    except Exception:
+        logger.warning("canary tick failed during status push", exc_info=True)
     return _response(updated=True)
 
 

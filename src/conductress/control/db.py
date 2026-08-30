@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
-DATABASE_SCHEMA_VERSION = 1
+DATABASE_SCHEMA_VERSION = 2
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -63,6 +63,22 @@ CREATE INDEX IF NOT EXISTS idx_audit_runner ON audit_log(runner_id);
 """
 
 
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS canary_schedule (
+    runner_id   TEXT    NOT NULL,
+    profile_id  TEXT    NOT NULL,
+    utc_date    TEXT    NOT NULL,
+    state       TEXT    NOT NULL CHECK (
+        state IN ('created', 'missed', 'expired')
+    ),
+    task_id     TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    PRIMARY KEY (runner_id, profile_id, utc_date)
+);
+"""
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -107,6 +123,12 @@ class ControlDatabase:
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (1, utc_text()),
+                )
+            if version < 2:
+                connection.executescript(_SCHEMA_V2)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (2, utc_text()),
                 )
             connection.commit()
         except Exception:
