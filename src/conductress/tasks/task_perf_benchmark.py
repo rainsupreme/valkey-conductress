@@ -1167,7 +1167,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
         try:
             while command.is_running():
                 stdout, stderr = command.poll_output()
-                output_tail = (output_tail + stdout + stderr)[-4096:]
+                output_tail = (output_tail + (stdout or "") + (stderr or ""))[-4096:]
                 now = time.monotonic()
                 if now - last_rss_sample >= RSS_SAMPLE_INTERVAL_SECONDS:
                     memory_info = await server.info("memory")
@@ -1183,7 +1183,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
                     last_status = time.time()
                 await asyncio.sleep(BENCHMARK_UPDATE_INTERVAL)
             stdout, stderr = command.poll_output()
-            output_tail = (output_tail + stdout + stderr)[-4096:]
+            output_tail = (output_tail + (stdout or "") + (stderr or ""))[-4096:]
         except Exception:
             if command.is_running():
                 command.kill()
