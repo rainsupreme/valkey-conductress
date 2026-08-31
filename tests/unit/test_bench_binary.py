@@ -16,10 +16,13 @@ def _make_task(**overrides):
     task.benchmark_cpu_override = ""
     task.client_netns = ""
     task.bench_binary = overrides.get("bench_binary", "")
+    task.generator_profile = overrides.get("generator_profile", "")
+    task._generator_provenance = {}
     task.test = MagicMock()
     task.test.keyspace = None
     task._is_local_benchmark = lambda ip: ip in {"127.0.0.1", "localhost", "::1"}
     task._build_benchmark_command = PerfTaskRunner._build_benchmark_command.__get__(task)
+    task._resolve_generator_binary = PerfTaskRunner._resolve_generator_binary.__get__(task)
     return task
 
 

@@ -18,5 +18,6 @@
   "repetitions": 3,
   "server_cpu_override": "",
   "benchmark_cpu_override": "",
-  "server_args": ""
+  "server_args": "",
+  "generator_profile": ""
 }
