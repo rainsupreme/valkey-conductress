@@ -6,7 +6,7 @@ and human output, and no state mutation.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -804,7 +804,12 @@ class TestCanaryStatusIntegration:
     async def test_schedule_with_created_task(self, canary_env, canary_api_client, auth_headers):
         """Schedule entries include task_state from joined tasks table."""
         scheduler = canary_env["scheduler"]
-        creation_time = datetime(2026, 8, 30, 7, 0, 0, tzinfo=timezone.utc)
+        # create_app() performs a real-time startup tick. Use a future date so
+        # that startup cannot have already recorded this unique row as missed.
+        future_day = (datetime.now(timezone.utc) + timedelta(days=2)).date()
+        creation_time = datetime.combine(future_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(
+            hours=PROFILE_DATA["schedule"]["utc_hour"], minutes=1
+        )
         scheduler.tick(now=creation_time)
 
         resp = await canary_api_client.get("/api/v1/canary/status/armbench", headers=auth_headers["operator"])
