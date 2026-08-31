@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DIR = ROOT / "tests" / "fixtures" / "golden_tasks"
 SCHEMA_DIR = ROOT / "schemas"
 EXPECTED_TASK_TYPES = {
+    "BoundedInsertionTaskData",
     "PerfTaskData",
     "MemTaskData",
     "MixedTaskData",

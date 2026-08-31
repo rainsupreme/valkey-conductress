@@ -70,6 +70,8 @@ Every task-producing local queue command accepts exactly one routing selector:
 
 ```bash
 conductress queue add --tests get --platform graviton3
+conductress queue add-insertion --insertions 20M --size 16 --key-size 16 \
+  --maxmemory 8GB --max-rss 12GB --perf-stat --runner armbench
 conductress queue add-memory --types zadd --runner armbench
 conductress queue add-mixed --set-ratio 20 --runner g4bench
 conductress queue add-scenario --scenario eval-storm --runner bench

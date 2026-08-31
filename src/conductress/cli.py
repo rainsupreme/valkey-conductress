@@ -284,6 +284,31 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser = queue_sub.add_parser("add", help="Add performance benchmark tasks to the queue")
     _add_perf_args(add_parser)
 
+    # queue add-insertion
+    insertion_parser = queue_sub.add_parser(
+        "add-insertion", help="Add a finite new-key-only SET task with explicit memory bounds"
+    )
+    insertion_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    insertion_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    insertion_parser.add_argument(
+        "--insertions", required=True, help="Exact unique key count (supports K/M/G suffixes)"
+    )
+    insertion_parser.add_argument("--size", default="16", help="Value size (default: 16 bytes)")
+    insertion_parser.add_argument("--key-size", default="16", help="Key size (default: 16 bytes)")
+    insertion_parser.add_argument("--io-threads", type=int, default=config.DEFAULT_IO_THREADS)
+    insertion_parser.add_argument("--pipelining", type=int, default=config.DEFAULT_PIPELINING)
+    insertion_parser.add_argument("--repetitions", type=int, default=config.DEFAULT_REPETITIONS)
+    insertion_parser.add_argument("--maxmemory", required=True, help="Valkey maxmemory bound (for example 8GB)")
+    insertion_parser.add_argument("--max-rss", required=True, help="RSS abort ceiling (for example 12GB)")
+    insertion_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counters")
+    insertion_parser.add_argument("--server-cpus", default="", help="Expert: explicit server cpulist")
+    insertion_parser.add_argument("--client-cpus", default="", help="Expert: explicit benchmark-client cpulist")
+    insertion_parser.add_argument("--bench-threads", type=int, default=0, help="Expert: client thread count")
+    insertion_parser.add_argument("--bench-clients", type=int, default=0, help="Expert: total client connections")
+    insertion_parser.add_argument("--server-args", default="", help="Extra raw server arguments")
+    insertion_parser.add_argument("--note", default="", help="Optional note for the task")
+    insertion_parser.add_argument("--make-args", default=config.DEFAULT_MAKE_ARGS)
+
     # queue add-memory
     mem_parser = queue_sub.add_parser("add-memory", help="Add memory efficiency tasks to the queue")
     mem_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
@@ -604,6 +629,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for task_parser in (
         add_parser,
+        insertion_parser,
         mem_parser,
         mixed_parser,
         scenario_parser,
@@ -620,6 +646,96 @@ def build_parser() -> argparse.ArgumentParser:
     queue_sub.add_parser("clear", help="Remove all pending tasks from the queue")
 
     return parser
+
+
+def handle_queue_add_insertion(args: argparse.Namespace) -> int:
+    """Submit an exact finite new-key SET task with explicit memory bounds."""
+    from conductress.tasks.task_perf_benchmark import BoundedInsertionTaskData
+    from conductress.utility import HumanNumber
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+    try:
+        insertions = int(HumanNumber.from_human(args.insertions))
+        val_size = int(HumanByte.from_human(args.size))
+        key_size = int(HumanByte.from_human(args.key_size))
+        maxmemory_bytes = int(HumanByte.from_human(args.maxmemory))
+        max_rss_bytes = int(HumanByte.from_human(args.max_rss))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    numeric = {
+        "insertions": insertions,
+        "size": val_size,
+        "key-size": key_size,
+        "io-threads": args.io_threads,
+        "pipelining": args.pipelining,
+        "repetitions": args.repetitions,
+        "maxmemory": maxmemory_bytes,
+        "max-rss": max_rss_bytes,
+    }
+    for name, value in numeric.items():
+        if value < 1:
+            print(f"Error: --{name} must be at least 1", file=sys.stderr)
+            return 1
+    if key_size < 16:
+        print("Error: --key-size must be at least 16", file=sys.stderr)
+        return 1
+    if insertions > config.BENCHMARK_MAX_ITERATIONS:
+        print(
+            f"Error: --insertions must not exceed {config.BENCHMARK_MAX_ITERATIONS}",
+            file=sys.stderr,
+        )
+        return 1
+    if args.bench_threads < 0 or args.bench_clients < 0:
+        print("Error: --bench-threads and --bench-clients must not be negative", file=sys.stderr)
+        return 1
+    if max_rss_bytes < maxmemory_bytes:
+        print("Error: --max-rss must be greater than or equal to --maxmemory", file=sys.stderr)
+        return 1
+    try:
+        validate_cpulist(args.server_cpus)
+        validate_cpulist(args.client_cpus)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    task = BoundedInsertionTaskData(
+        source=args.source,
+        specifier=args.specifier,
+        make_args=args.make_args,
+        replicas=0,
+        note=args.note,
+        requirements={},
+        val_size=val_size,
+        key_size=key_size,
+        io_threads=args.io_threads,
+        pipelining=args.pipelining,
+        insertions=insertions,
+        repetitions=args.repetitions,
+        maxmemory_bytes=maxmemory_bytes,
+        max_rss_bytes=max_rss_bytes,
+        perf_stat_enabled=args.perf_stat,
+        server_cpu_override=args.server_cpus,
+        benchmark_cpu_override=args.client_cpus,
+        server_args=args.server_args,
+        bench_threads=args.bench_threads,
+        bench_clients=args.bench_clients,
+    )
+    queue = _TaskSubmitter(args)
+    queue.submit_task(task)
+    submission = queue.finish()
+    if _finish_submission(submission, args):
+        return 0
+    print(f"Queued bounded insertion task: {insertions} unique SETs per repetition")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  key={key_size}B value={val_size}B io-threads={args.io_threads} pipeline={args.pipelining}")
+    print(f"  maxmemory={maxmemory_bytes} max-rss={max_rss_bytes} reps={args.repetitions}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
 
 
 def handle_queue_add(args: argparse.Namespace) -> int:
@@ -1248,6 +1364,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_list(args)
         if args.queue_command == "add":
             return handle_queue_add(args)
+        if args.queue_command == "add-insertion":
+            return handle_queue_add_insertion(args)
         if args.queue_command == "add-memory":
             return handle_queue_add_memory(args)
         if args.queue_command == "add-mixed":

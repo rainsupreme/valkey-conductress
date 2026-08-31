@@ -391,7 +391,7 @@ class TestQueueListSubcommand:
         queue_parser = parser._subparsers._actions[1].choices["queue"]
         queue_parser.print_help()
         captured = capsys.readouterr()
-        for subcmd in ("list", "add", "add-memory", "add-latency", "remove", "clear"):
+        for subcmd in ("list", "add", "add-insertion", "add-memory", "add-latency", "remove", "clear"):
             assert subcmd in captured.out
 
 

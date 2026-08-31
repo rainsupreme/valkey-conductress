@@ -167,6 +167,18 @@ def test_json_errors_are_stable(capsys):
     "argv",
     [
         ["queue", "add", "--tests", "get", "--runner", "armbench"],
+        [
+            "queue",
+            "add-insertion",
+            "--insertions",
+            "1M",
+            "--maxmemory",
+            "1GB",
+            "--max-rss",
+            "2GB",
+            "--runner",
+            "armbench",
+        ],
         ["queue", "add-memory", "--runner", "armbench"],
         ["queue", "add-mixed", "--set-ratio", "20", "--runner", "armbench"],
         ["queue", "add-scenario", "--scenario", "eval-storm", "--runner", "armbench"],
@@ -227,6 +239,7 @@ def test_queue_add_without_routing_remains_local(capsys):
     "argv",
     [
         ["queue", "add", "--tests", "get"],
+        ["queue", "add-insertion", "--insertions", "1M", "--maxmemory", "1GB", "--max-rss", "2GB"],
         ["queue", "add-memory", "--types", "set"],
         ["queue", "add-mixed", "--set-ratio", "20"],
         ["queue", "add-scenario", "--scenario", "eval-storm"],

@@ -401,3 +401,45 @@ class TestCliQueueListing:
         captured = capsys.readouterr()
         assert "detail check" in captured.out
         assert "Task ID" in captured.out
+
+
+class TestCliBoundedInsertionQueuing:
+    def test_queue_add_insertion_writes_exact_safety_contract(self, queue_dir):
+        exit_code = main(
+            [
+                "queue",
+                "add-insertion",
+                "--source",
+                "valkey",
+                "--specifier",
+                "abc123",
+                "--insertions",
+                "20M",
+                "--size",
+                "16",
+                "--key-size",
+                "16",
+                "--io-threads",
+                "9",
+                "--pipelining",
+                "10",
+                "--repetitions",
+                "3",
+                "--maxmemory",
+                "8GB",
+                "--max-rss",
+                "12GB",
+                "--perf-stat",
+            ]
+        )
+
+        assert exit_code == 0
+        task_files = list(queue_dir.glob("task_*.json"))
+        assert len(task_files) == 1
+        data = json.loads(task_files[0].read_text())
+        assert data["task_type"] == "BoundedInsertionTaskData"
+        assert data["insertions"] == 20_000_000
+        assert data["maxmemory_bytes"] == 8 * 1024**3
+        assert data["max_rss_bytes"] == 12 * 1024**3
+        assert data["repetitions"] == 3
+        assert data["perf_stat_enabled"] is True

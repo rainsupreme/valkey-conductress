@@ -113,6 +113,21 @@ Only `--tests` is required. All other arguments have sensible defaults defined i
 
 The CLI computes the **Cartesian product** of all multi-valued parameters (`tests`, `sizes`, `io-threads`, `pipelining`, `key-sizes`) and submits each combination as a separate task. For example, `--tests get,set --sizes 512,1KB` creates 4 tasks.
 
+### Bounded insertion-only SET tasks
+
+Use `queue add-insertion` to measure the new-key path without allowing an open-ended dataset:
+
+```bash
+python -m src queue add-insertion \
+  --source valkey --specifier COMMIT \
+  --insertions 20M --key-size 16 --size 16 \
+  --io-threads 9 --pipelining 10 --repetitions 3 \
+  --maxmemory 8GB --max-rss 12GB --perf-stat \
+  --runner armbench --json
+```
+
+Each repetition starts from an empty server, issues exactly `--insertions` sequentially unique SETs, verifies the final key count, records elapsed time and memory per key, and restarts the server. `--maxmemory` is applied with `noeviction`; rejected writes fail the final cardinality check. `--max-rss` is sampled during execution and aborts the task if crossed. Results use method `perf-set-insertion` and include per-run RPS, elapsed time, final memory, peak sampled RSS, and client CPU utilization.
+
 The `--source` value is validated against configured repository names.
 
 ### Managing the Queue

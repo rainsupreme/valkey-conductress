@@ -1,12 +1,13 @@
 """Throughput benchmark"""
 
+import asyncio
 import datetime
 import logging
 import time
 from dataclasses import dataclass
 from math import sqrt
 from statistics import mean, stdev
-from typing import List, Optional, Sequence, Union
+from typing import Any, List, Optional, Sequence, Union
 
 from scipy.stats import t as t_dist
 
@@ -853,9 +854,13 @@ class PerfTaskRunner(BaseTaskRunner):
 
         # Per-test overrides (currently zpop) take precedence over the
         # task-level keyspace. A nonzero seed freezes random key selection.
-        keyspace = self.test.keyspace or getattr(self, "keyspace", PERF_BENCH_KEYSPACE)
+        finite_request_count = int(getattr(self, "finite_request_count", 0))
+        keyspace = finite_request_count or self.test.keyspace or getattr(self, "keyspace", PERF_BENCH_KEYSPACE)
         seed = getattr(self, "seed", 0)
         seed_arg = f" --seed {seed}" if seed else ""
+        iteration_args = (
+            f"--sequential -n {finite_request_count}" if finite_request_count else f"-l -n {BENCHMARK_MAX_ITERATIONS}"
+        )
 
         if self.benchmark_cpu_override:
             # Expert override: use the explicit cpulist verbatim. Bind memory
@@ -870,7 +875,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"{netns_prefix}numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q {iteration_args} {self.test_command}"
             )
         elif benchmark_alloc_tag and self._is_local_benchmark(target_ip):
             allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
@@ -879,14 +884,14 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"{netns_prefix}numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q {iteration_args} {self.test_command}"
             )
         else:
             return (
                 f"{netns_prefix}numactl --cpunodebind={net_numa} --membind={net_numa} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
                 f"-r {keyspace} -c {self.bench_clients} -P {self.pipelining} "
-                f"--threads {self.bench_threads}{seed_arg} -q -l -n {BENCHMARK_MAX_ITERATIONS} {self.test_command}"
+                f"--threads {self.bench_threads}{seed_arg} -q {iteration_args} {self.test_command}"
             )
 
     async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
@@ -976,6 +981,361 @@ class PerfTaskRunner(BaseTaskRunner):
         # Normalize localhost variations
         local_ips = {"127.0.0.1", "localhost", "::1"}
         return target_ip in local_ips
+
+
+RSS_SAMPLE_INTERVAL_SECONDS = 0.5
+
+
+def checked_memory_snapshot(info: dict[str, str], maxmemory_bytes: int, max_rss_bytes: int) -> tuple[int, int]:
+    """Return ``(used_memory, rss)`` and reject a crossed safety bound."""
+    try:
+        used_memory = int(info["used_memory"])
+        rss = int(info["used_memory_rss"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("INFO memory did not provide numeric used_memory and used_memory_rss") from exc
+    if used_memory > maxmemory_bytes:
+        raise RuntimeError(f"used_memory safety limit exceeded: {used_memory} > {maxmemory_bytes}")
+    if rss > max_rss_bytes:
+        raise RuntimeError(f"RSS safety limit exceeded: {rss} > {max_rss_bytes}")
+    return used_memory, rss
+
+
+@dataclass
+class BoundedInsertionTaskData(BaseTaskData):
+    """Finite new-key-only SET benchmark with explicit memory bounds."""
+
+    val_size: int
+    key_size: int
+    io_threads: int
+    pipelining: int
+    insertions: int
+    repetitions: int
+    maxmemory_bytes: int
+    max_rss_bytes: int
+    perf_stat_enabled: bool = False
+    server_cpu_override: str = ""
+    benchmark_cpu_override: str = ""
+    server_args: str = ""
+    bench_threads: int = 0
+    bench_clients: int = 0
+
+    def __post_init__(self):
+        super().__post_init__()
+        positive = {
+            "val_size": self.val_size,
+            "key_size": self.key_size,
+            "io_threads": self.io_threads,
+            "pipelining": self.pipelining,
+            "insertions": self.insertions,
+            "repetitions": self.repetitions,
+            "maxmemory_bytes": self.maxmemory_bytes,
+            "max_rss_bytes": self.max_rss_bytes,
+        }
+        for name, value in positive.items():
+            if int(value) < 1:
+                raise ValueError(f"{name} must be at least 1")
+        if self.key_size < BASE_KEY_SIZE:
+            raise ValueError(f"key_size must be at least {BASE_KEY_SIZE}")
+        if self.insertions > BENCHMARK_MAX_ITERATIONS:
+            raise ValueError(f"insertions must not exceed {BENCHMARK_MAX_ITERATIONS}")
+        if self.bench_threads < 0 or self.bench_clients < 0:
+            raise ValueError("bench_threads and bench_clients must not be negative")
+        if self.max_rss_bytes < self.maxmemory_bytes:
+            raise ValueError("max_rss_bytes must be greater than or equal to maxmemory_bytes")
+        if self.replicas != 0:
+            raise ValueError("bounded insertion tasks do not support replicas")
+
+    def short_description(self) -> str:
+        return (
+            f"{HumanNumber.to_human(self.insertions)} unique SETs, "
+            f"key={HumanByte.to_human(self.key_size)}, value={HumanByte.to_human(self.val_size)}, "
+            f"maxmemory={HumanByte.to_human(self.maxmemory_bytes)}, "
+            f"RSS ceiling={HumanByte.to_human(self.max_rss_bytes)}"
+        )
+
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "BoundedInsertionTaskRunner":
+        return BoundedInsertionTaskRunner(
+            task_name=self.task_id,
+            server_infos=server_infos,
+            binary_source=self.source,
+            specifier=self.specifier,
+            val_size=self.val_size,
+            key_size=self.key_size,
+            io_threads=self.io_threads,
+            pipelining=self.pipelining,
+            insertions=self.insertions,
+            repetitions=self.repetitions,
+            maxmemory_bytes=self.maxmemory_bytes,
+            max_rss_bytes=self.max_rss_bytes,
+            make_args=self.make_args,
+            note=self.note,
+            perf_stat_enabled=self.perf_stat_enabled,
+            server_cpu_override=self.server_cpu_override,
+            benchmark_cpu_override=self.benchmark_cpu_override,
+            server_args=self.server_args,
+            bench_threads=self.bench_threads,
+            bench_clients=self.bench_clients,
+        )
+
+
+class BoundedInsertionTaskRunner(PerfTaskRunner):
+    """Run exact finite fills while reusing standard CPU/perf placement."""
+
+    def __init__(
+        self,
+        *,
+        task_name: str,
+        server_infos: list[ServerInfo],
+        binary_source: str,
+        specifier: str,
+        val_size: int,
+        key_size: int,
+        io_threads: int,
+        pipelining: int,
+        insertions: int,
+        repetitions: int,
+        maxmemory_bytes: int,
+        max_rss_bytes: int,
+        make_args: str,
+        note: str,
+        perf_stat_enabled: bool,
+        server_cpu_override: str,
+        benchmark_cpu_override: str,
+        server_args: str,
+        bench_threads: int,
+        bench_clients: int,
+    ):
+        bounded_server_args = (f"{server_args} --maxmemory {maxmemory_bytes} --maxmemory-policy noeviction").strip()
+        super().__init__(
+            task_name=task_name,
+            server_infos=server_infos,
+            binary_source=binary_source,
+            specifier=specifier,
+            io_threads=io_threads,
+            valsize=val_size,
+            pipelining=pipelining,
+            test="set",
+            warmup=0,
+            duration=0,
+            preload_keys=False,
+            has_expire=False,
+            make_args=make_args,
+            perf_stat_enabled=perf_stat_enabled,
+            note=note,
+            key_size=key_size,
+            repetitions=repetitions,
+            server_cpu_override=server_cpu_override,
+            benchmark_cpu_override=benchmark_cpu_override,
+            server_args=bounded_server_args,
+            bench_threads=bench_threads,
+            bench_clients=bench_clients,
+        )
+        self.finite_request_count = insertions
+        self.insertions = insertions
+        self.maxmemory_bytes = maxmemory_bytes
+        self.max_rss_bytes = max_rss_bytes
+        self.status = BenchmarkStatus(steps_total=repetitions, task_type="perf-set-insertion")
+
+    async def _run_finite_fill(self, command_string: str, server: Server, rep: int) -> dict[str, Any]:
+        before_info = await server.info("memory")
+        before_used, before_rss = checked_memory_snapshot(before_info, self.maxmemory_bytes, self.max_rss_bytes)
+        command = RealtimeCommand(command_string)
+        output_tail = ""
+        perf_started = False
+        if self.perf_stat_enabled:
+            await server.perf_stat_start()
+            perf_started = True
+        try:
+            command.start()
+        except Exception:
+            if perf_started:
+                await server.perf_stat_stop()
+            raise
+        start = time.monotonic()
+        client_cpu_start = sample_process_tree_cpu(command.p.pid) if command.p is not None else None
+        client_cpu_last = client_cpu_start
+        client_cpu_last_time = start
+        last_status = time.time()
+        last_rss_sample = 0.0
+        peak_rss = before_rss
+        try:
+            while command.is_running():
+                stdout, stderr = command.poll_output()
+                output_tail = (output_tail + stdout + stderr)[-4096:]
+                now = time.monotonic()
+                if now - last_rss_sample >= RSS_SAMPLE_INTERVAL_SECONDS:
+                    memory_info = await server.info("memory")
+                    _, rss = checked_memory_snapshot(memory_info, self.maxmemory_bytes, self.max_rss_bytes)
+                    peak_rss = max(peak_rss, rss)
+                    if command.p is not None:
+                        live_cpu = sample_process_tree_cpu(command.p.pid)
+                        if live_cpu is not None:
+                            client_cpu_last = live_cpu
+                            client_cpu_last_time = now
+                    last_rss_sample = now
+                if time.time() - last_status >= HEARTBEAT_INTERVAL:
+                    self.file_protocol.write_status(self.status)
+                    last_status = time.time()
+                await asyncio.sleep(BENCHMARK_UPDATE_INTERVAL)
+            stdout, stderr = command.poll_output()
+            output_tail = (output_tail + stdout + stderr)[-4096:]
+        except Exception:
+            if command.is_running():
+                command.kill()
+            raise
+        finally:
+            if perf_started:
+                await server.perf_stat_stop()
+
+        elapsed = time.monotonic() - start
+        if command.p is None or command.p.returncode != 0:
+            returncode = None if command.p is None else command.p.returncode
+            raise RuntimeError(f"finite insertion generator exited {returncode}: {output_tail}")
+        if elapsed <= 0:
+            raise RuntimeError("finite insertion elapsed time was not positive")
+
+        if client_cpu_start is not None and client_cpu_last is not None:
+            sampled_elapsed = client_cpu_last_time - start
+            if sampled_elapsed > 0:
+                self._client_cores_busy_per_rep.append((client_cpu_last - client_cpu_start) / sampled_elapsed)
+
+        after_info = await server.info("memory")
+        after_used, after_rss = checked_memory_snapshot(after_info, self.maxmemory_bytes, self.max_rss_bytes)
+        peak_rss = max(peak_rss, after_rss)
+        key_count, expire_count = await server.count_items_expires()
+        if expire_count != 0:
+            raise RuntimeError(f"finite insertion created {expire_count} unexpected expirations")
+        if key_count != self.insertions:
+            raise RuntimeError(
+                f"finite insertion expected {self.insertions} keys but DBSIZE reported {key_count}; "
+                "the maxmemory bound may have rejected writes"
+            )
+
+        return {
+            "rps": self.insertions / elapsed,
+            "elapsed_seconds": elapsed,
+            "inserted_keys": key_count,
+            "used_memory_before": before_used,
+            "used_memory_after": after_used,
+            "used_memory_rss_after": after_rss,
+            "peak_rss": peak_rss,
+            "bytes_per_inserted_key": (after_used - before_used) / key_count,
+        }
+
+    async def run(self) -> None:
+        self.file_protocol.write_status(self.status)
+        replication_group = ReplicationGroup(
+            self.server_infos,
+            self.binary_source,
+            self.specifier,
+            self.io_threads,
+            self.make_args,
+            server_cpu_override=self.server_cpu_override,
+            server_args=self.server_args,
+        )
+        benchmark_alloc_tag = None
+        client: Optional[Server] = None
+        server: Optional[Server] = None
+        samples: list[dict[str, Any]] = []
+        perf_counters: Optional[dict[str, dict[str, int]]] = None
+
+        try:
+            for rep in range(self.repetitions):
+                if rep > 0:
+                    await replication_group.stop_all_servers()
+                    primary = replication_group.primary or Server(self.server_infos[0].ip)
+                    platform = getattr(primary, "_platform_info", None)
+                    if platform is None or platform.needs_drop_caches:
+                        await primary.run_host_command("sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False)
+
+                await replication_group.kill_all_valkey_instances()
+                await replication_group.start()
+                if not replication_group.primary:
+                    raise RuntimeError("Replication group failed to start: no primary server available")
+                server = replication_group.primary
+                self.commit_hash = server.get_build_hash() or ""
+
+                empty_count, _ = await server.count_items_expires()
+                if empty_count != 0:
+                    raise RuntimeError(f"finite insertion repetition did not start empty: DBSIZE={empty_count}")
+
+                if client is None:
+                    client = Server("127.0.0.1")
+                    await client.ensure_host_cpu_allocation()
+                    benchmark_alloc_tag = self._allocate_benchmark_cpus(client, server)
+                    if self.benchmark_cpu_override:
+                        self._client_allocated_cores = count_cpu_list(self.benchmark_cpu_override)
+                    elif benchmark_alloc_tag is not None:
+                        self._client_allocated_cores = self.bench_threads
+
+                command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)
+                sample = await self._run_finite_fill(command_string, server, rep)
+                samples.append(sample)
+                self.status.steps_completed = rep + 1
+                self.file_protocol.write_status(self.status)
+
+                rep_counters = await self._collect_profiling_reports(server)
+                if rep_counters:
+                    self._perf_rep_count += 1
+                    if perf_counters is None:
+                        perf_counters = rep_counters
+                    else:
+                        for bucket, events in rep_counters.items():
+                            accumulated = perf_counters.setdefault(bucket, {})
+                            for name, value in events.items():
+                                accumulated[name] = accumulated.get(name, 0) + value
+
+            if server is None or not samples:
+                raise RuntimeError("bounded insertion produced no samples")
+
+            per_run_rps = [float(sample["rps"]) for sample in samples]
+            if len(per_run_rps) > 1:
+                mean_rps, ci_95 = compute_aggregated_stats(per_run_rps)
+            else:
+                mean_rps, ci_95 = per_run_rps[0], 0.0
+            mean_elapsed = sum(float(sample["elapsed_seconds"]) for sample in samples) / len(samples)
+            self.duration = mean_elapsed
+            data: dict[str, Any] = {
+                "insertions_per_rep": self.insertions,
+                "key_size": self.key_size,
+                "size": self.valsize,
+                "io-threads": self.io_threads,
+                "pipeline": self.pipelining,
+                "repetitions": self.repetitions,
+                "maxmemory_bytes": self.maxmemory_bytes,
+                "max_rss_bytes": self.max_rss_bytes,
+                "per_run_rps": per_run_rps,
+                "mean_rps": mean_rps,
+                "ci_95": ci_95,
+                "per_run_elapsed_seconds": [sample["elapsed_seconds"] for sample in samples],
+                "per_run_memory": samples,
+                "perf_stat_enabled": self.perf_stat_enabled,
+            }
+            if perf_counters:
+                self._store_perf_counters(data, perf_counters)
+            if self._client_cores_busy_per_rep:
+                data["client_cpu"] = summarize_client_cpu(self._client_cores_busy_per_rep, self._client_allocated_cores)
+
+            self.file_protocol.write_results(
+                BenchmarkResults(
+                    method="perf-set-insertion",
+                    source=self.binary_source,
+                    specifier=self.specifier,
+                    commit_hash=self.commit_hash,
+                    score=mean_rps,
+                    end_time=datetime.datetime.now(),
+                    data=data,
+                    make_args=self.make_args,
+                    note=self.note,
+                )
+            )
+            self.status.state = "completed"
+            self.status.end_time = time.time()
+            self.file_protocol.write_status(self.status)
+        finally:
+            await replication_group.stop_all_servers()
+            if benchmark_alloc_tag and client:
+                client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
 
 
 class PerfTaskVisualizer(PlotTaskVisualizer):

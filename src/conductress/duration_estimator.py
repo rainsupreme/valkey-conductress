@@ -18,6 +18,7 @@ def task_family(task_type: str) -> str:
     return {
         "PerfTaskData": "perf",
         "CanaryPerfTaskData": "perf",
+        "BoundedInsertionTaskData": "perf",
         "CachecannonTaskData": "cachecannon",
         "MixedTaskData": "mixed",
         "ScenarioTaskData": "scenario",
@@ -48,6 +49,12 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
         if max_reps > repetitions and float(document.get("target_cv") or 0) > 0:
             repetitions = min(max_reps, repetitions + 2)
         seconds = 60 + repetitions * (warmup + duration + 18)
+        if document.get("perf_stat_enabled"):
+            seconds += 45
+    elif task_type == "BoundedInsertionTaskData":
+        insertions = max(1, int(document.get("insertions") or 1))
+        # Conservative 500K inserts/s floor plus restart/cache-drop overhead.
+        seconds = 60 + repetitions * (insertions / 500_000 + 18)
         if document.get("perf_stat_enabled"):
             seconds += 45
     elif task_type == "CachecannonTaskData":
