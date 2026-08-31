@@ -114,6 +114,12 @@ SWEEP_TARGET_CV = 0.5
 ANNOTATION_THRESHOLD = 0.04
 SWEEP_MAKE_ARGS = ""
 
+# Versioned sweep epoch.  Disabled by default until overlap validation is
+# complete; enabling it runs additive v2 GET + 80:20 mixed coordinators while
+# leaving every v1 coordinator/state file active and unchanged.
+SWEEP_V2_ENABLED = False
+SWEEP_V2_EPOCH_ID = "v2"
+
 # Additional throughput workloads (each gets its own state file + series).
 # Label is auto-generated as {test}-k{key_size}-v{val_size}-t{io_threads}-p{pipelining}.
 # "platforms" limits the workload to specific architectures (omit for all platforms).

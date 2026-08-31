@@ -248,6 +248,11 @@ class BaseSweepCoordinator(ABC):
         ...
 
     @property
+    def epoch_id(self) -> str:
+        """Measurement epoch used for export namespacing (legacy by default)."""
+        return "v1"
+
+    @property
     def lower_is_better(self) -> bool:
         """Whether lower values are better (e.g. memory overhead). Default: False (higher is better)."""
         return False

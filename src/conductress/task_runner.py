@@ -94,6 +94,20 @@ class TaskRunner:
                 extra.initialize()
                 self._subscribers.append(extra)
 
+            # Additive v2 epoch: separate state, explicit scalable generator for
+            # GET, and pinned memtier for the canonical 80:20 mixed workload.
+            from conductress.config import SWEEP_V2_ENABLED
+
+            if SWEEP_V2_ENABLED:
+                from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2, ThroughputSweepCoordinatorV2
+
+                for v2_coordinator in (
+                    ThroughputSweepCoordinatorV2(repo_path),
+                    MixedSweepCoordinatorV2(repo_path),
+                ):
+                    v2_coordinator.initialize()
+                    self._subscribers.append(v2_coordinator)
+
             # Latency sweep runs independently (flat rate, no throughput dependency)
             from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 

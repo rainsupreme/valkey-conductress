@@ -8,13 +8,10 @@ serialization/backward compatibility.
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Focused unit tests: GeneratorProfile registry
@@ -140,13 +137,7 @@ class TestBootstrapMismatch:
 
     def test_missing_binary_triggers_build(self, tmp_path: Path):
         """A manifest without a binary should trigger rebuild."""
-        from conductress.generator_profiles import GeneratorManifest, GeneratorProfile
-
-        profile = GeneratorProfile(
-            name="test-profile",
-            repo_url="https://example.com/test.git",
-            commit_sha="a" * 40,
-        )
+        from conductress.generator_profiles import GeneratorManifest
 
         # Write a manifest but no binary
         manifest_path = tmp_path / "manifest.json"
@@ -161,7 +152,7 @@ class TestBootstrapMismatch:
 
     def test_manifest_commit_mismatch_detected(self, tmp_path: Path):
         """Changed commit_sha in profile vs manifest should trigger rebuild."""
-        from conductress.generator_profiles import GeneratorManifest, GeneratorProfile, _sha256_file
+        from conductress.generator_profiles import GeneratorManifest, _sha256_file
 
         binary = tmp_path / "valkey-benchmark"
         binary.write_bytes(b"fake binary")
@@ -260,16 +251,15 @@ class TestCrossContamination:
 
         assert "v2" in str(V2_STATE_DIR)
 
-    def test_v2_workload_id_prefixed(self, tmp_path: Path):
+    def test_v2_workload_id_is_canonical_and_epoch_is_v2(self, tmp_path: Path):
         from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
 
         with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
             with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                # Create a dummy state file so it doesn't crash
-                state_file = tmp_path / "state_v2-get-k16-v16-t7-p10.json"
-                state_file.write_text("{}")
                 coord = ThroughputSweepCoordinatorV2(tmp_path)
-        assert coord.workload_id.startswith("v2-")
+        assert coord.workload_id == "get-k16-v16-t7-p10"
+        assert coord.epoch_id == "v2"
+        assert "v2" in coord.state_file.name
 
     def test_v2_does_not_match_v1_task(self, tmp_path: Path):
         from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
@@ -350,17 +340,15 @@ class TestMixedSweepV2:
         if "valkey" not in cfg.REPO_NAMES:
             monkeypatch.setattr(cfg, "REPO_NAMES", cfg.REPO_NAMES + ["valkey"])
 
-    def test_mixed_v2_workload_id(self, tmp_path: Path):
+    def test_mixed_v2_workload_id_and_epoch(self, tmp_path: Path):
         from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
 
         with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
             with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                label = f"s20-v2-mixed-s20-k16-v16-t{7}-p10"
-                state_file = tmp_path / f"state_{label}.json"
-                state_file.write_text("{}")
                 coord = MixedSweepCoordinatorV2(tmp_path)
-        assert "s20-v2" in coord.workload_id
-        assert "mixed" in coord.workload_id
+        assert coord.workload_id == "mixed-s20-k16-v16-t7-p10"
+        assert coord.epoch_id == "v2"
+        assert "v2" in coord.state_file.name
 
     def test_mixed_v2_does_not_match_perf_task(self, tmp_path: Path):
         from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
@@ -417,7 +405,6 @@ class TestMixedSweepV2:
             io_threads=7,
             pipelining=10,
             duration=30,
-            generator_profile="scalable-v2",
         )
         mixed_task.sweep_commit = "abc"  # type: ignore[attr-defined]
         assert coord._is_my_task(mixed_task)
@@ -489,28 +476,6 @@ class TestSerialization:
         )
         d = asdict(task)
         assert d["generator_profile"] == ""
-
-    def test_mixed_taskdata_serializes_generator_profile(self):
-        from dataclasses import asdict
-
-        from conductress.tasks.task_mixed import MixedTaskData
-
-        task = MixedTaskData(
-            source="valkey",
-            specifier="abc",
-            replicas=0,
-            note="test",
-            requirements={},
-            make_args="",
-            set_ratio=20,
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            duration=30,
-            generator_profile="legacy-v1",
-        )
-        d = asdict(task)
-        assert d["generator_profile"] == "legacy-v1"
 
     def test_legacy_task_json_without_generator_profile_deserializes(self):
         """Tasks serialized before generator_profile existed should still load."""

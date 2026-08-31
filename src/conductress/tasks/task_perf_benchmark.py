@@ -845,25 +845,23 @@ class PerfTaskRunner(BaseTaskRunner):
         return benchmark_alloc_tag
 
     def _resolve_generator_binary(self) -> str:
-        """Resolve generator profile to a local binary path, if a profile is set.
+        """Resolve an explicit generator profile to a local binary path.
 
-        Returns empty string if no profile is set (legacy fallback).
-        Populates self._generator_provenance with build provenance.
+        No profile preserves the legacy default path.  An explicit profile is
+        part of the workload identity, so bootstrap or verification failures
+        must fail the task rather than silently running the legacy generator.
         """
         if not self.generator_profile:
             return ""
-        try:
-            from conductress.generator_profiles import resolve_bench_binary
 
-            path, provenance = resolve_bench_binary(
-                generator_profile=self.generator_profile,
-                bench_binary_override="",
-            )
-            self._generator_provenance = provenance
-            return path
-        except Exception as e:
-            self.logger.warning("Generator profile '%s' resolution failed: %s", self.generator_profile, e)
-            return ""
+        from conductress.generator_profiles import resolve_bench_binary
+
+        path, provenance = resolve_bench_binary(
+            generator_profile=self.generator_profile,
+            bench_binary_override="",
+        )
+        self._generator_provenance = provenance
+        return path
 
     def _build_benchmark_command(
         self,

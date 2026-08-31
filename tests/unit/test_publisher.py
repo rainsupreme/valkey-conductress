@@ -1,5 +1,6 @@
 """Tests for the dashboard publisher."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -148,3 +149,61 @@ class TestDashboardPublisher:
         # Output filename is platform-scoped
         output_path = mock_notable.call_args.args[1]
         assert output_path.name == f"notable-{pub._platform_id}.json"
+
+
+class TestEpochPublishing:
+    def test_v1_path_is_unchanged(self):
+        path = Path("series-arm64-get-k16-v16-t7-p10-throughput.json")
+        assert DashboardPublisher._epoch_path(path, "v1") == path
+
+    def test_v2_path_is_epoch_qualified(self):
+        path = Path("series-arm64-get-k16-v16-t7-p10-throughput.json")
+        assert DashboardPublisher._epoch_path(path, "v2").name == (
+            "series-arm64-get-k16-v16-t7-p10-throughput.epoch-v2.json"
+        )
+
+    def test_legacy_magic_mock_coordinator_defaults_to_v1(self):
+        assert DashboardPublisher._coord_epoch(MagicMock()) == "v1"
+
+
+def test_publish_writes_isolated_v1_v2_series_and_manifests(tmp_path):
+    def make_coord(epoch_id):
+        coord = MagicMock()
+        coord.epoch_id = epoch_id
+        coord.workload_id = "get-k16-v16-t7-p10"
+        coord.metric_id = "memory"  # avoid perf side exports in this contract test
+        coord.engine = None
+        coord.lower_is_better = False
+        coord.state = MagicMock()
+
+        def export(path, platform):
+            path.write_text('{"metadata": {}, "points": []}')
+            return 0
+
+        coord.export.side_effect = export
+        return coord
+
+    publisher = DashboardPublisher("user@host:/path", [make_coord("v1"), make_coord("v2")])
+    publisher._export_dir = tmp_path
+
+    def export_notable(_sources, path, _platform):
+        path.write_text('{"metadata": {}, "annotations": []}')
+
+    with (
+        patch("conductress.sweep.exporter.export_notable", side_effect=export_notable),
+        patch("conductress.publisher.run_rsync"),
+    ):
+        publisher.on_task_completed(MagicMock())
+
+    platform = publisher._platform_id
+    legacy = tmp_path / f"series-{platform}-get-k16-v16-t7-p10-memory.json"
+    v2 = tmp_path / f"series-{platform}-get-k16-v16-t7-p10-memory.epoch-v2.json"
+    assert legacy.exists()
+    assert v2.exists()
+    assert json.loads(legacy.read_text())["metadata"]["epoch"] == "v1"
+    assert json.loads(v2.read_text())["metadata"]["epoch"] == "v2"
+
+    base_manifest = json.loads((tmp_path / f"manifest-{platform}.json").read_text())
+    v2_manifest = json.loads((tmp_path / f"manifest-{platform}.epoch-v2.json").read_text())
+    assert [epoch["id"] for epoch in base_manifest["epochs"]] == ["v1", "v2"]
+    assert v2_manifest["epoch"] == "v2"

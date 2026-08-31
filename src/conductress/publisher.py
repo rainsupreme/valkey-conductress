@@ -1,6 +1,8 @@
 """Dashboard publisher: exports and rsyncs data to the dashboard server after task completions."""
 
+import json
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,8 +53,38 @@ class DashboardPublisher:
     def on_queue_empty(self) -> None:
         """No-op."""
 
+    @staticmethod
+    def _coord_epoch(coord: object) -> str:
+        epoch_id = getattr(coord, "epoch_id", "v1")
+        return epoch_id if isinstance(epoch_id, str) and epoch_id else "v1"
+
+    @staticmethod
+    def _epoch_path(path: Path, epoch_id: str) -> Path:
+        """Return the legacy path for v1 or add `.epoch-<id>` for v2+."""
+        if not epoch_id or epoch_id == "v1":
+            return path
+        return path.with_name(f"{path.stem}.epoch-{epoch_id}{path.suffix}")
+
+    @staticmethod
+    def _stamp_epoch(path: Path, epoch_id: str) -> None:
+        """Stamp exported JSON with its epoch before publication."""
+        if not path.exists():
+            return
+        payload = json.loads(path.read_text())
+        metadata = payload.setdefault("metadata", {})
+        metadata["epoch"] = epoch_id
+        path.write_text(json.dumps(payload, indent=2))
+
+    def _promote_epoch_stage(self, stage: Path, epoch_id: str) -> None:
+        """Move staged exporter files into the epoch-qualified namespace."""
+        for path in stage.glob("*.json"):
+            target = self._epoch_path(self._export_dir / path.name, epoch_id)
+            self._stamp_epoch(path, epoch_id)
+            path.replace(target)
+        shutil.rmtree(stage, ignore_errors=True)
+
     def _publish(self) -> None:
-        """Export all coordinator data + perf metrics + manifest, then rsync."""
+        """Export each measurement epoch independently, then rsync."""
         from conductress.sweep.exporter import (
             NotableSource,
             export_cpu_profile,
@@ -63,61 +95,78 @@ class DashboardPublisher:
         )
 
         try:
-            # Export each coordinator's series
-            for coord in self.coordinators:
-                output = self._export_dir / f"series-{self._platform_id}-{coord.workload_id}-{coord.metric_id}.json"
-                coord.export(output, platform=self._platform_label)
-
-            # Export perf metrics from all throughput coordinators
-            for coord in self.coordinators:
-                if coord.metric_id == "throughput":
-                    repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
-                    branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
-                    export_perf_metrics(
-                        coord.state, self._export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
-                    )
-                    # CPU flamegraph data exposes the binary's symbols — skip for engines that
-                    # opt out (Redis). Also stops any pre-existing stacks in state from being
-                    # re-published. Aggregate perf metrics above are unaffected.
-                    if should_profile_internals(coord.engine):
-                        export_cpu_profile(
-                            coord.state,
-                            self._export_dir,
-                            self._platform_id,
-                            coord.workload_id,
-                            repo=repo,
-                            branch=branch,
-                        )
-                        export_cpu_stacks_raw(
-                            coord.state,
-                            self._export_dir,
-                            self._platform_id,
-                            coord.workload_id,
-                            repo=repo,
-                            branch=branch,
-                        )
-
-            # Export combined notable-changes feed (Valkey only — the feed celebrates or
-            # flags Valkey commits; other engines' series are tracked but not surfaced here).
-            notable_sources = [
-                NotableSource(
-                    state=coord.state,
-                    workload=coord.workload_id,
-                    metric=coord.metric_id,
-                    lower_is_better=coord.lower_is_better,
-                )
-                for coord in self.coordinators
-                if coord.metric_id in ("throughput", "memory") and (not coord.engine or coord.engine.source == "valkey")
+            epoch_ids = list(dict.fromkeys(self._coord_epoch(c) for c in self.coordinators))
+            epoch_defs = [
+                {
+                    "id": epoch_id,
+                    "label": "Legacy v1 (stock generator)" if epoch_id == "v1" else "Scalable v2 (patched generator)",
+                    "generator": "stock" if epoch_id == "v1" else "patched",
+                }
+                for epoch_id in epoch_ids
             ]
-            export_notable(
-                notable_sources, self._export_dir / f"notable-{self._platform_id}.json", self._platform_label
-            )
 
-            # Export manifest with all workload IDs, categorized by metric
-            all_workloads = list(dict.fromkeys((c.workload_id, c.metric_id) for c in self.coordinators))
-            export_manifest(self._export_dir, platforms=["amd64", "arm64", "intel"], workloads=all_workloads)
+            for coord in self.coordinators:
+                epoch_id = self._coord_epoch(coord)
+                base = self._export_dir / f"series-{self._platform_id}-{coord.workload_id}-{coord.metric_id}.json"
+                output = self._epoch_path(base, epoch_id)
+                coord.export(output, platform=self._platform_label)
+                self._stamp_epoch(output, epoch_id)
 
-            # Rsync to target
+                if coord.metric_id != "throughput":
+                    continue
+
+                repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
+                branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
+                export_dir = self._export_dir
+                stage = None
+                if epoch_id != "v1":
+                    stage = self._export_dir / f".stage-{epoch_id}-{coord.workload_id}"
+                    shutil.rmtree(stage, ignore_errors=True)
+                    stage.mkdir(parents=True)
+                    export_dir = stage
+
+                export_perf_metrics(
+                    coord.state, export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                )
+                if should_profile_internals(coord.engine):
+                    export_cpu_profile(
+                        coord.state, export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                    )
+                    export_cpu_stacks_raw(
+                        coord.state, export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                    )
+                if stage is not None:
+                    self._promote_epoch_stage(stage, epoch_id)
+
+            # Notable feeds and manifests are isolated by epoch as well.  The
+            # legacy manifest advertises every available epoch so old URLs stay
+            # valid while new dashboards can discover v2.
+            for epoch_id in epoch_ids:
+                epoch_coords = [c for c in self.coordinators if self._coord_epoch(c) == epoch_id]
+                notable_sources = [
+                    NotableSource(
+                        state=coord.state,
+                        workload=coord.workload_id,
+                        metric=coord.metric_id,
+                        lower_is_better=coord.lower_is_better,
+                    )
+                    for coord in epoch_coords
+                    if coord.metric_id in ("throughput", "memory")
+                    and (not coord.engine or coord.engine.source == "valkey")
+                ]
+                notable = self._epoch_path(self._export_dir / f"notable-{self._platform_id}.json", epoch_id)
+                export_notable(notable_sources, notable, self._platform_label)
+                self._stamp_epoch(notable, epoch_id)
+
+                workloads = list(dict.fromkeys((c.workload_id, c.metric_id) for c in epoch_coords))
+                export_manifest(
+                    self._export_dir,
+                    platforms=["amd64", "arm64", "graviton4", "intel"],
+                    workloads=workloads,
+                    epoch_id=epoch_id,
+                    epochs=epoch_defs,
+                )
+
             self._rsync()
         except Exception:
             logger.error("Publish failed (non-fatal) — dashboard data may be stale", exc_info=True)

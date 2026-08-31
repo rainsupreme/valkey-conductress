@@ -110,7 +110,6 @@ class MixedTaskData(BaseTaskData):
     server_cpu_override: str = ""
     benchmark_cpu_override: str = ""
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
-    generator_profile: str = ""  # named generator profile; empty = legacy behavior
 
     def __post_init__(self):
         super().__post_init__()

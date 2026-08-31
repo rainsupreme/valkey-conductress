@@ -30,7 +30,7 @@ from conductress.config import (
     SWEEP_TARGET_CV,
     SWEEP_WARMUP,
 )
-from conductress.generator_profiles import DEFAULT_PROFILE, SCALABLE_V2, get_profile
+from conductress.generator_profiles import SCALABLE_V2
 from conductress.sweep.coordinator import BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
@@ -57,9 +57,9 @@ class ThroughputSweepCoordinatorV2(BaseSweepCoordinator):
     """Profile-aware throughput sweep using a named generator profile.
 
     Differences from v1 SweepCoordinator:
-    - Tasks carry ``generator_profile`` and an explicit ``bench_binary`` path.
+    - Tasks carry an explicit ``generator_profile``.
     - State files live under ``sweep_data/v2/`` to prevent cross-contamination.
-    - Workload IDs are prefixed with ``v2-`` for export namespace isolation.
+    - Export namespacing comes from ``epoch_id``; workload IDs remain canonical.
     - Task discrimination uses ``generator_profile`` field matching.
     """
 
@@ -83,18 +83,21 @@ class ThroughputSweepCoordinatorV2(BaseSweepCoordinator):
         self._pipelining = pipelining
 
         engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
-        self._label = f"v2-{engine_prefix}{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+        self._label = f"{engine_prefix}{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
 
         _ensure_v2_state_dir()
-        state_file = V2_STATE_DIR / f"state_{self._label}.json"
+        state_file = V2_STATE_DIR / f"state_{self._profile_name}_{self._label}.json"
         super().__init__(repo_path, state_file, engine=engine)
+
+    @property
+    def epoch_id(self) -> str:
+        return "v2"
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
         return self._label
 
     def _create_task(self, sweep_task: SweepTask) -> PerfTaskData:
-        profile = get_profile(self._profile_name)
         task = PerfTaskData(
             source=self._sweep_source,
             specifier=sweep_task.commit,
@@ -163,15 +166,11 @@ class ThroughputSweepCoordinatorV2(BaseSweepCoordinator):
 
 
 class MixedSweepCoordinatorV2(BaseSweepCoordinator):
-    """Profile-aware mixed GET/SET sweep (memtier-based).
+    """Versioned 80:20 GET/SET sweep using pinned memtier_benchmark.
 
-    Default parameters: set_ratio=20 (80% GET / 20% SET), val_size=16B,
-    pipelining=10 (P10 = pipeline depth 10).
-
-    State lives under ``sweep_data/v2/``, export namespace ``s20-v2-*``.
-
-    P50 scheduling is configurable but disabled by default: pass
-    ``schedule_p50=True`` to include P50 workloads in the sweep.
+    The v2 identity is a sweep protocol/export epoch, not a valkey-benchmark
+    generator profile.  MixedTaskRunner continues to use the separately pinned
+    memtier binary.  Default parameters are 20% SET, 16B values and P10.
     """
 
     metric_id = "throughput"
@@ -180,7 +179,6 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
     def __init__(
         self,
         repo_path: Path,
-        profile_name: str = SCALABLE_V2.name,
         set_ratio: int = 20,
         val_size: int = 16,
         io_threads: int = SWEEP_IO_THREADS,
@@ -188,7 +186,6 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
         engine: Optional[config.SweepEngine] = None,
         schedule_p50: bool = False,
     ):
-        self._profile_name = profile_name
         self._set_ratio = set_ratio
         self._val_size = val_size
         self._io_threads = io_threads
@@ -196,11 +193,15 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
         self._schedule_p50 = schedule_p50
 
         engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
-        self._label = f"s20-v2-{engine_prefix}mixed-s{set_ratio}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+        self._label = f"{engine_prefix}mixed-s{set_ratio}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
 
         _ensure_v2_state_dir()
-        state_file = V2_STATE_DIR / f"state_{self._label}.json"
+        state_file = V2_STATE_DIR / f"state_v2_{self._label}.json"
         super().__init__(repo_path, state_file, engine=engine)
+
+    @property
+    def epoch_id(self) -> str:
+        return "v2"
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
@@ -222,7 +223,6 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
             warmup=SWEEP_WARMUP,
             repetitions=SWEEP_REPETITIONS,
         )
-        task.generator_profile = self._profile_name  # type: ignore[attr-defined]
         return task
 
     def _find_task_entry(self, task: BaseTaskData) -> Optional[dict]:
@@ -257,5 +257,4 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
             and task.val_size == self._val_size
             and task.io_threads == self._io_threads
             and task.pipelining == self._pipelining
-            and getattr(task, "generator_profile", "") == self._profile_name
         )

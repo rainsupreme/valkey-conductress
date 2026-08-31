@@ -857,8 +857,19 @@ def export_cpu_stacks_raw(
     return {"files_written": files_written, "indexed": len(index_entries)}
 
 
-def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tuple[str, str]]) -> None:
-    """Write per-platform manifest for dashboard auto-discovery."""
+def export_manifest(
+    output_dir: Path,
+    platforms: list[str],
+    workloads: list[tuple[str, str]],
+    epoch_id: str = "v1",
+    epochs: Optional[list[dict[str, str]]] = None,
+) -> None:
+    """Write a per-platform manifest for one measurement epoch.
+
+    The v1 filename remains unchanged for backward compatibility.  v2+
+    manifests receive `.epoch-<id>` and every manifest advertises the epochs
+    available in the same publication batch.
+    """
     from conductress.publisher import detect_platform
 
     platform_id, _ = detect_platform()
@@ -866,8 +877,10 @@ def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tupl
     memory = [w for w, m in workloads if m == "memory"]
     latency = [w for w, m in workloads if m == "latency"]
     manifest: dict[str, Any] = {
-        "version": 2,
+        "version": 3,
         "platform": platform_id,
+        "epoch": epoch_id,
+        "epochs": epochs or [{"id": "v1", "label": "Legacy v1 (stock generator)", "generator": "stock"}],
         "throughput_workloads": throughput,
         "memory_workloads": memory,
         "latency_workloads": latency,
@@ -889,4 +902,5 @@ def export_manifest(output_dir: Path, platforms: list[str], workloads: list[tupl
         + PER_THREAD_PERF_GROUPS,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / f"manifest-{platform_id}.json").write_text(json.dumps(manifest, indent=2))
+    filename = f"manifest-{platform_id}.json" if epoch_id == "v1" else f"manifest-{platform_id}.epoch-{epoch_id}.json"
+    (output_dir / filename).write_text(json.dumps(manifest, indent=2))
