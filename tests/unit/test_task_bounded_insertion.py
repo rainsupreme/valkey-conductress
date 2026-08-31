@@ -147,6 +147,7 @@ async def test_finite_fill_profiles_full_interval_and_keeps_live_client_cpu(monk
             self.command = command
             self.p = FakeProcess()
             self.polls = 0
+            self.output_polls = 0
 
         def start(self):
             events.append("command-start")
@@ -159,6 +160,9 @@ async def test_finite_fill_profiles_full_interval_and_keeps_live_client_cpu(monk
             return False
 
         def poll_output(self):
+            self.output_polls += 1
+            if self.output_polls == 1:
+                return None, None
             return "", ""
 
         def kill(self):
