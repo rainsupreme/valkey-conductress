@@ -54,7 +54,8 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
     elif task_type == "BoundedInsertionTaskData":
         insertions = max(1, int(document.get("insertions") or 1))
         # Conservative 500K inserts/s floor plus restart/cache-drop overhead.
-        seconds = 60 + repetitions * (insertions / 500_000 + 18)
+        fill_seconds = (insertions + 499_999) // 500_000
+        seconds = 60 + repetitions * (fill_seconds + 18)
         if document.get("perf_stat_enabled"):
             seconds += 45
     elif task_type == "CachecannonTaskData":

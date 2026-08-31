@@ -390,6 +390,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self._client_cores_busy_per_rep: list[float] = []
         self._client_allocated_cores: Optional[int] = None
         self._perf_rep_count = 0  # reps whose perf counters were summed into perf_counters
+        self._perf_duration_seconds: Optional[float] = None
 
         # Build custom commands when key_size > 0
         if self.key_size > 0:
@@ -508,7 +509,9 @@ class PerfTaskRunner(BaseTaskRunner):
 
         if all_counters:
             detailed_data["perf_counters"] = all_counters
-            detailed_data["perf_duration_seconds"] = float(self.duration)
+            detailed_data["perf_duration_seconds"] = (
+                self._perf_duration_seconds if self._perf_duration_seconds is not None else float(self.duration)
+            )
             # Counters are summed across reps; record how many so the exporter can
             # normalize absolute per-request metrics (instructions-per-req).
             detailed_data["perf_rep_count"] = self._perf_rep_count or 1
@@ -1147,12 +1150,15 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             perf_started = True
         try:
             command.start()
+            process = command.p
+            if process is None:
+                raise RuntimeError("finite insertion generator did not create a process")
         except Exception:
             if perf_started:
                 await server.perf_stat_stop()
             raise
         start = time.monotonic()
-        client_cpu_start = sample_process_tree_cpu(command.p.pid) if command.p is not None else None
+        client_cpu_start = sample_process_tree_cpu(process.pid)
         client_cpu_last = client_cpu_start
         client_cpu_last_time = start
         last_status = time.time()
@@ -1167,11 +1173,10 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
                     memory_info = await server.info("memory")
                     _, rss = checked_memory_snapshot(memory_info, self.maxmemory_bytes, self.max_rss_bytes)
                     peak_rss = max(peak_rss, rss)
-                    if command.p is not None:
-                        live_cpu = sample_process_tree_cpu(command.p.pid)
-                        if live_cpu is not None:
-                            client_cpu_last = live_cpu
-                            client_cpu_last_time = now
+                    live_cpu = sample_process_tree_cpu(process.pid)
+                    if live_cpu is not None:
+                        client_cpu_last = live_cpu
+                        client_cpu_last_time = now
                     last_rss_sample = now
                 if time.time() - last_status >= HEARTBEAT_INTERVAL:
                     self.file_protocol.write_status(self.status)
@@ -1188,9 +1193,8 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
                 await server.perf_stat_stop()
 
         elapsed = time.monotonic() - start
-        if command.p is None or command.p.returncode != 0:
-            returncode = None if command.p is None else command.p.returncode
-            raise RuntimeError(f"finite insertion generator exited {returncode}: {output_tail}")
+        if process.returncode != 0:
+            raise RuntimeError(f"finite insertion generator exited {process.returncode}: {output_tail}")
         if elapsed <= 0:
             raise RuntimeError("finite insertion elapsed time was not positive")
 
@@ -1294,7 +1298,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             else:
                 mean_rps, ci_95 = per_run_rps[0], 0.0
             mean_elapsed = sum(float(sample["elapsed_seconds"]) for sample in samples) / len(samples)
-            self.duration = mean_elapsed
+            self._perf_duration_seconds = mean_elapsed
             data: dict[str, Any] = {
                 "insertions_per_rep": self.insertions,
                 "key_size": self.key_size,
