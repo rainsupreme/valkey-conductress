@@ -7,12 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from conductress.sweep.exporter import (
-    NotableSource,
-    export_manifest,
-    export_notable,
-    export_series,
-)
+from conductress.sweep.exporter import NotableSource, export_manifest, export_notable, export_series
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
 
 
