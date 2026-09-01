@@ -267,6 +267,7 @@ def main() -> None:
             SWEEP_STATE_DIR,
             SWEEP_STATE_FILE,
             SWEEP_THROUGHPUT_WORKLOADS,
+            SWEEP_V2_ENABLED,
         )
         from conductress.sweep.coordinator import BaseSweepCoordinator, SweepCoordinator
         from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS, MemorySweepCoordinator
@@ -298,6 +299,13 @@ def main() -> None:
                     )
                     if wl_coord.state_file.exists():
                         coordinators.append(wl_coord)
+            if SWEEP_V2_ENABLED and (not args.metric or args.metric == "throughput"):
+                from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2, ThroughputSweepCoordinatorV2
+
+                for v2_coord in (ThroughputSweepCoordinatorV2(repo_path), MixedSweepCoordinatorV2(repo_path)):
+                    if v2_coord.state_file.exists():
+                        coordinators.append(v2_coord)
+
             if not args.metric or args.metric == "memory":
                 for mem_wl in MEMORY_WORKLOADS:
                     if mem_wl.state_file.exists():
@@ -332,11 +340,11 @@ def main() -> None:
 
             exported_files = []
             for coord in coordinators:
-                output = (
-                    Path(args.output)
-                    if args.output
-                    else Path(f"series-{platform}-{coord.workload_id}-{coord.metric_id}.json")
-                )
+                epoch_id = getattr(coord, "epoch_id", "v1")
+                default_name = f"series-{platform}-{coord.workload_id}-{coord.metric_id}"
+                if epoch_id != "v1":
+                    default_name += f".epoch-{epoch_id}"
+                output = Path(args.output) if args.output else Path(f"{default_name}.json")
                 count = coord.export(output, platform=platform_str)
                 if count > 0:
                     print(f"Exported {count} {coord.metric_id} points to {output}")

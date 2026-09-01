@@ -32,7 +32,9 @@ def test_manifest_splits_throughput_and_memory(tmp_path):
     assert manifest_file.exists()
     data = json.loads(manifest_file.read_text())
 
-    assert data["version"] == 2
+    assert data["version"] == 3
+    assert data["epoch"] == "v1"
+    assert [epoch["id"] for epoch in data["epochs"]] == ["v1"]
     assert data["platform"] == "arm64"
     assert data["throughput_workloads"] == [
         "get-k16-v16-t7-p10",

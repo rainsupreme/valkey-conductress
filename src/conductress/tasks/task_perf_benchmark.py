@@ -136,6 +136,10 @@ class PerfTaskData(BaseTaskData):
     bench_binary: str = ""  # expert: absolute path to an alternative benchmark binary. The client
     # is part of the workload definition, so results from an overridden binary are NOT comparable
     # with sweep history; the override is recorded in result metadata. Empty = repo default.
+    generator_profile: str = ""  # named generator profile (e.g. "legacy-v1", "scalable-v2").
+    # When set, overrides the default bench_binary resolution with a profile-managed binary.
+    # Empty = legacy behavior (PROJECT_ROOT/valkey-benchmark from VALKEY_BENCHMARK_COMMIT).
+    # bench_binary override still takes absolute precedence over generator_profile.
 
     def __post_init__(self):
         super().__post_init__()
@@ -179,6 +183,7 @@ class PerfTaskData(BaseTaskData):
             bench_clients=self.bench_clients,
             client_netns=self.client_netns,
             bench_binary=self.bench_binary,
+            generator_profile=self.generator_profile,
         )
 
 
@@ -338,6 +343,7 @@ class PerfTaskRunner(BaseTaskRunner):
         seed: int = 0,
         client_netns: str = "",
         bench_binary: str = "",
+        generator_profile: str = "",
     ):
         super().__init__(task_name)
 
@@ -377,6 +383,10 @@ class PerfTaskRunner(BaseTaskRunner):
         # client is part of the workload definition: overridden results are
         # not sweep-comparable, so the override is recorded in metadata.
         self.bench_binary = bench_binary
+        # Generator profile: when set, resolves bench_binary via the profile
+        # system at execution time. bench_binary override takes precedence.
+        self.generator_profile = generator_profile
+        self._generator_provenance: dict = {}  # populated at resolve time
 
         self.perf_stat_enabled = perf_stat_enabled
         self._is_last_rep = False
@@ -565,6 +575,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 )
             if self.bench_binary:
                 detailed_data["bench_binary"] = self.bench_binary
+            if self._generator_provenance:
+                detailed_data["generator_provenance"] = self._generator_provenance
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -608,6 +620,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 )
             if self.bench_binary:
                 detailed_data["bench_binary"] = self.bench_binary
+            if self._generator_provenance:
+                detailed_data["generator_provenance"] = self._generator_provenance
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -830,6 +844,25 @@ class PerfTaskRunner(BaseTaskRunner):
         )
         return benchmark_alloc_tag
 
+    def _resolve_generator_binary(self) -> str:
+        """Resolve an explicit generator profile to a local binary path.
+
+        No profile preserves the legacy default path.  An explicit profile is
+        part of the workload identity, so bootstrap or verification failures
+        must fail the task rather than silently running the legacy generator.
+        """
+        if not self.generator_profile:
+            return ""
+
+        from conductress.generator_profiles import resolve_bench_binary
+
+        path, provenance = resolve_bench_binary(
+            generator_profile=self.generator_profile,
+            bench_binary_override="",
+        )
+        self._generator_provenance = provenance
+        return path
+
     def _build_benchmark_command(
         self,
         client: "Server",
@@ -838,7 +871,7 @@ class PerfTaskRunner(BaseTaskRunner):
     ) -> str:
         """Build the numactl + valkey-benchmark command string."""
         net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-        bench_bin = self.bench_binary or str(PROJECT_ROOT / VALKEY_BENCHMARK)
+        bench_bin = self.bench_binary or self._resolve_generator_binary() or str(PROJECT_ROOT / VALKEY_BENCHMARK)
 
         # Dual-ENI real-NIC hairpin (docs/real-nic-hairpin.md): run the client
         # inside a network namespace holding the secondary ENI. The namespace

@@ -3,10 +3,11 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from conductress.sweep.exporter import NotableSource, export_notable, export_series
+from conductress.sweep.exporter import NotableSource, export_manifest, export_notable, export_series
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepState
 
 
@@ -309,3 +310,39 @@ class TestExportNotable:
         export_notable([NotableSource(state=state, workload="w", metric="throughput")], output, platform="p")
         data = json.loads(output.read_text())
         assert data["annotations"] == []
+
+
+class TestEpochManifestExport:
+    EPOCHS = [
+        {"id": "v1", "label": "Legacy v1 (stock generator)", "generator": "stock"},
+        {"id": "v2", "label": "Scalable v2 (patched generator)", "generator": "patched"},
+    ]
+
+    def test_v1_manifest_keeps_legacy_filename_and_advertises_epochs(self, tmp_path):
+        with patch("conductress.publisher.detect_platform", return_value=("arm64", "ARM")):
+            export_manifest(
+                tmp_path,
+                platforms=["arm64"],
+                workloads=[("get-k16-v16-t7-p10", "throughput")],
+                epoch_id="v1",
+                epochs=self.EPOCHS,
+            )
+        path = tmp_path / "manifest-arm64.json"
+        payload = json.loads(path.read_text())
+        assert payload["version"] == 3
+        assert payload["epoch"] == "v1"
+        assert [e["id"] for e in payload["epochs"]] == ["v1", "v2"]
+
+    def test_v2_manifest_uses_epoch_filename_and_mixed_workload(self, tmp_path):
+        with patch("conductress.publisher.detect_platform", return_value=("arm64", "ARM")):
+            export_manifest(
+                tmp_path,
+                platforms=["arm64"],
+                workloads=[("mixed-s20-k16-v16-t7-p10", "throughput")],
+                epoch_id="v2",
+                epochs=self.EPOCHS,
+            )
+        path = tmp_path / "manifest-arm64.epoch-v2.json"
+        payload = json.loads(path.read_text())
+        assert payload["epoch"] == "v2"
+        assert payload["throughput_workloads"] == ["mixed-s20-k16-v16-t7-p10"]
