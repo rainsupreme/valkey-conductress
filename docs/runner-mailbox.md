@@ -121,3 +121,24 @@ These fields only report state. They expose no queue, cancel, or execution contr
 6. Disable the periodic status timer and set `CONDUCTRESS_BOUNDARY_STATUS_ONLY=1`.
 7. Observe at least three clean boundaries.
 8. Repeat sequentially for `g4bench`, `bench`, then `intelbench`.
+
+## Versioned sweep epoch toggle
+
+V2 GET and 80:20 mixed sweeps are additive and disabled by default. Enable them without modifying the source checkout:
+
+```ini
+# /etc/systemd/system/conductress.service.d/v2-sweeps.conf
+[Service]
+Environment=CONDUCTRESS_SWEEP_V2_ENABLED=1
+```
+
+Then reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart conductress.service
+```
+
+Accepted true values are `1`, `true`, `yes`, and `on`; accepted false values are `0`, `false`, `no`, and `off` (case-insensitive). Any other value fails startup rather than silently selecting an epoch.
+
+Rollback is immediate and does not alter either dataset: remove the drop-in (or set the value to `0`), reload systemd, and restart. V1 coordinators remain active while v2 is enabled; v2 uses separate planner state and epoch-qualified dashboard files.

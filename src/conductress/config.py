@@ -1,6 +1,7 @@
 """Configuration for the Conductress benchmark framework"""
 
 import json
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -114,10 +115,32 @@ SWEEP_TARGET_CV = 0.5
 ANNOTATION_THRESHOLD = 0.04
 SWEEP_MAKE_ARGS = ""
 
-# Versioned sweep epoch.  Disabled by default until overlap validation is
+# Versioned sweep epoch. Disabled by default until overlap validation is
 # complete; enabling it runs additive v2 GET + 80:20 mixed coordinators while
 # leaving every v1 coordinator/state file active and unchanged.
-SWEEP_V2_ENABLED = False
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a strict boolean environment variable.
+
+    Unknown values fail startup rather than silently selecting the wrong sweep
+    epoch. This keeps fleet enablement explicit and rollback-friendly.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE_ENV_VALUES:
+        return True
+    if value in _FALSE_ENV_VALUES:
+        return False
+    allowed = ", ".join(sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES))
+    raise ValueError(f"{name} must be one of: {allowed}; got {raw!r}")
+
+
+SWEEP_V2_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False)
 SWEEP_V2_EPOCH_ID = "v2"
 
 # Additional throughput workloads (each gets its own state file + series).
