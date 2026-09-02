@@ -134,3 +134,28 @@ class TestPinnedCommits:
         sha = config_module.VALKEY_BENCHMARK_COMMIT
         assert len(sha) == 40, f"expected full 40-char SHA, got {sha!r} (len {len(sha)})"
         assert all(c in "0123456789abcdef" for c in sha), f"non-hex chars in {sha!r}"
+
+
+class TestSweepV2EnvironmentToggle:
+    def test_default_is_disabled(self, monkeypatch):
+        monkeypatch.delenv("CONDUCTRESS_SWEEP_V2_ENABLED", raising=False)
+        assert config_module._env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False) is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on", "ON"])
+    def test_true_values(self, monkeypatch, value):
+        monkeypatch.setenv("CONDUCTRESS_SWEEP_V2_ENABLED", value)
+        assert config_module._env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "FALSE", " no ", "off", "OFF"])
+    def test_false_values(self, monkeypatch, value):
+        monkeypatch.setenv("CONDUCTRESS_SWEEP_V2_ENABLED", value)
+        assert config_module._env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", True) is False
+
+    @pytest.mark.parametrize("value", ["", "enabled", "2", "maybe"])
+    def test_invalid_values_fail_closed(self, monkeypatch, value):
+        monkeypatch.setenv("CONDUCTRESS_SWEEP_V2_ENABLED", value)
+        with pytest.raises(ValueError, match="CONDUCTRESS_SWEEP_V2_ENABLED must be one of"):
+            config_module._env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False)
+
+    def test_production_default_remains_disabled(self):
+        assert config_module.SWEEP_V2_ENABLED is False
