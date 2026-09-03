@@ -591,6 +591,7 @@ class MixedTaskRunner(BaseTaskRunner):
             "memtier_ratio": set_ratio_to_memtier_ratio(self.set_ratio),
             "duration": self.duration,
             "warmup": self.warmup,
+            "warmup_applied": self.warmup > 0,
             "io_threads": self.io_threads,
             "pipeline": self.pipelining,
             "size": self.val_size,

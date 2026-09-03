@@ -94,7 +94,10 @@ class AnalysisModule:
         method = record.get("method", "")
         mixed_variant = ""
         if method.startswith("perf-mixed-"):
-            mixed_variant = f"w{data.get('warmup', 0)}-t{data.get('threads', 0)}-c{data.get('clients', 0)}"
+            warmup_applied = int(bool(data.get("warmup_applied", False)))
+            mixed_variant = (
+                f"w{data.get('warmup', 0)}-wa{warmup_applied}-t{data.get('threads', 0)}-c{data.get('clients', 0)}"
+            )
         return (
             method,
             data.get("size", 0),
