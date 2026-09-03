@@ -1018,6 +1018,8 @@ class TestEndToEndRunnerMock:
         result = results_written[0]
         assert result.data["server_cpu_override"] == "0-8"
         assert result.data["server_args"] == "--io-threads-ownership yes"
+        assert result.data["warmup"] == 5
+        assert result.data["warmup_applied"] is True
         client_cpu = result.data["client_cpu"]
 
         # GNU time: 210.50 + 30.20 = 240.70 cpu_seconds / 30.00 wall = 8.023 cores_busy

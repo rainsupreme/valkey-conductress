@@ -87,9 +87,12 @@ but excludes warmup operations from the reported benchmark statistics.
 
 ### 7. Comparison dimensions and provenance
 
-Mixed comparison groups include a visible `w<seconds>-t<threads>-c<clients>`
-variant. This prevents 400-, 1200-, and 2400-connection results from being
-merged into one statistical sample bucket. Results also preserve
+Mixed comparison groups include a visible
+`w<seconds>-wa<applied>-t<threads>-c<clients>` variant. This prevents
+400-, 1200-, and 2400-connection results from being merged into one
+statistical sample bucket. `warmup_applied` also separates historical mixed
+results that recorded `warmup=5` while the field was still a no-op from new
+results where the warmup actually executes. Results preserve
 `server_cpu_override` and `server_args` so server topology and experimental
 gates remain reproducible.
 
