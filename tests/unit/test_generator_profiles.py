@@ -251,6 +251,66 @@ class TestCrossContamination:
 
         assert "v2" in str(V2_STATE_DIR)
 
+    @staticmethod
+    def _make_perf_task(generator_profile: str):
+        from conductress.tasks.task_perf_benchmark import PerfTaskData
+
+        task = PerfTaskData(
+            source="valkey",
+            specifier="abc123",
+            replicas=0,
+            note="epoch ownership task",
+            requirements={},
+            make_args="",
+            test="get",
+            val_size=16,
+            io_threads=7,
+            pipelining=10,
+            warmup=5,
+            duration=30,
+            perf_stat_enabled=False,
+            has_expire=False,
+            preload_keys=True,
+            generator_profile=generator_profile,
+        )
+        task.sweep_commit = "abc123"  # type: ignore[attr-defined]
+        return task
+
+    @staticmethod
+    def _make_v1_coordinator(tmp_path: Path):
+        from conductress.sweep.coordinator import SweepCoordinator
+
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_path):
+            return SweepCoordinator(tmp_path)
+
+    @pytest.mark.parametrize("generator_profile", ["", "legacy-v1"])
+    def test_v1_matches_only_legacy_profiles(self, tmp_path: Path, generator_profile: str):
+        coord = self._make_v1_coordinator(tmp_path)
+        assert coord._is_my_task(self._make_perf_task(generator_profile))
+
+    @pytest.mark.parametrize("generator_profile", ["scalable-v2", "unknown-future-profile"])
+    def test_v1_rejects_nonlegacy_profiles(self, tmp_path: Path, generator_profile: str):
+        coord = self._make_v1_coordinator(tmp_path)
+        assert not coord._is_my_task(self._make_perf_task(generator_profile))
+
+    def test_v2_completion_does_not_reach_v1_result_extraction(self, tmp_path: Path):
+        coord = self._make_v1_coordinator(tmp_path)
+        task = self._make_perf_task("scalable-v2")
+
+        with patch.object(coord, "_extract_result", return_value=None) as extract:
+            coord.on_task_completed(task)
+
+        extract.assert_not_called()
+
+    def test_v2_failure_does_not_mark_v1_build_failure(self, tmp_path: Path):
+        coord = self._make_v1_coordinator(tmp_path)
+        task = self._make_perf_task("scalable-v2")
+
+        with patch.object(coord, "record_build_failure") as record_failure:
+            coord.on_task_failed(task)
+
+        record_failure.assert_not_called()
+
     def test_v2_workload_id_is_canonical_and_epoch_is_v2(self, tmp_path: Path):
         from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
 

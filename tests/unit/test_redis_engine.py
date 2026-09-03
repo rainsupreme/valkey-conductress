@@ -121,6 +121,7 @@ class TestSweepCoordinatorEngine:
         redis_task.test = "get"
         redis_task.io_threads = 7
         redis_task.pipelining = 10
+        redis_task.generator_profile = ""
         assert coord._is_my_task(redis_task) is True
 
         # Task from valkey source should NOT match
@@ -131,6 +132,7 @@ class TestSweepCoordinatorEngine:
         valkey_task.test = "get"
         valkey_task.io_threads = 7
         valkey_task.pipelining = 10
+        valkey_task.generator_profile = ""
         assert coord._is_my_task(valkey_task) is False
 
 
