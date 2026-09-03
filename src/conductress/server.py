@@ -371,23 +371,38 @@ class Server:
     # PROFILING METHODS (delegated to ProfilingManager)
     # =============================================================================
 
-    def cpu_profile_start(self, duration: int) -> None:
-        """Start CPU profile (perf record) for the given duration."""
+    def cpu_profile_start(self, duration: int, delay_seconds: float = 0) -> None:
+        """Start CPU profile (perf record) for the given duration.
+
+        Args:
+            duration: Recording duration in seconds.
+            delay_seconds: Seconds to sleep before perf record starts.
+                Allows skipping a warmup phase. Default 0.
+        """
         self._profiling.target_pid = self.valkey_pid
-        self._profiling.cpu_profile_start(duration)
+        self._profiling.cpu_profile_start(duration, delay_seconds=delay_seconds)
 
     async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
         """Collect CPU profile stacks. Returns (main_stacks, io_stacks)."""
         return await self._profiling.cpu_profile_collect()
 
+    def cpu_profile_cancel(self) -> None:
+        """Cancel a running or delayed CPU profile promptly."""
+        self._profiling.cpu_profile_cancel()
+
     # =============================================================================
     # PERF STAT METHODS (delegated to ProfilingManager)
     # =============================================================================
 
-    async def perf_stat_start(self) -> None:
-        """Start perf stat collection."""
+    async def perf_stat_start(self, delay_seconds: float = 0) -> None:
+        """Start perf stat collection.
+
+        Args:
+            delay_seconds: Seconds to sleep before perf stat begins counting.
+                Allows skipping a warmup phase. Default 0.
+        """
         self._profiling.target_pid = self.valkey_pid
-        await self._profiling.perf_stat_start()
+        await self._profiling.perf_stat_start(delay_seconds=delay_seconds)
 
     async def perf_stat_stop(self) -> None:
         """Signal perf stat to stop."""
@@ -665,7 +680,7 @@ class Server:
         keypairs: dict[str, str] = {}
         for item in lines:
             if ":" in item:
-                (key, value) = item.split(":", 1)
+                key, value = item.split(":", 1)
                 keypairs[key.strip()] = value.strip()
         return keypairs
 
