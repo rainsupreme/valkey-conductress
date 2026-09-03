@@ -30,7 +30,7 @@ def test_task_shape_estimates_scale_with_repetitions_and_phases():
     scenario = estimate_task_duration_seconds(
         {"task_type": "ScenarioTaskData", "warmup": 5, "duration": 30, "repetitions": 3}
     )
-    assert mixed == 375
+    assert mixed == 315
     assert scenario == 450
 
 

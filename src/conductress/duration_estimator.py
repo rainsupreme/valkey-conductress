@@ -61,7 +61,8 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
     elif task_type == "CachecannonTaskData":
         seconds = 90 + repetitions * (warmup + duration + 15)
     elif task_type == "MixedTaskData":
-        seconds = 120 + repetitions * (2 * (warmup + duration) + 15)
+        # One request-bounded prefill plus one warmup+measurement phase per rep.
+        seconds = 120 + repetitions * (warmup + duration + 30)
     elif task_type == "ScenarioTaskData":
         seconds = 180 + repetitions * (2 * (warmup + duration) + 20)
     elif task_type == "LatencyTaskData":

@@ -365,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     mixed_parser.add_argument(
         "--key-sizes",
         default=str(config.DEFAULT_KEY_SIZE),
-        help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}",
+        help="Compatibility field; mixed memtier tasks currently support only 0 (standard memtier keys)",
     )
     mixed_parser.add_argument(
         "--io-threads",
@@ -952,6 +952,12 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
         key_sizes = _parse_comma_separated_bytes(args.key_sizes, "key-sizes")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if any(key_size != 0 for key_size in key_sizes):
+        print(
+            "Error: --key-sizes is not supported by mixed memtier tasks; use 0 (the default)",
+            file=sys.stderr,
+        )
         return 1
 
     try:

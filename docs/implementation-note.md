@@ -84,3 +84,30 @@ but excludes warmup operations from the reported benchmark statistics.
   the default case uncluttered.
 - Golden fixture `MixedTaskData.json` was updated with the new fields at
   their default values; schema compat test passes.
+
+### 7. Comparison dimensions and provenance
+
+Mixed comparison groups include a visible `w<seconds>-t<threads>-c<clients>`
+variant. This prevents 400-, 1200-, and 2400-connection results from being
+merged into one statistical sample bucket. Results also preserve
+`server_cpu_override` and `server_args` so server topology and experimental
+gates remain reproducible.
+
+### 8. Unsupported key-size control fails closed
+
+Memtier's existing mixed path does not implement Conductress's exact-key-size
+contract. Nonzero `key_size` values were previously recorded without changing
+the generated workload. Both CLI and task deserialization now reject nonzero
+values instead of presenting a fake control; zero remains backward compatible.
+
+### 9. Measurement and scheduling details
+
+- GNU time detection requires the parser-compatible `GNU time` signature;
+  BusyBox variants degrade to unavailable telemetry rather than parse noise.
+- Perf counters cover memtier warmup plus measurement, so
+  `perf_duration_seconds` records `warmup + duration` and
+  `perf_warmup_included` records that provenance.
+- Prefill requests use ceiling division, avoiding partial keyspace coverage
+  when connection count does not divide the three-million-key keyspace.
+- Duration estimates model one request-bounded prefill and one
+  warmup-plus-measurement phase per repetition.
