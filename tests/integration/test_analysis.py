@@ -182,6 +182,29 @@ class TestAnalysisCompare:
         assert io1_row.mean_a == pytest.approx(100500.0)
         assert io9_row.mean_a == pytest.approx(805000.0)
 
+    def test_mixed_client_variants_form_distinct_groups(self, tmp_path):
+        records = []
+        for threads, clients, base_score in ((8, 50, 1_000_000.0), (24, 50, 2_000_000.0)):
+            for specifier, delta in (("a", 0.0), ("b", 100_000.0)):
+                record = _make_record(
+                    specifier=specifier,
+                    method="perf-mixed-20set",
+                    score=base_score + delta,
+                    warmup=5,
+                )
+                record["data"].update({"threads": threads, "clients": clients})
+                records.append(record)
+
+        path = tmp_path / "output.jsonl"
+        _write_fixture(path, records)
+        rows = AnalysisModule(results_path=path).compare("a", "b")
+
+        assert len(rows) == 2
+        assert {row.method for row in rows} == {
+            "perf-mixed-20set-w5-t8-c50",
+            "perf-mixed-20set-w5-t24-c50",
+        }
+
 
 class TestAnalysisFormatTable:
     """Test AnalysisModule.format_table() produces correctly formatted output."""

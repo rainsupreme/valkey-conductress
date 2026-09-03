@@ -202,6 +202,8 @@ class MixedTaskData(BaseTaskData):
             raise ValueError(f"set_ratio must be 0-100, got {self.set_ratio}")
         if self.warmup < 0:
             raise ValueError(f"warmup must be >= 0, got {self.warmup}")
+        if self.key_size != 0:
+            raise ValueError("key_size is not supported by mixed memtier tasks; use 0")
         _validate_memtier_bounds(self.memtier_threads, self.memtier_clients)
 
     @property
@@ -328,7 +330,7 @@ class MixedTaskRunner(BaseTaskRunner):
         try:
             stdout, _ = await server.run_host_command("/usr/bin/time --version 2>&1 || true", check=False)
             # GNU time --version prints to stderr (some versions) or stdout
-            self._gnu_time_available = "GNU" in stdout or "time" in stdout.lower()
+            self._gnu_time_available = "GNU time" in stdout
         except Exception:
             self._gnu_time_available = False
         if not self._gnu_time_available:
@@ -484,7 +486,7 @@ class MixedTaskRunner(BaseTaskRunner):
                     f"--ratio 1:0 --key-pattern P:P "
                     f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
                     f"--data-size {self.val_size} "
-                    f"--requests {MIXED_KEYSPACE // self.total_connections} "
+                    f"--requests {(MIXED_KEYSPACE + self.total_connections - 1) // self.total_connections} "
                     f"--hide-histogram"
                 )
                 await server.run_host_command(prefill_cmd)
@@ -594,6 +596,8 @@ class MixedTaskRunner(BaseTaskRunner):
             "size": self.val_size,
             "key_size": self.key_size,
             "keyspace": MIXED_KEYSPACE,
+            "server_cpu_override": self.server_cpu_override,
+            "server_args": self.server_args,
             "threads": self.memtier_threads,
             "clients": self.memtier_clients,
             "total_connections": self.total_connections,
@@ -609,7 +613,8 @@ class MixedTaskRunner(BaseTaskRunner):
 
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
-            detailed_data["perf_duration_seconds"] = float(self.duration)
+            detailed_data["perf_duration_seconds"] = float(self.warmup + self.duration)
+            detailed_data["perf_warmup_included"] = self.warmup > 0
             detailed_data["perf_rep_count"] = len(per_run_rps)
 
         results = BenchmarkResults(

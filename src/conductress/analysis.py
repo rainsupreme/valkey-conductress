@@ -17,8 +17,10 @@ from .config import CONDUCTRESS_OUTPUT
 
 logger = logging.getLogger(__name__)
 
-# GroupKey: (method, val_size, key_size, io_threads, pipelining, make_args)
-GroupKey = tuple[str, int, int, int, int, str]
+# GroupKey: (method, val_size, key_size, io_threads, pipelining, mixed_variant, make_args)
+# mixed_variant is empty for non-mixed methods and encodes warmup/thread/client
+# dimensions for mixed results so different client-count cells cannot merge.
+GroupKey = tuple[str, int, int, int, int, str, str]
 
 
 @dataclass
@@ -89,12 +91,17 @@ class AnalysisModule:
     def _extract_group_key(self, record: dict) -> GroupKey:
         """Extract the group key tuple from a result record."""
         data = record.get("data", {})
+        method = record.get("method", "")
+        mixed_variant = ""
+        if method.startswith("perf-mixed-"):
+            mixed_variant = f"w{data.get('warmup', 0)}-t{data.get('threads', 0)}-c{data.get('clients', 0)}"
         return (
-            record.get("method", ""),
+            method,
             data.get("size", 0),
             data.get("key_size", 0),
             data.get("io-threads", 0),
             data.get("pipeline", 0),
+            mixed_variant,
             record.get("make_args", ""),
         )
 
@@ -210,11 +217,12 @@ class AnalysisModule:
                 ci_b = t_dist.ppf(0.975, n_b - 1) * (stdev(samples_b) / sqrt(n_b))
                 ci_b_pct = (ci_b / mean_b) * 100.0
 
-            method, val_size, key_size, io_threads, pipelining, make_args = group_key
+            method, val_size, key_size, io_threads, pipelining, mixed_variant, make_args = group_key
+            display_method = f"{method}-{mixed_variant}" if mixed_variant else method
 
             rows.append(
                 ComparisonRow(
-                    method=method,
+                    method=display_method,
                     val_size=val_size,
                     key_size=key_size,
                     io_threads=io_threads,

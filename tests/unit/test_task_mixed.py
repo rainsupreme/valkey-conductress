@@ -304,6 +304,10 @@ class TestMixedTaskDataValidation:
         with pytest.raises(ValueError, match="warmup must be >= 0"):
             self._make_task(warmup=-1)
 
+    def test_nonzero_key_size_rejected(self):
+        with pytest.raises(ValueError, match="key_size is not supported"):
+            self._make_task(key_size=32)
+
     def test_invalid_memtier_threads_negative(self):
         with pytest.raises(ValueError, match="memtier_threads must be >= 0"):
             self._make_task(memtier_threads=-1)
@@ -823,6 +827,28 @@ class TestCapacityModel:
         assert meta["total_connections"] == 2400
 
 
+class TestGnuTimeProbe:
+    @pytest.mark.asyncio
+    async def test_busybox_time_is_not_accepted(self):
+        runner = MixedTaskRunner(
+            task_name="test",
+            server_infos=[],
+            source="valkey",
+            specifier="unstable",
+            make_args="",
+            io_threads=9,
+            val_size=512,
+            pipelining=10,
+            set_ratio=20,
+            warmup=5,
+            duration=30,
+            repetitions=1,
+        )
+        server = MagicMock()
+        server.run_host_command = AsyncMock(return_value=("BusyBox time: unrecognized option --version", ""))
+        assert await runner._probe_gnu_time(server) is False
+
+
 class TestEndToEndRunnerMock:
     """End-to-end runner path mocks proving:
     1. Commands sent to run_host_command include/exclude taskset correctly
@@ -958,7 +984,10 @@ class TestEndToEndRunnerMock:
     @pytest.mark.asyncio
     async def test_gnu_time_parsed_into_result(self):
         """GNU time stderr is parsed and populates cores_busy/utilization/saturated."""
-        runner = self._make_runner()
+        runner = self._make_runner(
+            server_cpu_override="0-8",
+            server_args="--io-threads-ownership yes",
+        )
         server = self._build_mock_server()
 
         async def capture_cmd(cmd, check=True):
@@ -987,6 +1016,8 @@ class TestEndToEndRunnerMock:
         # Verify result was written
         assert len(results_written) == 1
         result = results_written[0]
+        assert result.data["server_cpu_override"] == "0-8"
+        assert result.data["server_args"] == "--io-threads-ownership yes"
         client_cpu = result.data["client_cpu"]
 
         # GNU time: 210.50 + 30.20 = 240.70 cpu_seconds / 30.00 wall = 8.023 cores_busy
@@ -1160,6 +1191,25 @@ class TestCliAddMixed:
         tasks = list(self.queue_path.glob("task_*.json"))
         data = json.loads(tasks[0].read_text())
         assert data["warmup"] == expected
+
+    def test_nonzero_key_size_rejected(self, capsys):
+        exit_code = main(
+            [
+                "queue",
+                "add-mixed",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--set-ratio",
+                "20",
+                "--key-sizes",
+                "32",
+            ]
+        )
+        assert exit_code == 1
+        assert "--key-sizes is not supported" in capsys.readouterr().err
+        assert list(self.queue_path.glob("task_*.json")) == []
 
     def test_invalid_ratio_rejected(self, capsys):
         exit_code = main(
