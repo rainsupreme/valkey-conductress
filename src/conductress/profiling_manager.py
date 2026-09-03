@@ -7,7 +7,7 @@ lifecycle on remote hosts via SSH.
 import logging
 import subprocess
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from typing import Optional
 
 from . import config
@@ -28,6 +28,8 @@ class ProfilingManager:
         self._host = host
         self._perf_stat_thread: Optional[Thread] = None
         self._cpu_profile_thread: Optional[Thread] = None
+        self._cpu_profile_cancel_event: Event = Event()
+        self._cpu_profile_process: Optional[subprocess.Popen] = None
         self._target_pid: int = -1
         # Thread-group TIDs discovered at server start (main thread + IO threads).
         # Shared by the CPU-profile (flamegraph) and per-thread perf-stat paths.
@@ -46,19 +48,57 @@ class ProfilingManager:
     # CPU PROFILE (per-thread flamegraph stacks)
     # =========================================================================
 
-    def cpu_profile_start(self, duration: int) -> None:
+    def cpu_profile_start(self, duration: int, delay_seconds: float = 0) -> None:
         """Start perf record with frame-pointer call-graph on target PID.
 
         Records for the specified duration in seconds. Non-blocking — runs in a thread.
         Call cpu_profile_collect() after the duration to retrieve results.
         Also discovers thread TIDs now (while server is alive).
+
+        Args:
+            duration: Recording duration in seconds.
+            delay_seconds: Seconds to sleep before starting perf record.
+                Use to skip a warmup phase so only the scored measurement
+                interval is profiled. Default 0 (no delay).
         """
         if self._cpu_profile_thread and self._cpu_profile_thread.is_alive():
             raise RuntimeError("CPU profile already running")
         # Discover TIDs now while server is running (won't exist after shutdown)
         self._discover_thread_tids()
-        self._cpu_profile_thread = Thread(target=self._cpu_profile_run_sync, args=(duration,))
+        self._cpu_profile_cancel_event.clear()
+        self._cpu_profile_process = None
+        self._cpu_profile_thread = Thread(target=self._cpu_profile_run_sync, args=(duration, delay_seconds))
         self._cpu_profile_thread.start()
+
+    def cpu_profile_cancel(self) -> None:
+        """Cancel a running or delayed CPU profile and join the thread promptly.
+
+        If the profile thread is still in its delay sleep, setting the event
+        wakes it immediately and it returns without launching perf record.
+        If perf record is already running, terminates the perf subprocess
+        (scoped to the exact Popen, no broad pkill).  If no profile is
+        active, this is a no-op.
+        """
+        if self._cpu_profile_thread is None:
+            return
+        self._cpu_profile_cancel_event.set()
+        proc = self._cpu_profile_process
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+        # Event cancellation closes the pre-launch race; process termination
+        # closes the post-launch path. Joining to completion guarantees callers
+        # never clear bookkeeping while a profile thread is still alive.
+        self._cpu_profile_thread.join()
+        self._cpu_profile_thread = None
+        self._cpu_profile_process = None
 
     def _discover_thread_tids(self) -> None:
         """Classify the target process's threads into main vs IO groups.
@@ -88,17 +128,40 @@ class ProfilingManager:
         except (FileNotFoundError, PermissionError):
             pass
 
-    def _cpu_profile_run_sync(self, duration: int) -> None:
-        """Run perf record synchronously in a thread."""
+    def _cpu_profile_run_sync(self, duration: int, delay_seconds: float = 0) -> None:
+        """Run perf record synchronously in a thread.
+
+        When delay_seconds > 0, waits on the cancel event instead of a hard
+        sleep so that cpu_profile_cancel() can interrupt promptly.
+        If cancelled before perf record launches, returns without recording.
+        If cancelled after perf record starts, terminates the perf process.
+        """
+        if delay_seconds > 0:
+            # Interruptible wait — returns True if event was set (cancelled)
+            if self._cpu_profile_cancel_event.wait(timeout=delay_seconds):
+                return  # cancelled before perf record started
+        if self._cpu_profile_cancel_event.is_set():
+            return  # check again after wait
         ip = self._host.ip
         command = (
-            f"sudo perf record -g --call-graph fp -p {self._target_pid} "
+            f"exec sudo perf record -g --call-graph fp -p {self._target_pid} "
             f"-o {CPU_PROFILE_DATA} -- sleep {max(duration - 2, 5)}"
         )
         if ip in ["127.0.0.1", "localhost"]:
-            subprocess.run(command, shell=True)
+            proc = subprocess.Popen(command, shell=True)
         else:
-            subprocess.run(["ssh", "-i", str(config.SSH_KEYFILE), ip, command])
+            proc = subprocess.Popen(["ssh", "-i", str(config.SSH_KEYFILE), ip, command])
+        self._cpu_profile_process = proc
+        # Cancellation may race between the pre-launch event check and handle
+        # publication. Recheck after publishing so that race still terminates
+        # the exact process we just created.
+        if self._cpu_profile_cancel_event.is_set():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        proc.wait()
+        self._cpu_profile_process = None
 
     async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
         """Wait for perf record and return per-thread collapsed stacks.
@@ -171,18 +234,25 @@ class ProfilingManager:
     # PERF STAT (hardware counters)
     # =========================================================================
 
-    async def perf_stat_start(self) -> None:
+    async def perf_stat_start(self, delay_seconds: float = 0) -> None:
         """Start perf stat collection on the target process.
 
         Discovers the main/IO thread TIDs first (while the server is alive) so the
         collection can run in ``--per-thread`` mode and attribute counters to the
         main thread vs the IO-thread group, in addition to the process-wide total.
+
+        Args:
+            delay_seconds: Seconds to sleep inside the shell before perf stat
+                begins counting. Use to skip a warmup phase so only the scored
+                measurement interval is captured. The sentinel file is created
+                immediately (so perf_stat_stop works normally), but the perf
+                process itself sleeps before it starts counting. Default 0.
         """
         if self._perf_stat_thread and self._perf_stat_thread.is_alive():
             raise RuntimeError("Perf stat already running")
         self._discover_thread_tids()
         await self._host.run_host_command(f"touch {PERF_STAT_STATUS_FILE}")
-        self._perf_stat_thread = Thread(target=self._perf_stat_run_sync)
+        self._perf_stat_thread = Thread(target=self._perf_stat_run_sync, args=(delay_seconds,))
         self._perf_stat_thread.start()
 
     PERF_EVENTS_COMMON = [
@@ -236,7 +306,7 @@ class ProfilingManager:
             return f"{tma_group},{base}"
         return base
 
-    def _perf_stat_run_sync(self) -> None:
+    def _perf_stat_run_sync(self, delay_seconds: float = 0) -> None:
         """Run perf stat synchronously in a thread.
 
         Uses ``--per-thread`` with an explicit TID list (main + IO threads) rather
@@ -249,12 +319,22 @@ class ProfilingManager:
 
         Falls back to the process-wide ``-p PID`` form when no IO-thread TIDs were
         discovered (e.g. io-threads disabled), preserving the original behavior.
+
+        When ``delay_seconds > 0``, a shell ``sleep`` precedes the perf stat
+        invocation so that hardware counters begin after the warmup phase.
+        The sentinel file is already created (by the caller), so
+        ``perf_stat_stop`` remains race-free: removing the sentinel while
+        perf is still in the delay sleep just means perf will start and
+        immediately see the sentinel gone, exiting cleanly.
         """
         events = self._build_perf_event_string()
         ip = self._host.ip
         target = self._build_perf_stat_target()
+
+        delay_prefix = f"sleep {delay_seconds} && " if delay_seconds > 0 else ""
+
         command = (
-            f'perf stat --per-thread -e "{events}" {target} -o {PERF_STATS_PATH} '
+            f'{delay_prefix}perf stat --per-thread -e "{events}" {target} -o {PERF_STATS_PATH} '
             f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
         )
         if ip in ["127.0.0.1", "localhost"]:

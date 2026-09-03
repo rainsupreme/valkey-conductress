@@ -107,10 +107,106 @@ values instead of presenting a fake control; zero remains backward compatible.
 
 - GNU time detection requires the parser-compatible `GNU time` signature;
   BusyBox variants degrade to unavailable telemetry rather than parse noise.
-- Perf counters cover memtier warmup plus measurement, so
-  `perf_duration_seconds` records `warmup + duration` and
-  `perf_warmup_included` records that provenance.
+- Server perf counters and CPU profiles use delayed starts, exclude warmup,
+  and record `perf_duration_seconds = duration` with
+  `perf_warmup_included = false`. Client GNU-time CPU accounting remains
+  warmup-inclusive for conservative generator-saturation detection.
 - Prefill requests use ceiling division, avoiding partial keyspace coverage
   when connection count does not divide the three-million-key keyspace.
 - Duration estimates model one request-bounded prefill and one
   warmup-plus-measurement phase per repetition.
+
+
+### 10. Measurement-only perf counters and CPU profiling
+
+Server perf counters (`perf stat`) and CPU flamegraph profiling (`perf record`)
+now cover ONLY the scored `--test-time` interval for mixed tasks, matching
+PerfTaskRunner semantics where perf starts after the warmup phase.
+
+**Mechanism**: `ProfilingManager.perf_stat_start()` and `cpu_profile_start()`
+accept a new `delay_seconds` parameter (default 0, backward compatible).
+When non-zero:
+- **perf stat**: the shell command is prefixed with `sleep <delay> && `,
+  so the perf process sleeps through the warmup and only starts counting
+  once the scored measurement begins. The sentinel file is created
+  immediately (before the sleep), so `perf_stat_stop()` remains race-free.
+- **CPU profile**: a cancellable `Event.wait(delay)` runs in the profiling
+  thread before `perf record` launches. Failure cleanup can wake the thread
+  immediately and prevent recording from starting.
+
+**MixedTaskRunner changes**:
+- `perf_stat_start(delay_seconds=float(self.warmup))` — armed immediately
+  before the blocking memtier command; the delay covers the warmup phase.
+- `cpu_profile_start(duration, delay_seconds=float(self.warmup))` — armed
+  on the FINAL repetition only (same as PerfTaskRunner), with the same
+  warmup delay.
+- `perf_stat_stop()` called after memtier completes (scored phase is over).
+- Per-rep perf stat collection and summing across reps (matching PerfTaskRunner).
+- Result schema: `perf_duration_seconds = float(duration)` (scored only),
+  `perf_warmup_included = False`, `perf_rep_count = <actual count>`.
+- CPU profile stacks persisted as `cpu_stacks_main` and `cpu_stacks_io`
+  (same schema keys as PerfTaskRunner).
+
+**warmup=0 handling**: delay is `float(0)`, which produces no sleep prefix
+for perf stat and no delayed Event wait for CPU profile — perf starts immediately,
+identical to a zero-warmup PerfTaskRunner.
+
+**Failure cleanup**: every exit path after collector arming reaches one
+per-repetition `finally` block. Perf is stopped and joined according to its
+lifecycle state; delayed or active CPU profiling is cancelled through the
+exact process handle. No collector can outlive a failed repetition.
+
+**Client GNU-time CPU measurement**: intentionally remains warmup-inclusive
+(covers warmup + measurement). This is conservative for saturation detection:
+if the client is saturated at all during the run, we want to know.
+The distinction is documented in the result schema.
+
+**Backward compatibility**: `delay_seconds=0` (the default) is a no-op at
+all API layers: `ProfilingManager`, `Server`, and PerfTaskRunner callers
+are completely unaffected. The `Server.perf_stat_start()` and
+`Server.cpu_profile_start()` signatures add `delay_seconds` as a keyword
+argument with default 0.
+
+
+### 11. Lifecycle correctness and cancellation (round 5)
+
+The per-repetition collector lifecycle was refactored so that ANY code path
+after perf stat or CPU profile arming reaches a single `finally` block.
+Previously, cleanup only ran when `run_host_command` raised (the memtier
+invocation); exceptions during GNU-time parsing, RPS parsing, perf stop,
+perf report, metric writing, or result handling could leave background
+perf threads and perf-record subprocesses racing server shutdown.
+
+**try/finally per-rep block**: Each repetition in `MixedTaskRunner.run()` now
+has an inner `try/finally` that:
+- Stops perf stat exactly once (idempotent; `perf_stat_stop` is safe to
+  call when already stopped).
+- Joins perf stat exactly once (`perf_stat_wait`).
+- Cancels or joins the CPU profile exactly once.
+
+On success, the `try` body stops, joins, reports, and marks perf consumed;
+the `finally` block observes that state and does nothing. CPU profile collection
+likewise marks the profile consumed. On failure anywhere inside the try body,
+`finally` performs only the missing stop/join/cancel operations.
+
+**`ProfilingManager.cpu_profile_cancel()` API**: New backward-compatible
+cancellation method using `threading.Event`:
+- The delay sleep was replaced with `Event.wait(timeout=delay_seconds)`.
+  When `cpu_profile_cancel()` sets the event, the thread wakes from the
+  wait and returns without launching `perf record`.
+- If `perf record` has already started, `cancel()` terminates the exact
+  `Popen` subprocess (no broad `pkill`), waits for termination, and joins the
+  profile thread to completion before clearing lifecycle state.
+- `cpu_profile_cancel()` is a no-op when no profile is active.
+- `Server.cpu_profile_cancel()` delegates to `ProfilingManager`.
+
+**Backward compatibility**: `cpu_profile_start(delay_seconds=0)` still
+works identically — with no delay, `Event.wait` is never called, and
+`Popen` replaces `subprocess.run` (both block until perf record finishes).
+All existing callers (`PerfTaskRunner`, `BoundedInsertionTaskRunner`) are
+unaffected; they never call `cpu_profile_cancel()`.
+
+**Perf lifecycle state**: `perf_armed` and `perf_stopped` distinguish an
+active collector, a stopped collector awaiting join/report, and a fully
+consumed collector. Successful repetitions call stop and wait once; failure
+cleanup retries stop only if the initial stop did not complete.

@@ -318,6 +318,10 @@ class MixedTaskRunner(BaseTaskRunner):
         self._client_cores_busy_per_rep: list[float] = []
         self._gnu_time_available: Optional[bool] = None  # probed once per run
 
+        # CPU profile stacks (flamegraph) — collected on the final rep only
+        self._cpu_stacks_main: list[list] = []
+        self._cpu_stacks_io: list[list] = []
+
         self.status = BenchmarkStatus(
             steps_total=repetitions * 2,
             task_type=f"perf-mixed-{set_ratio}pct-set",
@@ -453,9 +457,12 @@ class MixedTaskRunner(BaseTaskRunner):
 
         per_run_rps: List[float] = []
         perf_counters: Optional[dict] = None
+        perf_rep_count = 0
 
         try:
             for rep in range(self.repetitions):
+                is_last_rep = rep == self.repetitions - 1
+
                 # Between-rep housekeeping
                 if rep > 0:
                     await replication_group.stop_all_servers()
@@ -493,85 +500,131 @@ class MixedTaskRunner(BaseTaskRunner):
                 self.status.steps_completed = rep * 2 + 1
                 self.file_protocol.write_status(self.status)
 
-                # Perf stat: start before measurement
-                if self.perf_stat_enabled:
-                    await server.perf_stat_start()
+                # --- Collector-armed region: any path from here must go
+                # through the finally block to stop/join collectors. ---
+                perf_armed = False
+                perf_stopped = False
+                cpu_profile_armed = False
+                try:
+                    # Perf stat: arm with delay so counters skip the warmup phase.
+                    if self.perf_stat_enabled:
+                        await server.perf_stat_start(delay_seconds=float(self.warmup))
+                        perf_armed = True
 
-                # Run measurement phase
-                ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
-                measure_cmd = (
-                    f"{taskset_pfx}~/conductress/memtier_benchmark "
-                    f"--server {server.ip} --port {server.port} --protocol redis "
-                    f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
-                    f"--ratio {ratio_str} --key-pattern R:R "
-                    f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
-                    f"--data-size {self.val_size} "
-                    f"--pipeline {self.pipelining} "
-                    f"{self._build_warmup_arg()}"
-                    f"--test-time {self.duration} "
-                    f"--hide-histogram"
-                )
+                    # CPU profile: arm on the final rep only, with the same delay.
+                    if is_last_rep and self.perf_stat_enabled and self._profile_internals:
+                        server.cpu_profile_start(self.duration, delay_seconds=float(self.warmup))
+                        cpu_profile_armed = True
 
-                # Wrap with GNU time for empirical client CPU measurement
-                use_gnu_time = self._gnu_time_available is True
-                if use_gnu_time:
-                    timed_cmd = self._build_timed_command(measure_cmd)
-                    stdout, stderr = await server.run_host_command(timed_cmd)
-                else:
-                    stdout, _ = await server.run_host_command(measure_cmd)
-                    stderr = ""
+                    # Run measurement phase (memtier handles warmup + scored interval)
+                    ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
+                    measure_cmd = (
+                        f"{taskset_pfx}~/conductress/memtier_benchmark "
+                        f"--server {server.ip} --port {server.port} --protocol redis "
+                        f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
+                        f"--ratio {ratio_str} --key-pattern R:R "
+                        f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
+                        f"--data-size {self.val_size} "
+                        f"--pipeline {self.pipelining} "
+                        f"{self._build_warmup_arg()}"
+                        f"--test-time {self.duration} "
+                        f"--hide-histogram"
+                    )
 
-                # Extract client CPU from GNU time output
-                if use_gnu_time and stderr:
-                    time_data = parse_gnu_time_stderr(stderr)
-                    if time_data and time_data["wall_seconds"] > 0:
-                        self._client_cores_busy_per_rep.append(time_data["cores_busy"])
-                        logger.info(
-                            "Rep %d client CPU: %.3f cores busy " "(%.1fs user + %.1fs sys / %.1fs wall)",
-                            rep + 1,
-                            time_data["cores_busy"],
-                            time_data["user_seconds"],
-                            time_data["system_seconds"],
-                            time_data["wall_seconds"],
-                        )
+                    # Wrap with GNU time for empirical client CPU measurement
+                    use_gnu_time = self._gnu_time_available is True
+                    if use_gnu_time:
+                        timed_cmd = self._build_timed_command(measure_cmd)
+                        stdout, stderr = await server.run_host_command(timed_cmd)
                     else:
-                        logger.warning(
-                            "Rep %d: GNU time output present but unparseable; " "client CPU unavailable this rep",
-                            rep + 1,
-                        )
+                        stdout, _ = await server.run_host_command(measure_cmd)
+                        stderr = ""
 
-                # Perf stat: stop and collect
-                if self.perf_stat_enabled:
-                    await server.perf_stat_stop()
-
-                # Parse total RPS from memtier output
-                total_rps = parse_memtier_total_rps(stdout)
-                if total_rps is None:
-                    raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
-
-                per_run_rps.append(total_rps)
-                logger.info("Rep %d/%d: %.1f ops/sec", rep + 1, self.repetitions, total_rps)
-
-                # Write per-rep metric
-                metric = MetricData(metrics={"rps": total_rps}, rep=rep + 1)
-                self.file_protocol.append_metric(metric)
-
-                self.status.steps_completed = rep * 2 + 2
-                self.file_protocol.write_status(self.status)
-
-                # Collect perf stat report
-                if self.perf_stat_enabled:
-                    server.perf_stat_wait()
-                    result_dir = self.file_protocol.get_result_dir()
-                    rep_counters = await server.perf_stat_report(result_dir)
-                    if rep_counters:
-                        if perf_counters is None:
-                            perf_counters = rep_counters
+                    # Extract client CPU from GNU time output
+                    if use_gnu_time and stderr:
+                        time_data = parse_gnu_time_stderr(stderr)
+                        if time_data and time_data["wall_seconds"] > 0:
+                            self._client_cores_busy_per_rep.append(time_data["cores_busy"])
+                            logger.info(
+                                "Rep %d client CPU: %.3f cores busy " "(%.1fs user + %.1fs sys / %.1fs wall)",
+                                rep + 1,
+                                time_data["cores_busy"],
+                                time_data["user_seconds"],
+                                time_data["system_seconds"],
+                                time_data["wall_seconds"],
+                            )
                         else:
-                            for bucket, events in rep_counters.items():
-                                acc = perf_counters.setdefault(bucket, {})
-                                for k, v in events.items():
-                                    acc[k] = acc.get(k, 0) + v
+                            logger.warning(
+                                "Rep %d: GNU time output present but unparseable; " "client CPU unavailable this rep",
+                                rep + 1,
+                            )
+
+                    # Perf stat: stop counting (scored phase is over)
+                    if perf_armed:
+                        await server.perf_stat_stop()
+                        perf_stopped = True
+
+                    # Parse total RPS from memtier output
+                    total_rps = parse_memtier_total_rps(stdout)
+                    if total_rps is None:
+                        raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
+
+                    per_run_rps.append(total_rps)
+                    logger.info("Rep %d/%d: %.1f ops/sec", rep + 1, self.repetitions, total_rps)
+
+                    # Write per-rep metric
+                    metric = MetricData(metrics={"rps": total_rps}, rep=rep + 1)
+                    self.file_protocol.append_metric(metric)
+
+                    self.status.steps_completed = rep * 2 + 2
+                    self.file_protocol.write_status(self.status)
+
+                    # Collect perf stat report per-rep and sum across reps
+                    if perf_armed:
+                        server.perf_stat_wait()
+                        result_dir = self.file_protocol.get_result_dir()
+                        rep_counters = await server.perf_stat_report(result_dir)
+                        if rep_counters:
+                            perf_rep_count += 1
+                            if perf_counters is None:
+                                perf_counters = rep_counters
+                            else:
+                                for bucket, events in rep_counters.items():
+                                    acc = perf_counters.setdefault(bucket, {})
+                                    for k, v in events.items():
+                                        acc[k] = acc.get(k, 0) + v
+                        perf_armed = False  # stopped, joined, and reported
+
+                    # Collect CPU profile stacks on last rep
+                    if cpu_profile_armed:
+                        try:
+                            cpu_main, cpu_io = await server.cpu_profile_collect()
+                            if cpu_main:
+                                self._cpu_stacks_main = cpu_main
+                                self._cpu_stacks_io = cpu_io
+                        except Exception as e:
+                            logger.warning("CPU profile collection failed: %s", e)
+                        cpu_profile_armed = False  # fully consumed
+
+                finally:
+                    # Ensure collectors cannot outlive the rep regardless of
+                    # where the exception occurred — stop perf exactly once,
+                    # cancel/join cpu profile exactly once.
+                    if perf_armed:
+                        if not perf_stopped:
+                            try:
+                                await server.perf_stat_stop()
+                            except Exception:
+                                pass
+                        try:
+                            server.perf_stat_wait()
+                        except Exception:
+                            pass
+                    if cpu_profile_armed:
+                        try:
+                            server.cpu_profile_cancel()
+                        except Exception:
+                            pass
 
         finally:
             await replication_group.stop_all_servers()
@@ -614,9 +667,14 @@ class MixedTaskRunner(BaseTaskRunner):
 
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
-            detailed_data["perf_duration_seconds"] = float(self.warmup + self.duration)
-            detailed_data["perf_warmup_included"] = self.warmup > 0
-            detailed_data["perf_rep_count"] = len(per_run_rps)
+            # Counters cover only the scored interval (delay skipped warmup)
+            detailed_data["perf_duration_seconds"] = float(self.duration)
+            detailed_data["perf_warmup_included"] = False
+            detailed_data["perf_rep_count"] = perf_rep_count or 1
+
+        if self._cpu_stacks_main:
+            detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
+            detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
 
         results = BenchmarkResults(
             method=f"perf-mixed-{self.set_ratio}set",
