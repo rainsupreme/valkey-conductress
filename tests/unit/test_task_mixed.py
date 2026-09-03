@@ -300,6 +300,10 @@ class TestMixedTaskDataValidation:
         with pytest.raises(ValueError, match="set_ratio must be 0-100"):
             self._make_task(set_ratio=101)
 
+    def test_invalid_warmup_negative(self):
+        with pytest.raises(ValueError, match="warmup must be >= 0"):
+            self._make_task(warmup=-1)
+
     def test_invalid_memtier_threads_negative(self):
         with pytest.raises(ValueError, match="memtier_threads must be >= 0"):
             self._make_task(memtier_threads=-1)
@@ -699,6 +703,14 @@ class TestCommandConstruction:
         assert timed == "/usr/bin/time -v ~/conductress/memtier_benchmark --test-time 30"
         assert "taskset" not in timed
 
+    def test_positive_warmup_builds_memtier_option(self):
+        runner = self._make_runner(warmup=7)
+        assert runner._build_warmup_arg() == "--warmup-period 7 "
+
+    def test_zero_warmup_omits_memtier_option(self):
+        runner = self._make_runner(warmup=0)
+        assert runner._build_warmup_arg() == ""
+
 
 class TestCapacityModel:
     """Tests for the mixed-task capacity model in _compute_client_cpu_meta.
@@ -898,6 +910,11 @@ class TestEndToEndRunnerMock:
         assert len(prefill_cmds) == 1
         assert "--threads 8" in prefill_cmds[0]
         assert "--clients 50" in prefill_cmds[0]
+
+        measure_cmds = [c for c in commands_sent if "/usr/bin/time -v" in c]
+        assert len(measure_cmds) == 1
+        assert "--warmup-period 5" in measure_cmds[0]
+        assert "--test-time 30" in measure_cmds[0]
 
     @pytest.mark.asyncio
     async def test_pinned_commands_have_taskset(self):
@@ -1118,9 +1135,31 @@ class TestCliAddMixed:
         assert data["val_size"] == 512
         assert data["io_threads"] == 9
         assert data["pipelining"] == 10
+        assert data["warmup"] == config.DEFAULT_WARMUP
         # New fields present with defaults
         assert data["memtier_threads"] == 0
         assert data["memtier_clients"] == 0
+
+    @pytest.mark.parametrize(("value", "expected"), [("12s", 12), ("0s", 0)])
+    def test_warmup_serialized(self, value, expected):
+        exit_code = main(
+            [
+                "queue",
+                "add-mixed",
+                "--source",
+                "valkey",
+                "--specifier",
+                "unstable",
+                "--set-ratio",
+                "20",
+                "--warmup",
+                value,
+            ]
+        )
+        assert exit_code == 0
+        tasks = list(self.queue_path.glob("task_*.json"))
+        data = json.loads(tasks[0].read_text())
+        assert data["warmup"] == expected
 
     def test_invalid_ratio_rejected(self, capsys):
         exit_code = main(

@@ -200,6 +200,8 @@ class MixedTaskData(BaseTaskData):
         self.task_type = "MixedTaskData"
         if not (0 <= self.set_ratio <= 100):
             raise ValueError(f"set_ratio must be 0-100, got {self.set_ratio}")
+        if self.warmup < 0:
+            raise ValueError(f"warmup must be >= 0, got {self.warmup}")
         _validate_memtier_bounds(self.memtier_threads, self.memtier_clients)
 
     @property
@@ -345,6 +347,10 @@ class MixedTaskRunner(BaseTaskRunner):
         if self.benchmark_cpu_override:
             return f"taskset -c {self.benchmark_cpu_override} "
         return ""
+
+    def _build_warmup_arg(self) -> str:
+        """Return memtier's warmup option, or an empty string when disabled."""
+        return f"--warmup-period {self.warmup} " if self.warmup > 0 else ""
 
     def _build_timed_command(self, cmd: str) -> str:
         """Wrap a command with /usr/bin/time -v for CPU accounting.
@@ -499,6 +505,7 @@ class MixedTaskRunner(BaseTaskRunner):
                     f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
                     f"--data-size {self.val_size} "
                     f"--pipeline {self.pipelining} "
+                    f"{self._build_warmup_arg()}"
                     f"--test-time {self.duration} "
                     f"--hide-histogram"
                 )

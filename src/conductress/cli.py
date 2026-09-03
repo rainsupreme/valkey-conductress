@@ -383,6 +383,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
     )
     mixed_parser.add_argument(
+        "--warmup",
+        default=f"{config.DEFAULT_WARMUP}s",
+        help=f"Warmup duration passed to memtier (0s disables). Default: {config.DEFAULT_WARMUP}s",
+    )
+    mixed_parser.add_argument(
         "--repetitions",
         type=int,
         default=config.DEFAULT_REPETITIONS,
@@ -967,6 +972,12 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    try:
+        warmup = _parse_human_time(args.warmup, "warmup")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if args.repetitions < 1:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
@@ -1010,6 +1021,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
             io_threads=io_thread,
             pipelining=pipeline,
             duration=duration,
+            warmup=warmup,
             repetitions=args.repetitions,
             perf_stat_enabled=args.perf_stat,
             key_size=key_size,
@@ -1034,7 +1046,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     print(f"  source={args.source} specifier={args.specifier}")
     print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
     print(f"  connections={total_conns} ({eff_t} threads × {eff_c} clients)")
-    print(f"  duration={duration}s reps={args.repetitions}")
+    print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
     if args.note:
