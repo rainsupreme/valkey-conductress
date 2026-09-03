@@ -52,21 +52,19 @@ the memtier process tree kept busy during the measurement window.
 - Prefill commands are NOT wrapped with time (prefill is not a measurement
   window and would pollute the signal).
 
-### 4. Warmup field: backward-compatibility no-op
+### 4. Warmup is an active control
 
-`warmup` is stored in task data and written to results but is NOT consumed
-by the measurement phase.  memtier is invoked with `--test-time {duration}`
-only.  memtier_benchmark's `--warmup-period` flag exists but was not
-activated because:
+`warmup` is passed to memtier as `--warmup-period <seconds>` when greater
+than zero. Memtier executes the same configured workload during this period
+but excludes warmup operations from the reported benchmark statistics.
 
-- The current baseline measurement uses `--test-time` without warmup discard.
-  Adding `--warmup-period` would change the effective measurement duration
-  for all mixed tasks, breaking A/B comparability with prior results.
-- memtier's internal warmup (first connections, TCP window growth) is
-  negligible for a preloaded keyspace running at steady state for 30+ seconds.
-
-If a discarded-warmup phase is desired in the future, it should be gated
-behind a new field or flag and not silently alter the `warmup=5` default.
+- The CLI exposes `--warmup` using the same human-duration syntax as
+  `--duration` and defaults to the existing Conductress five-second warmup.
+- `--warmup 0s` is the explicit no-warmup setting; in that case Conductress
+  omits `--warmup-period` from the command entirely.
+- Negative values are rejected in both CLI parsing and task validation.
+- GNU time intentionally covers warmup plus measurement because client CPU
+  saturation should be detected across the generator's full steady workload.
 
 ### 5. Upper bounds
 
