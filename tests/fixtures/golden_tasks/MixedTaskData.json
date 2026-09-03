@@ -18,5 +18,7 @@
   "repetitions": 3,
   "server_cpu_override": "",
   "benchmark_cpu_override": "",
-  "server_args": ""
+  "server_args": "",
+  "memtier_threads": 0,
+  "memtier_clients": 0
 }

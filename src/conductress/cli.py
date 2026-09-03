@@ -410,6 +410,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
     )
+    mixed_parser.add_argument(
+        "--memtier-threads",
+        type=int,
+        default=0,
+        help="memtier_benchmark --threads override (0 = default 8). "
+        "Scale with --memtier-clients to control total connections.",
+    )
+    mixed_parser.add_argument(
+        "--memtier-clients",
+        type=int,
+        default=0,
+        help="memtier_benchmark --clients (per-thread) override (0 = default 50). "
+        "Total connections = threads * clients.",
+    )
 
     # queue add-scenario
     scenario_parser = queue_sub.add_parser(
@@ -968,6 +982,16 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
         print(f"Error (--client-cpus): {e}", file=sys.stderr)
         return 1
 
+    memtier_threads = args.memtier_threads
+    memtier_clients = args.memtier_clients
+    from conductress.tasks.task_mixed import _validate_memtier_bounds
+
+    try:
+        _validate_memtier_bounds(memtier_threads, memtier_clients)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     import itertools
 
     combinations = list(itertools.product(sizes, io_threads, pipelining, key_sizes))
@@ -992,6 +1016,8 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
             server_cpu_override=args.server_cpus,
             benchmark_cpu_override=args.client_cpus,
             server_args=args.server_args,
+            memtier_threads=memtier_threads,
+            memtier_clients=memtier_clients,
         )
         queue.submit_task(task)
 
@@ -999,9 +1025,15 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     if _finish_submission(submission, args):
         return 0
     ratio_str = f"{args.set_ratio}%SET/{100-args.set_ratio}%GET"
+    from conductress.tasks.task_mixed import _effective_memtier_clients, _effective_memtier_threads
+
+    eff_t = _effective_memtier_threads(memtier_threads)
+    eff_c = _effective_memtier_clients(memtier_clients)
+    total_conns = eff_t * eff_c
     print(f"Queued {len(combinations)} mixed task(s) ({ratio_str}):")
     print(f"  source={args.source} specifier={args.specifier}")
     print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
+    print(f"  connections={total_conns} ({eff_t} threads × {eff_c} clients)")
     print(f"  duration={duration}s reps={args.repetitions}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
