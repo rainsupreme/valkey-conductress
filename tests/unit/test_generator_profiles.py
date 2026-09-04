@@ -442,18 +442,72 @@ class TestMixedSweepV2:
         perf_task.sweep_commit = "abc"  # type: ignore[attr-defined]
         assert not coord._is_my_task(perf_task)
 
-    def test_mixed_v2_matches_mixed_task(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
+    @staticmethod
+    def _make_mixed_task(sweep_commit: str = "abc"):
         from conductress.tasks.task_mixed import MixedTaskData
+
+        return MixedTaskData(
+            source="valkey",
+            specifier="abc",
+            replicas=0,
+            note="",
+            requirements={},
+            make_args="",
+            set_ratio=20,
+            val_size=16,
+            io_threads=7,
+            pipelining=10,
+            duration=30,
+            sweep_commit=sweep_commit,
+        )
+
+    @staticmethod
+    def _make_coordinator(tmp_path: Path):
+        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
 
         with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
             with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                label = f"s20-v2-mixed-s20-k16-v16-t{7}-p10"
-                state_file = tmp_path / f"state_{label}.json"
-                state_file.write_text("{}")
-                coord = MixedSweepCoordinatorV2(tmp_path)
+                return MixedSweepCoordinatorV2(tmp_path)
 
-        mixed_task = MixedTaskData(
+    def test_mixed_v2_matches_mixed_task(self, tmp_path: Path):
+        coord = self._make_coordinator(tmp_path)
+        assert coord._is_my_task(self._make_mixed_task())
+
+    def test_mixed_v2_sweep_commit_survives_queue_round_trip(self, tmp_path: Path):
+        from conductress.task_queue import TaskQueue
+        from conductress.tasks.task_mixed import MixedTaskData
+
+        queue = TaskQueue(tmp_path / "queue")
+        task = self._make_mixed_task()
+        queue.submit_task(task)
+
+        restored = queue.get_next_task()
+        assert isinstance(restored, MixedTaskData)
+        assert restored.sweep_commit == "abc"
+        assert self._make_coordinator(tmp_path)._is_my_task(restored)
+
+    def test_reloaded_mixed_v2_completion_records_result(self, tmp_path: Path):
+        from conductress.task_queue import TaskQueue
+
+        queue = TaskQueue(tmp_path / "queue")
+        queue.submit_task(self._make_mixed_task())
+        restored = queue.get_next_task()
+        assert restored is not None
+
+        coord = self._make_coordinator(tmp_path)
+        with patch.object(coord, "_extract_result", return_value=(123.0, 1.5, 5)):
+            with patch.object(coord, "record_result") as record_result:
+                with patch.object(coord, "_extract_perf_counters", return_value=None):
+                    with patch.object(coord, "_extract_cpu_stacks") as extract_stacks:
+                        coord.on_task_completed(restored)
+
+        record_result.assert_called_once_with("abc", 123.0, 1.5, 5)
+        extract_stacks.assert_called_once_with(restored)
+
+    def test_legacy_mixed_task_without_sweep_commit_defaults_empty(self):
+        from conductress.tasks.task_mixed import MixedTaskData
+
+        task = MixedTaskData(
             source="valkey",
             specifier="abc",
             replicas=0,
@@ -466,8 +520,7 @@ class TestMixedSweepV2:
             pipelining=10,
             duration=30,
         )
-        mixed_task.sweep_commit = "abc"  # type: ignore[attr-defined]
-        assert coord._is_my_task(mixed_task)
+        assert task.sweep_commit == ""
 
 
 # ---------------------------------------------------------------------------
