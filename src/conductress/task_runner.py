@@ -108,6 +108,17 @@ class TaskRunner:
                     v2_coordinator.initialize()
                     self._subscribers.append(v2_coordinator)
 
+            # Additive v3 epoch: cachecannon is the canonical generator for
+            # GET/SET/DELETE and mixed ratios. Isolated state under sweep_data/v3.
+            from conductress.config import SWEEP_V3_ENABLED
+
+            if SWEEP_V3_ENABLED:
+                from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+                for v3_coordinator in create_v3_coordinators(repo_path):
+                    v3_coordinator.initialize()
+                    self._subscribers.append(v3_coordinator)
+
             # Latency sweep runs independently (flat rate, no throughput dependency)
             from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 
