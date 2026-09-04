@@ -268,6 +268,7 @@ def main() -> None:
             SWEEP_STATE_FILE,
             SWEEP_THROUGHPUT_WORKLOADS,
             SWEEP_V2_ENABLED,
+            SWEEP_V3_ENABLED,
         )
         from conductress.sweep.coordinator import BaseSweepCoordinator, SweepCoordinator
         from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS, MemorySweepCoordinator
@@ -305,6 +306,12 @@ def main() -> None:
                 for v2_coord in (ThroughputSweepCoordinatorV2(repo_path), MixedSweepCoordinatorV2(repo_path)):
                     if v2_coord.state_file.exists():
                         coordinators.append(v2_coord)
+            if SWEEP_V3_ENABLED and (not args.metric or args.metric == "throughput"):
+                from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+                for v3_coord in create_v3_coordinators(repo_path):
+                    if v3_coord.state_file.exists():
+                        coordinators.append(v3_coord)
 
             if not args.metric or args.metric == "memory":
                 for mem_wl in MEMORY_WORKLOADS:

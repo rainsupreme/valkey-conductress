@@ -22,5 +22,8 @@
   "server_cpu_override": "",
   "benchmark_cpu_override": "",
   "set_ratio": 0,
-  "distribution": "uniform"
+  "distribution": "uniform",
+  "max_reps": 0,
+  "target_cv": 0.0,
+  "sweep_commit": ""
 }

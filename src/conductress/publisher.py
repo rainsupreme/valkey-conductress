@@ -59,6 +59,23 @@ class DashboardPublisher:
         return epoch_id if isinstance(epoch_id, str) and epoch_id else "v1"
 
     @staticmethod
+    def _epoch_def(epoch_id: str) -> dict:
+        """Resolve dashboard metadata for an epoch from the shared registry.
+
+        An unregistered epoch gets a generic label rather than inheriting some
+        other epoch's description. The previous binary ``v1``-or-else expression
+        would have labelled a v3 series "Scalable v2 (patched generator)", which
+        is precisely the provenance confusion the epoch split exists to prevent.
+        """
+        from conductress.config import SWEEP_EPOCHS
+
+        entry = SWEEP_EPOCHS.get(epoch_id)
+        if entry is None:
+            logger.warning("Unregistered sweep epoch %r — publishing a generic label", epoch_id)
+            return {"id": epoch_id, "label": f"Epoch {epoch_id}", "generator": "unknown"}
+        return {"id": epoch_id, **entry}
+
+    @staticmethod
     def _epoch_path(path: Path, epoch_id: str) -> Path:
         """Return the legacy path for v1 or add `.epoch-<id>` for v2+."""
         if not epoch_id or epoch_id == "v1":
@@ -96,14 +113,7 @@ class DashboardPublisher:
 
         try:
             epoch_ids = list(dict.fromkeys(self._coord_epoch(c) for c in self.coordinators))
-            epoch_defs = [
-                {
-                    "id": epoch_id,
-                    "label": "Legacy v1 (stock generator)" if epoch_id == "v1" else "Scalable v2 (patched generator)",
-                    "generator": "stock" if epoch_id == "v1" else "patched",
-                }
-                for epoch_id in epoch_ids
-            ]
+            epoch_defs = [self._epoch_def(epoch_id) for epoch_id in epoch_ids]
 
             for coord in self.coordinators:
                 epoch_id = self._coord_epoch(coord)

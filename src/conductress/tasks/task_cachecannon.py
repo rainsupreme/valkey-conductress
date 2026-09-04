@@ -54,6 +54,17 @@ def _compute_aggregated_stats(per_run_rps: list) -> tuple:
     return compute_aggregated_stats(per_run_rps)
 
 
+def _should_stop_adaptive(per_run_rps: list, rep: int, min_reps: int, target_cv: float) -> bool:
+    """Adaptive stopping test. Deferred import to avoid circular dependency.
+
+    Shares the perf-benchmark implementation so both generators converge on
+    precision identically rather than drifting apart.
+    """
+    from conductress.tasks.task_perf_benchmark import should_stop_adaptive
+
+    return should_stop_adaptive(per_run_rps, rep, min_reps, target_cv)
+
+
 def _latency_from_json(command: str, block: dict) -> dict:
     """Convert a cachecannon JSON latency object to the recorded ms schema.
 
@@ -260,11 +271,32 @@ class CachecannonTaskData(BaseTaskData):
     benchmark_cpu_override: str = ""
     set_ratio: int = 0  # 0 = pure workload per 'test'; >0 = mixed GET/SET
     distribution: str = "uniform"  # key distribution: 'uniform' or 'zipf'
+    max_reps: int = 0  # 0 = fixed reps; >0 = adaptive mode upper limit
+    target_cv: float = 0.0  # adaptive: stop early when 95% CI half-width (% of mean) <= this; 0 = disabled
+    sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
         super().__post_init__()
         self.warmup = int(self.warmup)
         self.duration = int(self.duration)
+        # These must be REAL controls. An accepted-but-ignored value is a fake
+        # lever: it makes the operator believe they configured a precision
+        # target that never took effect. Adaptive stopping can only ever fire
+        # between `repetitions` and `max_reps`, so a target with no headroom
+        # above the minimum is rejected rather than silently doing nothing.
+        if self.max_reps and self.max_reps < self.repetitions:
+            raise ValueError(
+                f"max_reps ({self.max_reps}) must be >= repetitions ({self.repetitions}); "
+                "repetitions is the adaptive minimum and max_reps the ceiling"
+            )
+        if self.target_cv < 0:
+            raise ValueError(f"target_cv must be >= 0, got {self.target_cv}")
+        if self.target_cv > 0 and self.max_reps <= self.repetitions:
+            raise ValueError(
+                f"target_cv={self.target_cv} requires max_reps > repetitions "
+                f"(got max_reps={self.max_reps}, repetitions={self.repetitions}); "
+                "otherwise adaptive stopping has no reps to skip and the target is a no-op"
+            )
 
     def workload_label(self) -> str:
         """Human label for the workload: 'get', 'set', or 'mixed s<N>'."""
@@ -296,6 +328,8 @@ class CachecannonTaskData(BaseTaskData):
             warmup=self.warmup,
             duration=self.duration,
             repetitions=self.repetitions,
+            max_reps=self.max_reps,
+            target_cv=self.target_cv,
             keyspace_count=self.keyspace_count,
             cachecannon_binary=self.cachecannon_binary,
             server_args=self.server_args,
@@ -339,6 +373,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
         note: str,
         set_ratio: int = 0,
         distribution: str = "uniform",
+        max_reps: int = 0,
+        target_cv: float = 0.0,
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
@@ -356,6 +392,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.warmup = warmup
         self.duration = duration
         self.repetitions = repetitions
+        self.max_reps = max_reps
+        self.target_cv = target_cv
         self.keyspace_count = keyspace_count
         self.cachecannon_binary = cachecannon_binary
         self.server_args = server_args
@@ -373,15 +411,18 @@ class CachecannonTaskRunner(BaseTaskRunner):
         if distribution != "uniform":
             workload += f" {distribution}"
         self.workload = workload
+        effective_reps = max_reps if max_reps > 0 else repetitions
+        rep_label = f"x{repetitions}" if effective_reps == repetitions else f"x{repetitions}-{effective_reps}"
         self.title = (
             f"cachecannon {workload}, {source}:{specifier}, io-threads={io_threads}, "
             f"P{pipelining}, {connections}c, {threads}t, "
-            f"{HumanTime.to_human(duration)} x{repetitions}"
+            f"{HumanTime.to_human(duration)} {rep_label}"
         )
 
-        # Status tracking
+        # Status tracking. Budget for the adaptive ceiling so progress never
+        # exceeds 100% when extra reps are needed to hit the precision target.
         self.status = BenchmarkStatus(
-            steps_total=(warmup + duration) * repetitions,
+            steps_total=(warmup + duration) * effective_reps,
             task_type=f"cachecannon-{workload.replace(' ', '-')}",
         )
 
@@ -462,7 +503,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
         all_results: list[dict] = []
 
         try:
-            for rep in range(self.repetitions):
+            effective_reps = self.max_reps if self.max_reps > 0 else self.repetitions
+            for rep in range(effective_reps):
                 # Between-rep housekeeping
                 if rep > 0:
                     await replication_group.stop_all_servers()
@@ -524,7 +566,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
 
                 # Build and execute cachecannon command
                 command_string = self._build_command(toml_path, cpu_list)
-                self.logger.info("Starting cachecannon (rep %d/%d): %s", rep + 1, self.repetitions, command_string)
+                self.logger.info("Starting cachecannon (rep %d/%d): %s", rep + 1, effective_reps, command_string)
 
                 self.status.state = "running"
                 self.file_protocol.write_status(self.status)
@@ -586,7 +628,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 self.logger.info(
                     "Rep %d/%d: %.0f rps, %.2f%% errors, hit rate %.1f%%",
                     rep + 1,
-                    self.repetitions,
+                    effective_reps,
                     parsed["throughput_rps"],
                     parsed["error_pct"],
                     parsed["hit_rate"]["percent"] if parsed["hit_rate"] else 0,
@@ -603,6 +645,20 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 ):
                     cores_busy = (client_cpu_s1 - client_cpu_s0) / (client_cpu_t1 - client_cpu_t0)
                     self._client_cores_busy_per_rep.append(cores_busy)
+
+                # Adaptive stop: once the 95% CI half-width is inside the
+                # precision target there is nothing to gain from more reps, and
+                # each one costs a full server restart plus a 3M-key prefill.
+                if _should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
+                    mean_rps, ci_95 = _compute_aggregated_stats(per_run_rps)
+                    self.logger.info(
+                        "Adaptive stop after %d reps: 95%% CI half-width %.3f%% <= target %.3f%%",
+                        rep + 1,
+                        (ci_95 / mean_rps) * 100 if mean_rps else 0.0,
+                        self.target_cv,
+                    )
+                    self.status.steps_total = (self.warmup + self.duration) * (rep + 1)
+                    break
 
             # Record aggregated results
             if server is None:

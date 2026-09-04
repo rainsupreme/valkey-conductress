@@ -143,6 +143,57 @@ def _env_bool(name: str, default: bool = False) -> bool:
 SWEEP_V2_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False)
 SWEEP_V2_EPOCH_ID = "v2"
 
+SWEEP_V3_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V3_ENABLED", False)
+SWEEP_V3_EPOCH_ID = "v3"
+
+# ---------------------------------------------------------------------------
+# cachecannon-v3 sweep protocol
+# ---------------------------------------------------------------------------
+# Every value below was CONFIRMED by the Stage 2 ramp measurement on 2026-09-04
+# (20 cells, ~1,780 per-second samples, G4 + AMD, 400c and 1200c, 5 fresh server
+# starts each).  Two results are load-bearing and must not be "tidied":
+#
+#   * Warmup is 10s, NOT the 30s originally extrapolated from memtier.  Every
+#     cell converges by second 10; cachecannon settles roughly 3x faster than
+#     memtier.  Zero warmup fails only on G4/1200c, where an opening ~5% spike
+#     leaks into the scored window (+0.643% median bias).
+#   * Connections are 400, NOT 1200.  1200c was rejected on stability grounds:
+#     AMD showed 2.520% between-restart CV across a 6% spread, which can never
+#     satisfy the target below and would burn the rep ceiling on every cell.
+#
+# Changing any of these values defines a NEW workload identity, not a
+# continuation of the series.  See conductress-cachecannon-v3/epoch-specification.md.
+SWEEP_V3_CACHECANNON_COMMIT = "31a2befaa8bf7b3b7a7f7e03e2a847a2e407a3ce"
+SWEEP_V3_WARMUP = 10
+SWEEP_V3_DURATION = 30
+SWEEP_V3_CONNECTIONS = 400
+SWEEP_V3_CLIENT_THREADS = 8  # 50 connections per client thread at 400c
+SWEEP_V3_IO_THREADS = 7  # server io-threads
+SWEEP_V3_PIPELINING = 10
+SWEEP_V3_VAL_SIZE = 16
+SWEEP_V3_KEYSPACE = 3_000_000
+SWEEP_V3_DISTRIBUTION = "uniform"
+SWEEP_V3_SET_RATIO = 20  # the canonical mixed workload
+SWEEP_V3_REPETITIONS = 5  # minimum reps
+SWEEP_V3_MAX_REPS = 10  # adaptive ceiling
+# Precision target for adaptive stopping.  NOTE: despite the historical field
+# name, should_stop_adaptive() bounds the 95% CI half-width as a percent of the
+# mean, which is a *wider* statistic than CV.  At n=5 the half-width is roughly
+# 1.24x the CV, so the measured 0.28-0.30% CV at 400c corresponds to about
+# 0.35-0.37% here -- inside this bound, but with less margin than the raw CV
+# numbers suggest.
+SWEEP_V3_TARGET_CV = 0.5
+
+# Epoch registry: id -> dashboard metadata.  The publisher advertises these in
+# every manifest so old URLs keep working while new dashboards can discover
+# additional epochs.  Unknown ids fall back to a generic label rather than
+# being silently mislabelled as some other epoch.
+SWEEP_EPOCHS: dict[str, dict[str, str]] = {
+    "v1": {"label": "Legacy v1 (stock generator)", "generator": "stock"},
+    "v2": {"label": "Scalable v2 (patched generator)", "generator": "patched"},
+    "v3": {"label": "Cachecannon v3 (io_uring generator)", "generator": "cachecannon"},
+}
+
 # Additional throughput workloads (each gets its own state file + series).
 # Label is auto-generated as {test}-k{key_size}-v{val_size}-t{io_threads}-p{pipelining}.
 # "platforms" limits the workload to specific architectures (omit for all platforms).
