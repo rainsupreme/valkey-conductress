@@ -95,8 +95,10 @@ class AnalysisModule:
         mixed_variant = ""
         if method.startswith("perf-mixed-"):
             warmup_applied = int(bool(data.get("warmup_applied", False)))
+            warmup_method = data.get("warmup_method", "legacy")
             mixed_variant = (
-                f"w{data.get('warmup', 0)}-wa{warmup_applied}-t{data.get('threads', 0)}-c{data.get('clients', 0)}"
+                f"w{data.get('warmup', 0)}-wa{warmup_applied}-wm{warmup_method}-"
+                f"t{data.get('threads', 0)}-c{data.get('clients', 0)}"
             )
         return (
             method,

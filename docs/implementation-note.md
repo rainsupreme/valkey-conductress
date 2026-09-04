@@ -52,19 +52,23 @@ the memtier process tree kept busy during the measurement window.
 - Prefill commands are NOT wrapped with time (prefill is not a measurement
   window and would pollute the signal).
 
-### 4. Warmup is an active control
+### 4. Warmup is an active, separate invocation
 
-`warmup` is passed to memtier as `--warmup-period <seconds>` when greater
-than zero. Memtier executes the same configured workload during this period
-but excludes warmup operations from the reported benchmark statistics.
+The deployed memtier binary (`d52544b1`) does not support
+`--warmup-period`. Conductress therefore runs warmup as a separate unscored
+memtier invocation with the same ratio, key pattern, keyspace, data size,
+pipeline, threads, clients, and taskset as the scored invocation, using
+`--test-time <warmup>`. Its output is discarded and any failure aborts the
+task before perf collectors are armed.
 
 - The CLI exposes `--warmup` using the same human-duration syntax as
-  `--duration` and defaults to the existing Conductress five-second warmup.
-- `--warmup 0s` is the explicit no-warmup setting; in that case Conductress
-  omits `--warmup-period` from the command entirely.
+  `--duration` and defaults to five seconds.
+- `--warmup 0s` omits the warmup invocation entirely.
 - Negative values are rejected in both CLI parsing and task validation.
-- GNU time intentionally covers warmup plus measurement because client CPU
-  saturation should be detected across the generator's full steady workload.
+- Warmup establishes server-side steady state; memtier reconnects for the
+  scored invocation because this binary has no native in-process warmup.
+- GNU time wraps only the scored invocation, so client CPU telemetry is
+  measurement-only.
 
 ### 5. Upper bounds
 
@@ -88,11 +92,10 @@ but excludes warmup operations from the reported benchmark statistics.
 ### 7. Comparison dimensions and provenance
 
 Mixed comparison groups include a visible
-`w<seconds>-wa<applied>-t<threads>-c<clients>` variant. This prevents
-400-, 1200-, and 2400-connection results from being merged into one
-statistical sample bucket. `warmup_applied` also separates historical mixed
-results that recorded `warmup=5` while the field was still a no-op from new
-results where the warmup actually executes. Results preserve
+`w<seconds>-wa<applied>-wm<method>-t<threads>-c<clients>` variant. This prevents
+different connection shapes or warmup implementations from being merged into
+one statistical sample bucket. Historical results without method provenance
+are labeled `legacy`; new active warmups use `separate_invocation`. Results preserve
 `server_cpu_override` and `server_args` so server topology and experimental
 gates remain reproducible.
 
@@ -107,10 +110,11 @@ values instead of presenting a fake control; zero remains backward compatible.
 
 - GNU time detection requires the parser-compatible `GNU time` signature;
   BusyBox variants degrade to unavailable telemetry rather than parse noise.
-- Server perf counters and CPU profiles use delayed starts, exclude warmup,
-  and record `perf_duration_seconds = duration` with
-  `perf_warmup_included = false`. Client GNU-time CPU accounting remains
-  warmup-inclusive for conservative generator-saturation detection.
+- Warmup completes before server perf counters and CPU profiles are armed;
+  collectors start immediately (`delay_seconds = 0`) and cover only the
+  scored invocation. Client GNU-time CPU accounting also wraps only the
+  scored invocation. Results record `perf_duration_seconds = duration` and
+  `perf_warmup_included = false`.
 - Prefill requests use ceiling division, avoiding partial keyspace coverage
   when connection count does not divide the three-million-key keyspace.
 - Duration estimates model one request-bounded prefill and one
@@ -135,31 +139,28 @@ When non-zero:
   immediately and prevent recording from starting.
 
 **MixedTaskRunner changes**:
-- `perf_stat_start(delay_seconds=float(self.warmup))` — armed immediately
-  before the blocking memtier command; the delay covers the warmup phase.
-- `cpu_profile_start(duration, delay_seconds=float(self.warmup))` — armed
-  on the FINAL repetition only (same as PerfTaskRunner), with the same
-  warmup delay.
-- `perf_stat_stop()` called after memtier completes (scored phase is over).
-- Per-rep perf stat collection and summing across reps (matching PerfTaskRunner).
-- Result schema: `perf_duration_seconds = float(duration)` (scored only),
-  `perf_warmup_included = False`, `perf_rep_count = <actual count>`.
-- CPU profile stacks persisted as `cpu_stacks_main` and `cpu_stacks_io`
-  (same schema keys as PerfTaskRunner).
+- Runs the unscored warmup invocation first when `warmup > 0`.
+- Calls `perf_stat_start(delay_seconds=0)` immediately before the scored
+  invocation.
+- Calls `cpu_profile_start(duration, delay_seconds=0)` on the final
+  repetition only.
+- Calls `perf_stat_stop()` after the scored invocation completes.
+- Collects and sums perf stat reports across repetitions.
+- Records `perf_duration_seconds = float(duration)`,
+  `perf_warmup_included = False`, and the actual `perf_rep_count`.
+- Persists CPU profile stacks as `cpu_stacks_main` and `cpu_stacks_io`.
 
-**warmup=0 handling**: delay is `float(0)`, which produces no sleep prefix
-for perf stat and no delayed Event wait for CPU profile — perf starts immediately,
-identical to a zero-warmup PerfTaskRunner.
+**warmup=0 handling**: no warmup command is issued. Perf stat and CPU
+profiling are armed immediately before the scored invocation with zero delay.
 
 **Failure cleanup**: every exit path after collector arming reaches one
 per-repetition `finally` block. Perf is stopped and joined according to its
 lifecycle state; delayed or active CPU profiling is cancelled through the
 exact process handle. No collector can outlive a failed repetition.
 
-**Client GNU-time CPU measurement**: intentionally remains warmup-inclusive
-(covers warmup + measurement). This is conservative for saturation detection:
-if the client is saturated at all during the run, we want to know.
-The distinction is documented in the result schema.
+**Client GNU-time CPU measurement**: wraps only the scored invocation and
+records `measurement_window = "scored_only"`, aligning client saturation
+with the throughput sample.
 
 **Backward compatibility**: `delay_seconds=0` (the default) is a no-op at
 all API layers: `ProfilingManager`, `Server`, and PerfTaskRunner callers
