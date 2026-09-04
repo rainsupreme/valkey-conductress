@@ -194,6 +194,7 @@ class MixedTaskData(BaseTaskData):
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
     memtier_threads: int = 0  # 0 = MIXED_THREADS default (8)
     memtier_clients: int = 0  # 0 = MIXED_CLIENTS default (50 per thread)
+    sweep_commit: str = ""  # non-empty marks this as a sweep task
 
     def __post_init__(self):
         super().__post_init__()
