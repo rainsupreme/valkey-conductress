@@ -484,8 +484,10 @@ class TestCachecannonContract:
     TOML that generate_toml_config emits must be ACCEPTED by the real
     cachecannon binary -- its humantime_serde fields reject bare integers
     at startup, before any traffic is sent.
-    Output side: parse_results_block depends on the throughput/error/hit-rate
-    lines in cachecannon's stdout summary.
+    Output side: parse_json_results depends on cachecannon emitting an NDJSON
+    ``{"type":"result"}`` message when ``[admin] format = "json"`` is set. This
+    guards the exactness of throughput: the human ``clean`` formatter abbreviates
+    to three significant figures.
     """
 
     def _find_cachecannon(self) -> str:
@@ -537,27 +539,38 @@ class TestCachecannonContract:
         ), f"cachecannon rejected generated TOML:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
         assert "Parse(" not in result.stderr
 
-    def test_results_block_output_contract(self, local_server):
-        """parse_results_block extracts throughput, errors, and hit rate
-        from a real run's stdout."""
-        from conductress.tasks.task_cachecannon import parse_results_block
+    def test_json_results_output_contract(self, local_server):
+        """parse_json_results extracts exact throughput, errors, and hit rate
+        from a real run's NDJSON stdout.
+
+        Also asserts the value is NOT three-significant-figure quantized, which
+        is what the retired clean-output parser produced.
+        """
+        from conductress.tasks.task_cachecannon import parse_json_results
 
         result = self._run_cachecannon(local_server)
         assert result.returncode == 0
-        parsed = parse_results_block(result.stdout)
+        parsed = parse_json_results(result.stdout)
         assert parsed["throughput_rps"] > 0
         assert parsed["error_pct"] == 0
         assert parsed["hit_rate"] is not None
         assert parsed["hit_rate"]["percent"] > 99.0  # prefill=true guarantees hits
+        assert parsed["latency"] is not None
+        # An exact integer count, not a rounded display value.
+        assert float(parsed["throughput_rps"]).is_integer()
+        assert parsed["requests"] > 0
 
     def test_mixed_zipf_toml_accepted(self, local_server):
         """The set_ratio/distribution extensions also produce accepted
         configs and a parseable result (exercises get+set weights and
         the zipf keyspace distribution end-to-end)."""
-        from conductress.tasks.task_cachecannon import parse_results_block
+        from conductress.tasks.task_cachecannon import parse_json_results
 
         result = self._run_cachecannon(local_server, set_ratio=30, distribution="zipf")
         assert result.returncode == 0, f"mixed/zipf TOML rejected:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
-        parsed = parse_results_block(result.stdout)
+        parsed = parse_json_results(result.stdout)
         assert parsed["throughput_rps"] > 0
         assert parsed["error_pct"] == 0
+        # A mixed run exercises both command families.
+        assert parsed["latency_get"] is not None
+        assert parsed["latency_set"] is not None

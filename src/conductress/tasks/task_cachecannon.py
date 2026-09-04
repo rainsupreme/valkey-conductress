@@ -10,8 +10,8 @@ Config: TOML file generated per-run in the result directory.
 """
 
 import datetime
+import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -54,183 +54,93 @@ def _compute_aggregated_stats(per_run_rps: list) -> tuple:
     return compute_aggregated_stats(per_run_rps)
 
 
-def parse_throughput(text: str) -> float:
-    """Parse a throughput string like '1.7M req/s', '850K req/s', '1234567 req/s'.
+def _latency_from_json(command: str, block: dict) -> dict:
+    """Convert a cachecannon JSON latency object to the recorded ms schema.
 
-    Returns requests per second as a float.
+    cachecannon reports latency percentiles as integer microseconds, so no unit
+    inference is required.
     """
-    match = re.search(r"([\d.]+)\s*([BMKk])?\s*req/s", text)
-    if not match:
-        raise ValueError(f"Cannot parse throughput from: {text!r}")
-    value = float(match.group(1))
-    suffix = match.group(2)
-    if suffix == "B":
-        return value * 1_000_000_000
-    elif suffix == "M":
-        return value * 1_000_000
-    elif suffix in ("K", "k"):
-        return value * 1_000
-    return value
-
-
-def parse_error_rate(text: str) -> float:
-    """Parse error percentage from line like 'throughput   1.7M req/s, 0.00% errors'.
-
-    Returns the error percentage as a float (e.g. 0.0, 1.5).
-    """
-    match = re.search(r"([\d.]+)%\s*errors", text)
-    if not match:
-        raise ValueError(f"Cannot parse error rate from: {text!r}")
-    return float(match.group(1))
-
-
-def parse_hit_rate(text: str) -> dict:
-    """Parse hit rate line like 'hit rate     100% (50.4M hit, 0 miss)'.
-
-    Returns dict with 'percent', 'hits', 'misses'.
-    """
-    match = re.search(r"([\d.]+)%\s*\(([\d.]+)([BMKk])?\s*hit,\s*([\d.]+)([BMKk])?\s*miss\)", text)
-    if not match:
-        raise ValueError(f"Cannot parse hit rate from: {text!r}")
-    percent = float(match.group(1))
-
-    def _parse_count(val_str, suffix):
-        val = float(val_str)
-        if suffix == "B":
-            return val * 1_000_000_000
-        elif suffix == "M":
-            return val * 1_000_000
-        elif suffix in ("K", "k"):
-            return val * 1_000
-        return val
-
-    hits = _parse_count(match.group(2), match.group(3))
-    misses = _parse_count(match.group(4), match.group(5))
-    return {"percent": percent, "hits": hits, "misses": misses}
-
-
-def parse_latency_row(text: str) -> dict:
-    """Parse a latency percentile row like:
-    'GET          7.24 ms   7.34 ms   8.12 ms   9.45 ms   12.3 ms   15.6 ms'
-
-    cachecannon formats EACH value independently (format_latency_us): values
-    under 1ms get a microsecond suffix (U+00B5 'µs'), 1ms-1s get 'ms', and
-    >=1s get 's' -- so a single row can legitimately mix units, e.g.
-    'GET   938 µs   958 µs   975 µs   1.88 ms   1.91 ms   2.21 ms'.
-    Each value is converted using ITS OWN unit token and normalized to ms.
-
-    Command names may span multiple tokens (e.g. 'GET TTFB').
-
-    Returns dict with keys: command, p50_ms, p90_ms, p99_ms, p999_ms,
-    p9999_ms, max_ms (all normalized to milliseconds).
-    """
-    _UNIT_TO_MS = {
-        "\u00b5s": 0.001,  # µs (U+00B5 MICRO SIGN)
-        "\u03bcs": 0.001,  # μs (U+03BC GREEK SMALL LETTER MU)
-        "us": 0.001,
-        "ms": 1.0,
-        "s": 1000.0,
-    }
-    parts = text.split()
-    if len(parts) < 7:
-        raise ValueError(f"Cannot parse latency row (too few fields): {text!r}")
-
-    # Command name = leading tokens until the first numeric value.
-    command_tokens = []
-    idx = 0
-    while idx < len(parts):
-        try:
-            float(parts[idx])
-            break
-        except ValueError:
-            command_tokens.append(parts[idx])
-            idx += 1
-    if not command_tokens or idx >= len(parts):
-        raise ValueError(f"Cannot parse latency row (no command/values): {text!r}")
-    command = " ".join(command_tokens)
-
-    # Consume (value, unit) pairs, converting each by its own unit.
-    values_ms = []
-    while idx < len(parts):
-        try:
-            value = float(parts[idx])
-        except ValueError:
-            raise ValueError(f"Cannot parse latency row (expected number at {parts[idx]!r}): {text!r}")
-        idx += 1
-        if idx >= len(parts):
-            raise ValueError(f"Cannot parse latency row (value {value} missing unit): {text!r}")
-        unit = parts[idx].lower()
-        factor = _UNIT_TO_MS.get(unit)
-        if factor is None:
-            raise ValueError(f"Cannot parse latency row (unknown unit {parts[idx]!r}): {text!r}")
-        idx += 1
-        values_ms.append(value * factor)
-
-    if len(values_ms) < 6:
-        raise ValueError(f"Cannot parse latency row (found {len(values_ms)} values, need 6): {text!r}")
-
+    required = ("p50_us", "p90_us", "p99_us", "p999_us", "p9999_us", "max_us")
+    missing = [field for field in required if field not in block]
+    if missing:
+        raise ValueError(f"cachecannon JSON latency object missing {missing}: {block!r}")
     return {
         "command": command,
-        "p50_ms": values_ms[0],
-        "p90_ms": values_ms[1],
-        "p99_ms": values_ms[2],
-        "p999_ms": values_ms[3],
-        "p9999_ms": values_ms[4],
-        "max_ms": values_ms[5],
+        "p50_ms": block["p50_us"] / 1000.0,
+        "p90_ms": block["p90_us"] / 1000.0,
+        "p99_ms": block["p99_us"] / 1000.0,
+        "p999_ms": block["p999_us"] / 1000.0,
+        "p9999_ms": block["p9999_us"] / 1000.0,
+        "max_ms": block["max_us"] / 1000.0,
+        "count": block.get("count", 0),
     }
 
 
-def parse_results_block(output: str) -> dict:
-    """Parse the final RESULTS block from cachecannon output.
+def parse_json_results(output: str) -> dict:
+    """Parse cachecannon's NDJSON output and return EXACT result values.
 
-    Expects a block starting with 'RESULTS (Xs)' containing throughput, hit rate,
-    and latency lines.
+    cachecannon emits newline-delimited JSON when ``[admin] format = "json"`` is
+    set. Unstructured progress lines (``[precheck]``, ringline diagnostics) are
+    interleaved on the same streams and are skipped.
 
-    Returns dict with keys: throughput_rps, error_pct, hit_rate, latency.
+    Exactness is the entire point of this parser. The human ``clean`` formatter
+    renders throughput through an abbreviating helper, so 3,104,882 ops/sec
+    prints as ``3.10M`` -- three significant figures, a quantization step of
+    roughly 0.3-0.5% at multi-million ops/sec. That is at or above the sweep
+    target CV, which makes variance unmeasurable and collapses independent
+    repetitions onto a single representable value. The JSON ``result`` message
+    carries the exact integer instead.
+
+    Returns dict with keys: throughput_rps, error_pct, hit_rate, latency,
+    latency_get, latency_set, requests, responses, errors, duration_secs.
     """
-    lines = output.splitlines()
-    # Find the RESULTS block
-    results_start = None
-    for i, line in enumerate(lines):
-        if re.match(r"RESULTS\s*\(\d+", line):
-            results_start = i
-            break
-
-    if results_start is None:
-        raise ValueError("No RESULTS block found in cachecannon output")
-
-    # Parse lines after the RESULTS header
-    throughput_rps = None
-    error_pct = None
-    hit_rate = None
-    latency = None
-
-    for line in lines[results_start + 1 :]:
+    result_obj = None
+    for line in output.splitlines():
         stripped = line.strip()
-        if not stripped:
+        if not stripped.startswith("{"):
             continue
-        if "req/s" in stripped:
-            throughput_rps = parse_throughput(stripped)
-            error_pct = parse_error_rate(stripped)
-        elif "hit rate" in stripped.lower():
-            hit_rate = parse_hit_rate(stripped)
-        elif stripped and stripped.split()[0].isupper() and "ms" in stripped:
-            # Latency row (command name in uppercase followed by ms values)
-            try:
-                latency = parse_latency_row(stripped)
-            except ValueError:
-                pass
+        try:
+            candidate = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and candidate.get("type") == "result":
+            result_obj = candidate
 
-    if throughput_rps is None:
-        raise ValueError("Could not parse throughput from RESULTS block")
-    if error_pct is None:
-        raise ValueError("Could not parse error rate from RESULTS block")
+    if result_obj is None:
+        raise ValueError(
+            'No cachecannon JSON result message found. Is [admin] format = "json" set? '
+            f"Output tail:\n{output[-1000:]}"
+        )
+
+    for field in ("throughput", "err_pct", "hits", "misses", "hit_pct"):
+        if field not in result_obj:
+            raise ValueError(f"cachecannon JSON result missing {field!r}: {result_obj!r}")
+
+    latency_get = _latency_from_json("GET", result_obj["get"]) if "get" in result_obj else None
+    latency_set = _latency_from_json("SET", result_obj["set"]) if "set" in result_obj else None
+
+    # Primary latency is whichever command actually carried the workload. The
+    # previous clean-output parser recorded the LAST latency row it matched,
+    # which for a GET-only run could be an all-zero SET row.
+    primary = latency_get
+    if latency_set and (latency_get is None or latency_set["count"] > latency_get["count"]):
+        primary = latency_set
 
     return {
-        "throughput_rps": throughput_rps,
-        "error_pct": error_pct,
-        "hit_rate": hit_rate,
-        "latency": latency,
+        "throughput_rps": float(result_obj["throughput"]),
+        "error_pct": float(result_obj["err_pct"]),
+        "hit_rate": {
+            "percent": float(result_obj["hit_pct"]),
+            "hits": float(result_obj["hits"]),
+            "misses": float(result_obj["misses"]),
+        },
+        "latency": primary,
+        "latency_get": latency_get,
+        "latency_set": latency_set,
+        "requests": result_obj.get("requests"),
+        "responses": result_obj.get("responses"),
+        "errors": result_obj.get("errors"),
+        "duration_secs": result_obj.get("duration_secs"),
     }
 
 
@@ -318,6 +228,9 @@ length = {val_size}
 [timestamps]
 enabled = true
 mode = "userspace"
+
+[admin]
+format = "json"
 """
     return toml
 
@@ -652,9 +565,9 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     full_output = "\n".join(output_lines)
                     raise RuntimeError(f"cachecannon exited with code {exit_code}. Output:\n{full_output[-2000:]}")
 
-                # Parse results
+                # Parse results (exact values from cachecannon's JSON output)
                 full_output = "\n".join(output_lines)
-                parsed = parse_results_block(full_output)
+                parsed = parse_json_results(full_output)
 
                 # Fail loudly on errors or low hit rate
                 if parsed["error_pct"] > 0:
@@ -750,6 +663,9 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # Latency from last rep (most representative after warmup effects)
         if all_results and all_results[-1].get("latency"):
             detailed_data["latency"] = all_results[-1]["latency"]
+            for per_command in ("latency_get", "latency_set"):
+                if all_results[-1].get(per_command):
+                    detailed_data[per_command] = all_results[-1][per_command]
 
         # Hit rate from last rep
         if all_results and all_results[-1].get("hit_rate"):
