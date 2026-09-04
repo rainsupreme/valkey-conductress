@@ -536,4 +536,5 @@ class SweepCoordinator(BaseSweepCoordinator):
             and task.test == self._test
             and task.io_threads == self._io_threads
             and task.pipelining == self._pipelining
+            and getattr(task, "generator_profile", "") in ("", "legacy-v1")
         )
