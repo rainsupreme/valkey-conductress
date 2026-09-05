@@ -155,6 +155,19 @@ def parse_json_results(output: str) -> dict:
     }
 
 
+def workload_issues_gets(test: str, set_ratio: int) -> bool:
+    """Whether the effective workload sends any GET commands.
+
+    Mirrors generate_toml_config's weight mapping: set_ratio > 0 overrides
+    'test' with a mixed workload (get_weight = 100 - set_ratio); set_ratio == 0
+    means a pure workload per 'test'. The hit-rate prefill guard is only
+    meaningful when this returns True -- pure-SET runs have hit rate 0.0 by
+    definition (SETs cannot hit)."""
+    if set_ratio > 0:
+        return set_ratio < 100
+    return test == "get"
+
+
 def generate_toml_config(
     *,
     duration: int,
@@ -617,7 +630,15 @@ class CachecannonTaskRunner(BaseTaskRunner):
                         f"cachecannon reported {parsed['error_pct']}% errors "
                         f"(threshold: 0%). Output:\n{full_output[-1000:]}"
                     )
-                if parsed["hit_rate"] and parsed["hit_rate"]["percent"] < 99.0:
+                # Prefill sanity guard -- only meaningful when the workload
+                # issues GETs (see workload_issues_gets): a pure-SET run has
+                # hit rate 0.0 by definition, and the unconditional check
+                # failed every valid pure-SET task.
+                if (
+                    workload_issues_gets(self.test, self.set_ratio)
+                    and parsed["hit_rate"]
+                    and parsed["hit_rate"]["percent"] < 99.0
+                ):
                     raise RuntimeError(
                         f"cachecannon hit rate {parsed['hit_rate']['percent']}% "
                         f"(threshold: 99%). Prefill may have failed."

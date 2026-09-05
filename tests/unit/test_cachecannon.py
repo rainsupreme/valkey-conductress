@@ -459,3 +459,32 @@ def test_runner_construction():
     assert runner.test == "get"
     assert runner.val_size == 512
     assert runner.pipelining == 10
+
+
+def test_workload_issues_gets_pure_get():
+    from conductress.tasks.task_cachecannon import workload_issues_gets
+
+    assert workload_issues_gets("get", 0) is True
+
+
+def test_workload_issues_gets_pure_set_via_test():
+    # Pure SET has hit rate 0.0 by definition; the prefill hit-rate guard
+    # must not apply (this failed every pure-SET task before the fix).
+    from conductress.tasks.task_cachecannon import workload_issues_gets
+
+    assert workload_issues_gets("set", 0) is False
+
+
+def test_workload_issues_gets_mixed_ratios():
+    from conductress.tasks.task_cachecannon import workload_issues_gets
+
+    assert workload_issues_gets("get", 20) is True
+    assert workload_issues_gets("set", 20) is True  # ratio overrides test
+    assert workload_issues_gets("get", 99) is True
+
+
+def test_workload_issues_gets_all_set_via_ratio():
+    from conductress.tasks.task_cachecannon import workload_issues_gets
+
+    assert workload_issues_gets("get", 100) is False
+    assert workload_issues_gets("set", 100) is False
