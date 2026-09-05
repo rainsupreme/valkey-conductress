@@ -90,7 +90,9 @@ class TestScheduleNext:
         allowed = _make_subscriber("memory-set-k16-v64", urgency=1.0)
 
         config = MagicMock()
-        config.is_allowed.side_effect = lambda wid: wid != "get-k16-v16-t7-p10"
+        # is_allowed now takes (workload_id, epoch_id); epoch defaults so pre-epoch
+        # callers keep working, but a stub must accept the second argument.
+        config.is_allowed.side_effect = lambda wid, epoch="v1": wid != "get-k16-v16-t7-p10"
 
         runner._subscribers = [blocked, allowed]
 

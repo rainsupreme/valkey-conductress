@@ -21,6 +21,7 @@ from .config import (
     FLEET_IDLE_POLL_INTERVAL,
     MANAGEMENT_SETTLE_SECONDS,
     QUEUE_POLL_INTERVAL,
+    SWEEP_EPOCH_PRECEDENCE,
     get_servers,
 )
 from .file_protocol import FileProtocol
@@ -320,6 +321,29 @@ class TaskRunner:
 
             self.task = self._choose_next(queue)
 
+    def _epoch_ordered_subscribers(self) -> list:
+        """Subscribers ordered by explicit epoch precedence, highest priority first.
+
+        NIGHTLY has absolute priority and returns on the FIRST matching
+        coordinator, so the scan order decides which epoch measures each new HEAD
+        first. That order used to be an accident of the sequence in which
+        subscribers were appended; it is now driven by SWEEP_EPOCH_PRECEDENCE.
+
+        The sort is stable and epochs missing from the precedence list are keyed
+        after every listed epoch, so coordinators within one epoch keep exactly
+        the relative order they were registered in.
+        """
+        precedence = SWEEP_EPOCH_PRECEDENCE
+
+        def key(sub) -> int:
+            epoch = getattr(sub, "epoch_id", "v1")
+            try:
+                return precedence.index(epoch)
+            except ValueError:
+                return len(precedence)
+
+        return sorted(self._subscribers, key=key)
+
     def _schedule_next(self) -> None:
         """Pick the highest-priority coordinator and let it queue a task.
 
@@ -331,11 +355,12 @@ class TaskRunner:
             return
 
         config = load_sweep_config()
+        ordered = self._epoch_ordered_subscribers()
 
         # Absolute priority: any coordinator with a NIGHTLY task goes first
-        for sub in self._subscribers:
+        for sub in ordered:
             wid = getattr(sub, "workload_id", None)
-            if wid and not config.is_allowed(wid):
+            if wid and not config.is_allowed(wid, getattr(sub, "epoch_id", "v1")):
                 continue
             if getattr(sub, "has_nightly_task", lambda: False)():
                 sub.on_queue_empty()
@@ -345,13 +370,15 @@ class TaskRunner:
 
         # Score each subscriber that supports urgency scoring
         candidates = []
-        for sub in self._subscribers:
+        for sub in ordered:
             wid = getattr(sub, "workload_id", None)
-            if wid and not config.is_allowed(wid):
+            if wid and not config.is_allowed(wid, getattr(sub, "epoch_id", "v1")):
                 continue
             score = getattr(sub, "get_urgency_score", lambda: 0.0)()
             candidates.append((score, sub))
-        # Sort by urgency (highest first) and let the winner queue
+        # Sort by urgency (highest first) and let the winner queue. The sort is
+        # stable over an epoch-ordered list, so equal urgency breaks toward the
+        # higher-precedence epoch instead of registration order.
         candidates.sort(key=lambda x: x[0], reverse=True)
         for _score, sub in candidates:
             sub.on_queue_empty()

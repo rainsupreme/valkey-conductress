@@ -146,6 +146,44 @@ SWEEP_V2_EPOCH_ID = "v2"
 SWEEP_V3_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V3_ENABLED", False)
 SWEEP_V3_EPOCH_ID = "v3"
 
+
+def _env_epoch_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Read a comma-separated epoch precedence list from the environment.
+
+    An explicitly set but empty/blank value is an error rather than a silent
+    fallback, matching ``_env_bool``: mis-set scheduling policy should fail
+    startup, not quietly restore the default ordering.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    items = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not items:
+        raise ValueError(f"{name} must be a comma-separated epoch list (e.g. 'v3,v1'); got {raw!r}")
+    duplicates = {e for e in items if items.count(e) > 1}
+    if duplicates:
+        raise ValueError(f"{name} lists duplicate epochs: {sorted(duplicates)}")
+    return items
+
+
+# Scheduling precedence between measurement epochs, highest priority first.
+#
+# Before this existed, a newly added epoch outranked (or was outranked by) the
+# legacy coordinators purely as a side effect of the order in which TaskRunner
+# happened to append subscribers.  That was invisible in the scheduler and easy
+# to break by moving a registration block.  Precedence is now explicit.
+#
+# It matters because NIGHTLY (untested HEAD) has absolute priority and returns on
+# the FIRST matching coordinator, so whichever epoch is scanned first measures
+# each new HEAD first.  With "v3" ahead of "v1", v3 becomes the primary epoch and
+# v1 continues to run one cell later per HEAD -- deprioritized, not paused, so no
+# v1 coverage is lost.
+#
+# Epochs absent from this list are scanned after every listed epoch, preserving
+# their existing relative order.  Override without a deploy via
+# CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE (e.g. "v1,v3" restores v1-first).
+SWEEP_EPOCH_PRECEDENCE = _env_epoch_list("CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE", ("v3", "v1"))
+
 # ---------------------------------------------------------------------------
 # cachecannon-v3 sweep protocol
 # ---------------------------------------------------------------------------
