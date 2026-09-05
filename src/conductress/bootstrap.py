@@ -340,7 +340,10 @@ WorkingDirectory={workdir}
 ExecStart=/usr/bin/python3 -m conductress run --sweep{publish_arg}
 Restart=on-failure
 RestartSec=5
-LimitNOFILE=65536
+# cachecannon at 400 connections x 8 threads on io_uring can require ~128k fds
+# (it fails fast with an explicit RLIMIT_NOFILE error on kernel-5.14 hosts;
+# observed on RHEL 9 Graviton 3). 65536 is not enough.
+LimitNOFILE=1048576
 StandardOutput=journal
 StandardError=journal
 
@@ -397,6 +400,98 @@ async def ensure_memtier(host: Host) -> None:
     await host.run(f"cd {build_dir} && git fetch && git checkout {config.MEMTIER_COMMIT}")
     await host.run(f"cd {build_dir} && autoreconf -ivf && ./configure && make -j$(nproc)")
     await host.run(f"cp {build_dir}/memtier_benchmark {binary_path}")
+
+
+IO_URING_SYSCTL_DROPIN = "/etc/sysctl.d/99-conductress-io-uring.conf"
+
+IO_URING_SYSCTL_CONTENT = """\
+# Installed by conductress bootstrap.
+# The cachecannon load generator uses io_uring on every benchmark host; a host
+# where io_uring is disabled would run its generator on a different I/O engine
+# (ringline's mio fallback), which is a cross-platform measurement confound.
+# RHEL 9 ships kernel.io_uring_disabled=2 (disabled for all users) by default.
+kernel.io_uring_disabled = 0
+"""
+
+
+async def ensure_io_uring_enabled(host: Host) -> None:
+    """Ensure io_uring is enabled and the setting persists across reboots.
+
+    The generator fleet must run one I/O engine everywhere: cachecannon uses
+    io_uring, and a host with io_uring disabled silently falls back to mio,
+    making its results a measurement confound rather than a failure. RHEL 9
+    disables io_uring by default (``kernel.io_uring_disabled=2``); Amazon
+    Linux 2023 leaves it enabled and often has no such sysctl at all.
+
+    Kernels that predate the sysctl (< 6.6 mainline; RHEL 9's 5.14 backports
+    it) simply have io_uring enabled unconditionally, so a missing sysctl is
+    treated as enabled and left alone.
+    """
+    current = await host.run("cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent", check=False)
+    current = current.strip()
+
+    if current == "absent":
+        host.log_info_msg("io_uring sysctl not present (kernel predates it) -- io_uring is enabled")
+        return
+    if current == "0":
+        host.log_info_msg("io_uring already enabled")
+    else:
+        host.log_warn_msg(f"io_uring_disabled={current} -- enabling (required for cachecannon engine parity)")
+        await host.run("sudo sysctl -w kernel.io_uring_disabled=0")
+
+    # Persist regardless of the runtime value: a host that boots back to the
+    # distro default would silently change the generator's I/O engine.
+    existing = await host.run(f"cat {IO_URING_SYSCTL_DROPIN} 2>/dev/null || echo ''", check=False)
+    if existing.strip() != IO_URING_SYSCTL_CONTENT.strip():
+        host.log_info_msg(f"Persisting io_uring enablement to {IO_URING_SYSCTL_DROPIN}")
+        escaped = IO_URING_SYSCTL_CONTENT.replace("'", "'\\''")
+        await host.run(f"echo '{escaped}' | sudo tee {IO_URING_SYSCTL_DROPIN} > /dev/null")
+
+
+async def ensure_cachecannon(host: Host) -> None:
+    """Ensure cachecannon is built at the pinned commit.
+
+    cachecannon is the canonical generator for GET/SET/DELETE throughput and
+    mixed ratios (the v3 sweep epoch). The binary lands at
+    ``~/cachecannon/target/release/cachecannon``, matching
+    ``DEFAULT_CACHECANNON_BINARY`` in the cachecannon task.
+
+    If a binary exists but its repo is at the wrong commit, this rebuilds:
+    a generator-version drift across the fleet is exactly the kind of silent
+    comparability break the pin exists to prevent.
+
+    Safe at bootstrap time: this runs before the runner service starts. Never
+    run a cargo build on a host mid-measurement -- the build contaminates the
+    running cell.
+    """
+    cachecannon_dir = host.get_home_path() / "cachecannon"
+    binary_path = cachecannon_dir / "target/release/cachecannon"
+    pinned = config.SWEEP_V3_CACHECANNON_COMMIT
+
+    if not await path_exists(host, cachecannon_dir, expected_type="directory"):
+        host.log_info_msg("Cloning cachecannon...")
+        await host.run(f'git clone https://github.com/cachecannon/cachecannon.git "{cachecannon_dir}"')
+
+    current = await host.run(f"cd {cachecannon_dir} && git rev-parse HEAD", check=False)
+    at_pin = current.strip() == pinned
+
+    if at_pin and await path_exists(host, binary_path, expected_type="file"):
+        host.log_info_msg(f"cachecannon already built at pinned {pinned[:12]}")
+        return
+
+    # Rust toolchain: required for the build, distro package is sufficient.
+    has_cargo = await host.run("command -v cargo >/dev/null 2>&1 && echo yes || echo no", check=False)
+    if "yes" not in has_cargo:
+        host.log_info_msg("Installing rust/cargo...")
+        await host.run("sudo dnf install -y cargo rust")
+
+    host.log_info_msg(f"Building cachecannon at pinned {pinned[:12]} (aarch64 takes ~5min)...")
+    await host.run(f"cd {cachecannon_dir} && git fetch && git checkout {pinned}")
+    await host.run(f"cd {cachecannon_dir} && cargo build --release")
+
+    if not await path_exists(host, binary_path, expected_type="file"):
+        raise RuntimeError(f"cachecannon build completed but binary missing at {binary_path}")
+    host.log_info_msg("cachecannon build complete")
 
 
 async def install_systemd_service(host: Host) -> None:
@@ -485,9 +580,11 @@ async def update_host(server_info: config.ServerInfo):
 
     await update_pip_packages(host)
     await ensure_file_descriptor_limits(host)
+    await ensure_io_uring_enabled(host)
     await ensure_conductress(host, pull=(server_info != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
     await ensure_memtier(host)
+    await ensure_cachecannon(host)
 
     # Clean up deprecated/legacy files from older versions
     await cleanup_legacy_build_cache(host)
