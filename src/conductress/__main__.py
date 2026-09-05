@@ -106,9 +106,22 @@ def main() -> None:
 
     # Sweep control commands
     focus_parser = sweep_sub.add_parser("focus", help="Focus on a single workload (others paused)")
-    focus_parser.add_argument("workload", help="Workload ID to focus on (e.g. memory-set-64b, throughput)")
+    focus_parser.add_argument(
+        "workload",
+        help=(
+            "Selector to focus on. 'throughput' (all epochs), "
+            "'v3:get-k16-v16-t7-p10' (one epoch), or 'v3:*' (a whole epoch)"
+        ),
+    )
     pause_parser = sweep_sub.add_parser("pause", help="Pause specific sweeps")
-    pause_parser.add_argument("workloads", nargs="+", help="Workload IDs to pause")
+    pause_parser.add_argument(
+        "workloads",
+        nargs="+",
+        help=(
+            "Selectors to pause. A bare workload id pauses it in EVERY epoch "
+            "(v1 and v3 share ids); qualify as 'v1:<workload>' or 'v1:*' to pause one epoch"
+        ),
+    )
     sweep_sub.add_parser("resume", help="Resume all sweeps (remove focus/pause)")
     sweep_sub.add_parser("list", help="List all workload IDs and current scheduling config")
 
@@ -434,16 +447,24 @@ def main() -> None:
             print("All sweeps resumed (normal scheduling).")
 
         elif args.sweep_command == "list":
+            from conductress.config import SWEEP_EPOCH_PRECEDENCE
             from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
             from conductress.sweep_config import load_sweep_config
 
             cfg = load_sweep_config()
             workloads = ["throughput"] + [f"memory-{wl.label}" for wl in MEMORY_WORKLOADS]
             print(f"Mode: {cfg.mode}" + (f" (target: {cfg.target})" if cfg.target else ""))
-            print(f"\nWorkload IDs:")
+            if cfg.paused:
+                print(f"Paused selectors: {', '.join(cfg.paused)}")
+            print(f"Epoch precedence: {' > '.join(SWEEP_EPOCH_PRECEDENCE)} (highest first)")
+            print("\nWorkload IDs (static hint; the live roster depends on enabled epochs):")
             for wid in workloads:
                 status = "✓" if cfg.is_allowed(wid) else "✗ paused"
                 print(f"  {wid:<30} {status}")
+            print(
+                "\nWorkload ids are shared across epochs, so a bare selector pauses every epoch."
+                "\nQualify a selector to target one: 'v1:<workload>', or 'v1:*' for a whole epoch."
+            )
 
         else:
             sweep_parser.print_usage()

@@ -7,6 +7,19 @@ Config format:
     {"mode": "normal"}                     -- all sweeps active (default)
     {"mode": "focus", "target": "memory-set-64b"}  -- only this workload runs
     {"mode": "paused", "paused": ["throughput"]}   -- these sweeps skip their turn
+
+Selectors may be epoch-qualified. A bare ``workload_id`` matches that workload in
+every epoch (the pre-epoch behaviour, preserved for existing config files), while
+``epoch:workload_id`` matches a single epoch and ``epoch:*`` matches a whole
+epoch:
+
+    {"mode": "paused", "paused": ["v1:get-k16-v16-t7-p10"]}  -- pause only v1's GET
+    {"mode": "paused", "paused": ["v1:*"]}                   -- pause the whole v1 epoch
+    {"mode": "focus", "target": "v3:get-k16-v16-t7-p10"}     -- focus one epoch's GET
+
+Qualification exists because workload ids are shared across epochs on purpose:
+v1 and v3 both name the canonical GET sweep ``get-k16-v16-t7-p10``. Pausing that
+bare id therefore stops BOTH epochs, which is rarely what the operator means.
 """
 
 import json
@@ -21,25 +34,61 @@ logger = logging.getLogger(__name__)
 
 SWEEP_CONFIG_FILE = PROJECT_ROOT / "sweep_config.json"
 
+SELECTOR_SEPARATOR = ":"
+SELECTOR_WILDCARD = "*"
+
+
+def parse_selector(selector: str) -> tuple[Optional[str], str]:
+    """Split a selector into ``(epoch_id, workload_id)``.
+
+    A bare ``"get-k16-v16-t7-p10"`` yields ``(None, "get-k16-v16-t7-p10")`` and
+    matches that workload in EVERY epoch, which preserves the behaviour of every
+    selector written before epochs existed.
+
+    An epoch-qualified ``"v3:get-k16-v16-t7-p10"`` yields
+    ``("v3", "get-k16-v16-t7-p10")`` and matches only that epoch. This matters
+    because a workload_id is deliberately shared across epochs -- v1 and v3 both
+    call the canonical GET sweep ``get-k16-v16-t7-p10`` -- so before epoch
+    qualification existed, pausing that id silently paused BOTH epochs.
+
+    ``"v3:*"`` selects every workload in epoch v3.
+    """
+    epoch, sep, workload = selector.partition(SELECTOR_SEPARATOR)
+    if not sep:
+        return None, selector.strip()
+    return epoch.strip(), workload.strip()
+
+
+def selector_matches(selector: str, workload_id: str, epoch_id: str) -> bool:
+    """Return True if ``selector`` selects this workload in this epoch."""
+    want_epoch, want_workload = parse_selector(selector)
+    if want_epoch is not None and want_epoch != epoch_id:
+        return False
+    if want_workload in ("", SELECTOR_WILDCARD):
+        # "v3:" and "v3:*" both mean "every workload in this epoch". A bare "*"
+        # (no epoch) would match everything, which is what it says.
+        return True
+    return want_workload == workload_id
+
 
 @dataclass
 class SweepConfig:
     """Current sweep scheduling configuration."""
 
     mode: str = "normal"  # "normal", "focus", "paused"
-    target: Optional[str] = None  # workload_id to focus on (mode=focus)
-    paused: Optional[list[str]] = None  # list of workload_ids to skip (mode=paused)
+    target: Optional[str] = None  # selector to focus on (mode=focus)
+    paused: Optional[list[str]] = None  # list of selectors to skip (mode=paused)
 
     def __post_init__(self):
         if self.paused is None:
             self.paused = []
 
-    def is_allowed(self, workload_id: str) -> bool:
-        """Check if a sweep with this workload_id is allowed to queue."""
+    def is_allowed(self, workload_id: str, epoch_id: str = "v1") -> bool:
+        """Check if a sweep with this workload_id/epoch is allowed to queue."""
         if self.mode == "focus":
-            return workload_id == self.target
+            return self.target is not None and selector_matches(self.target, workload_id, epoch_id)
         if self.mode == "paused":
-            return workload_id not in (self.paused or [])
+            return not any(selector_matches(sel, workload_id, epoch_id) for sel in (self.paused or []))
         return True  # normal mode
 
 
