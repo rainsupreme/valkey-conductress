@@ -544,6 +544,8 @@ class PerfTaskRunner(BaseTaskRunner):
         if per_run_rps is not None and len(per_run_rps) > 1:
             # Aggregated result for repetitions > 1
             mean_rps, ci_95 = compute_aggregated_stats(per_run_rps)
+            cv = (stdev(per_run_rps) / mean_rps) * 100 if mean_rps else 0.0
+            reps = len(per_run_rps)
 
             detailed_data = {
                 "warmup": self.warmup,
@@ -588,6 +590,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 data=detailed_data,
                 make_args=self.make_args,
                 note=self.note,
+                cv=cv,
+                reps=reps,
             )
         else:
             # Single-run result (repetitions == 1 or legacy behavior)
