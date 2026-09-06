@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from statistics import stdev
 from typing import Optional
 
 from conductress.config import (
@@ -711,9 +712,12 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # Compute aggregated stats
         if len(per_run_rps) >= 2:
             mean_rps, ci_95 = _compute_aggregated_stats(per_run_rps)
+            cv = (stdev(per_run_rps) / mean_rps) * 100 if mean_rps else 0.0
         else:
             mean_rps = per_run_rps[0] if per_run_rps else 0
             ci_95 = 0.0
+            cv = 0.0
+        reps = len(per_run_rps)
 
         # Build detailed data
         detailed_data = {
@@ -774,6 +778,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
             data=detailed_data,
             make_args=self.make_args,
             note=self.note,
+            cv=cv if reps >= 2 else None,
+            reps=reps,
         )
 
         self.file_protocol.write_results(results)

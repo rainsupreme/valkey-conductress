@@ -68,6 +68,8 @@ class BenchmarkResults:
         default_factory=lambda: {f.name: v for f, v in get_all_features().items()}
     )  # feature states
     note: Optional[str] = None  # optional note from task
+    cv: Optional[float] = None  # coefficient of variation (%) across repetitions; None when n < 2
+    reps: Optional[int] = None  # number of repetitions actually executed (may differ from requested)
 
 
 class FileProtocol:

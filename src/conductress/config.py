@@ -25,6 +25,15 @@ DEFAULT_PIPELINING = 10
 DEFAULT_WARMUP = 5  # seconds
 DEFAULT_DURATION = 30  # seconds
 DEFAULT_REPETITIONS = 3
+
+# Minimum repetitions before adaptive early-stop may fire. With fewer reps, a
+# bimodal between-restart distribution (observed on Intel Xeon, suspected on
+# AMD EPYC) can place every sample on one mode, producing a deceptively low CV
+# and a false-certainty early stop. At n=3 the probability of all samples
+# landing on the same mode is 25%; at n=5 it drops to 6.25%. Five is the
+# conservative floor: enough to expose inter-mode variance with high
+# probability, cheap enough to not meaningfully extend well-behaved cells.
+SWEEP_MIN_REPS = 5
 DEFAULT_VAL_SIZE = 512  # bytes
 DEFAULT_KEY_SIZE = 0  # 0 = standard keys
 
@@ -212,7 +221,7 @@ SWEEP_V3_VAL_SIZE = 16
 SWEEP_V3_KEYSPACE = 3_000_000
 SWEEP_V3_DISTRIBUTION = "uniform"
 SWEEP_V3_SET_RATIO = 20  # the canonical mixed workload
-SWEEP_V3_REPETITIONS = 5  # minimum reps
+SWEEP_V3_REPETITIONS = SWEEP_MIN_REPS  # minimum reps (references the common floor)
 SWEEP_V3_MAX_REPS = 10  # adaptive ceiling
 # Precision target for adaptive stopping.  NOTE: despite the historical field
 # name, should_stop_adaptive() bounds the 95% CI half-width as a percent of the
