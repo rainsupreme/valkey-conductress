@@ -239,6 +239,36 @@ def not_lead_clip() -> str:
     return "".join(polys)
 
 
+STARS = [
+    (736, 110, 1.0, .61), (729, 162, 1.6, .71), (636, 25, 1.4, .62), (64, 157, 0.8, .70), (660, 153, 0.9, .46),
+    (726, 97, 1.0, .75), (202, 27, 1.2, .81), (87, 137, 1.6, .43), (714, 151, 1.0, .56), (100, 43, 0.8, .58),
+    (849, 113, 1.1, .77), (813, 41, 1.1, .61), (47, 34, 1.6, .50), (694, 162, 0.9, .79), (806, 16, 0.8, .38),
+    (70, 34, 1.5, .55), (172, 161, 1.5, .36), (842, 49, 1.4, .47), (809, 123, 1.3, .84), (835, 150, 1.3, .53),
+    (692, 71, 1.3, .54), (143, 64, 1.1, .72), (157, 51, 1.0, .36), (81, 29, 1.7, .68), (662, 128, 0.8, .72),
+    (145, 164, 1.0, .81), (271, 91, 1.6, .38), (817, 94, 1.6, .76), (799, 171, 1.7, .50), (160, 22, 1.6, .66),
+    (784, 66, 1.0, .37), (204, 106, 1.1, .83), (133, 102, 1.1, .78), (638, 141, 1.5, .67),
+]
+MOUNTAINS = (
+    "M0 196 L38 186 L74 191 L112 178 L146 189 L184 181 L221 190 L258 183 L292 191 L326 187 L360 194 L385 196 Z",
+    "M515 196 L540 194 L568 189 L606 183 L640 190 L676 180 L712 189 L748 176 L786 188 L820 182 L858 190 L900 185 L900 196 Z",
+)
+
+
+def scenery() -> str:
+    """Stars either side of the mark, mountain silhouettes on the horizon, black ground.
+    Identical to the sign-on's resting frame (brand/motion), which is the rule."""
+    stars = "\n".join(f'    <circle cx="{x}" cy="{y}" r="{r}" opacity="{o:.2f}"/>' for x, y, r, o in STARS)
+    mts = "\n".join(f'    <path d="{d}"/>' for d in MOUNTAINS)
+    return f"""  <g id="stars" fill="{SUNSET['paper']}">
+{stars}
+  </g>
+  <g id="mountains" fill="#07040c">
+{mts}
+  </g>
+  <rect id="ground" x="0" y="196" width="900" height="144" fill="#000"/>
+"""
+
+
 def lockup_svg(palette: str, opaque: bool, word_d: str, sub_d: str) -> str:
     p = ("s" if palette == "sunset" else "r") + ("h" if opaque else "l")
     ramp_ref = f"{p}-ramp"
@@ -248,7 +278,7 @@ def lockup_svg(palette: str, opaque: bool, word_d: str, sub_d: str) -> str:
     <rect width="900" height="340" fill="url(#{p}-sky)"/>
     <circle cx="450" cy="110" r="150" fill="{SUNSET['orange'] if palette == 'sunset' else '#ffffff'}" opacity="{0.07 if palette == 'sunset' else 0.05}"/>
   </g>
-  <g id="horizon" opacity="0.7">
+{scenery()}  <g id="horizon" opacity="0.7">
 {GRID.format(p=p)}
   </g>
 """

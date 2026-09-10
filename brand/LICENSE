@@ -1,19 +1,43 @@
 Conductress brand assets
 Copyright (c) 2026 Rain Valentine
 
-The files in this directory (brand/) -- the Conductress mark, lockups, wordmark,
-palette, terminal renderings, sign-on animation, and the generator that
-produces them -- are licensed under the Creative Commons Attribution 4.0
-International License (CC BY 4.0).
+COPYRIGHT
 
-You may share and adapt these assets for any purpose, including commercially,
-provided you give appropriate credit, link to the license, and indicate if
-changes were made. You may not present a fork, derivative, or unrelated project
-as Conductress, or imply endorsement by the Conductress project.
+The artwork in this directory (brand/) -- the Conductress mark, lockups,
+wordmark, palette, terminal renderings, sign-on animation, and the generator
+that produces them -- is licensed under the Creative Commons Attribution 4.0
+International License (CC BY 4.0). You may copy, redistribute and adapt it for
+any purpose, provided you give appropriate credit, link to the license, and
+indicate if changes were made.
 
 Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
 Summary:           https://creativecommons.org/licenses/by/4.0/
 
 The Conductress source code is separately licensed under the BSD 3-Clause
-License; see ../LICENSE. The hexagon in the mark references the Valkey logo,
-which belongs to LF Projects, LLC and is not covered by this license.
+License; see ../LICENSE.
+
+TRADEMARK
+
+CC BY 4.0 grants no trademark rights (section 2(b)(2) of the license). The
+name "Conductress", the keyhole-C mark, and the lockups in this directory
+identify the Conductress project. They are unregistered marks used by the
+project since 2026.
+
+You may use the name and mark to refer to Conductress: in articles, talks,
+compatibility statements, package listings, and links to the project. You may
+adapt the artwork under CC BY 4.0, for example to produce a new size or file
+format for the project.
+
+Please do not use the name or mark, or anything confusingly similar, as the
+name or logo of a fork, a derivative product, a service, or an unrelated
+project, and do not use them in a way that implies the Conductress project
+produced, endorsed, or supports something it did not. A fork should choose its
+own name and mark. This is the same convention most open-source projects
+follow, and it is what lets "Conductress" continue to mean one thing.
+
+THIRD-PARTY MARKS
+
+The hexagon shape references the Valkey logo, which belongs to LF Projects,
+LLC. The Valkey logo itself is not included here and is not covered by this
+license. The six-band rainbow palette in brand/pride/ is an homage to the
+1977 Apple logo; no Apple mark is included and none is claimed.

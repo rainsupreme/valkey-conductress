@@ -29,7 +29,7 @@ The subtitle is **ONLY DATA IS REAL**.
 
 | File | What it is | Use it for |
 |---|---|---|
-| `logo/conductress-hero.svg` / `.png` (1800x680) | Full scene: sky, grid horizon, streaks, trail, C, wordmark, subtitle. Opaque. | README top, social preview, slides |
+| `logo/conductress-hero.svg` / `.png` (1800x680) | Full scene: starfield, mountain horizon, grid, streaks, trail, C, wordmark, subtitle. Opaque. Identical to the sign-on's resting frame. | README top, social preview, slides |
 | `logo/conductress-lockup.svg` | Streaks, trail, C, wordmark, subtitle on a **transparent** background | Dashboard header, docs, anywhere the page supplies the background |
 | `logo/conductress-wordmark.svg` | CONDUCTRESS alone, with its chromatic fringe | Beside a mark that is placed separately |
 | `logo/conductress-mark.svg` / `-512.png` / `-180.png` | The C alone, 7 stripes | 64px and up; app icon; apple-touch-icon (180) |
@@ -170,9 +170,15 @@ a timestamp for frame capture.
   the reference; the mark itself belongs to LF Projects.
 - Do not stretch, rotate, outline, or drop-shadow the mark.
 
-## Licence
+## Licence and trademark
 
-The Conductress code is under the repository's BSD 3-Clause licence. The brand
-assets in this directory are under [CC BY 4.0](LICENSE): use and adapt them
-with attribution, but do not present a fork or an unrelated project as
-Conductress.
+The Conductress code is under the repository's BSD 3-Clause licence. The
+artwork in this directory is under [CC BY 4.0](LICENSE): copy and adapt it with
+attribution.
+
+Copyright is not the thing that protects a logo, though. The name
+"Conductress" and the keyhole-C mark identify this project; they are
+unregistered marks, and [LICENSE](LICENSE) carries the usage statement: refer
+to Conductress freely, adapt the artwork for the project freely, but do not use
+the name or mark as the identity of a fork, a derivative, or anything the
+project did not produce. A fork should pick its own name and mark.
