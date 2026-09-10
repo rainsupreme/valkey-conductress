@@ -38,7 +38,7 @@ The subtitle is **ONLY DATA IS REAL**.
 | `logo/favicon.ico` | 16 + 32 + 48 bundled | `<link rel="icon">` |
 | `pride/`, `trans/`, `bi/`, `lesbian/`, `nonbinary/` | The same set in each flag palette | June, or whenever you choose |
 | `valkey/` | The same set in Valkey's periwinkle, as a tonal ramp | Co-branded surfaces: a ValkeyConf slide, a Valkey-hosted page |
-| `mono/` | One colour, light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`). No hero. | Print, stickers, embroidery, engraving, single-colour footers |
+| `mono/` | One flat colour, stencil-safe (explicit paths, no clip/gradient/opacity): light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`), each with a `-plain` no-trail lockup. No hero. | Shirts, embroidery, vinyl, engraving, one-ink print |
 | `terminal/conductress-logo-ascii.py` and `*.ansi` | The lockup for a Linux terminal | CLI banner, TUI splash, MOTD |
 | `motion/conductress-signon.html` | The animated sign-on | Dashboard loading screen, talk openers |
 
@@ -117,9 +117,11 @@ hues fight any tint, so it sits on near-black.
 - **Lesbian** (`lesbian/`): the five-stripe sunset flag, dark orange to dark
   rose with white at the centre; it is close kin to the primary palette.
 - **Nonbinary** (`nonbinary/`): yellow, white, purple, black. The black band is
-  the flag's `#2c2c2c`, which on the midnight sky reads as a dark grey sliver
-  at the base rather than a full stripe. It is faithful; it is not loud. On a
-  light background (the transparent lockup on paper) it reads fully.
+  the flag's `#2c2c2c`, kept as-is: on the midnight sky it reads as a dark grey
+  sliver at the base rather than a full stripe. Where it needs to read on a
+  dark ground, give the mark a contrasting backing or an outline rather than
+  changing the colour; on a light ground (the transparent lockup on paper) it
+  reads fully.
 
 <p align="center">
   <img src="pride/conductress-hero-pride.svg" width="600" alt="Conductress hero in the pride rainbow palette">
@@ -137,15 +139,33 @@ inside Valkey's visual world, such as a ValkeyConf slide or a page on a Valkey
 property, where the sunset would fight the host palette. It is a courtesy
 variant, not an implication of endorsement; see the trademark note.
 
-## One colour
+## One colour (stencil)
 
-`mono/` is the mark and lockup in a single flat colour, with the trail as
-solid outlines at stepped opacity and no glow, no fringe, no hero. `-mono-light`
-is paper `#fff6ea` for dark grounds; `-mono-dark` is midnight `#150c26` for
-light grounds. This is the version for anything that cannot carry a gradient:
-stickers, embroidery, laser engraving, a printed footer, a favicon on a themed
-browser chrome. It is also the test of the mark: the C has to read with the
-stripes and nothing else, and it does.
+`mono/` is the mark and lockup in a single flat colour for anything that
+cannot carry a gradient or a tint: shirts, embroidery, vinyl, laser engraving,
+one-ink print, a favicon on themed browser chrome. `-mono-light` is paper
+`#fff6ea` for dark grounds; `-mono-dark` is midnight `#150c26` for light ones.
+
+These files are built differently from the rest, and that is the point:
+
+- Every piece of the C is an explicit closed path. There is no `clipPath`,
+  gradient, filter, or opacity anywhere in the file, because cutters and
+  embroidery digitizers (Cricut, Silhouette, Ink/Stitch) commonly ignore
+  clipping and cannot do 40% ink. The 7-stripe C is nine pieces: five whole
+  stripes and two that the keyhole splits.
+- The trail fades by stroke width alone, 0.5 to 3.2 units, and each outline
+  is emitted only where it lies outside the lead hexagon, so nothing is cut
+  or stitched twice.
+- `-plain` drops the trail: mark, wordmark, subtitle. Ten overlapping outlines
+  are a lot of thread and a fragile stencil; for a chest print or a patch,
+  plain is the one to use.
+
+It is also the honest test of the mark: the C has to read with the stripes and
+nothing else, and it does, down to the 3-stripe cut.
+
+<p align="center">
+  <img src="mono/conductress-lockup-mono-light-plain.svg" width="450" alt="One-colour lockup without the trail">
+</p>
 
 ## Wordmark and subtitle
 
