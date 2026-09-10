@@ -3,22 +3,28 @@
 
 Run from anywhere:  python3 brand/tools/build.py
 
-Outputs (all checked in, so consumers never need to run this):
-  brand/logo/conductress-hero.svg          900x340 opaque scene: sky, grid, streaks, trail, C, wordmark, subtitle
-  brand/logo/conductress-lockup.svg        900x340 transparent: streaks, trail, C, wordmark, subtitle
-  brand/logo/conductress-wordmark.svg      wordmark alone, outlined, with its chromatic fringe
-  brand/logo/conductress-mark.svg          the keyhole C alone, 7 stripes, 100x100
-  brand/logo/conductress-mark-32.svg       5-stripe cut for 32-64px
-  brand/logo/conductress-mark-16.svg       3-stripe cut for 16px
-  brand/logo/conductress-hero.png          1800x680
-  brand/logo/conductress-mark-{512,180,32,16}.png
-  brand/logo/favicon.ico                   16 + 32 + 48
-  brand/pride/...                          the same set in the rainbow palette
+Outputs (all checked in, so consumers never need to run this). For the primary
+sunset palette, in brand/logo/:
+  conductress-hero.svg / .png (1800x680)  opaque scene: starfield, mountain horizon, grid,
+                                          streaks, trail, C, wordmark, subtitle; identical
+                                          to the sign-on's resting frame
+  conductress-lockup.svg                  transparent: streaks, trail, C, wordmark, subtitle
+  conductress-wordmark.svg                wordmark alone, outlined, with its chromatic fringe
+  conductress-mark.svg                    the keyhole C alone, 7 stripes, 100x100
+  conductress-mark-32.svg                 5-stripe cut for 32-63px
+  conductress-mark-16.svg                 3-stripe cut for 16px
+  conductress-mark-{512,180,32,16}.png, favicon.ico (16+32+48)
+Every other palette gets the same set (minus the hero for mono) in its own folder,
+with the palette name as a filename suffix. brand/palette.svg is the swatch strip.
+
+PALETTES below is the whole design in data. Three kinds:
+  ramp   a gradient runs once across the mark, top to bottom (sunset, valkey)
+  bands  flat flag stripes (pride, trans, bi, lesbian, nonbinary)
+  mono   one colour, for print/embroidery/engraving; no hero, no fringe
 
 Type is converted to outlines with fontTools so the SVGs render identically with
 no font installed. Wordmark: Nimbus Sans Bold (URW's Helvetica). Subtitle:
-DejaVu Sans Mono. Both are on every mainstream Linux; the paths to them are the
-only machine-specific part of this file.
+DejaVu Sans Mono. The two font paths are the only machine-specific part.
 
 Geometry is the design's own: pointy-top hexagon R=46 about (50,50) in a 100-unit
 box, keyhole = circle r=22 plus a channel (y 39..61) to the right edge. In the
@@ -35,18 +41,81 @@ ROOT = Path(__file__).resolve().parents[1]
 FONT_SANS = "/usr/share/fonts/urw-base35/NimbusSans-Bold.otf"
 FONT_MONO = "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf"
 
-# ------------------------------------------------------------------ palette
+# ------------------------------------------------------------------ colours
 
-SUNSET = {
-    "cream": "#ffe08a", "amber": "#ffc94a", "orange": "#ff7a3d", "magenta": "#ff2d7e",
-    "violet": "#6d3bd8", "midnight": "#150c26", "paper": "#fff6ea", "gold": "#c9a86e",
-}
+CREAM, AMBER, ORANGE, MAGENTA, VIOLET = "#ffe08a", "#ffc94a", "#ff7a3d", "#ff2d7e", "#6d3bd8"
+MIDNIGHT, PAPER, GOLD = "#150c26", "#fff6ea", "#c9a86e"
+MIDNIGHT_SKY = ("#2a1140", MIDNIGHT, "#07040d")
+
+VALKEY = "#6983ff"  # the Valkey brand periwinkle
+VALKEY_RAMP = [(0, "#e3e8ff"), (0.28, "#a4b3ff"), (0.56, VALKEY), (0.82, "#4a5de0"), (1, "#2e3a9e")]
+
 APPLE6 = ["#61bb46", "#fdb827", "#f5821f", "#e03a3e", "#963d97", "#009ddc"]
-APPLE3 = ["#8fc63f", "#ea5a2e", "#4a6fbf"]
+TRANS = ["#5bcefa", "#f5a9b8", "#ffffff", "#f5a9b8", "#5bcefa"]
+BI = ["#d60270", "#d60270", "#9b4f96", "#0038a8", "#0038a8"]  # the flag's 2:1:2 proportions
+LESBIAN = ["#d52d00", "#ff9a56", "#ffffff", "#d362a4", "#a30262"]
+NONBINARY = ["#fcf434", "#ffffff", "#9c59d1", "#2c2c2c"]
+
+# Keys: kind; folder; suffix; label; names (for the swatch strip).
+#   ramp:  ramp (stops), trail (3 colours l->r), grid (2), rule (3), sky (3), glow (colour, opacity),
+#          fringe (right, left), subtitle
+#   bands: bands (top->bottom), small (the 16px cut), sky, glow, fringe, subtitle
+#   mono:  color, hero=False
+PALETTES = {
+    "sunset": dict(
+        kind="ramp", folder="logo", suffix="", label="sunset",
+        ramp=[(0, CREAM), (0.28, AMBER), (0.56, ORANGE), (0.82, MAGENTA), (1, VIOLET)],
+        trail=(VIOLET, MAGENTA, AMBER), grid=(ORANGE, VIOLET), rule=(VIOLET, MAGENTA, AMBER),
+        sky=MIDNIGHT_SKY, glow=(ORANGE, 0.07), fringe=(MAGENTA, AMBER), subtitle=GOLD,
+        names=["cream", "amber", "orange", "magenta", "violet", "gold", "midnight"],
+        swatches=[CREAM, AMBER, ORANGE, MAGENTA, VIOLET, GOLD, MIDNIGHT],
+    ),
+    "valkey": dict(
+        kind="ramp", folder="valkey", suffix="-valkey", label="Valkey periwinkle",
+        ramp=VALKEY_RAMP, trail=("#2e3a9e", VALKEY, "#e3e8ff"), grid=(VALKEY, "#2e3a9e"),
+        rule=("#2e3a9e", VALKEY, "#e3e8ff"), sky=("#1a1f3d", "#0f1226", "#06070f"), glow=(VALKEY, 0.08),
+        fringe=(VALKEY, "#e3e8ff"), subtitle="#8f9bd6",
+        names=["pale", "light", "valkey", "deep", "ink"], swatches=[c for _, c in VALKEY_RAMP],
+    ),
+    "pride": dict(
+        kind="bands", folder="pride", suffix="-pride", label="pride rainbow", bands=APPLE6,
+        small=["#8fc63f", "#ea5a2e", "#4a6fbf"], sky=("#1b1b28", "#0d0d16", "#050508"), glow=("#ffffff", 0.05),
+        fringe=(APPLE6[3], APPLE6[5]), subtitle="#9a9ab0",
+        names=["green", "yellow", "orange", "red", "purple", "blue"],
+    ),
+    "trans": dict(
+        kind="bands", folder="trans", suffix="-trans", label="trans pride", bands=TRANS, small=TRANS,
+        sky=MIDNIGHT_SKY, glow=(TRANS[1], 0.06), fringe=(TRANS[1], TRANS[0]), subtitle="#b8b3d0",
+        names=["blue", "pink", "white", "pink", "blue"],
+    ),
+    "bi": dict(
+        kind="bands", folder="bi", suffix="-bi", label="bi pride", bands=BI, small=[BI[0], BI[2], BI[3]],
+        sky=MIDNIGHT_SKY, glow=(BI[2], 0.09), fringe=(BI[0], "#6d8dff"), subtitle="#b8b3d0",
+        names=["magenta", "magenta", "lavender", "blue", "blue"],
+    ),
+    "lesbian": dict(
+        kind="bands", folder="lesbian", suffix="-lesbian", label="lesbian pride", bands=LESBIAN,
+        small=[LESBIAN[1], LESBIAN[2], LESBIAN[3]], sky=MIDNIGHT_SKY, glow=(LESBIAN[1], 0.07),
+        fringe=(LESBIAN[4], LESBIAN[1]), subtitle="#b8b3d0",
+        names=["dark orange", "orange", "white", "pink", "dark rose"],
+    ),
+    "nonbinary": dict(
+        kind="bands", folder="nonbinary", suffix="-nonbinary", label="nonbinary pride", bands=NONBINARY,
+        small=NONBINARY, sky=MIDNIGHT_SKY, glow=(NONBINARY[2], 0.08), fringe=(NONBINARY[2], NONBINARY[0]),
+        subtitle="#b8b3d0", names=["yellow", "white", "purple", "black"],
+    ),
+    "mono-light": dict(
+        kind="mono", folder="mono", suffix="-mono-light", label="one colour, light on dark", color=PAPER,
+        names=["paper"], swatches=[PAPER],
+    ),
+    "mono-dark": dict(
+        kind="mono", folder="mono", suffix="-mono-dark", label="one colour, dark on light", color=MIDNIGHT,
+        names=["midnight"], swatches=[MIDNIGHT],
+    ),
+}
 
 HEX_PATH = "M50 4 L89.8 27 L89.8 73 L50 96 L10.2 73 L10.2 27 Z"
 C_PATH = "M89.8 27 L50 4 L10.2 27 L10.2 73 L50 96 L89.8 73 L89.8 61 L69.05 61 A22 22 0 1 1 69.05 39 L89.8 39 Z"
-LEAD_HEX = "M540 52 L590.2 81 L590.2 139 L540 168 L489.8 139 L489.8 81 Z"
 
 # ------------------------------------------------------------- text -> path
 
@@ -76,81 +145,109 @@ def text_path(text: str, font_path: str, size: float, cx: float, baseline: float
     return " ".join(d)
 
 
-# ----------------------------------------------------------------- pieces
+# ----------------------------------------------------------------- stripes
 
-def sunset_ramp(gid: str) -> str:
-    return f"""    <linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="0" y2="96">
-      <stop offset="0%" stop-color="{SUNSET['cream']}"/>
-      <stop offset="28%" stop-color="{SUNSET['amber']}"/>
-      <stop offset="56%" stop-color="{SUNSET['orange']}"/>
-      <stop offset="82%" stop-color="{SUNSET['magenta']}"/>
-      <stop offset="100%" stop-color="{SUNSET['violet']}"/>
-    </linearGradient>"""
+RAMP_PLANS = {  # (y, height) inside the 100-box, for the 7 / 5 / 3 stripe cuts
+    "big": [(4, 8.5), (17.5, 8.5), (31, 8.5), (44.5, 8.5), (58, 8.5), (71.5, 8.5), (85, 11)],
+    "mid": [(4, 12), (22.5, 12), (41, 12), (59.5, 12), (78, 18)],
+    "small": [(4, 20), (35, 20), (66, 30)],
+}
 
 
-def stripes(palette: str, count: int, fill_ref: str) -> str:
-    """Stripe rects inside the 100-box, ready to be clipped by the C."""
-    if palette == "sunset":
-        plans = {
-            7: [(4, 8.5), (17.5, 8.5), (31, 8.5), (44.5, 8.5), (58, 8.5), (71.5, 8.5), (85, 11)],
-            5: [(4, 12), (22.5, 12), (41, 12), (59.5, 12), (78, 18)],
-            3: [(4, 20), (35, 20), (66, 30)],
-        }
-        return "\n".join(
-            f'      <rect x="8" y="{y}" width="84" height="{h}" fill="url(#{fill_ref})"/>' for y, h in plans[count]
-        )
-    if count == 6:  # gapped bands: 12.34 on a 15.33 pitch, last one solid to the base
-        rows = [(4 + i * 15.333, 12.34 if i < 5 else 15.34, APPLE6[i]) for i in range(6)]
-    elif count == 5:  # 6 touching bands for the 32px cut (gaps vanish at that size)
-        rows = [(4 + i * 15.333, 15.34, APPLE6[i]) for i in range(6)]
-    else:  # 3 merged bands for 16px
-        rows = [(4 + i * 30.667, 30.67, APPLE3[i]) for i in range(3)]
-    return "\n".join(f'      <rect x="8" y="{y:.2f}" width="84" height="{h}" fill="{c}"/>' for y, h, c in rows)
+def band_rows(bands, gap: float):
+    """Even bands filling y 4..96; gap units of dark between them, last band solid to the base."""
+    n = len(bands)
+    pitch = 92 / n
+    return [(4 + i * pitch, pitch - (gap if i < n - 1 else 0), c) for i, c in enumerate(bands)]
 
 
-def mark_svg(palette: str, count: int) -> str:
-    p = "s" if palette == "sunset" else "r"
-    ramp = sunset_ramp(f"{p}-ramp") if palette == "sunset" else ""
-    label = {"sunset": "sunset", "rainbow": "pride rainbow"}[palette]
+def stripes(name: str, cut: str, p: str) -> str:
+    """Stripe rects inside the 100-box, ready to be clipped by the C. cut: big (64px+), mid (32-63), small (16)."""
+    pal = PALETTES[name]
+    if pal["kind"] == "ramp":
+        return "\n".join(f'      <rect x="8" y="{y}" width="84" height="{h}" fill="url(#{p}-ramp)"/>' for y, h in RAMP_PLANS[cut])
+    if pal["kind"] == "mono":
+        return "\n".join(f'      <rect x="8" y="{y}" width="84" height="{h}" fill="{pal["color"]}"/>' for y, h in RAMP_PLANS[cut])
+    if cut == "big":
+        rows = band_rows(pal["bands"], 3)  # gaps keep the striped-sun kinship
+    elif cut == "mid":
+        rows = band_rows(pal["bands"], 0)  # gaps vanish below 64px; touch instead
+    else:
+        rows = band_rows(pal["small"], 0)
+    return "\n".join(f'      <rect x="8" y="{y:.2f}" width="84" height="{h:.2f}" fill="{c}"/>' for y, h, c in rows)
+
+
+def ramp_def(name: str, p: str) -> str:
+    pal = PALETTES[name]
+    if pal["kind"] != "ramp":
+        return ""
+    stops = "".join(f'<stop offset="{o:.2f}" stop-color="{c}"/>' for o, c in pal["ramp"])
+    return f'    <linearGradient id="{p}-ramp" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="0" y2="96">{stops}</linearGradient>'
+
+
+def prefix(name: str) -> str:
+    return {"sunset": "s", "mono-light": "ml", "mono-dark": "md"}.get(name, name[:2])
+
+
+def mark_svg(name: str, cut: str) -> str:
+    p = prefix(name)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!-- Conductress mark: keyhole C, {label} palette, {count}-stripe cut. Generated by brand/tools/build.py -->
+<!-- Conductress mark: keyhole C, {PALETTES[name]['label']} palette, {cut} cut. Generated by brand/tools/build.py -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Conductress mark">
   <defs>
-{ramp}
+{ramp_def(name, p)}
     <clipPath id="{p}-c"><path d="{C_PATH}"/></clipPath>
   </defs>
   <g clip-path="url(#{p}-c)">
-{stripes(palette, count, f"{p}-ramp")}
+{stripes(name, cut, p)}
   </g>
 </svg>
 """
 
 
-def scene_defs(palette: str, p: str) -> str:
-    if palette == "sunset":
-        S = SUNSET
-        return f"""    <radialGradient id="{p}-sky" cx="50%" cy="38%" r="72%">
-      <stop offset="0%" stop-color="#2a1140"/><stop offset="60%" stop-color="{S['midnight']}"/><stop offset="100%" stop-color="#07040d"/>
-    </radialGradient>
-    <linearGradient id="{p}-trail" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="{S['violet']}"/><stop offset="55%" stop-color="{S['magenta']}"/><stop offset="100%" stop-color="{S['amber']}"/>
+# ------------------------------------------------------------------- scene
+
+def scene_defs(name: str, p: str) -> str:
+    pal = PALETTES[name]
+    kind = pal["kind"]
+    if kind == "mono":
+        c = pal["color"]
+        return f"""    <linearGradient id="{p}-trail" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="{c}"/><stop offset="100%" stop-color="{c}"/>
     </linearGradient>
     <linearGradient id="{p}-streak" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="{S['violet']}" stop-opacity="0"/><stop offset="60%" stop-color="{S['magenta']}" stop-opacity="0.5"/><stop offset="100%" stop-color="{S['amber']}" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="{p}-grid" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="{S['orange']}" stop-opacity="0.5"/><stop offset="100%" stop-color="{S['violet']}" stop-opacity="0.05"/>
+      <stop offset="0%" stop-color="{c}" stop-opacity="0"/><stop offset="100%" stop-color="{c}" stop-opacity="0.8"/>
     </linearGradient>
     <linearGradient id="{p}-rule" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="{S['violet']}" stop-opacity="0"/><stop offset="25%" stop-color="{S['magenta']}"/><stop offset="75%" stop-color="{S['amber']}"/><stop offset="100%" stop-color="{S['amber']}" stop-opacity="0"/>
+      <stop offset="0%" stop-color="{c}" stop-opacity="0"/><stop offset="30%" stop-color="{c}"/><stop offset="70%" stop-color="{c}"/><stop offset="100%" stop-color="{c}" stop-opacity="0"/>
+    </linearGradient>"""
+    s0, s1, s2 = pal["sky"]
+    sky = f"""    <radialGradient id="{p}-sky" cx="50%" cy="38%" r="72%">
+      <stop offset="0%" stop-color="{s0}"/><stop offset="60%" stop-color="{s1}"/><stop offset="100%" stop-color="{s2}"/>
+    </radialGradient>"""
+    if kind == "ramp":
+        t0, t1, t2 = pal["trail"]
+        g0, g1 = pal["grid"]
+        r0, r1, r2 = pal["rule"]
+        return f"""{sky}
+    <linearGradient id="{p}-trail" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="{t0}"/><stop offset="55%" stop-color="{t1}"/><stop offset="100%" stop-color="{t2}"/>
     </linearGradient>
-{sunset_ramp(f"{p}-ramp")}"""
+    <linearGradient id="{p}-streak" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="{t0}" stop-opacity="0"/><stop offset="60%" stop-color="{t1}" stop-opacity="0.5"/><stop offset="100%" stop-color="{t2}" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="{p}-grid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="{g0}" stop-opacity="0.5"/><stop offset="100%" stop-color="{g1}" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="{p}-rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="{r0}" stop-opacity="0"/><stop offset="25%" stop-color="{r1}"/><stop offset="75%" stop-color="{r2}"/><stop offset="100%" stop-color="{r2}" stop-opacity="0"/>
+    </linearGradient>
+{ramp_def(name, p)}"""
+    n = len(pal["bands"])
     bands = "".join(
-        f'<stop offset="{i/6:.4f}" stop-color="{c}"/><stop offset="{(i+1)/6:.4f}" stop-color="{c}"/>' for i, c in enumerate(APPLE6)
+        f'<stop offset="{i/n:.4f}" stop-color="{c}"/><stop offset="{(i+1)/n:.4f}" stop-color="{c}"/>' for i, c in enumerate(pal["bands"])
     )
-    return f"""    <radialGradient id="{p}-sky" cx="50%" cy="38%" r="72%">
-      <stop offset="0%" stop-color="#1b1b28"/><stop offset="60%" stop-color="#0d0d16"/><stop offset="100%" stop-color="#050508"/>
-    </radialGradient>
+    return f"""{sky}
     <linearGradient id="{p}-trail" gradientUnits="userSpaceOnUse" x1="0" y1="52" x2="0" y2="168">{bands}</linearGradient>
     <linearGradient id="{p}-streak" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0.55"/>
@@ -189,56 +286,6 @@ GRID = """    <line x1="60" y1="196" x2="840" y2="196" stroke="url(#{p}-rule)" s
       <line x1="450" y1="196" x2="840" y2="330"/><line x1="450" y1="196" x2="1040" y2="330"/>
     </g>"""
 
-
-def wordmark_group(palette: str, p: str, word_d: str) -> str:
-    if palette == "sunset":
-        left, right, op = SUNSET["magenta"], SUNSET["amber"], 0.75
-    else:
-        left, right, op = APPLE6[3], APPLE6[5], 0.7
-    return f"""  <g id="wordmark">
-    <path d="{word_d}" transform="translate(2 0)" fill="{left}" opacity="{op}"/>
-    <path d="{word_d}" transform="translate(-2 0)" fill="{right}" opacity="{op}"/>
-    <path d="{word_d}" fill="{SUNSET['paper']}" filter="url(#{p}-soft)"/>
-  </g>"""
-
-
-def subtitle_group(palette: str, p: str, sub_d: str) -> str:
-    fill = SUNSET["gold"] if palette == "sunset" else "#9a9ab0"
-    return f"""  <g id="subtitle">
-    <line x1="170" y1="276" x2="730" y2="276" stroke="url(#{p}-rule)" stroke-width="2.2"/>
-    <line x1="230" y1="284" x2="670" y2="284" stroke="url(#{p}-rule)" stroke-width="1.1"/>
-    <path d="{sub_d}" fill="{fill}"/>
-  </g>"""
-
-
-def not_lead_clip() -> str:
-    """Everything except the lead hexagon, as a UNION of six outward half-planes.
-
-    A single evenodd path would be shorter, but cairosvg ignores clip-rule, and a
-    mask vanished entirely in earlier renders. Six same-orientation polygons under
-    the default nonzero rule work in browsers and cairosvg alike.
-    """
-    pts = [(540, 52), (590.2, 81), (590.2, 139), (540, 168), (489.8, 139), (489.8, 81)]
-    cx, cy, L = 540.0, 110.0, 5000.0
-    polys = []
-    for i in range(6):
-        ax, ay = pts[i]
-        bx, by = pts[(i + 1) % 6]
-        dx, dy = bx - ax, by - ay
-        ln = (dx * dx + dy * dy) ** 0.5
-        dx, dy = dx / ln, dy / ln
-        # outward normal: the one pointing away from the centre
-        nx, ny = dy, -dx
-        mx, my = (ax + bx) / 2 - cx, (ay + by) / 2 - cy
-        if nx * mx + ny * my < 0:
-            nx, ny = -nx, -ny
-        a2 = (ax - dx * L, ay - dy * L)
-        b2 = (bx + dx * L, by + dy * L)
-        quad = [a2, b2, (b2[0] + nx * L, b2[1] + ny * L), (a2[0] + nx * L, a2[1] + ny * L)]
-        polys.append('<polygon points="' + " ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + '"/>')
-    return "".join(polys)
-
-
 STARS = [
     (736, 110, 1.0, .61), (729, 162, 1.6, .71), (636, 25, 1.4, .62), (64, 157, 0.8, .70), (660, 153, 0.9, .46),
     (726, 97, 1.0, .75), (202, 27, 1.2, .81), (87, 137, 1.6, .43), (714, 151, 1.0, .56), (100, 43, 0.8, .58),
@@ -259,7 +306,7 @@ def scenery() -> str:
     Identical to the sign-on's resting frame (brand/motion), which is the rule."""
     stars = "\n".join(f'    <circle cx="{x}" cy="{y}" r="{r}" opacity="{o:.2f}"/>' for x, y, r, o in STARS)
     mts = "\n".join(f'    <path d="{d}"/>' for d in MOUNTAINS)
-    return f"""  <g id="stars" fill="{SUNSET['paper']}">
+    return f"""  <g id="stars" fill="{PAPER}">
 {stars}
   </g>
   <g id="mountains" fill="#07040c">
@@ -269,29 +316,85 @@ def scenery() -> str:
 """
 
 
-def lockup_svg(palette: str, opaque: bool, word_d: str, sub_d: str) -> str:
-    p = ("s" if palette == "sunset" else "r") + ("h" if opaque else "l")
-    ramp_ref = f"{p}-ramp"
+def not_lead_clip() -> str:
+    """Everything except the lead hexagon, as a UNION of six outward half-planes.
+
+    A single evenodd path would be shorter, but cairosvg ignores clip-rule, and a
+    mask vanished entirely in earlier renders. Six same-orientation polygons under
+    the default nonzero rule work in browsers and cairosvg alike.
+    """
+    pts = [(540, 52), (590.2, 81), (590.2, 139), (540, 168), (489.8, 139), (489.8, 81)]
+    cx, cy, L = 540.0, 110.0, 5000.0
+    polys = []
+    for i in range(6):
+        ax, ay = pts[i]
+        bx, by = pts[(i + 1) % 6]
+        dx, dy = bx - ax, by - ay
+        ln = (dx * dx + dy * dy) ** 0.5
+        dx, dy = dx / ln, dy / ln
+        nx, ny = dy, -dx  # outward normal: the one pointing away from the centre
+        mx, my = (ax + bx) / 2 - cx, (ay + by) / 2 - cy
+        if nx * mx + ny * my < 0:
+            nx, ny = -nx, -ny
+        a2 = (ax - dx * L, ay - dy * L)
+        b2 = (bx + dx * L, by + dy * L)
+        quad = [a2, b2, (b2[0] + nx * L, b2[1] + ny * L), (a2[0] + nx * L, a2[1] + ny * L)]
+        polys.append('<polygon points="' + " ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + '"/>')
+    return "".join(polys)
+
+
+# ------------------------------------------------------------- type groups
+
+def wordmark_group(name: str, p: str, word_d: str) -> str:
+    pal = PALETTES[name]
+    if pal["kind"] == "mono":
+        return f"""  <g id="wordmark">
+    <path d="{word_d}" fill="{pal['color']}"/>
+  </g>"""
+    right, left = pal["fringe"]
+    op = 0.75 if name == "sunset" else 0.7
+    return f"""  <g id="wordmark">
+    <path d="{word_d}" transform="translate(2 0)" fill="{right}" opacity="{op}"/>
+    <path d="{word_d}" transform="translate(-2 0)" fill="{left}" opacity="{op}"/>
+    <path d="{word_d}" fill="{PAPER}" filter="url(#{p}-soft)"/>
+  </g>"""
+
+
+def subtitle_group(name: str, p: str, sub_d: str) -> str:
+    pal = PALETTES[name]
+    fill = pal["color"] if pal["kind"] == "mono" else pal["subtitle"]
+    op = ' opacity="0.7"' if pal["kind"] == "mono" else ""
+    return f"""  <g id="subtitle">
+    <line x1="170" y1="276" x2="730" y2="276" stroke="url(#{p}-rule)" stroke-width="2.2"/>
+    <line x1="230" y1="284" x2="670" y2="284" stroke="url(#{p}-rule)" stroke-width="1.1"/>
+    <path d="{sub_d}" fill="{fill}"{op}/>
+  </g>"""
+
+
+# ---------------------------------------------------------------- lockups
+
+def lockup_svg(name: str, opaque: bool, word_d: str, sub_d: str) -> str:
+    pal = PALETTES[name]
+    p = prefix(name) + ("h" if opaque else "l")
     kind = "hero" if opaque else "lockup"
-    background = (
-        f"""  <g id="background">
+    background = ""
+    if opaque:
+        glow_c, glow_o = pal["glow"]
+        background = f"""  <g id="background">
     <rect width="900" height="340" fill="url(#{p}-sky)"/>
-    <circle cx="450" cy="110" r="150" fill="{SUNSET['orange'] if palette == 'sunset' else '#ffffff'}" opacity="{0.07 if palette == 'sunset' else 0.05}"/>
+    <circle cx="450" cy="110" r="150" fill="{glow_c}" opacity="{glow_o}"/>
   </g>
 {scenery()}  <g id="horizon" opacity="0.7">
 {GRID.format(p=p)}
   </g>
 """
-        if opaque
-        else ""
-    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!-- Conductress {kind}, {palette} palette. Generated by brand/tools/build.py; edit that, not this.
+<!-- Conductress {kind}, {pal['label']} palette. Generated by brand/tools/build.py; edit that, not this.
      Type is outlined (Nimbus Sans Bold / DejaVu Sans Mono); the trail is clipped out of the lead
      hexagon so the keyhole and stripe gaps show whatever is behind the logo. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" width="900" height="340" role="img" aria-label="Conductress">
   <defs>
-{scene_defs(palette, p)}
+{scene_defs(name, p)}
     <filter id="{p}-bloom" x="-60%" y="-60%" width="220%" height="220%">
       <feGaussianBlur stdDeviation="7" result="b1"/><feMerge><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
@@ -303,7 +406,7 @@ def lockup_svg(palette: str, opaque: bool, word_d: str, sub_d: str) -> str:
     <clipPath id="{p}-c"><path d="{C_PATH}"/></clipPath>
     <symbol id="{p}-cmark" viewBox="0 0 100 100">
       <g clip-path="url(#{p}-c)">
-{stripes(palette, 7 if palette == "sunset" else 6, ramp_ref)}
+{stripes(name, "big", p)}
       </g>
     </symbol>
   </defs>
@@ -316,51 +419,54 @@ def lockup_svg(palette: str, opaque: bool, word_d: str, sub_d: str) -> str:
 {trail_paths()}
   </g>
 
-  <g id="lead" filter="url(#{p}-bloom)">
+  <g id="lead"{'' if pal['kind'] == 'mono' else f' filter="url(#{p}-bloom)"'}>
     <use href="#{p}-cmark" x="477" y="47" width="126" height="126"/>
   </g>
 
-{wordmark_group(palette, p, word_d)}
+{wordmark_group(name, p, word_d)}
 
-{subtitle_group(palette, p, sub_d)}
+{subtitle_group(name, p, sub_d)}
 </svg>
 """
 
 
-def wordmark_svg(palette: str, word_d: str) -> str:
-    p = ("s" if palette == "sunset" else "r") + "w"
-    # wordmark alone: shift the 900x340 coordinates into a tight 640x80 box
+def wordmark_svg(name: str, word_d: str) -> str:
+    p = prefix(name) + "w"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!-- Conductress wordmark, outlined (Nimbus Sans Bold 54/13). Generated by brand/tools/build.py -->
+<!-- Conductress wordmark, outlined (Nimbus Sans Bold 54/13), {PALETTES[name]['label']}. Generated by brand/tools/build.py -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="130 200 640 72" width="640" height="72" role="img" aria-label="CONDUCTRESS">
   <defs>
     <filter id="{p}-soft" x="-40%" y="-40%" width="180%" height="180%">
       <feGaussianBlur stdDeviation="3" result="b2"/><feMerge><feMergeNode in="b2"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
-{wordmark_group(palette, p, word_d)}
+{wordmark_group(name, p, word_d)}
 </svg>
 """
 
 
 def palette_svg() -> str:
-    """Swatch strip for the guide: the sunset roles on top, the six pride bands below."""
-    sunset = [("cream", "#ffe08a"), ("amber", "#ffc94a"), ("orange", "#ff7a3d"), ("magenta", "#ff2d7e"),
-              ("violet", "#6d3bd8"), ("gold", "#c9a86e"), ("midnight", "#150c26")]
-    pride = list(zip(["green", "yellow", "orange", "red", "purple", "blue"], APPLE6))
-    w = 100
-    rows = []
-    for r, row in enumerate((sunset, pride)):
-        for i, (name, hexv) in enumerate(row):
-            x, y = i * w, r * 92
-            rows.append(f'  <rect x="{x}" y="{y}" width="{w}" height="56" fill="{hexv}"/>')
-            rows.append(f'  <path d="{text_path(name, FONT_MONO, 11, x + w / 2, y + 70, 0)}" fill="#c9bfe6"/>')
-            rows.append(f'  <path d="{text_path(hexv, FONT_MONO, 11, x + w / 2, y + 84, 0)}" fill="#8f83b5"/>')
+    """Swatch strip for the guide: one row per palette."""
+    rows_data = []
+    for pal in PALETTES.values():
+        colours = pal.get("swatches") or pal["bands"]
+        rows_data.append((pal["label"], list(zip(pal["names"], colours))))
+    w, rh = 100, 100
+    h = rh * len(rows_data)
+    out = []
+    for r, (label, row) in enumerate(rows_data):
+        y0 = r * rh
+        out.append(f'  <path d="{text_path(label, FONT_MONO, 11, 60, y0 + 14, 0)}" fill="#8f83b5"/>')
+        for i, (nm, hexv) in enumerate(row):
+            x, y = i * w, y0 + 20
+            out.append(f'  <rect x="{x}" y="{y}" width="{w}" height="46" fill="{hexv}"/>')
+            out.append(f'  <path d="{text_path(nm, FONT_MONO, 10, x + w / 2, y + 60, 0)}" fill="#c9bfe6"/>')
+            out.append(f'  <path d="{text_path(hexv, FONT_MONO, 10, x + w / 2, y + 73, 0)}" fill="#8f83b5"/>')
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!-- Conductress palette. Generated by brand/tools/build.py -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 184" width="700" height="184" role="img" aria-label="Conductress colour palette">
-  <rect width="700" height="184" fill="#0b0812"/>
-{chr(10).join(rows)}
+<!-- Conductress palettes. Generated by brand/tools/build.py -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 {h}" width="700" height="{h}" role="img" aria-label="Conductress colour palettes">
+  <rect width="700" height="{h}" fill="#0b0812"/>
+{chr(10).join(out)}
 </svg>
 """
 
@@ -400,23 +506,22 @@ def main() -> None:
     sub_d = text_path("ONLY DATA IS REAL", FONT_MONO, 15, 450, 312, 8)
     write(ROOT / "palette.svg", palette_svg())
 
-    for palette, folder in (("sunset", "logo"), ("rainbow", "pride")):
-        d = ROOT / folder
-        suffix = "" if palette == "sunset" else "-pride"
-        write(d / f"conductress-hero{suffix}.svg", lockup_svg(palette, True, word_d, sub_d))
-        write(d / f"conductress-lockup{suffix}.svg", lockup_svg(palette, False, word_d, sub_d))
-        write(d / f"conductress-wordmark{suffix}.svg", wordmark_svg(palette, word_d))
-        big, mid, small = (7, 5, 3) if palette == "sunset" else (6, 5, 3)
-        write(d / f"conductress-mark{suffix}.svg", mark_svg(palette, big))
-        write(d / f"conductress-mark{suffix}-32.svg", mark_svg(palette, mid))
-        write(d / f"conductress-mark{suffix}-16.svg", mark_svg(palette, small))
-
-        png(d / f"conductress-hero{suffix}.svg", d / f"conductress-hero{suffix}.png", 1800)
-        png(d / f"conductress-mark{suffix}.svg", d / f"conductress-mark{suffix}-512.png", 512)
-        png(d / f"conductress-mark{suffix}.svg", d / f"conductress-mark{suffix}-180.png", 180)
-        png(d / f"conductress-mark{suffix}-32.svg", d / f"conductress-mark{suffix}-32.png", 32)
-        png(d / f"conductress-mark{suffix}-16.svg", d / f"conductress-mark{suffix}-16.png", 16)
-        ico(d / f"conductress-mark{suffix}-16.svg", d / f"conductress-mark{suffix}-32.svg", d / f"favicon{suffix}.ico")
+    for name, pal in PALETTES.items():
+        d = ROOT / pal["folder"]
+        sfx = pal["suffix"]
+        if pal["kind"] != "mono":
+            write(d / f"conductress-hero{sfx}.svg", lockup_svg(name, True, word_d, sub_d))
+            png(d / f"conductress-hero{sfx}.svg", d / f"conductress-hero{sfx}.png", 1800)
+        write(d / f"conductress-lockup{sfx}.svg", lockup_svg(name, False, word_d, sub_d))
+        write(d / f"conductress-wordmark{sfx}.svg", wordmark_svg(name, word_d))
+        write(d / f"conductress-mark{sfx}.svg", mark_svg(name, "big"))
+        write(d / f"conductress-mark{sfx}-32.svg", mark_svg(name, "mid"))
+        write(d / f"conductress-mark{sfx}-16.svg", mark_svg(name, "small"))
+        png(d / f"conductress-mark{sfx}.svg", d / f"conductress-mark{sfx}-512.png", 512)
+        png(d / f"conductress-mark{sfx}.svg", d / f"conductress-mark{sfx}-180.png", 180)
+        png(d / f"conductress-mark{sfx}-32.svg", d / f"conductress-mark{sfx}-32.png", 32)
+        png(d / f"conductress-mark{sfx}-16.svg", d / f"conductress-mark{sfx}-16.png", 16)
+        ico(d / f"conductress-mark{sfx}-16.svg", d / f"conductress-mark{sfx}-32.svg", d / f"favicon{sfx}.ico")
 
 
 if __name__ == "__main__":

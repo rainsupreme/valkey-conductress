@@ -36,7 +36,9 @@ The subtitle is **ONLY DATA IS REAL**.
 | `logo/conductress-mark-32.svg` / `-32.png` | The C, 5 stripes | 32 to 63px |
 | `logo/conductress-mark-16.svg` / `-16.png` | The C, 3 stripes | 16px favicon |
 | `logo/favicon.ico` | 16 + 32 + 48 bundled | `<link rel="icon">` |
-| `pride/...` | The same set in the rainbow palette (see below) | June, or whenever you choose |
+| `pride/`, `trans/`, `bi/`, `lesbian/`, `nonbinary/` | The same set in each flag palette | June, or whenever you choose |
+| `valkey/` | The same set in Valkey's periwinkle, as a tonal ramp | Co-branded surfaces: a ValkeyConf slide, a Valkey-hosted page |
+| `mono/` | One colour, light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`). No hero. | Print, stickers, embroidery, engraving, single-colour footers |
 | `terminal/conductress-logo-ascii.py` and `*.ansi` | The lockup for a Linux terminal | CLI banner, TUI splash, MOTD |
 | `motion/conductress-signon.html` | The animated sign-on | Dashboard loading screen, talk openers |
 
@@ -67,7 +69,8 @@ or lockup. Do not put the lockup on a photograph or on top of a chart.
 
 ## Colour
 
-The sunset palette, on midnight:
+The sunset palette, on midnight. The strip below shows every palette in this
+directory, one row each; the table covers the primary one.
 
 <p align="center"><img src="palette.svg" width="700" alt="Palette swatches: cream, amber, orange, magenta, violet, gold, midnight; then the six pride bands"></p>
 
@@ -96,21 +99,53 @@ For terminals that cannot do 24-bit colour, `terminal/conductress-logo-256.ansi`
 uses the nearest xterm-256 cube entries; the gradient steps slightly but the
 palette holds.
 
-## Pride variant
+## Flag variants
 
-The stripes become the six bands of the 1977 Apple logo, in Apple's order top
-to bottom: green `#61bb46`, yellow `#fdb827`, orange `#f5821f`, red `#e03a3e`,
-purple `#963d97`, blue `#009ddc`. The trail takes the same six bands, so it
-still reads as the C smearing rather than a second object. The ground is
-near-black rather than midnight, because a tinted sky fights six saturated
-hues. The 16px cut merges the bands in pairs.
+The stripes are a natural place for a flag, and the mark carries several. In
+each, the trail takes the same bands so it still reads as the C smearing rather
+than a second object; the wordmark's chromatic fringe takes two of the flag's
+colours; the sky stays midnight except for the rainbow, whose six saturated
+hues fight any tint, so it sits on near-black.
+
+- **Pride rainbow** (`pride/`): the six bands of the 1977 Apple logo, in
+  Apple's order. The 16px cut merges the bands in pairs.
+- **Trans** (`trans/`): blue, pink, white, pink, blue. The white band falls on
+  the keyhole channel, so it survives only as the C's left arm, which reads
+  correctly as the flag's centre.
+- **Bi** (`bi/`): magenta, lavender, blue in the flag's 2:1:2 proportions,
+  laid out as five stripes so the lavender is one band wide.
+- **Lesbian** (`lesbian/`): the five-stripe sunset flag, dark orange to dark
+  rose with white at the centre; it is close kin to the primary palette.
+- **Nonbinary** (`nonbinary/`): yellow, white, purple, black. The black band is
+  the flag's `#2c2c2c`, which on the midnight sky reads as a dark grey sliver
+  at the base rather than a full stripe. It is faithful; it is not loud. On a
+  light background (the transparent lockup on paper) it reads fully.
 
 <p align="center">
   <img src="pride/conductress-hero-pride.svg" width="600" alt="Conductress hero in the pride rainbow palette">
 </p>
 
-This is the only sanctioned recolour of the mark. It is the June variant, and
-it is available any time the project wants it.
+These, plus the two below, are the sanctioned recolours. Adding another is one
+entry in `PALETTES` in `tools/build.py`.
+
+## Valkey periwinkle
+
+`valkey/` recolours the mark as a tonal ramp around Valkey's brand periwinkle
+`#6983ff`, pale at the top point to ink at the base, with the trail, grid and
+rule in the same family on a blue-black sky. Use it where Conductress appears
+inside Valkey's visual world, such as a ValkeyConf slide or a page on a Valkey
+property, where the sunset would fight the host palette. It is a courtesy
+variant, not an implication of endorsement; see the trademark note.
+
+## One colour
+
+`mono/` is the mark and lockup in a single flat colour, with the trail as
+solid outlines at stepped opacity and no glow, no fringe, no hero. `-mono-light`
+is paper `#fff6ea` for dark grounds; `-mono-dark` is midnight `#150c26` for
+light grounds. This is the version for anything that cannot carry a gradient:
+stickers, embroidery, laser engraving, a printed footer, a favicon on a themed
+browser chrome. It is also the test of the mark: the C has to read with the
+stripes and nothing else, and it does.
 
 ## Wordmark and subtitle
 
@@ -164,8 +199,9 @@ a timestamp for frame capture.
 - No per-stripe recolouring, and no gradient that restarts on each stripe.
 - No trail below 64px, and no 7-stripe mark below 64px.
 - No second light source in the hero. The scene works because there is one.
-- No other recolour than the pride variant. In particular, no neon
-  magenta-cyan version: it collides with the chart palette.
+- No recolours beyond the ones in this directory. In particular, no neon
+  magenta-cyan version: it collides with the chart palette. A new flag or
+  co-brand palette is added to `tools/build.py`, not improvised in place.
 - Do not use the actual Valkey logo in Conductress material. The hexagon is
   the reference; the mark itself belongs to LF Projects.
 - Do not stretch, rotate, outline, or drop-shadow the mark.
