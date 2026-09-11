@@ -387,8 +387,8 @@ STREAKS = """    <line x1="150" y1="72" x2="372" y2="72" stroke-width="2"/>
     <line x1="104" y1="144" x2="350" y2="144" stroke-width="4.2"/>
     <line x1="182" y1="164" x2="360" y2="164" stroke-width="1.4"/>"""
 
-GRID = """    <line x1="60" y1="196" x2="840" y2="196" stroke="url(#{p}-rule)" stroke-width="1.6"/>
-    <g stroke="url(#{p}-grid)" stroke-width="1.1" fill="none">
+# perspective grid only: no line along the horizon itself, the mountain silhouettes draw it
+GRID = """    <g stroke="url(#{p}-grid)" stroke-width="1.1" fill="none">
       <line x1="450" y1="196" x2="-140" y2="330"/><line x1="450" y1="196" x2="60" y2="330"/>
       <line x1="450" y1="196" x2="248" y2="330"/><line x1="450" y1="196" x2="380" y2="330"/>
       <line x1="450" y1="196" x2="520" y2="330"/><line x1="450" y1="196" x2="652" y2="330"/>
