@@ -31,6 +31,7 @@ The subtitle is **ONLY DATA IS REAL**.
 |---|---|---|
 | `logo/conductress-hero.svg` / `.png` (1800x680) | Full scene: starfield, mountain horizon, grid, streaks, trail, C, wordmark, subtitle. Opaque. Identical to the sign-on's resting frame. | README top, social preview, slides |
 | `logo/conductress-lockup.svg` | Streaks, trail, C, wordmark, subtitle on a **transparent** background | Dashboard header, docs, anywhere the page supplies the background |
+| `logo/conductress-lockup-horizontal.svg` | C on the left, wordmark and subtitle stacked to its right (860x180). Transparent, no trail. | Navigation bars, banners, anywhere wide and short |
 | `logo/conductress-wordmark.svg` | CONDUCTRESS alone, with its chromatic fringe | Beside a mark that is placed separately |
 | `logo/conductress-mark.svg` / `-512.png` / `-180.png` | The C alone, 7 stripes | 64px and up; app icon; apple-touch-icon (180) |
 | `logo/conductress-mark-32.svg` / `-32.png` | The C, 5 stripes | 32 to 63px |
@@ -55,6 +56,13 @@ slide, a social preview image. It carries its own sky and is opaque.
 background: the dashboard header, a docs sidebar. The trail is clipped out of
 the lead hexagon so the keyhole and stripe gaps show the page, not trail lines.
 Dark backgrounds only; the cream wordmark disappears on white.
+
+**Horizontal lockup** for wide, short spaces: a navigation bar, a banner, a
+slide footer, an email header. The C sits on the left at full height with the
+wordmark, rule and subtitle stacked to its right and left-aligned, the same
+layout as the terminal lockup. It has no trail, so it has no motion; use it
+where the stacked lockup's height would not fit, not as the default. Every
+palette has one, including the one-colour set.
 
 **Mark alone** below about 200px wide, where the wordmark stops being legible.
 Pick the cut by rendered size, not by file preference: the 7-stripe mark turns
@@ -156,7 +164,8 @@ These files are built differently from the rest, and that is the point:
 - The trail fades by stroke width alone, 0.5 to 3.2 units, and each outline
   is emitted only where it lies outside the lead hexagon, so nothing is cut
   or stitched twice.
-- `-plain` drops the trail: mark, wordmark, subtitle. Ten overlapping outlines
+- `-plain` drops the trail and centres the C over the wordmark (with the
+  trail the C sits right of centre to leave it room). Ten overlapping outlines
   are a lot of thread and a fragile stencil; for a chest print or a patch,
   plain is the one to use.
 

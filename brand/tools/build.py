@@ -119,8 +119,20 @@ C_PATH = "M89.8 27 L50 4 L10.2 27 L10.2 73 L50 96 L89.8 73 L89.8 61 L69.05 61 A2
 
 # ------------------------------------------------------------- text -> path
 
-def text_path(text: str, font_path: str, size: float, cx: float, baseline: float, spacing: float) -> str:
-    """Return an SVG path 'd' for text centred at cx on the given baseline."""
+def text_width(text: str, font_path: str, size: float, spacing: float) -> float:
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(font_path)
+    cmap = font.getBestCmap()
+    hmtx = font["hmtx"]
+    s = size / font["head"].unitsPerEm
+    return sum(hmtx[cmap[ord(ch)]][0] * s for ch in text) + spacing * (len(text) - 1)
+
+
+def text_path(text: str, font_path: str, size: float, x: float, baseline: float, spacing: float,
+              anchor: str = "middle") -> str:
+    """Return an SVG path 'd' for text on the given baseline, centred at x (anchor='middle')
+    or starting at x (anchor='start')."""
     from fontTools.pens.svgPathPen import SVGPathPen
     from fontTools.pens.transformPen import TransformPen
     from fontTools.ttLib import TTFont
@@ -133,7 +145,7 @@ def text_path(text: str, font_path: str, size: float, cx: float, baseline: float
     names = [cmap[ord(ch)] for ch in text]
     advances = [hmtx[n][0] * s for n in names]
     width = sum(advances) + spacing * (len(text) - 1)
-    x = cx - width / 2
+    x = x - width / 2 if anchor == "middle" else x
     d = []
     for name, adv in zip(names, advances):
         pen = SVGPathPen(gs)
@@ -177,8 +189,9 @@ def stripes(name: str, cut: str, p: str) -> str:
     return "\n".join(f'      <rect x="8" y="{y:.2f}" width="84" height="{h:.2f}" fill="{c}"/>' for y, h, c in rows)
 
 
-def stripe_polygons(cut: str = "big", step: float = 0.5) -> list[str]:
-    """Each piece of the striped keyhole C as its own closed path, with no clipPath.
+def stripe_polygons(cut: str = "big", step: float = 0.5, scale: float = 1.0, dx: float = 0.0, dy: float = 0.0) -> list[str]:
+    """Each piece of the striped keyhole C as its own closed path, with no clipPath,
+    mapped from the 100-box by scale and offset.
 
     Cutters and embroidery digitizers (Cricut, Ink/Stitch) commonly ignore clipPath,
     so the stencil files carry explicit geometry. Method: walk each stripe band in
@@ -214,7 +227,7 @@ def stripe_polygons(cut: str = "big", step: float = 0.5) -> list[str]:
         return out
 
     def fmt(ring):
-        return "M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in ring) + " Z"
+        return "M" + " L".join(f"{dx + x * scale:.2f} {dy + y * scale:.2f}" for x, y in ring) + " Z"
 
     paths = []
     for y0, h in RAMP_PLANS[cut]:
@@ -306,7 +319,7 @@ def scene_defs(name: str, p: str) -> str:
         return f"""    <linearGradient id="{p}-trail" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="{c}"/><stop offset="100%" stop-color="{c}"/>
     </linearGradient>
-    <linearGradient id="{p}-rule" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="{p}-rule" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="840" y2="0">
       <stop offset="0%" stop-color="{c}"/><stop offset="100%" stop-color="{c}"/>
     </linearGradient>"""
     s0, s1, s2 = pal["sky"]
@@ -327,7 +340,7 @@ def scene_defs(name: str, p: str) -> str:
     <linearGradient id="{p}-grid" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="{g0}" stop-opacity="0.5"/><stop offset="100%" stop-color="{g1}" stop-opacity="0.05"/>
     </linearGradient>
-    <linearGradient id="{p}-rule" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="{p}-rule" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="840" y2="0">
       <stop offset="0%" stop-color="{r0}" stop-opacity="0"/><stop offset="25%" stop-color="{r1}"/><stop offset="75%" stop-color="{r2}"/><stop offset="100%" stop-color="{r2}" stop-opacity="0"/>
     </linearGradient>
 {ramp_def(name, p)}"""
@@ -343,7 +356,7 @@ def scene_defs(name: str, p: str) -> str:
     <linearGradient id="{p}-grid" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0.03"/>
     </linearGradient>
-    <linearGradient id="{p}-rule" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="{p}-rule" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="840" y2="0">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/><stop offset="50%" stop-color="#d8d8e6"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>"""
 
@@ -545,15 +558,10 @@ def flat_lockup_svg(name: str, word_d: str, sub_d: str, trail: bool) -> str:
     outlined type. The trail fades by stroke width only; the plain version drops it."""
     pal = PALETTES[name]
     c = pal["color"]
-    # the C at lockup size: the 100-box maps to a 126-unit box at (477,47)
-    s = 1.26
-    polys = []
-    for d in stripe_polygons("big"):
-        # scale/translate the path numbers in place
-        toks = d.replace("M", "").replace("Z", "").split(" L")
-        pts = [(477 + float(x) * s, 47 + float(y) * s) for x, y in (t.split() for t in toks)]
-        polys.append("M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in pts) + " Z")
-    mark = "\n".join(f'    <path d="{d}"/>' for d in polys)
+    # the C at lockup size: the 100-box maps to a 126-unit box. With the trail it sits
+    # at (477,47) so the trail has room on the left; without it, it centres over the wordmark.
+    mark_x = 477 if trail else 387
+    mark = "\n".join(f'    <path d="{d}"/>' for d in stripe_polygons("big", scale=1.26, dx=mark_x, dy=47))
     # trail: each outline is emitted only where it lies outside the lead hexagon
     # (geometry, not clipPath), so nothing is cut or stitched twice
     trail_g = ""
@@ -621,6 +629,81 @@ def _outline_outside_lead(hexpts) -> str:
     if cur:
         runs.append(cur)
     return " ".join("M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in run) for run in runs)
+
+
+def horizontal_svg(name: str) -> str:
+    """Mark on the left, wordmark / rule / subtitle stacked to its right and left-aligned,
+    vertically centred on the mark. The layout of the terminal (MOTD) lockup. No trail.
+
+    Canvas 860x180. Mark: 160-unit box at (40,10), so the hexagon spans x 56..184, y 16..164,
+    centre (120,90). Type column starts at x=232."""
+    pal = PALETTES[name]
+    p = prefix(name) + "z"
+    flat = pal["kind"] == "mono"
+    tx = 232
+    word_w = text_width("CONDUCTRESS", FONT_SANS, 54, 13)
+    word_d = text_path("CONDUCTRESS", FONT_SANS, 54, tx, 96, 13, anchor="start")
+    sub_d = text_path("ONLY DATA IS REAL", FONT_MONO, 15, tx, 150, 8, anchor="start")
+    rule_r = tx + word_w
+    if flat:
+        c = pal["color"]
+        mark = "\n".join(f'    <path d="{d}"/>' for d in stripe_polygons("big", scale=1.6, dx=40, dy=10))
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!-- Conductress horizontal lockup, {pal['label']}. Generated by brand/tools/build.py; edit that, not this.
+     Stencil-safe: one flat colour, explicit closed paths, outlined type; no clipPath, gradients,
+     filters or opacity. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 180" width="860" height="180" role="img" aria-label="Conductress">
+  <g id="mark" fill="{c}">
+{mark}
+  </g>
+  <g id="wordmark" fill="{c}">
+    <path d="{word_d}"/>
+  </g>
+  <g id="subtitle" fill="{c}" stroke="{c}">
+    <line x1="{tx}" y1="114" x2="{rule_r:.1f}" y2="114" stroke-width="2.2"/>
+    <line x1="{tx}" y1="122" x2="{rule_r - 60:.1f}" y2="122" stroke-width="1.1"/>
+    <path d="{sub_d}" stroke="none"/>
+  </g>
+</svg>
+"""
+    # coloured: the mark symbol, the fringed wordmark, and a rule that starts solid at the
+    # text edge and fades to the right (the stacked lockup's rule fades at both ends)
+    if pal["kind"] == "ramp":
+        _, r1, r2 = pal["rule"]
+        hrule = f'<stop offset="0%" stop-color="{r1}"/><stop offset="55%" stop-color="{r2}"/><stop offset="100%" stop-color="{r2}" stop-opacity="0"/>'
+    else:
+        hrule = '<stop offset="0%" stop-color="#d8d8e6"/><stop offset="100%" stop-color="#d8d8e6" stop-opacity="0"/>'
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!-- Conductress horizontal lockup, {pal['label']} palette. Generated by brand/tools/build.py; edit that, not this.
+     Type is outlined (Nimbus Sans Bold / DejaVu Sans Mono). Transparent background, dark grounds only. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 180" width="860" height="180" role="img" aria-label="Conductress">
+  <defs>
+{scene_defs(name, p)}
+    <linearGradient id="{p}-hrule" gradientUnits="userSpaceOnUse" x1="{tx}" y1="0" x2="{rule_r:.1f}" y2="0">{hrule}</linearGradient>
+    <filter id="{p}-bloom" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b1"/><feMerge><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="{p}-soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b2"/><feMerge><feMergeNode in="b2"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="{p}-c"><path d="{C_PATH}"/></clipPath>
+    <symbol id="{p}-cmark" viewBox="0 0 100 100">
+      <g clip-path="url(#{p}-c)">
+{stripes(name, "big", p)}
+      </g>
+    </symbol>
+  </defs>
+  <g id="mark" filter="url(#{p}-bloom)">
+    <use href="#{p}-cmark" x="40" y="10" width="160" height="160"/>
+  </g>
+{wordmark_group(name, p, word_d)}
+  <g id="subtitle">
+    <line x1="{tx}" y1="114" x2="{rule_r:.1f}" y2="114" stroke="url(#{p}-hrule)" stroke-width="2.2"/>
+    <line x1="{tx}" y1="122" x2="{rule_r - 60:.1f}" y2="122" stroke="url(#{p}-hrule)" stroke-width="1.1"/>
+    <path d="{sub_d}" fill="{pal['subtitle']}"/>
+  </g>
+</svg>
+"""
 
 
 def wordmark_svg(name: str, word_d: str) -> str:
@@ -710,6 +793,7 @@ def main() -> None:
             write(d / f"conductress-lockup{sfx}-plain.svg", flat_lockup_svg(name, word_d, sub_d, trail=False))
         else:
             write(d / f"conductress-lockup{sfx}.svg", lockup_svg(name, False, word_d, sub_d))
+        write(d / f"conductress-lockup{sfx}-horizontal.svg", horizontal_svg(name))
         write(d / f"conductress-wordmark{sfx}.svg", wordmark_svg(name, word_d))
         write(d / f"conductress-mark{sfx}.svg", mark_svg(name, "big"))
         write(d / f"conductress-mark{sfx}-32.svg", mark_svg(name, "mid"))
