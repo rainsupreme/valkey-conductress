@@ -50,7 +50,8 @@ MIDNIGHT_SKY = ("#2a1140", MIDNIGHT, "#07040d")
 VALKEY = "#6983ff"  # the Valkey brand periwinkle
 VALKEY_RAMP = [(0, "#e3e8ff"), (0.28, "#a4b3ff"), (0.56, VALKEY), (0.82, "#4a5de0"), (1, "#2e3a9e")]
 
-APPLE6 = ["#61bb46", "#fdb827", "#f5821f", "#e03a3e", "#963d97", "#009ddc"]
+RAINBOW = ["#e40303", "#ff8c00", "#ffed00", "#008026", "#24408e", "#732982"]  # six-stripe pride flag
+RAINBOW3 = ["#f24802", "#80b613", "#4c3588"]  # adjacent pairs merged, for 16px
 TRANS = ["#5bcefa", "#f5a9b8", "#ffffff", "#f5a9b8", "#5bcefa"]
 BI = ["#d60270", "#d60270", "#9b4f96", "#0038a8", "#0038a8"]  # the flag's 2:1:2 proportions
 LESBIAN = ["#d52d00", "#ff9a56", "#ffffff", "#d362a4", "#a30262"]
@@ -78,10 +79,10 @@ PALETTES = {
         names=["pale", "light", "valkey", "deep", "ink"], swatches=[c for _, c in VALKEY_RAMP],
     ),
     "pride": dict(
-        kind="bands", folder="pride", suffix="-pride", label="pride rainbow", bands=APPLE6,
-        small=["#8fc63f", "#ea5a2e", "#4a6fbf"], sky=("#1b1b28", "#0d0d16", "#050508"), glow=("#ffffff", 0.05),
-        fringe=(APPLE6[3], APPLE6[5]), subtitle="#9a9ab0",
-        names=["green", "yellow", "orange", "red", "purple", "blue"],
+        kind="bands", folder="pride", suffix="-pride", label="pride rainbow", bands=RAINBOW,
+        small=RAINBOW3, sky=("#1b1b28", "#0d0d16", "#050508"), glow=("#ffffff", 0.05),
+        fringe=(RAINBOW[0], RAINBOW[4]), subtitle="#9a9ab0",
+        names=["red", "orange", "yellow", "green", "blue", "violet"],
     ),
     "trans": dict(
         kind="bands", folder="trans", suffix="-trans", label="trans pride", bands=TRANS, small=TRANS,

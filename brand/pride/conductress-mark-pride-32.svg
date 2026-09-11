@@ -6,11 +6,11 @@
     <clipPath id="pr-c"><path d="M89.8 27 L50 4 L10.2 27 L10.2 73 L50 96 L89.8 73 L89.8 61 L69.05 61 A22 22 0 1 1 69.05 39 L89.8 39 Z"/></clipPath>
   </defs>
   <g clip-path="url(#pr-c)">
-      <rect x="8" y="4.00" width="84" height="15.33" fill="#61bb46"/>
-      <rect x="8" y="19.33" width="84" height="15.33" fill="#fdb827"/>
-      <rect x="8" y="34.67" width="84" height="15.33" fill="#f5821f"/>
-      <rect x="8" y="50.00" width="84" height="15.33" fill="#e03a3e"/>
-      <rect x="8" y="65.33" width="84" height="15.33" fill="#963d97"/>
-      <rect x="8" y="80.67" width="84" height="15.33" fill="#009ddc"/>
+      <rect x="8" y="4.00" width="84" height="15.33" fill="#e40303"/>
+      <rect x="8" y="19.33" width="84" height="15.33" fill="#ff8c00"/>
+      <rect x="8" y="34.67" width="84" height="15.33" fill="#ffed00"/>
+      <rect x="8" y="50.00" width="84" height="15.33" fill="#008026"/>
+      <rect x="8" y="65.33" width="84" height="15.33" fill="#24408e"/>
+      <rect x="8" y="80.67" width="84" height="15.33" fill="#732982"/>
   </g>
 </svg>

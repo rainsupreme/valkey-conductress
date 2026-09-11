@@ -115,8 +115,11 @@ than a second object; the wordmark's chromatic fringe takes two of the flag's
 colours; the sky stays midnight except for the rainbow, whose six saturated
 hues fight any tint, so it sits on near-black.
 
-- **Pride rainbow** (`pride/`): the six bands of the 1977 Apple logo, in
-  Apple's order. The 16px cut merges the bands in pairs.
+- **Pride rainbow** (`pride/`): the six-stripe rainbow flag, red at the top
+  through orange, yellow, green and blue to violet at the base, in the flag's
+  published colours. The 16px cut merges adjacent pairs. (An earlier draft
+  used the 1977 Apple logo's colours and order; it read as Apple, not pride,
+  and was retired.)
 - **Trans** (`trans/`): blue, pink, white, pink, blue. The white band falls on
   the keyhole channel, so it survives only as the C's left arm, which reads
   correctly as the flag's centre.
