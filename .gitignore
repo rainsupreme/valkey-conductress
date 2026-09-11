@@ -25,5 +25,6 @@ build/
 .venv/
 .env
 *.png
+!brand/**/*.png
 sweep_data/
 .venv

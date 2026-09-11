@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<!-- BRIEF: Conductress 80s "sign-on" animation, v3 (brand/ production cut).
+     PRODUCTION DEFAULTS (Rain, Sep 10 2026): score = COSMOS; CRT overlay (scanlines, vignette,
+     end flicker) OFF; it is a toggle on the start card, or ?crt in the URL.
+     A ~6.5s title sequence in the tradition of
+     Cinemaware / Sierra / Amiga cracktro openings, built on the chosen lockup (variant H: keyhole
+     C-mark leading a hexagon speed trail, sunset palette, hard-edged circle glow, A's sky+grid).
+
+     TIMELINE (seconds)
+       0.00  black
+       0.30  grid horizon draws itself out from the vanishing point, WHITE-HOT, cooling to
+             amber/violet as it goes (a hot stroke layer over the cool one, colour-animated)
+       0.80  trail hexes scream in from off-screen left, heavy motion blur, hard ease-out
+       1.55  lead C snaps into place. A WHITE version of the C flares over it and fades, while
+             a burst of rotating four-point SPARKLES (bloomed) plays across the mark. Tinkling
+             bells replace v1's white flash + drum kick.
+       1.80  the C's seven stripes fill bottom-up like a VU meter, one tick each
+       2.70  CONDUCTRESS slams in letter by letter (scale 3 -> 1, chromatic split -> converge)
+       4.10  subtitle types with a block cursor (the double rule was dropped: over the grid it
+             covered the scene; the static hero matches)
+       5.60  one scanline flicker (CRT overlay only), then hold.  REPLAY button.
+
+     AUDIO: synthesised live in WebAudio, five scores selectable before START (COSMOS default).
+       VHS FANFARE  detuned saw+tri brass through a 3.4kHz lowpass, tape wow+flutter, soft
+                    saturation. v2: hiss bed is PINK noise (Kellet filter), quieter, lowpassed.
+       CHIPTUNE     pulse waves, 30Hz-cycled chords, noise drum -> now high pulse tinkles.
+       ORCHESTRA    v2 NEW. "Sell me speakers": strings (triple-detuned saws, slow attack,
+                    tremolo swell on the fly-in), brass, timpani, harp plucks on the VU fill,
+                    cymbal swell into the final chord, fluttering ascending arpeggios (the flight
+                    of birds), plate reverb. Same I-IV-V-I harmony as the brass fanfare.
+       COSMOS       v2 NEW. Ethereal: sub drone, slow chorused pads on quartal/Lydian voicings
+                    (Cmaj9 -> Fmaj7#11 -> Gadd9 -> C Lydian), FM glass bells on a pentatonic,
+                    long 5s reverb, no percussion at all. The infinite empty cosmos.
+       SILENT
+     Browsers refuse audio without a gesture, so the sequence starts on a click: PRESS START.
+
+     DEBUG: ?t=2.5 pauses every animation at t=2.5s (Web Animations API) for frame capture.
+            ?run=orch starts the sequence + schedules that score without a gesture (audio stays
+            suspended, but any scheduling exception surfaces in the console).
+     Sunset palette: #ffe08a #ffc94a #ff7a3d #ff2d7e #6d3bd8 on #150c26. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CONDUCTRESS — sign-on</title>
+<style>
+  :root { --bg:#150c26; --cream:#fff6ea; --amber:#ffc94a; --mag:#ff2d7e; --vio:#6d3bd8; --gold:#c9a86e; }
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}
+  #stage{position:fixed;inset:0;display:grid;place-items:center;background:#000}
+  svg#art{width:min(100vw,177.7vh);height:auto;display:block}
+
+  /* everything parks in its "before" state; .play starts the clocks.
+     NOTE: never use the `animation:` shorthand below -- it resets fill-mode/play-state and
+     overrides this class. Longhands only. */
+  .anim{animation-play-state:paused;animation-fill-mode:both}
+  .play .anim{animation-play-state:running}
+
+  #sky   {animation-name:fadein;animation-duration:.6s;animation-timing-function:ease-out;animation-delay:0s}
+  #stars {animation-name:fadein;animation-duration:1.4s;animation-timing-function:ease-out;animation-delay:.2s}
+  #mountains{animation-name:fadein;animation-duration:.9s;animation-timing-function:ease-out;animation-delay:.3s}
+  #glow  {transform-origin:450px 110px;animation-name:glowup;animation-duration:.9s;animation-timing-function:cubic-bezier(.2,.9,.2,1);animation-delay:1.55s}
+
+  /* grid: cool layer draws; hot layer draws on top, white -> amber -> gone */
+  #hlines line{stroke-dasharray:1200;stroke-dashoffset:1200;animation-name:draw;animation-duration:1.1s;animation-timing-function:cubic-bezier(.3,.7,.1,1);animation-delay:.3s}
+  #hrule {stroke-dasharray:1200;stroke-dashoffset:1200;animation-name:draw;animation-duration:.9s;animation-timing-function:ease-out;animation-delay:.35s}
+  #hot line{stroke-dasharray:1200;stroke-dashoffset:1200;animation-name:drawhot;animation-duration:2.2s;animation-timing-function:cubic-bezier(.3,.7,.1,1);animation-delay:.3s}
+  #hotrule{stroke-dasharray:1200;stroke-dashoffset:1200;animation-name:drawhot;animation-duration:1.9s;animation-timing-function:ease-out;animation-delay:.35s}
+
+  #trail path{animation-name:flyin;animation-duration:.75s;animation-timing-function:cubic-bezier(.05,.9,.15,1)}
+  #trail path:nth-child(1){animation-delay:.80s} #trail path:nth-child(2){animation-delay:.83s}
+  #trail path:nth-child(3){animation-delay:.86s} #trail path:nth-child(4){animation-delay:.89s}
+  #trail path:nth-child(5){animation-delay:.92s} #trail path:nth-child(6){animation-delay:.95s}
+  #trail path:nth-child(7){animation-delay:.98s} #trail path:nth-child(8){animation-delay:1.01s}
+  #trail path:nth-child(9){animation-delay:1.04s} #trail path:nth-child(10){animation-delay:1.07s}
+  #streaks{animation-name:streak;animation-duration:.9s;animation-timing-function:ease-out;animation-delay:.85s}
+
+  #lead  {animation-name:snap;animation-duration:.45s;animation-timing-function:cubic-bezier(.1,1.4,.3,1);animation-delay:1.55s}
+  #flare {transform-origin:540px 110px;animation-name:flare;animation-duration:1.1s;animation-timing-function:ease-out;animation-delay:1.55s}
+  /* sparkles: eight, one every 0.19s on the arpeggio grid, each living 1.3s so 2-3 overlap; DOM order sweeps bottom -> top.
+     Delays key off the positioning WRAPPER (#sparks > g), because each .sp is the only child of its wrapper
+     and .sp:nth-child(N) would match all-or-nothing. Linear timing: rotation is continuous, scale ease lives in the keyframes. */
+  #sparks .sp{transform-box:fill-box;transform-origin:50% 50%;animation-name:sparkle;animation-duration:1.3s;animation-timing-function:linear}
+  #sparks > g:nth-child(1) .sp{animation-delay:1.52s} #sparks > g:nth-child(2) .sp{animation-delay:1.71s}
+  #sparks > g:nth-child(3) .sp{animation-delay:1.90s} #sparks > g:nth-child(4) .sp{animation-delay:2.09s}
+  #sparks > g:nth-child(5) .sp{animation-delay:2.28s} #sparks > g:nth-child(6) .sp{animation-delay:2.47s}
+  #sparks > g:nth-child(7) .sp{animation-delay:2.66s} #sparks > g:nth-child(8) .sp{animation-delay:2.85s}
+
+  #stripes rect{transform-box:fill-box;transform-origin:50% 100%;animation-name:vu;animation-duration:.16s;animation-timing-function:cubic-bezier(.2,1.6,.4,1)}
+  #stripes rect:nth-child(7){animation-delay:1.80s} #stripes rect:nth-child(6){animation-delay:1.93s}
+  #stripes rect:nth-child(5){animation-delay:2.06s} #stripes rect:nth-child(4){animation-delay:2.19s}
+  #stripes rect:nth-child(3){animation-delay:2.32s} #stripes rect:nth-child(2){animation-delay:2.45s}
+  #stripes rect:nth-child(1){animation-delay:2.58s}
+
+  #word .g{transform-box:fill-box;transform-origin:50% 50%;animation-name:slam;animation-duration:.42s;animation-timing-function:cubic-bezier(.1,1.2,.2,1)}
+  #word .g:nth-child(3){animation-delay:2.70s} #word .g:nth-child(4){animation-delay:2.82s}
+  #word .g:nth-child(5){animation-delay:2.94s} #word .g:nth-child(6){animation-delay:3.06s}
+  #word .g:nth-child(7){animation-delay:3.18s} #word .g:nth-child(8){animation-delay:3.30s}
+  #word .g:nth-child(9){animation-delay:3.42s} #word .g:nth-child(10){animation-delay:3.54s}
+  #word .g:nth-child(11){animation-delay:3.66s} #word .g:nth-child(12){animation-delay:3.78s}
+  #word .g:nth-child(13){animation-delay:3.90s}
+  #word .r,#word .b{animation-name:split;animation-duration:.55s;animation-timing-function:ease-out;animation-delay:3.95s}
+
+  #sub  {animation-name:typein;animation-duration:1.15s;animation-timing-function:steps(17,end);animation-delay:4.45s}
+  #cursor{animation-name:typecur,blink;animation-duration:1.15s,.5s;animation-timing-function:steps(17,end),steps(1,end);animation-delay:4.45s,5.6s;animation-iteration-count:1,infinite;animation-fill-mode:forwards,none}
+  #scan,#vignette{display:none}
+  .crt #scan,.crt #vignette{display:block}
+  #scan  {animation-name:flicker;animation-duration:.35s;animation-timing-function:steps(2,end);animation-delay:5.6s}
+  #vignette{animation-name:fadein;animation-duration:1.2s;animation-timing-function:ease-out;animation-delay:0s}
+
+  @keyframes fadein{from{opacity:0}to{opacity:1}}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  @keyframes drawhot{0%{stroke-dashoffset:1200;stroke:#ffffff;opacity:1}
+                     45%{stroke-dashoffset:0;stroke:#fff1c4;opacity:1}
+                     65%{stroke:#ffb45c;opacity:.7}
+                     100%{stroke-dashoffset:0;stroke:#ff2d7e;opacity:0}}
+  @keyframes glowup{from{opacity:0;transform:scale(.4)}to{opacity:.07;transform:scale(1)}}
+  @keyframes flyin{0%{transform:translateX(-1300px);filter:blur(0);opacity:0}
+                   10%{opacity:1;filter:blur(3px)}
+                   70%{filter:blur(2px)}
+                   100%{transform:translateX(0);filter:blur(0);opacity:var(--op)}}
+  @keyframes streak{0%{opacity:0;transform:translateX(-500px)}30%{opacity:1}100%{opacity:0;transform:translateX(120px)}}
+  @keyframes snap{0%{opacity:0;transform:translateX(-900px) scaleX(2.4)}60%{opacity:1;transform:translateX(14px) scaleX(.94)}100%{opacity:1;transform:none}}
+  @keyframes flare{0%{opacity:0;transform:scale(1.35)}18%{opacity:1;transform:scale(1.04)}100%{opacity:0;transform:scale(1)}}
+  @keyframes sparkle{0%{opacity:1;transform:scale(0) rotate(0deg)}
+                     18%{transform:scale(1.15) rotate(40deg)}
+                     35%{transform:scale(1) rotate(78deg)}
+                     70%{transform:scale(.85) rotate(155deg)}
+                     100%{opacity:1;transform:scale(0) rotate(220deg)}}
+  @keyframes vu{from{transform:scaleY(0);opacity:0}to{transform:scaleY(1);opacity:1}}
+  @keyframes slam{0%{opacity:0;transform:scale(3.2) translateY(-30px)}55%{opacity:1;transform:scale(.92)}100%{opacity:1;transform:scale(1)}}
+  @keyframes split{0%{opacity:0;transform:translateX(var(--dx))}12%{opacity:.9}100%{opacity:.75;transform:translateX(var(--dx0))}}
+  @keyframes wipe{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  @keyframes typein{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+  @keyframes typecur{from{opacity:1;transform:translateX(0)}to{opacity:1;transform:translateX(289px)}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+  @keyframes flicker{0%{opacity:.18}50%{opacity:.55}100%{opacity:.22}}
+
+  /* ---------- chrome ---------- */
+  #ui{position:fixed;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.72);color:var(--cream);
+      font-family:'SF Mono',Menlo,Consolas,monospace;letter-spacing:.18em;text-align:center;transition:opacity .3s}
+  #ui.hidden{opacity:0;pointer-events:none}
+  #ui button{background:none;border:2px solid var(--amber);color:var(--amber);font:inherit;letter-spacing:.3em;padding:14px 34px;cursor:pointer;margin:10px}
+  #ui button:hover{background:var(--amber);color:#150c26}
+  #ui .row{display:flex;gap:8px;justify-content:center;margin-top:18px;flex-wrap:wrap;max-width:640px}
+  #ui .row label{font-size:12px;opacity:.85;cursor:pointer;border:1px solid #6d5f92;padding:8px 14px}
+  #ui .row input{display:none}
+  #ui .row input:checked+span{color:var(--amber)}
+  #ui .row label:has(input:checked){border-color:var(--amber)}
+  #replay{position:fixed;right:18px;bottom:14px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;letter-spacing:.25em;
+      color:#6d5f92;background:none;border:1px solid #2a1d4a;padding:6px 12px;cursor:pointer;opacity:0;transition:opacity .4s}
+  .play #replay{opacity:1;transition-delay:6s}
+</style>
+</head>
+<body>
+<div id="stage">
+<svg id="art" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" role="img" aria-label="Conductress sign-on animation">
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="38%" r="72%">
+      <stop offset="0%" stop-color="#2a1140"/><stop offset="60%" stop-color="#150c26"/><stop offset="100%" stop-color="#07040d"/>
+    </radialGradient>
+    <linearGradient id="trailg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6d3bd8"/><stop offset="55%" stop-color="#ff2d7e"/><stop offset="100%" stop-color="#ffc94a"/>
+    </linearGradient>
+    <linearGradient id="csun" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="0" y2="96">
+      <stop offset="0%" stop-color="#ffe08a"/><stop offset="28%" stop-color="#ffc94a"/><stop offset="56%" stop-color="#ff7a3d"/>
+      <stop offset="82%" stop-color="#ff2d7e"/><stop offset="100%" stop-color="#6d3bd8"/>
+    </linearGradient>
+    <linearGradient id="gridg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ff7a3d" stop-opacity="0.5"/><stop offset="100%" stop-color="#6d3bd8" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="ruleg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6d3bd8" stop-opacity="0"/><stop offset="25%" stop-color="#ff2d7e"/>
+      <stop offset="75%" stop-color="#ffc94a"/><stop offset="100%" stop-color="#ffc94a" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="streakg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6d3bd8" stop-opacity="0"/><stop offset="60%" stop-color="#ff2d7e" stop-opacity="0.5"/><stop offset="100%" stop-color="#ffc94a" stop-opacity="0.9"/>
+    </linearGradient>
+    <radialGradient id="sparkglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/><stop offset="30%" stop-color="#fff3d0" stop-opacity="0.7"/><stop offset="65%" stop-color="#ffc94a" stop-opacity="0.25"/><stop offset="100%" stop-color="#ff7a3d" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="scanp" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="1.6" fill="#000"/></pattern>
+    <filter id="bloom" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="hotglow" x="-20%" y="-60%" width="140%" height="220%">
+      <feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="flareblur" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="sparkbloom" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="6" result="wide"/><feGaussianBlur stdDeviation="2" result="tight"/>
+      <feMerge><feMergeNode in="wide"/><feMergeNode in="wide"/><feMergeNode in="tight"/><feMergeNode in="tight"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="cpath"><path d="M89.8 27 L50 4 L10.2 27 L10.2 73 L50 96 L89.8 73 L89.8 61 L69.05 61 A22 22 0 1 1 69.05 39 L89.8 39 Z"/></clipPath>
+    <clipPath id="leadclip"><path d="M540 52 L590.2 81 L590.2 139 L540 168 L489.8 139 L489.8 81 Z"/></clipPath>
+    <!-- four-point diffraction sparkle: long thin spikes, a short cross, a soft core -->
+    <symbol id="spark" viewBox="-20 -20 40 40" overflow="visible">
+      <circle r="16" fill="url(#sparkglow)"/>
+      <path d="M0 -19 L1.3 -1.3 L19 0 L1.3 1.3 L0 19 L-1.3 1.3 L-19 0 L-1.3 -1.3 Z" fill="#ffffff"/>
+      <path d="M0 -8 L.7 -.7 L8 0 L.7 .7 L0 8 L-.7 .7 L-8 0 L-.7 -.7 Z" fill="#fff6ea" transform="rotate(45)"/>
+    </symbol>
+  </defs>
+
+  <rect width="900" height="340" fill="#000"/>
+  <g id="sky" class="anim"><rect width="900" height="340" fill="url(#sky)"/></g>
+  <circle id="glow" class="anim" cx="450" cy="110" r="150" fill="#ff7a3d"/>
+  <!-- distant stars, either side of the mark, fading in with the sky -->
+  <g id="stars" class="anim" fill="#fff6ea">
+      <circle cx="736" cy="110" r="1.0" opacity="0.61"/>
+      <circle cx="729" cy="162" r="1.6" opacity="0.71"/>
+      <circle cx="636" cy="25" r="1.4" opacity="0.62"/>
+      <circle cx="64" cy="157" r="0.8" opacity="0.70"/>
+      <circle cx="660" cy="153" r="0.9" opacity="0.46"/>
+      <circle cx="726" cy="97" r="1.0" opacity="0.75"/>
+      <circle cx="202" cy="27" r="1.2" opacity="0.81"/>
+      <circle cx="87" cy="137" r="1.6" opacity="0.43"/>
+      <circle cx="714" cy="151" r="1.0" opacity="0.56"/>
+      <circle cx="100" cy="43" r="0.8" opacity="0.58"/>
+      <circle cx="849" cy="113" r="1.1" opacity="0.77"/>
+      <circle cx="813" cy="41" r="1.1" opacity="0.61"/>
+      <circle cx="47" cy="34" r="1.6" opacity="0.50"/>
+      <circle cx="694" cy="162" r="0.9" opacity="0.79"/>
+      <circle cx="806" cy="16" r="0.8" opacity="0.38"/>
+      <circle cx="70" cy="34" r="1.5" opacity="0.55"/>
+      <circle cx="172" cy="161" r="1.5" opacity="0.36"/>
+      <circle cx="842" cy="49" r="1.4" opacity="0.47"/>
+      <circle cx="809" cy="123" r="1.3" opacity="0.84"/>
+      <circle cx="835" cy="150" r="1.3" opacity="0.53"/>
+      <circle cx="692" cy="71" r="1.3" opacity="0.54"/>
+      <circle cx="143" cy="64" r="1.1" opacity="0.72"/>
+      <circle cx="157" cy="51" r="1.0" opacity="0.36"/>
+      <circle cx="81" cy="29" r="1.7" opacity="0.68"/>
+      <circle cx="662" cy="128" r="0.8" opacity="0.72"/>
+      <circle cx="145" cy="164" r="1.0" opacity="0.81"/>
+      <circle cx="271" cy="91" r="1.6" opacity="0.38"/>
+      <circle cx="817" cy="94" r="1.6" opacity="0.76"/>
+      <circle cx="799" cy="171" r="1.7" opacity="0.50"/>
+      <circle cx="160" cy="22" r="1.6" opacity="0.66"/>
+      <circle cx="784" cy="66" r="1.0" opacity="0.37"/>
+      <circle cx="204" cy="106" r="1.1" opacity="0.83"/>
+      <circle cx="133" cy="102" r="1.1" opacity="0.78"/>
+      <circle cx="638" cy="141" r="1.5" opacity="0.67"/>
+  </g>
+  <!-- small distant ranges either side of the road, darker than the sky, sitting on the horizon -->
+  <g id="mountains" class="anim" fill="#07040c">
+    <path d="M0 196 L38 186 L74 191 L112 178 L146 189 L184 181 L221 190 L258 183 L292 191 L326 187 L360 194 L385 196 Z"/>
+    <path d="M515 196 L540 194 L568 189 L606 183 L640 190 L676 180 L712 189 L748 176 L786 188 L820 182 L858 190 L900 185 L900 196 Z"/>
+  </g>
+  <!-- the ground plane is black; the grid draws over it -->
+  <rect id="ground" x="0" y="196" width="900" height="144" fill="#000"/>
+
+  <g id="horizon" opacity="0.7">
+    <line id="hrule" class="anim" x1="60" y1="196" x2="840" y2="196" stroke="url(#ruleg)" stroke-width="1.6"/>
+    <g id="hlines" stroke="url(#gridg)" stroke-width="1.1" fill="none">
+      <line class="anim" x1="450" y1="196" x2="-140" y2="330"/><line class="anim" x1="450" y1="196" x2="60" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="248" y2="330"/><line class="anim" x1="450" y1="196" x2="380" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="520" y2="330"/><line class="anim" x1="450" y1="196" x2="652" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="840" y2="330"/><line class="anim" x1="450" y1="196" x2="1040" y2="330"/>
+    </g>
+  </g>
+  <!-- white-hot pass: same geometry, drawn over, colour-animated from white and cooling out -->
+  <g id="hotgrid" filter="url(#hotglow)">
+    <line id="hotrule" class="anim" x1="60" y1="196" x2="840" y2="196" stroke="#fff" stroke-width="2.2"/>
+    <g id="hot" stroke="#fff" stroke-width="1.8" fill="none">
+      <line class="anim" x1="450" y1="196" x2="-140" y2="330"/><line class="anim" x1="450" y1="196" x2="60" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="248" y2="330"/><line class="anim" x1="450" y1="196" x2="380" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="520" y2="330"/><line class="anim" x1="450" y1="196" x2="652" y2="330"/>
+      <line class="anim" x1="450" y1="196" x2="840" y2="330"/><line class="anim" x1="450" y1="196" x2="1040" y2="330"/>
+    </g>
+  </g>
+
+  <g id="streaks" class="anim" stroke="url(#streakg)" stroke-linecap="round">
+    <line x1="150" y1="72" x2="372" y2="72" stroke-width="2"/><line x1="118" y1="96" x2="356" y2="96" stroke-width="3.4"/>
+    <line x1="166" y1="120" x2="366" y2="120" stroke-width="1.6"/><line x1="104" y1="144" x2="350" y2="144" stroke-width="4.2"/>
+    <line x1="182" y1="164" x2="360" y2="164" stroke-width="1.4"/>
+  </g>
+
+  <g id="trail" fill="none" stroke="url(#trailg)" stroke-linejoin="round">
+    <path class="anim" style="--op:.17" d="M370 52 L420.2 81 L420.2 139 L370 168 L319.8 139 L319.8 81 Z" stroke-width="1.4"/>
+    <path class="anim" style="--op:.24" d="M387 52 L437.2 81 L437.2 139 L387 168 L336.8 139 L336.8 81 Z" stroke-width="1.6"/>
+    <path class="anim" style="--op:.32" d="M404 52 L454.2 81 L454.2 139 L404 168 L353.8 139 L353.8 81 Z" stroke-width="1.8"/>
+    <path class="anim" style="--op:.40" d="M421 52 L471.2 81 L471.2 139 L421 168 L370.8 139 L370.8 81 Z" stroke-width="2.0"/>
+    <path class="anim" style="--op:.48" d="M438 52 L488.2 81 L488.2 139 L438 168 L387.8 139 L387.8 81 Z" stroke-width="2.2"/>
+    <path class="anim" style="--op:.57" d="M455 52 L505.2 81 L505.2 139 L455 168 L404.8 139 L404.8 81 Z" stroke-width="2.4"/>
+    <path class="anim" style="--op:.66" d="M472 52 L522.2 81 L522.2 139 L472 168 L421.8 139 L421.8 81 Z" stroke-width="2.6"/>
+    <path class="anim" style="--op:.75" d="M489 52 L539.2 81 L539.2 139 L489 168 L438.8 139 L438.8 81 Z" stroke-width="2.8"/>
+    <path class="anim" style="--op:.84" d="M506 52 L556.2 81 L556.2 139 L506 168 L455.8 139 L455.8 81 Z" stroke-width="3.0"/>
+    <path class="anim" style="--op:.92" d="M523 52 L573.2 81 L573.2 139 L523 168 L472.8 139 L472.8 81 Z" stroke-width="3.2"/>
+  </g>
+
+  <g clip-path="url(#leadclip)"><rect width="900" height="340" fill="url(#sky)"/></g>
+  <g id="lead" class="anim" filter="url(#bloom)">
+    <!-- C-mark: symbol box 126px at (477,47) puts the hex at 100x116 centred on (540,110) -->
+    <svg x="477" y="47" width="126" height="126" viewBox="0 0 100 100" overflow="visible">
+      <g id="stripes" clip-path="url(#cpath)">
+        <rect class="anim" x="8" y="4"    width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="17.5" width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="31"   width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="44.5" width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="58"   width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="71.5" width="84" height="8.5" fill="url(#csun)"/>
+        <rect class="anim" x="8" y="85"   width="84" height="11"  fill="url(#csun)"/>
+      </g>
+    </svg>
+  </g>
+  <!-- the white version of the C that flares in over the real one and fades -->
+  <g id="flare" class="anim" filter="url(#flareblur)" opacity="0">
+    <svg x="477" y="47" width="126" height="126" viewBox="0 0 100 100" overflow="visible">
+      <g clip-path="url(#cpath)"><rect x="0" y="0" width="100" height="100" fill="#ffffff"/></g>
+    </svg>
+  </g>
+  <!-- sparkles anchored to the mark's corners: hex vertices + the two keyhole-mouth corners.
+       Ordered bottom -> top so the timed sequence climbs the C as the arpeggio rises. -->
+  <g id="sparks" filter="url(#sparkbloom)">
+    <g transform="translate(540 168)"><g class="sp anim"><use href="#spark" x="-22" y="-22" width="44" height="44"/></g></g>
+    <g transform="translate(489.8 139)"><g class="sp anim"><use href="#spark" x="-17" y="-17" width="34" height="34"/></g></g>
+    <g transform="translate(590.2 139)"><g class="sp anim"><use href="#spark" x="-19" y="-19" width="38" height="38"/></g></g>
+    <g transform="translate(590.2 124)"><g class="sp anim"><use href="#spark" x="-13" y="-13" width="26" height="26"/></g></g>
+    <g transform="translate(590.2 96)"><g class="sp anim"><use href="#spark" x="-14" y="-14" width="28" height="28"/></g></g>
+    <g transform="translate(489.8 81)"><g class="sp anim"><use href="#spark" x="-18" y="-18" width="36" height="36"/></g></g>
+    <g transform="translate(590.2 81)"><g class="sp anim"><use href="#spark" x="-16" y="-16" width="32" height="32"/></g></g>
+    <g transform="translate(540 52)"><g class="sp anim"><use href="#spark" x="-26" y="-26" width="52" height="52"/></g></g>
+  </g>
+
+  <g id="word" font-weight="800" font-size="54" text-anchor="middle">
+    <g class="r anim" style="--dx:-14px;--dx0:-2px" opacity="0"><text x="200" y="252" fill="#ff2d7e">C</text><text x="250" y="252" fill="#ff2d7e">O</text><text x="300" y="252" fill="#ff2d7e">N</text><text x="350" y="252" fill="#ff2d7e">D</text><text x="400" y="252" fill="#ff2d7e">U</text><text x="450" y="252" fill="#ff2d7e">C</text><text x="500" y="252" fill="#ff2d7e">T</text><text x="550" y="252" fill="#ff2d7e">R</text><text x="600" y="252" fill="#ff2d7e">E</text><text x="650" y="252" fill="#ff2d7e">S</text><text x="700" y="252" fill="#ff2d7e">S</text></g>
+    <g class="b anim" style="--dx:14px;--dx0:2px" opacity="0"><text x="200" y="252" fill="#ffc94a">C</text><text x="250" y="252" fill="#ffc94a">O</text><text x="300" y="252" fill="#ffc94a">N</text><text x="350" y="252" fill="#ffc94a">D</text><text x="400" y="252" fill="#ffc94a">U</text><text x="450" y="252" fill="#ffc94a">C</text><text x="500" y="252" fill="#ffc94a">T</text><text x="550" y="252" fill="#ffc94a">R</text><text x="600" y="252" fill="#ffc94a">E</text><text x="650" y="252" fill="#ffc94a">S</text><text x="700" y="252" fill="#ffc94a">S</text></g>
+    <g class="g anim"><text x="200" y="252" fill="#fff6ea">C</text></g>
+    <g class="g anim"><text x="250" y="252" fill="#fff6ea">O</text></g>
+    <g class="g anim"><text x="300" y="252" fill="#fff6ea">N</text></g>
+    <g class="g anim"><text x="350" y="252" fill="#fff6ea">D</text></g>
+    <g class="g anim"><text x="400" y="252" fill="#fff6ea">U</text></g>
+    <g class="g anim"><text x="450" y="252" fill="#fff6ea">C</text></g>
+    <g class="g anim"><text x="500" y="252" fill="#fff6ea">T</text></g>
+    <g class="g anim"><text x="550" y="252" fill="#fff6ea">R</text></g>
+    <g class="g anim"><text x="600" y="252" fill="#fff6ea">E</text></g>
+    <g class="g anim"><text x="650" y="252" fill="#fff6ea">S</text></g>
+    <g class="g anim"><text x="700" y="252" fill="#fff6ea">S</text></g>
+  </g>
+
+  <g id="subtitle">
+    <text id="sub" class="anim" x="450" y="312" text-anchor="middle" font-family="'SF Mono',Menlo,Consolas,monospace" font-size="15" letter-spacing="8" fill="#c9a86e">ONLY DATA IS REAL</text>
+    <rect id="cursor" class="anim" x="311" y="299" width="10" height="16" fill="#ffc94a" opacity="0"/>
+  </g>
+
+  <rect id="scan" class="anim" width="900" height="340" fill="url(#scanp)" opacity="0.18"/>
+  <rect id="vignette" class="anim" width="900" height="340" fill="none" stroke="#000" stroke-width="40" opacity="0.5"/>
+</svg>
+</div>
+
+<div id="ui">
+  <div>
+    <div style="font-size:11px;opacity:.7;margin-bottom:14px">CONDUCTRESS · SIGN-ON</div>
+    <button id="start">PRESS START</button>
+    <div class="row">
+      <label><input type="radio" name="score" value="vhs"><span>VHS FANFARE</span></label>
+      <label><input type="radio" name="score" value="chip"><span>CHIPTUNE</span></label>
+      <label><input type="radio" name="score" value="orch"><span>ORCHESTRA</span></label>
+      <label><input type="radio" name="score" value="cosmos" checked><span>COSMOS</span></label>
+      <label><input type="radio" name="score" value="mute"><span>SILENT</span></label>
+    </div>
+    <div class="row"><label><input type="checkbox" id="crt"><span>CRT OVERLAY</span></label></div>
+  </div>
+</div>
+<button id="replay">REPLAY</button>
+
+<script>
+/* ============================ AUDIO CORE ============================ */
+const N = n => 440 * Math.pow(2, (n - 69) / 12);          // MIDI note -> Hz
+let ctx, master, verb;                                     // verb = reverb send bus (may be null)
+
+function impulse(seconds, decay) {                         // synthetic plate/hall IR
+  const len = Math.ceil(ctx.sampleRate * seconds), buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) { const d = buf.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay); }
+  return buf;
+}
+
+function buildMaster(score) {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain(); master.gain.value = 0.55;
+  verb = null;
+  let out = ctx.destination;
+  if (score === 'vhs') {
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3400; lp.Q.value = 0.7;
+    const hs = ctx.createBiquadFilter(); hs.type = 'highshelf'; hs.frequency.value = 1800; hs.gain.value = -5;
+    const sat = ctx.createWaveShaper(); const curve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; curve[i] = Math.tanh(1.8 * x) / Math.tanh(1.8); }
+    sat.curve = curve;
+    master.connect(lp); lp.connect(hs); hs.connect(sat); sat.connect(out);
+  } else if (score === 'orch' || score === 'cosmos') {
+    // reverb send: master -> convolver -> out, alongside the dry path; gentle limiter on the sum
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.knee.value = 18; comp.ratio.value = 4; comp.attack.value = .005; comp.release.value = .25;
+    const cv = ctx.createConvolver(); cv.buffer = impulse(score === 'cosmos' ? 5.5 : 2.6, score === 'cosmos' ? 2.2 : 3.2);
+    const wet = ctx.createGain(); wet.gain.value = score === 'cosmos' ? .55 : .32;
+    master.connect(comp); master.connect(cv); cv.connect(wet); wet.connect(comp); comp.connect(out);
+    verb = cv;
+  } else {
+    master.connect(out);
+  }
+}
+
+// tape wow (slow) + flutter (fast) as a shared detune bus, in cents
+function tapeLfo(t0) {
+  const sum = ctx.createGain(); sum.gain.value = 1;
+  const mk = (hz, cents) => { const o = ctx.createOscillator(); o.frequency.value = hz; const g = ctx.createGain(); g.gain.value = cents; o.connect(g); g.connect(sum); o.start(t0); o.stop(t0 + 9); };
+  mk(0.45, 7); mk(6.5, 1.6);
+  return sum;
+}
+
+// noise: color 'white' | 'pink' (Kellet 3-pole approximation) | 'brown'
+function noise(t0, dur, {gain = .1, lp = 4000, hp = 200, attack = .01, release = .1, color = 'white'} = {}) {
+  const len = Math.ceil(ctx.sampleRate * dur), buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, br = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    if (color === 'pink') { b0 = .99765 * b0 + w * .0990460; b1 = .96300 * b1 + w * .2965164; b2 = .57000 * b2 + w * 1.0526913; d[i] = (b0 + b1 + b2 + w * .1848) * .18; }
+    else if (color === 'brown') { br = (br + .02 * w) / 1.02; d[i] = br * 3.5; }
+    else d[i] = w;
+  }
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const f1 = ctx.createBiquadFilter(); f1.type = 'lowpass'; f1.frequency.value = lp;
+  const f2 = ctx.createBiquadFilter(); f2.type = 'highpass'; f2.frequency.value = hp;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(gain, t0 + attack);
+  g.gain.setValueAtTime(gain, t0 + dur - release); g.gain.linearRampToValueAtTime(0, t0 + dur);
+  src.connect(f1); f1.connect(f2); f2.connect(g); g.connect(master); src.start(t0); src.stop(t0 + dur);
+  return {src, f1, g};
+}
+
+/* ============================ INSTRUMENTS ============================ */
+// brass: saw + detuned saw + triangle sub, lowpass with envelope
+function brass(t0, midi, dur, vel = .5, lfo = null) {
+  const out = ctx.createGain(); out.gain.setValueAtTime(0, t0);
+  out.gain.linearRampToValueAtTime(vel, t0 + .04); out.gain.setValueAtTime(vel, t0 + dur - .12);
+  out.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+  const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = 1.2;
+  f.frequency.setValueAtTime(500, t0); f.frequency.linearRampToValueAtTime(2600, t0 + .09); f.frequency.exponentialRampToValueAtTime(1200, t0 + dur);
+  [['sawtooth', 0, .5], ['sawtooth', 9, .4], ['triangle', -1200, .55]].forEach(([type, det, g]) => {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.value = N(midi); o.detune.value = det;
+    if (lfo) lfo.connect(o.detune);
+    const og = ctx.createGain(); og.gain.value = g; o.connect(og); og.connect(f); o.start(t0); o.stop(t0 + dur + .05);
+  });
+  f.connect(out); out.connect(master);
+}
+
+// strings: three detuned saws per note, slow attack, warm lowpass, optional tremolo swell
+function strings(t0, midi, dur, vel = .18, {attack = .35, tremolo = 0, swell = false} = {}) {
+  const out = ctx.createGain();
+  if (swell) { out.gain.setValueAtTime(.001, t0); out.gain.exponentialRampToValueAtTime(vel, t0 + dur * .85); out.gain.linearRampToValueAtTime(0, t0 + dur); }
+  else { out.gain.setValueAtTime(0, t0); out.gain.linearRampToValueAtTime(vel, t0 + attack); out.gain.setValueAtTime(vel, t0 + Math.max(attack, dur - .35)); out.gain.linearRampToValueAtTime(0, t0 + dur); }
+  const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 4200; f.Q.value = .5;
+  [-7, 0, 8].forEach(det => {
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = N(midi); o.detune.value = det;
+    const og = ctx.createGain(); og.gain.value = .33;
+    if (tremolo) { const l = ctx.createOscillator(); l.frequency.value = tremolo; const lg = ctx.createGain(); lg.gain.value = .3; l.connect(lg); lg.connect(og.gain); l.start(t0); l.stop(t0 + dur); }
+    o.connect(og); og.connect(f); o.start(t0); o.stop(t0 + dur + .05);
+  });
+  f.connect(out); out.connect(master);
+}
+
+// timpani: pitched sine drop + skin noise
+function timpani(t0, midi = 36, vel = .7) {
+  const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(N(midi) * 1.6, t0); o.frequency.exponentialRampToValueAtTime(N(midi), t0 + .06);
+  const g = ctx.createGain(); g.gain.setValueAtTime(vel, t0); g.gain.exponentialRampToValueAtTime(.001, t0 + 1.1);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + 1.2);
+  noise(t0, .09, {gain: vel * .35, lp: 900, hp: 80, attack: .002, release: .07});
+}
+
+// harp / pluck: triangle with fast decay
+function pluck(t0, midi, vel = .25, dur = .9) {
+  const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = N(midi);
+  const g = ctx.createGain(); g.gain.setValueAtTime(vel, t0); g.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + dur + .02);
+}
+
+// FM glass bell: sine carrier, 3.5x modulator with decaying index. The "tinkle".
+function bell(t0, midi, vel = .2, dur = 1.4, ratio = 3.5) {
+  const c = ctx.createOscillator(); c.type = 'sine'; c.frequency.value = N(midi);
+  const m = ctx.createOscillator(); m.type = 'sine'; m.frequency.value = N(midi) * ratio;
+  const mg = ctx.createGain(); mg.gain.setValueAtTime(N(midi) * 2.2, t0); mg.gain.exponentialRampToValueAtTime(1, t0 + dur * .7);
+  m.connect(mg); mg.connect(c.frequency);
+  const g = ctx.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vel, t0 + .004); g.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+  c.connect(g); g.connect(master); c.start(t0); m.start(t0); c.stop(t0 + dur + .02); m.stop(t0 + dur + .02);
+}
+
+// pad: sine + triangle, chorus-detuned x3, very slow attack, gentle filter sweep
+function pad(t0, midi, dur, vel = .12, {attack = .9, release = 1.6} = {}) {
+  const out = ctx.createGain(); out.gain.setValueAtTime(0, t0); out.gain.linearRampToValueAtTime(vel, t0 + attack);
+  out.gain.setValueAtTime(vel, t0 + Math.max(attack, dur - release)); out.gain.linearRampToValueAtTime(0, t0 + dur);
+  const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = .8;
+  f.frequency.setValueAtTime(600, t0); f.frequency.linearRampToValueAtTime(2400, t0 + dur * .6); f.frequency.linearRampToValueAtTime(900, t0 + dur);
+  [['sine', -6], ['triangle', 0], ['sine', 7]].forEach(([type, det]) => {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.value = N(midi); o.detune.value = det;
+    const og = ctx.createGain(); og.gain.value = .4; o.connect(og); og.connect(f); o.start(t0); o.stop(t0 + dur + .05);
+  });
+  f.connect(out); out.connect(master);
+}
+
+// chiptune voice: pulse, instant envelope, optional 30Hz chord cycling
+function chip(t0, midis, dur, vel = .22, duty = .5) {
+  const notes = Array.isArray(midis) ? midis : [midis];
+  const o = ctx.createOscillator();
+  const real = new Float32Array(32), imag = new Float32Array(32);
+  for (let k = 1; k < 32; k++) imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
+  o.setPeriodicWave(ctx.createPeriodicWave(real, imag));
+  const g = ctx.createGain(); g.gain.setValueAtTime(vel, t0); g.gain.setValueAtTime(vel * .7, t0 + dur * .6); g.gain.setValueAtTime(0, t0 + dur);
+  const step = 1 / 30;
+  for (let t = 0, i = 0; t < dur; t += step, i++) o.frequency.setValueAtTime(N(notes[i % notes.length]), t0 + t);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + dur + .01);
+}
+function chipNoise(t0, dur, vel = .3) { noise(t0, dur, {gain: vel, lp: 9000, hp: 800, attack: .002, release: dur * .8}); }
+
+// the sparkle burst, 1.52..2.4s: a scatter of bright pentatonic bells, high and short
+const SPARK_T = [1.52, 1.71, 1.90, 2.09, 2.28, 2.47, 2.66, 2.85];   // = sparkle delays, 0.19s grid, one per corner
+const ASCEND  = [84, 88, 91, 96, 100, 103, 108, 112];                                        // C pentatonic, rising
+// notes: an array walked in order, or a function(i) -> midi. `every` thins the cascade (2 = every other sparkle).
+function tinkle(t0, voice = bell, vel = .16, notes = ASCEND, every = 1) {
+  SPARK_T.forEach((t, i) => {
+    if (i % every) return;
+    const m = typeof notes === 'function' ? notes(i) : notes[Math.floor(i / every) % notes.length];
+    if (m != null) voice(t0 + t, m, vel, .9);
+  });
+}
+// cosmos glint: pure sine, soft attack, long tail, faint octave -- a harmonic lighting up, not a bell
+function glint(t0, midi, vel = .08, dur = 2.6) {
+  [[0, 1], [12, .35]].forEach(([off, g]) => {
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = N(midi + off);
+    const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = N(midi + off); o2.detune.value = 6;
+    const e = ctx.createGain(); e.gain.setValueAtTime(0, t0); e.gain.linearRampToValueAtTime(vel * g, t0 + .14); e.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+    o.connect(e); o2.connect(e); e.connect(master); o.start(t0); o2.start(t0); o.stop(t0 + dur + .02); o2.stop(t0 + dur + .02);
+  });
+}
+
+/* ============================ SCORES ============================ */
+function scoreVHS(t0) {
+  const lfo = tapeLfo(t0);
+  noise(t0, 7.2, {gain: .05, lp: 2400, hp: 120, attack: .5, release: 1.4, color: 'pink'});   // tape bed, pink
+  const w = noise(t0 + .75, .9, {gain: .18, lp: 600, hp: 120, attack: .3, release: .25, color: 'pink'});
+  w.f1.frequency.setValueAtTime(400, t0 + .75); w.f1.frequency.exponentialRampToValueAtTime(3200, t0 + 1.55);
+  tinkle(t0, (t, m, v, d) => bell(t, m, v, 1.1, 2.0), .12, ASCEND, 1);          // 8 clean rising pings, ratio 2.0 = purer tone
+  [60, 64, 67, 72, 76, 79, 84].forEach((m, i) => brass(t0 + 1.80 + i * .13, m, .12, .18, lfo));
+  const F = (t, chord, d, v = .34) => chord.forEach(m => brass(t0 + t, m, d, v / Math.sqrt(chord.length), lfo));
+  F(2.70, [48, 55, 60, 64], .22); F(2.94, [48, 55, 60, 64], .22);
+  F(3.18, [53, 57, 60, 65], .34); F(3.54, [55, 59, 62, 67], .34);
+  F(3.90, [48, 55, 60, 64, 72], 1.9, .42);
+  for (let i = 0; i < 17; i++) noise(t0 + 4.45 + i * (1.15 / 17), .03, {gain: .09, lp: 3000, hp: 1200, attack: .002, release: .02});
+  noise(t0 + 5.6, .12, {gain: .10, lp: 2500, hp: 600, attack: .002, release: .1, color: 'pink'});
+}
+
+function scoreChip(t0) {
+  chipNoise(t0 + .8, .7, .18);
+  for (let i = 0; i < 10; i++) chip(t0 + .8 + i * .06, 48 + i * 2, .06, .12, .25);
+  tinkle(t0, (t, m, v, d) => chip(t, m, .08, v * 1.1, .125), .16, i => 84 + [0, 4, 7, 12][i % 4] + Math.floor(i / 4) * 12);
+  [60, 64, 67, 72, 76, 79, 84].forEach((m, i) => chip(t0 + 1.80 + i * .13, m, .09, .2, .5));
+  const C = (t, arr, d, v = .26) => chip(t0 + t, arr, d, v, .5);
+  C(2.70, [60, 64, 67], .2); C(2.94, [60, 64, 67], .2);
+  C(3.18, [65, 69, 72], .32); C(3.54, [67, 71, 74], .32);
+  C(3.90, [72, 76, 79], 1.6, .3); chip(t0 + 3.90, 48, 1.6, .18, .25);
+  for (let i = 0; i < 17; i++) chip(t0 + 4.45 + i * (1.15 / 17), 96, .02, .06, .125);
+  chipNoise(t0 + 5.6, .08, .2);
+}
+
+function scoreOrch(t0) {
+  // 0.3-1.55 the flight of birds: string tremolo swell on an open C, plus fluttering arpeggios
+  // climbing through the C major scale in three overlapping waves
+  [36, 43, 48, 55].forEach(m => strings(t0 + .3, m, 1.35, .16, {tremolo: 11, swell: true}));
+  const scale = [60, 62, 64, 65, 67, 69, 71, 72, 74, 76, 77, 79, 81, 83, 84, 86, 88];
+  for (let w = 0; w < 3; w++) for (let i = 0; i < 12; i++) pluck(t0 + .55 + w * .22 + i * .055, scale[(i + w * 3) % scale.length] + (w === 2 ? 12 : 0), .11, .35);
+  noise(t0 + .9, .7, {gain: .09, lp: 9000, hp: 3000, attack: .5, release: .2});            // cymbal swell into the snap
+  // 1.52-2.4 sparkles
+  tinkle(t0, bell, .17, i => ASCEND[i % ASCEND.length] + (i >= 8 ? 12 : 0));
+  timpani(t0 + 1.55, 36, .35);                                                              // soft, felt under the sparkles
+  // 1.8 VU fill: harp glissando doubled by high strings sneaking in
+  [60, 64, 67, 72, 76, 79, 84].forEach((m, i) => { pluck(t0 + 1.80 + i * .13, m, .22, .8); pluck(t0 + 1.80 + i * .13 + .02, m + 12, .1, .5); });
+  strings(t0 + 1.9, 67, 1.0, .07, {attack: .6}); strings(t0 + 1.9, 72, 1.0, .07, {attack: .6});
+  // 2.7 fanfare: brass doubled by strings an octave up, timpani on each stab
+  const F = (t, chord, d, v) => { chord.forEach(m => { brass(t0 + t, m, d, v / Math.sqrt(chord.length)); strings(t0 + t, m + 12, d + .15, v * .35, {attack: .06}); }); timpani(t0 + t, chord[0], .5); };
+  F(2.70, [48, 55, 60, 64], .22, .36); F(2.94, [48, 55, 60, 64], .22, .36);
+  F(3.18, [53, 57, 60, 65], .34, .38); F(3.54, [55, 59, 62, 67], .34, .40);
+  // 3.9 the arrival: full C major across four octaves, cymbal, timpani roll, bells on top
+  noise(t0 + 3.55, .5, {gain: .12, lp: 10000, hp: 2500, attack: .4, release: .1});
+  for (let i = 0; i < 6; i++) timpani(t0 + 3.62 + i * .05, 36, .25 + i * .06);
+  [36, 43, 48, 55, 60, 64, 67, 72, 76, 79, 84].forEach((m, i) => { if (m < 60) strings(t0 + 3.90, m, 2.6, .14, {attack: .05}); else { brass(t0 + 3.90, m, 2.0, .16); strings(t0 + 3.90, m, 2.6, .10, {attack: .08}); } });
+  timpani(t0 + 3.90, 36, .9); bell(t0 + 3.90, 96, .2, 2.4); bell(t0 + 3.92, 91, .14, 2.2);
+  // 4.45 typewriter as celesta ticks; final high shimmer under the hold
+  for (let i = 0; i < 17; i++) bell(t0 + 4.45 + i * (1.15 / 17), 103 + (i % 2) * 4, .05, .25, 5);
+  [72, 79, 84].forEach(m => strings(t0 + 4.4, m, 2.4, .05, {attack: 1.0}));
+}
+
+function scoreCosmos(t0) {
+  // the void: sub drone and a slow pad on C-G, breathing
+  pad(t0, 36, 7.4, .16, {attack: 1.2, release: 2.0}); pad(t0 + .1, 43, 7.3, .08, {attack: 1.6, release: 2.0});
+  noise(t0, 7.4, {gain: .035, lp: 900, hp: 60, attack: 1.5, release: 1.5, color: 'brown'});   // deep-space wind
+  // 0.8 fly-in: an ascending shimmer of bells, accelerating, like light bending in
+  for (let i = 0; i < 14; i++) bell(t0 + .8 + Math.pow(i / 14, 1.6) * .75, 72 + [0, 2, 4, 7, 9][i % 5] + Math.floor(i / 5) * 12, .06 + i * .006, 1.8, 2.0);
+  // 1.52 sparkles: glass bells, longer, with fifths underneath
+  tinkle(t0, (t, m, v) => glint(t, m, v, 2.8), .07, [79, 81, 83, 86, 88, 91, 93, 95, 98, 100, 102, 105]);
+  // 1.8 VU: soft pings on a Lydian scale
+  [60, 64, 66, 67, 71, 74, 78].forEach((m, i) => bell(t0 + 1.80 + i * .13, m + 12, .09, 1.6, 2.0));
+  // 2.7 letters: pad chords move underneath -- Cmaj9 -> Fmaj7#11 -> Gadd9 -> C Lydian, each blooming
+  const P = (t, chord, d, v = .07) => chord.forEach((m, i) => pad(t0 + t, m, d, v * (i === 0 ? 1.3 : 1), {attack: .25, release: .5}));
+  P(2.70, [48, 55, 62, 64, 71], 1.0); P(3.18, [41, 53, 60, 64, 71], 1.0); P(3.54, [43, 55, 59, 62, 69], .9);
+  // 3.9 the wide chord: C Lydian, four octaves of pad, one bright bell far above
+  [36, 48, 55, 62, 66, 67, 71, 74, 79, 86].forEach((m, i) => pad(t0 + 3.90, m, 3.4, i < 2 ? .13 : .06, {attack: .35 + i * .04, release: 1.8}));
+  bell(t0 + 3.95, 98, .16, 3.4, 2.0); bell(t0 + 4.35, 103, .09, 3.0, 3.5);
+  // 4.45 typing: barely-there high pings
+  for (let i = 0; i < 17; i++) bell(t0 + 4.45 + i * (1.15 / 17), 108 - (i % 3) * 5, .025, .5, 7);
+  // a last, very slow descending bell trail into the hold
+  [96, 91, 86, 79].forEach((m, i) => bell(t0 + 5.3 + i * .45, m, .07 - i * .012, 2.6, 2.0));
+}
+
+const SCORES = {vhs: scoreVHS, chip: scoreChip, orch: scoreOrch, cosmos: scoreCosmos};
+
+/* ============================ CONTROL ============================ */
+const stage = document.getElementById('stage'), ui = document.getElementById('ui');
+function play(forced) {
+  const score = forced || document.querySelector('input[name=score]:checked').value;
+  stage.classList.remove('play'); void stage.offsetWidth;   // restart all keyframes
+  if (score !== 'mute') {
+    if (!ctx || ctx.state === 'closed') buildMaster(score);
+    const t0 = ctx.currentTime + 0.08;
+    SCORES[score](t0);
+    setTimeout(() => stage.classList.add('play'), 80);
+  } else {
+    stage.classList.add('play');
+  }
+}
+document.getElementById('crt').onchange = e => stage.classList.toggle('crt', e.target.checked);
+document.getElementById('start').onclick = () => { ui.classList.add('hidden'); play(); };
+document.getElementById('replay').onclick = () => { if (ctx) { ctx.close(); ctx = null; } play(); };
+
+// DEBUG: ?t=SECONDS freezes every animation at that time; ?run=SCORE schedules a score headless.
+const q = new URLSearchParams(location.search);
+if (q.get('crt') !== null) stage.classList.add('crt');
+if (q.get('run')) { ui.classList.add('hidden'); try { play(q.get('run')); console.log('scheduled', q.get('run')); } catch (e) { console.error('SCORE ERROR', q.get('run'), e); } }
+if (q.get('t') !== null) {
+  ui.classList.add('hidden'); stage.classList.add('play');
+  requestAnimationFrame(() => document.getAnimations().forEach(a => { a.pause(); a.currentTime = parseFloat(q.get('t')) * 1000; }));
+}
+</script>
+</body>
+</html>
