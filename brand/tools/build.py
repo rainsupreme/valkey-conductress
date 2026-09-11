@@ -469,7 +469,7 @@ def wordmark_group(name: str, p: str, word_d: str) -> str:
   </g>"""
 
 
-def subtitle_group(name: str, p: str, sub_d: str) -> str:
+def subtitle_group(name: str, p: str, sub_d: str, rules: bool = True) -> str:
     pal = PALETTES[name]
     if pal["kind"] == "mono":
         c = pal["color"]
@@ -479,9 +479,11 @@ def subtitle_group(name: str, p: str, sub_d: str) -> str:
     <line x1="290" y1="284" x2="610" y2="284" stroke="{c}" stroke-width="1.1"/>
     <path d="{sub_d}" fill="{c}"/>
   </g>"""
-    return f"""  <g id="subtitle">
+    # the hero omits the rules: over the grid horizon they cover the scene
+    rule_lines = "" if not rules else f"""
     <line x1="170" y1="276" x2="730" y2="276" stroke="url(#{p}-rule)" stroke-width="2.2"/>
-    <line x1="230" y1="284" x2="670" y2="284" stroke="url(#{p}-rule)" stroke-width="1.1"/>
+    <line x1="230" y1="284" x2="670" y2="284" stroke="url(#{p}-rule)" stroke-width="1.1"/>"""
+    return f"""  <g id="subtitle">{rule_lines}
     <path d="{sub_d}" fill="{pal['subtitle']}"/>
   </g>"""
 
@@ -549,7 +551,7 @@ def lockup_svg(name: str, opaque: bool, word_d: str, sub_d: str, trail: bool = T
 
 {wordmark_group(name, p, word_d)}
 
-{subtitle_group(name, p, sub_d)}
+{subtitle_group(name, p, sub_d, rules=not opaque)}
 </svg>
 """
 

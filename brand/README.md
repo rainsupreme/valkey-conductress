@@ -187,8 +187,11 @@ outlines; if you must set it live, use Helvetica Neue Bold, Helvetica Bold, or
 Arial Bold with the same tracking.
 
 The subtitle is ONLY DATA IS REAL in DejaVu Sans Mono at 15 units with 8 units
-of letter-spacing, gold, under a two-line rule that fades out at both ends. Any
-monospace face is acceptable when set live.
+of letter-spacing, gold. In the transparent lockups it sits under a two-line
+rule that fades out at both ends (or starts at the text edge, in the
+horizontal lockup). The hero and the sign-on carry no rule: over the grid
+horizon the lines covered the scene, and the subtitle holds its place without
+them. Any monospace face is acceptable when set live.
 
 The lockup does not use the mark in place of the letter C in the wordmark.
 That was tried; the wordmark's C stays a letter.
@@ -215,8 +218,8 @@ browser and PRESS START (browsers require a click before audio).
 The beats: the grid horizon draws itself from the vanishing point; the trail
 screams in from the left and the C snaps into place with a flare; the stripes
 fill bottom-up like a VU meter; CONDUCTRESS slams in letter by letter with the
-chromatic split converging to its resting fringe; the rule wipes and the
-subtitle types itself. The resting frame is the hero lockup.
+chromatic split converging to its resting fringe; the subtitle types itself.
+The resting frame is the hero.
 
 The score is synthesised live in WebAudio. The default is **COSMOS**: a sub
 drone, slow chorused pads on Lydian voicings, glass bells, long reverb, no

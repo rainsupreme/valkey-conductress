@@ -16,7 +16,8 @@
              bells replace v1's white flash + drum kick.
        1.80  the C's seven stripes fill bottom-up like a VU meter, one tick each
        2.70  CONDUCTRESS slams in letter by letter (scale 3 -> 1, chromatic split -> converge)
-       4.10  double rule wipes outward from centre; subtitle types with a block cursor
+       4.10  subtitle types with a block cursor (the double rule was dropped: over the grid it
+             covered the scene; the static hero matches)
        5.60  one scanline flicker (CRT overlay only), then hold.  REPLAY button.
 
      AUDIO: synthesised live in WebAudio, five scores selectable before START (COSMOS default).
@@ -98,8 +99,6 @@
   #word .g:nth-child(13){animation-delay:3.90s}
   #word .r,#word .b{animation-name:split;animation-duration:.55s;animation-timing-function:ease-out;animation-delay:3.95s}
 
-  #rule1{transform-origin:450px 276px;animation-name:wipe;animation-duration:.5s;animation-timing-function:cubic-bezier(.2,.9,.2,1);animation-delay:4.10s}
-  #rule2{transform-origin:450px 284px;animation-name:wipe;animation-duration:.5s;animation-timing-function:cubic-bezier(.2,.9,.2,1);animation-delay:4.22s}
   #sub  {animation-name:typein;animation-duration:1.15s;animation-timing-function:steps(17,end);animation-delay:4.45s}
   #cursor{animation-name:typecur,blink;animation-duration:1.15s,.5s;animation-timing-function:steps(17,end),steps(1,end);animation-delay:4.45s,5.6s;animation-iteration-count:1,infinite;animation-fill-mode:forwards,none}
   #scan,#vignette{display:none}
@@ -340,8 +339,6 @@
   </g>
 
   <g id="subtitle">
-    <line id="rule1" class="anim" x1="170" y1="276" x2="730" y2="276" stroke="url(#ruleg)" stroke-width="2.2"/>
-    <line id="rule2" class="anim" x1="230" y1="284" x2="670" y2="284" stroke="url(#ruleg)" stroke-width="1.1"/>
     <text id="sub" class="anim" x="450" y="312" text-anchor="middle" font-family="'SF Mono',Menlo,Consolas,monospace" font-size="15" letter-spacing="8" fill="#c9a86e">ONLY DATA IS REAL</text>
     <rect id="cursor" class="anim" x="311" y="299" width="10" height="16" fill="#ffc94a" opacity="0"/>
   </g>
