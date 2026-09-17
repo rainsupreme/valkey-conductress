@@ -7,7 +7,7 @@ exactly like a server ceiling. Sampling cumulative CPU time for every server
 thread, every generator thread and every core lets the task attach a
 *bottleneck verdict* to the result instead of an unqualified number.
 
-What CPU time can and cannot say here (measured on benchdev, Sep 17 2026, a
+What CPU time can and cannot say here (measured on a 16-core x86 development host, a
 replica with ``--io-threads 2`` under a rate-limited cachecannon reader):
 
 * **Valkey server threads spin.** The I/O thread read 1.00 of a core at 20k

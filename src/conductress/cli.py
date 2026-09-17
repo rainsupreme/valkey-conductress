@@ -709,7 +709,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr_parser.add_argument(
         "--replica-args",
         default="",
-        help="Extra raw server arguments for replicas only (the feature lever, e.g. '--io-threads-ownership yes')",
+        help="Extra raw server arguments for replicas only; the natural A/B lever for a replica-side config change",
     )
     rr_parser.add_argument(
         "--sample-interval", type=float, default=1.0, help="INFO sampling cadence in seconds (default: 1.0)"
@@ -717,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr_parser.add_argument(
         "--info-fields",
         default="",
-        help="Comma-separated extra INFO fields to sample from every instance (e.g. door-2 counters)",
+        help="Comma-separated extra INFO fields to sample from every instance (e.g. counters a build under test exposes)",
     )
     rr_parser.add_argument(
         "--cachecannon-binary",

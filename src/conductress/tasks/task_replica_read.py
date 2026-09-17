@@ -1,10 +1,10 @@
 """Replica-read benchmark task.
 
 Measures read throughput served by a REPLICA while its primary ingests writes
-at a fixed rate over a real replication link. This is the topology the
-concurrent-reads work (door-2, feature 1: speculative GET on I/O threads) is
-aimed at: on a replica the only writer is the replication stream, executed on
-the main thread, with no client write/read interleaving on any connection.
+at a fixed rate over a real replication link. On a replica the only writer is
+the replication stream, executed on the main thread, so no client connection
+ever interleaves writes with reads. That makes it the cleanest topology for
+measuring any change to how a server serves reads while writes are arriving.
 
 Topology (one host, loopback, all instances pinned by the CPU allocator):
 
@@ -17,25 +17,26 @@ Phases per repetition:
     2. preload: cachecannon prefill of the keyspace against the primary,
        then wait until every replica's offset equals the primary's
     3. measure: start the fixed-rate writer at the primary, then the reader
-       at the first replica (warmup + duration); sample INFO from every
-       instance on a fixed cadence for the whole reader window
+       at the first replica (warmup + duration); sample INFO and CPU counters
+       from every instance and both generators on a fixed cadence for the
+       whole reader window
     4. guards: reader 0% errors and >= 99% hit rate; writer 0% errors and
        achieved rate within tolerance of the target (an under-delivering
-       writer silently turns the cell into a lower-write-rate cell)
+       writer silently turns the run into a lower-write-rate run)
+    5. bottleneck verdict: was anything other than the server the limit?
+       Recorded on the result, never a failure (see cpu_sampling)
 
 Score = mean reader throughput (rps). Results carry the writer's achieved
 rate, replication-lag statistics (primary minus replica offset, bytes), the
-full per-instance INFO series and both TOML configs, so a cell can be audited
-without re-running it.
+per-instance INFO series, the verdict with its evidence and both TOML
+configs, so a run can be audited without repeating it.
 
-Independent variables the cell is designed around: replica io-threads,
-write rate, and the replica-only server args (the feature lever). A/B is two
-queued tasks that differ in --specifier or --replica-args.
+Independent variables the task is designed around: replica io-threads, write
+rate, and replica-only server arguments. An A/B is two queued tasks that
+differ in --specifier (two builds) or --replica-args (one build, two configs).
 
 Cluster mode: the TopologySpec can describe it but the bootstrap is a
-follow-up (see topology.py). Speculation is also disabled server-side in
-cluster mode on the current door-2 branch, so a cluster cell would measure
-stock behaviour on both arms today.
+follow-up (see topology.py).
 """
 
 import asyncio
@@ -106,7 +107,7 @@ class ReplicaReadTaskData(BaseTaskData):
     replica_args: str = ""  # replicas only, after server_args
     # Sampling
     sample_interval: float = 1.0
-    info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. door-2 counters)
+    info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. counters a build under test exposes)
     cachecannon_binary: str = DEFAULT_CACHECANNON_BINARY
     benchmark_cpu_override: str = ""
 
@@ -491,7 +492,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
 
         Per-core and per-thread jiffies for a 96-core host at 1 Hz over a
         60 s rep would add ~1 MB to the result row; the INFO series (offsets,
-        ops/sec, door-2 counters) is what later analysis reads back.
+        ops/sec, any extra INFO fields) is what later analysis reads back.
         """
         return [{k: v for k, v in s.items() if k not in ("cores", "threads", "generators")} for s in samples]
 
