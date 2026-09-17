@@ -1,0 +1,490 @@
+"""Replica-read benchmark task.
+
+Measures read throughput served by a REPLICA while its primary ingests writes
+at a fixed rate over a real replication link. This is the topology the
+concurrent-reads work (door-2, feature 1: speculative GET on I/O threads) is
+aimed at: on a replica the only writer is the replication stream, executed on
+the main thread, with no client write/read interleaving on any connection.
+
+Topology (one host, loopback, all instances pinned by the CPU allocator):
+
+    primary   127.0.0.1:<base>      <- writer:  cachecannon SET, rate_limit=W
+    replica   127.0.0.1:<base+1>    <- reader:  cachecannon GET, closed loop
+    [replica  127.0.0.1:<base+2> ...]  extra replicas add fan-out load only
+
+Phases per repetition:
+    1. kill stray servers, start topology, REPLICAOF, wait for link up
+    2. preload: cachecannon prefill of the keyspace against the primary,
+       then wait until every replica's offset equals the primary's
+    3. measure: start the fixed-rate writer at the primary, then the reader
+       at the first replica (warmup + duration); sample INFO from every
+       instance on a fixed cadence for the whole reader window
+    4. guards: reader 0% errors and >= 99% hit rate; writer 0% errors and
+       achieved rate within tolerance of the target (an under-delivering
+       writer silently turns the cell into a lower-write-rate cell)
+
+Score = mean reader throughput (rps). Results carry the writer's achieved
+rate, replication-lag statistics (primary minus replica offset, bytes), the
+full per-instance INFO series and both TOML configs, so a cell can be audited
+without re-running it.
+
+Independent variables the cell is designed around: replica io-threads,
+write rate, and the replica-only server args (the feature lever). A/B is two
+queued tasks that differ in --specifier or --replica-args.
+
+Cluster mode: the TopologySpec can describe it but the bootstrap is a
+follow-up (see topology.py). Speculation is also disabled server-side in
+cluster mode on the current door-2 branch, so a cluster cell would measure
+stock behaviour on both arms today.
+"""
+
+import asyncio
+import datetime
+import logging
+import time
+from dataclasses import dataclass
+from statistics import mean, stdev
+from typing import Optional
+
+from conductress.cachecannon import DEFAULT_CACHECANNON_BINARY, generate_toml_config, parse_json_results
+from conductress.config import (
+    DEFAULT_DURATION,
+    DEFAULT_REPETITIONS,
+    DEFAULT_VAL_SIZE,
+    DEFAULT_WARMUP,
+    PERF_BENCH_KEYSPACE,
+    ServerInfo,
+)
+from conductress.cpu_allocator import AllocationTag
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.server import Server
+from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.topology import DEFAULT_BASE_PORT, TopologyGroup, TopologySpec, replication_lag_stats
+from conductress.utility import HumanByte, HumanTime, RealtimeCommand
+
+logger = logging.getLogger(__name__)
+
+METHOD = "replica-read"
+
+# Writer runs longer than the reader so the reader's whole window sees the
+# write stream, and the writer still exits on its own (its JSON result is how
+# we learn the achieved rate).
+WRITER_SLACK_SECONDS = 5
+# Fraction of the target write rate the writer must achieve for a valid cell.
+WRITE_RATE_TOLERANCE = 0.10
+# Preload: a short cachecannon run whose only job is the prefill.
+PRELOAD_DURATION_SECONDS = 1
+# Reader must hit: every key was written to the primary and replicated.
+READER_MIN_HIT_RATE_PCT = 99.0
+
+
+@dataclass
+class ReplicaReadTaskData(BaseTaskData):
+    """Task data for the replica-read benchmark. See module docstring."""
+
+    # Reader (measured) side -- aimed at the first replica
+    val_size: int = DEFAULT_VAL_SIZE
+    pipelining: int = 1
+    connections: int = 400
+    threads: int = 8
+    keyspace_count: int = PERF_BENCH_KEYSPACE
+    warmup: int = DEFAULT_WARMUP
+    duration: int = DEFAULT_DURATION
+    repetitions: int = DEFAULT_REPETITIONS
+    # Writer side -- fixed rate at the primary
+    write_rate: int = 50_000
+    write_connections: int = 16
+    write_threads: int = 4
+    write_pipelining: int = 1
+    # Topology
+    io_threads: int = 8  # replica io-threads (the measured instance)
+    primary_io_threads: int = 1
+    base_port: int = DEFAULT_BASE_PORT
+    server_args: str = ""  # every instance
+    primary_args: str = ""  # primary only, after server_args
+    replica_args: str = ""  # replicas only, after server_args
+    # Sampling
+    sample_interval: float = 1.0
+    info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. door-2 counters)
+    cachecannon_binary: str = DEFAULT_CACHECANNON_BINARY
+    benchmark_cpu_override: str = ""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.warmup = int(self.warmup)
+        self.duration = int(self.duration)
+        if self.replicas < 1:
+            raise ValueError(f"replicas must be >= 1 for a replica-read task, got {self.replicas}")
+        if self.write_rate < 1:
+            raise ValueError(f"write_rate must be >= 1 req/s, got {self.write_rate}")
+        if self.repetitions < 1:
+            raise ValueError(f"repetitions must be >= 1, got {self.repetitions}")
+        if self.duration < 1:
+            raise ValueError(f"duration must be >= 1s, got {self.duration}")
+        if self.sample_interval <= 0:
+            raise ValueError(f"sample_interval must be > 0, got {self.sample_interval}")
+        for name in ("connections", "threads", "write_connections", "write_threads", "pipelining", "write_pipelining"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be >= 1, got {getattr(self, name)}")
+        # Build the spec once so an invalid layout fails at submission, not on the runner.
+        self.topology_spec()
+
+    def topology_spec(self) -> TopologySpec:
+        """Instance layout derived from the task levers (validated at construction)."""
+        return TopologySpec.replica_read(
+            replicas=self.replicas,
+            replica_io_threads=self.io_threads,
+            primary_io_threads=self.primary_io_threads,
+            server_args=self.server_args,
+            primary_args=self.primary_args,
+            replica_args=self.replica_args,
+            base_port=self.base_port,
+        )
+
+    def extra_info_fields(self) -> list:
+        """Extra INFO field names to sample from every instance."""
+        return [f.strip() for f in self.info_fields.split(",") if f.strip()]
+
+    def short_description(self) -> str:
+        return (
+            f"replica-read {self.replicas}r io{self.io_threads}, writes {self.write_rate}/s, "
+            f"{HumanByte.to_human(self.val_size)} values, P{self.pipelining}, {self.connections}c, "
+            f"{self.threads}t, {HumanTime.to_human(self.duration)} x{self.repetitions}"
+        )
+
+    def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "ReplicaReadTaskRunner":
+        return ReplicaReadTaskRunner(self, server_infos)
+
+
+class ReplicaReadTaskRunner(BaseTaskRunner):
+    """Run the replica-read benchmark. See module docstring for the phases."""
+
+    def __init__(self, task: ReplicaReadTaskData, server_infos: list[ServerInfo]):
+        super().__init__(task.task_id)
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.task = task
+        if not server_infos:
+            raise ValueError("replica-read needs a server host")
+        self.host = server_infos[0]
+        self.spec = task.topology_spec()
+        self.commit_hash = ""
+        self.title = (
+            f"replica-read, {task.source}:{task.specifier}, {task.replicas} replica(s), "
+            f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
+            f"P{task.pipelining}, {task.connections}c, {task.threads}t, "
+            f"{HumanTime.to_human(task.duration)} x{task.repetitions}"
+        )
+        self.status = BenchmarkStatus(
+            steps_total=(task.warmup + task.duration + WRITER_SLACK_SECONDS) * task.repetitions,
+            task_type=METHOD,
+        )
+
+    # ------------------------------------------------------------------ CPU placement
+
+    def _allocate_client_cpus(self, client: Server, purpose: str, count: int) -> Optional[AllocationTag]:
+        """Allocate ``count`` CPUs for a generator, away from every server instance."""
+        if self.task.benchmark_cpu_override:
+            return None
+        server_tags = [
+            AllocationTag(task_id=f"server_{self.host.ip}_{i.port}", purpose="server") for i in self.spec.instances
+        ]
+        tag = AllocationTag(task_id=f"{self.task_name}_{purpose}", purpose="benchmark")
+        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+        cpus = client._cpu_allocator.allocate(
+            client.ip,
+            tag,
+            count=count,
+            require_numa=net_numa,
+            avoid_tags=server_tags,
+            prefer_different_cache=True,
+        )
+        self.logger.info("Allocated CPUs %s for %s generator", cpus, purpose)
+        return tag
+
+    def _cpu_list(self, client: Server, tag: Optional[AllocationTag]) -> str:
+        if self.task.benchmark_cpu_override:
+            return self.task.benchmark_cpu_override
+        if tag:
+            allocated = client._cpu_allocator.get_allocation(client.ip, tag)
+            if allocated:
+                return ",".join(map(str, allocated))
+        return ""
+
+    # ------------------------------------------------------------------ generators
+
+    def _toml(self, name: str, content: str) -> str:
+        path = self.file_protocol.work_dir / name
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return str(path)
+
+    def _launch(self, toml_path: str) -> RealtimeCommand:
+        command = RealtimeCommand(f"{self.task.cachecannon_binary} {toml_path}")
+        command.start()
+        return command
+
+    @staticmethod
+    def _drain(command: RealtimeCommand, lines: list) -> None:
+        line, _ = command.poll_output()
+        while line:
+            lines.append(line)
+            line, _ = command.poll_output()
+
+    async def _wait_and_parse(self, command: RealtimeCommand, label: str) -> dict:
+        """Wait for a generator to exit, then parse its JSON result."""
+        lines: list = []
+        while command.is_running():
+            self._drain(command, lines)
+            await asyncio.sleep(0.5)
+        self._drain(command, lines)
+        output = "\n".join(lines)
+        exit_code = command.p.returncode if command.p else None
+        if exit_code != 0:
+            raise RuntimeError(f"{label} cachecannon exited with code {exit_code}. Output:\n{output[-2000:]}")
+        parsed = parse_json_results(output)
+        if parsed["error_pct"] > 0:
+            raise RuntimeError(f"{label} cachecannon reported {parsed['error_pct']}% errors. Output:\n{output[-1000:]}")
+        return parsed
+
+    # ------------------------------------------------------------------ run
+
+    async def run(self):
+        task = self.task
+        self.logger.info("preparing: %s", self.title)
+        self.file_protocol.write_status(self.status)
+
+        group = TopologyGroup(self.host, self.spec, task.source, task.specifier, task.make_args)
+        client: Optional[Server] = None
+        reader_tag: Optional[AllocationTag] = None
+        writer_tag: Optional[AllocationTag] = None
+        reps: list = []
+        reader_toml = writer_toml = ""
+
+        try:
+            for rep in range(task.repetitions):
+                if rep > 0:
+                    await group.stop_all_servers()
+                    await Server(self.host.ip, username=self.host.username).run_host_command(
+                        "sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False
+                    )
+
+                # 1. topology
+                await group.kill_all_valkey_instances()
+                await group.start()
+                await group.begin_replication()
+                await group.wait_for_repl_sync()
+                primary, replica = group.primary, group.replicas[0]
+                assert primary is not None
+                self.commit_hash = primary.get_build_hash() or ""
+
+                if client is None:
+                    client = Server("127.0.0.1")
+                    await client.ensure_host_cpu_allocation()
+                    reader_tag = self._allocate_client_cpus(client, "reader", task.threads)
+                    writer_tag = self._allocate_client_cpus(client, "writer", task.write_threads)
+                reader_cpus = self._cpu_list(client, reader_tag)
+                writer_cpus = self._cpu_list(client, writer_tag)
+                primary_ep = f"{primary.ip}:{primary.port}"
+                replica_ep = f"{replica.ip}:{replica.port}"
+
+                # 2. preload at the primary, then let replication drain
+                self.status.state = "running"
+                self.file_protocol.write_status(self.status)
+                preload_toml = self._toml(
+                    f"preload_rep{rep + 1}.toml",
+                    generate_toml_config(
+                        duration=PRELOAD_DURATION_SECONDS,
+                        warmup=0,
+                        threads=task.write_threads,
+                        cpu_list=writer_cpus,
+                        endpoint=primary_ep,
+                        connections=max(task.write_connections, 32),
+                        pipeline_depth=16,
+                        keyspace_count=task.keyspace_count,
+                        val_size=task.val_size,
+                        test="get",
+                        prefill=True,
+                    ),
+                )
+                await self._wait_and_parse(self._launch(preload_toml), "preload")
+                await group.wait_for_offsets_caught_up()
+                keys_primary = (await primary.count_items_expires())[0]
+                keys_replica = (await replica.count_items_expires())[0]
+                if keys_replica != keys_primary or keys_primary < task.keyspace_count:
+                    raise RuntimeError(
+                        f"preload mismatch: primary {keys_primary} keys, replica {keys_replica}, "
+                        f"expected >= {task.keyspace_count}"
+                    )
+
+                # 3. measure: writer first, then reader; sample throughout
+                writer_toml = generate_toml_config(
+                    duration=task.warmup + task.duration + WRITER_SLACK_SECONDS,
+                    warmup=0,
+                    threads=task.write_threads,
+                    cpu_list=writer_cpus,
+                    endpoint=primary_ep,
+                    connections=task.write_connections,
+                    pipeline_depth=task.write_pipelining,
+                    keyspace_count=task.keyspace_count,
+                    val_size=task.val_size,
+                    test="set",
+                    rate_limit=task.write_rate,
+                    prefill=False,
+                )
+                reader_toml = generate_toml_config(
+                    duration=task.duration,
+                    warmup=task.warmup,
+                    threads=task.threads,
+                    cpu_list=reader_cpus,
+                    endpoint=replica_ep,
+                    connections=task.connections,
+                    pipeline_depth=task.pipelining,
+                    keyspace_count=task.keyspace_count,
+                    val_size=task.val_size,
+                    test="get",
+                    prefill=False,
+                )
+                writer_path = self._toml(f"writer_rep{rep + 1}.toml", writer_toml)
+                reader_path = self._toml(f"reader_rep{rep + 1}.toml", reader_toml)
+
+                self.status.state = "running"
+                self.file_protocol.write_status(self.status)
+                self.logger.info(
+                    "rep %d/%d: writer %d/s at %s, reader at %s",
+                    rep + 1,
+                    task.repetitions,
+                    task.write_rate,
+                    primary_ep,
+                    replica_ep,
+                )
+
+                samples: list = []
+                writer_cmd = self._launch(writer_path)
+                await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
+                reader_cmd = self._launch(reader_path)
+                sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd))
+                try:
+                    reader = await self._wait_and_parse(reader_cmd, "reader")
+                finally:
+                    sampler.cancel()
+                    try:
+                        await sampler
+                    except asyncio.CancelledError:
+                        pass
+                writer = await self._wait_and_parse(writer_cmd, "writer")
+
+                # 4. guards
+                hit = reader["hit_rate"]["percent"] if reader["hit_rate"] else 0.0
+                if hit < READER_MIN_HIT_RATE_PCT:
+                    raise RuntimeError(
+                        f"reader hit rate {hit}% < {READER_MIN_HIT_RATE_PCT}%: replica dataset incomplete"
+                    )
+                achieved = writer["throughput_rps"]
+                if achieved < task.write_rate * (1 - WRITE_RATE_TOLERANCE):
+                    raise RuntimeError(
+                        f"writer achieved {achieved:.0f}/s, below {1 - WRITE_RATE_TOLERANCE:.0%} of target "
+                        f"{task.write_rate}/s: primary or writer could not sustain the rate"
+                    )
+
+                lag = replication_lag_stats(samples, primary.port, replica.port)
+                reps.append(
+                    {
+                        "reader_rps": reader["throughput_rps"],
+                        "reader_latency": reader["latency"],
+                        "reader_hit_rate": reader["hit_rate"],
+                        "writer_rps": achieved,
+                        "writer_latency": writer["latency"],
+                        "lag": lag,
+                        "samples": samples,
+                    }
+                )
+                self.logger.info(
+                    "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes",
+                    rep + 1,
+                    task.repetitions,
+                    reader["throughput_rps"],
+                    achieved,
+                    task.write_rate,
+                    lag.get("max_bytes"),
+                )
+
+            await self._record_result(group, reps, reader_toml, writer_toml)
+            self.status.state = "completed"
+            self.status.end_time = time.time()
+            self.status.steps_completed = self.status.steps_total
+            self.file_protocol.write_status(self.status)
+        finally:
+            await group.stop_all_servers()
+            if client is not None:
+                for tag in (reader_tag, writer_tag):
+                    if tag:
+                        client._cpu_allocator.release(client.ip, tag)
+
+    async def _sample_loop(self, group: TopologyGroup, samples: list, reader_cmd: RealtimeCommand) -> None:
+        fields = self.task.extra_info_fields()
+        while reader_cmd.is_running():
+            try:
+                samples.append(await group.sample(fields))
+            except Exception as exc:  # pylint: disable=broad-except
+                self.logger.warning("INFO sample failed: %s", exc)
+            await asyncio.sleep(self.task.sample_interval)
+
+    # ------------------------------------------------------------------ results
+
+    async def _record_result(self, group: TopologyGroup, reps: list, reader_toml: str, writer_toml: str) -> None:
+        task = self.task
+        completion_time = datetime.datetime.now()
+        assert group.primary is not None
+        lscpu_output, _ = await group.primary.run_host_command("lscpu")
+
+        reader_rps = [r["reader_rps"] for r in reps]
+        mean_rps = mean(reader_rps)
+        cv = (stdev(reader_rps) / mean_rps) * 100 if len(reader_rps) >= 2 and mean_rps else None
+
+        detailed = {
+            "topology": self.spec.to_dict(),
+            "server_cpus": {s.port: s.server_cpus for s in group.servers},
+            "warmup": task.warmup,
+            "duration": task.duration,
+            "io-threads": task.io_threads,
+            "primary_io_threads": task.primary_io_threads,
+            "pipeline": task.pipelining,
+            "connections": task.connections,
+            "threads": task.threads,
+            "size": task.val_size,
+            "keyspace_count": task.keyspace_count,
+            "write_rate_target": task.write_rate,
+            "write_connections": task.write_connections,
+            "write_threads": task.write_threads,
+            "write_pipeline": task.write_pipelining,
+            "write_rate_achieved_mean": mean(r["writer_rps"] for r in reps),
+            "replication_lag": {
+                "max_bytes": max((r["lag"].get("max_bytes", 0) or 0) for r in reps),
+                "mean_bytes": mean((r["lag"].get("mean_bytes", 0.0) or 0.0) for r in reps),
+            },
+            "per_run_rps": reader_rps,
+            "mean_rps": mean_rps,
+            "latency": reps[-1]["reader_latency"],
+            "per_rep_results": reps,
+            "sample_interval": task.sample_interval,
+            "info_fields": task.extra_info_fields(),
+            "cachecannon_binary": task.cachecannon_binary,
+            "reader_toml": reader_toml,
+            "writer_toml": writer_toml,
+            "lscpu": lscpu_output,
+        }
+
+        results = BenchmarkResults(
+            method=METHOD,
+            source=task.source,
+            specifier=task.specifier,
+            commit_hash=self.commit_hash,
+            score=mean_rps,
+            end_time=completion_time,
+            data=detailed,
+            make_args=task.make_args,
+            note=task.note,
+            cv=cv,
+            reps=len(reps),
+        )
+        self.file_protocol.write_results(results)

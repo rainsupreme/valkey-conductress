@@ -77,6 +77,7 @@ conductress queue add-mixed --set-ratio 20 --runner g4bench
 conductress queue add-scenario --scenario eval-storm --runner bench
 conductress queue add-latency valkey-rainfall COMMIT 500000 --runner g4bench
 conductress queue add-cachecannon --runner armbench
+conductress queue add-replica-read --io-threads 8 --write-rate 50000 --runner g4bench
 ```
 
 Options:
