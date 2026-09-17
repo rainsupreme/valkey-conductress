@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from statistics import mean, stdev
 from typing import Optional
 
+from conductress import cpu_sampling
 from conductress.cachecannon import DEFAULT_CACHECANNON_BINARY, generate_toml_config, parse_json_results
 from conductress.config import (
     DEFAULT_DURATION,
@@ -60,7 +61,7 @@ from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import DEFAULT_BASE_PORT, TopologyGroup, TopologySpec, replication_lag_stats
-from conductress.utility import HumanByte, HumanTime, RealtimeCommand
+from conductress.utility import HumanByte, HumanTime, RealtimeCommand, parse_cpulist
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,13 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         return command
 
     @staticmethod
+    def _pid(command: Optional[RealtimeCommand]) -> Optional[int]:
+        """OS pid of a launched generator, or None if it has not started."""
+        if command is None:
+            return None
+        return getattr(command.p, "pid", None)
+
+    @staticmethod
     def _drain(command: RealtimeCommand, lines: list) -> None:
         line, _ = command.poll_output()
         while line:
@@ -238,7 +246,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             await asyncio.sleep(0.5)
         self._drain(command, lines)
         output = "\n".join(lines)
-        exit_code = command.p.returncode if command.p else None
+        exit_code = getattr(command.p, "returncode", None)
         if exit_code != 0:
             raise RuntimeError(f"{label} cachecannon exited with code {exit_code}. Output:\n{output[-2000:]}")
         parsed = parse_json_results(output)
@@ -362,7 +370,8 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 writer_cmd = self._launch(writer_path)
                 await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
                 reader_cmd = self._launch(reader_path)
-                sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd))
+                reader_started = time.monotonic()
+                sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd, writer_cmd))
                 try:
                     reader = await self._wait_and_parse(reader_cmd, "reader")
                 finally:
@@ -387,6 +396,15 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                     )
 
                 lag = replication_lag_stats(samples, primary.port, replica.port)
+                bottleneck = cpu_sampling.bottleneck_verdict(
+                    samples,
+                    replica_port=replica.port,
+                    replica_pid=replica.valkey_pid,
+                    primary_port=primary.port,
+                    primary_pid=primary.valkey_pid,
+                    allocated_cpus=self._allocated_cpus(group, reader_cpus, writer_cpus),
+                    window_start=reader_started + task.warmup,
+                )
                 reps.append(
                     {
                         "reader_rps": reader["throughput_rps"],
@@ -395,17 +413,21 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                         "writer_rps": achieved,
                         "writer_latency": writer["latency"],
                         "lag": lag,
-                        "samples": samples,
+                        "bottleneck": bottleneck,
+                        "samples": self._slim_samples(samples),
                     }
                 )
-                self.logger.info(
-                    "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes",
+                log = self.logger.info if bottleneck["valid"] else self.logger.warning
+                log(
+                    "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes, bottleneck=%s (%s)",
                     rep + 1,
                     task.repetitions,
                     reader["throughput_rps"],
                     achieved,
                     task.write_rate,
                     lag.get("max_bytes"),
+                    bottleneck["verdict"],
+                    bottleneck["reason"],
                 )
 
             await self._record_result(group, reps, reader_toml, writer_toml)
@@ -420,16 +442,87 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                     if tag:
                         client._cpu_allocator.release(client.ip, tag)
 
-    async def _sample_loop(self, group: TopologyGroup, samples: list, reader_cmd: RealtimeCommand) -> None:
+    @staticmethod
+    def _allocated_cpus(group: TopologyGroup, reader_cpus: str, writer_cpus: str) -> dict:
+        """Label -> CPU list for every pinned party; cores in none of them are foreign."""
+        assert group.primary is not None
+        allocated = {
+            "primary": list(group.primary.server_cpus),
+            "replica": list(group.replicas[0].server_cpus),
+            "reader": parse_cpulist(reader_cpus) if reader_cpus else [],
+            "writer": parse_cpulist(writer_cpus) if writer_cpus else [],
+        }
+        for extra in group.replicas[1:]:
+            allocated[f"replica:{extra.port}"] = list(extra.server_cpus)
+        return allocated
+
+    async def _sample_loop(
+        self,
+        group: TopologyGroup,
+        samples: list,
+        reader_cmd: RealtimeCommand,
+        writer_cmd: Optional[RealtimeCommand] = None,
+    ) -> None:
+        """Sample the topology (remote shell) and the two local generators once per interval.
+
+        The generators run on THIS host, so their thread ticks are read straight
+        from ``/proc`` rather than through the remote shell; ``t_local`` stamps
+        that read so the two clocks are never mixed.
+        """
         fields = self.task.extra_info_fields()
+        reader_pid = self._pid(reader_cmd)
+        writer_pid = self._pid(writer_cmd)
         while reader_cmd.is_running():
             try:
-                samples.append(await group.sample(fields))
+                sample = await group.sample(fields)
+                sample["t_local"] = time.monotonic()
+                sample["generators"] = {
+                    "reader": cpu_sampling.read_local_thread_stats(reader_pid),
+                    "writer": cpu_sampling.read_local_thread_stats(writer_pid),
+                }
+                samples.append(sample)
             except Exception as exc:  # pylint: disable=broad-except
                 self.logger.warning("INFO sample failed: %s", exc)
             await asyncio.sleep(self.task.sample_interval)
 
+    @staticmethod
+    def _slim_samples(samples: list) -> list:
+        """Drop the cumulative counters from stored samples; the verdict already summarises them.
+
+        Per-core and per-thread jiffies for a 96-core host at 1 Hz over a
+        60 s rep would add ~1 MB to the result row; the INFO series (offsets,
+        ops/sec, door-2 counters) is what later analysis reads back.
+        """
+        return [{k: v for k, v in s.items() if k not in ("cores", "threads", "generators")} for s in samples]
+
     # ------------------------------------------------------------------ results
+
+    @staticmethod
+    def _aggregate_bottleneck(reps: list) -> dict:
+        """One verdict for the row: the score is only a server number if EVERY rep was.
+
+        Anything else names the worst rep so a reader of the row does not have
+        to open ``per_rep_results`` to find out why ``valid`` is false.
+        """
+        verdicts = [r["bottleneck"]["verdict"] for r in reps]
+        valid = all(r["bottleneck"]["valid"] for r in reps)
+        if valid:
+            verdict = cpu_sampling.VERDICT_SERVER
+        else:
+            verdict = next(v for v in verdicts if v != cpu_sampling.VERDICT_SERVER)
+        worst = next((r["bottleneck"] for r in reps if r["bottleneck"]["verdict"] == verdict), reps[0]["bottleneck"])
+        duties = [v for r in reps if (v := (r["bottleneck"].get("replica") or {}).get("loop_duty")) is not None]
+        reader_peaks = [
+            v for r in reps if (v := (r["bottleneck"].get("reader") or {}).get("max_thread_util")) is not None
+        ]
+        return {
+            "verdict": verdict,
+            "valid": valid,
+            "per_rep": verdicts,
+            "reason": worst["reason"],
+            "replica_loop_duty_mean": mean(duties) if duties else None,
+            "reader_max_thread_util": max(reader_peaks, default=None),
+        }
 
     async def _record_result(self, group: TopologyGroup, reps: list, reader_toml: str, writer_toml: str) -> None:
         task = self.task
@@ -465,6 +558,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "per_run_rps": reader_rps,
             "mean_rps": mean_rps,
             "latency": reps[-1]["reader_latency"],
+            "bottleneck": self._aggregate_bottleneck(reps),
             "per_rep_results": reps,
             "sample_interval": task.sample_interval,
             "info_fields": task.extra_info_fields(),

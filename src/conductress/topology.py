@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from conductress import config
+from conductress import config, cpu_sampling
 from conductress.config import ServerInfo
 from conductress.server import Server
 
@@ -259,7 +259,7 @@ class TopologyGroup:
 
     # ------------------------------------------------------------------ sampling
 
-    async def sample(self, extra_fields: Optional[list] = None) -> dict:
+    async def sample(self, extra_fields: Optional[list] = None, cpu: bool = True) -> dict:
         """One ``INFO replication stats`` snapshot per instance.
 
         All instances are queried from ONE remote shell invocation, back to
@@ -273,18 +273,38 @@ class TopologyGroup:
         replication offsets, ops/sec, and any ``extra_fields`` present (missing
         fields are silently omitted so a stock build and a feature build sample
         identically).
+
+        With ``cpu=True`` the same shell also emits the host's per-core
+        ``/proc/stat`` counters and every instance's per-thread CPU ticks, so
+        the sample gains ``"cores"`` (``{cpu: {busy, idle, softirq, total}}``)
+        and ``"threads"`` (``{port: {tid: {comm, ticks}}}``). These are
+        cumulative; ``cpu_sampling`` turns consecutive samples into utilisation.
         """
         if self.primary is None:
             raise RuntimeError("topology not started")
         extra_fields = extra_fields or []
         cli = str(config.PROJECT_ROOT / config.VALKEY_CLI)
-        command = "; ".join(
+        parts = [
             f"echo '{_SAMPLE_SEPARATOR}{s.port}'; {cli} -h {s.ip} -p {s.port} info replication stats"
             for s in self.servers
-        )
+        ]
+        if cpu:
+            parts.append(cpu_sampling.cpu_sample_command({s.port: s.valkey_pid for s in self.servers}))
         t = time.monotonic()
-        out, _ = await self.primary.run_host_command(command, check=False)
-        return {"t": t, "instances": parse_multi_info(out, extra_fields)}
+        out, _ = await self.primary.run_host_command("; ".join(parts), check=False)
+        if not cpu:
+            return {"t": t, "instances": parse_multi_info(out, extra_fields)}
+        info_lines, procstat_lines, thread_lines = cpu_sampling.split_sections(out, _SAMPLE_SEPARATOR)
+        return {
+            "t": t,
+            "instances": parse_multi_info("\n".join(info_lines), extra_fields),
+            "cores": cpu_sampling.parse_proc_stat(procstat_lines),
+            "threads": {port: cpu_sampling.parse_thread_stats(lines) for port, lines in thread_lines.items()},
+        }
+
+    def pids(self) -> dict:
+        """Main pid per instance port (``-1`` for an instance that is not running)."""
+        return {s.port: s.valkey_pid for s in self.servers}
 
 
 _SAMPLE_SEPARATOR = "=== conductress-instance "
@@ -306,6 +326,12 @@ def parse_multi_info(output: str, extra_fields: Optional[list] = None) -> dict:
             "instantaneous_ops_per_sec": _to_int(info.get("instantaneous_ops_per_sec")),
             "total_commands_processed": _to_int(info.get("total_commands_processed")),
             "total_reads_processed": _to_int(info.get("total_reads_processed")),
+            # Cumulative main-thread event-loop time (usec) and iteration count.
+            # Unlike CPU time these are not inflated by spin-waiting, so they
+            # are what cpu_sampling reports as the server's duty.
+            "eventloop_cycles": _to_int(info.get("eventloop_cycles")),
+            "eventloop_duration_sum": _to_int(info.get("eventloop_duration_sum")),
+            "eventloop_duration_cmd_sum": _to_int(info.get("eventloop_duration_cmd_sum")),
         }
         if info.get("role") == "slave":
             row["master_link_status"] = info.get("master_link_status")
