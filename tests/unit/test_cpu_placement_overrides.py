@@ -16,6 +16,7 @@ import pytest
 from conductress import config
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner
+from conductress.topology import TopologySpec
 from conductress.utility import parse_cpulist, validate_cpulist
 
 
@@ -93,7 +94,7 @@ class TestRoundTripPersistence:
             source="manual",
             specifier="test-commit",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="chiplet experiment",
             requirements={},
             test="get",
@@ -123,7 +124,7 @@ class TestRoundTripPersistence:
             source="manual",
             specifier="unstable",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             test="set",
@@ -275,7 +276,7 @@ class TestOverrideBypassesAllocator:
             source="manual",
             specifier="test",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             test="get",

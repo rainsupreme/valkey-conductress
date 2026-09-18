@@ -1082,7 +1082,7 @@ class BoundedInsertionTaskData(BaseTaskData):
             raise ValueError("bench_threads and bench_clients must not be negative")
         if self.max_rss_bytes < self.maxmemory_bytes:
             raise ValueError("max_rss_bytes must be greater than or equal to maxmemory_bytes")
-        if self.replicas != 0:
+        if self.topology.replicas:
             raise ValueError("bounded insertion tasks do not support replicas")
 
     def short_description(self) -> str:

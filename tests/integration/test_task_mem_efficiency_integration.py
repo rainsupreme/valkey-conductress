@@ -8,6 +8,7 @@ import pytest
 from conductress.config import ServerInfo
 from conductress.file_protocol import FileProtocol
 from conductress.tasks.task_mem_efficiency import MemTaskData
+from conductress.topology import TopologySpec
 
 
 class TestMemTaskIntegration:
@@ -35,7 +36,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="integration test",
             requirements={},
             make_args="",
@@ -89,7 +90,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="expiration test",
             requirements={},
             make_args="",
@@ -129,7 +130,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="concurrent test",
             requirements={},
             make_args="",
@@ -171,7 +172,7 @@ class TestMemTaskIntegration:
             task_data = MemTaskData(
                 source="valkey",
                 specifier="8.0",
-                replicas=0,
+                topology=TopologySpec.standalone(),
                 note="error test",
                 requirements={},
                 make_args="",
@@ -213,7 +214,7 @@ class TestMemTaskIntegration:
         original_task = MemTaskData(
             source="valkey",
             specifier="v7.2.0",
-            replicas=1,
+            topology=TopologySpec.replication_hosts(1),
             note="serialization test",
             requirements={"memory": "4GB"},
             make_args="-O3 -DNDEBUG",
@@ -235,7 +236,7 @@ class TestMemTaskIntegration:
         assert loaded_task.type == original_task.type
         assert loaded_task.val_sizes == original_task.val_sizes
         assert loaded_task.has_expire == original_task.has_expire
-        assert loaded_task.replicas == original_task.replicas
+        assert loaded_task.topology == original_task.topology
         assert loaded_task.note == original_task.note
         assert loaded_task.requirements == original_task.requirements
 
@@ -255,7 +256,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="file protocol test",
             requirements={},
             make_args="",
@@ -303,7 +304,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="zadd integration test",
             requirements={},
             make_args="",
@@ -342,7 +343,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="sadd integration test",
             requirements={},
             make_args="",
@@ -381,7 +382,7 @@ class TestMemTaskIntegration:
         task_data = MemTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="hset integration test",
             requirements={},
             make_args="",

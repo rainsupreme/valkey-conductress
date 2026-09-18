@@ -36,6 +36,7 @@ from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_mixed import MixedTaskData
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ class ThroughputSweepCoordinatorV2(BaseSweepCoordinator):
             source=self._sweep_source,
             specifier=sweep_task.commit,
             make_args=self._sweep_make_args,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[perf-sweep-v2:{self._sweep_source}/{self.workload_id}] {sweep_task.reason}",
             requirements={},
             test=self._test,
@@ -212,7 +213,7 @@ class MixedSweepCoordinatorV2(BaseSweepCoordinator):
             source=self._sweep_source,
             specifier=sweep_task.commit,
             make_args=self._sweep_make_args,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[mixed-sweep-v2:{self._sweep_source}/{self.workload_id}] {sweep_task.reason}",
             requirements={},
             set_ratio=self._set_ratio,

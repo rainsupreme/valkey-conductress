@@ -9,6 +9,7 @@ import pytest
 from conductress.sweep.coordinator import SweepCoordinator
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 
 def _make_task():
@@ -17,7 +18,7 @@ def _make_task():
         source="valkey",
         specifier="aaa",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
         test="get",

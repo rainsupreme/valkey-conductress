@@ -191,8 +191,8 @@ async def test_two_host_group_issues_the_same_set_of_calls(fake_server):
     fake_server.log = []
     spec = TopologySpec(
         instances=[
-            InstanceSpec(role="primary", port=6379, own_dir=False),
-            InstanceSpec(role="replica", port=6379, host=OTHER, own_dir=False),
+            InstanceSpec(role="primary", port=6379, io_threads=1, own_dir=False),
+            InstanceSpec(role="replica", port=6379, io_threads=1, host=OTHER, own_dir=False),
         ]
     )
     new = TopologyGroup(HOST, spec, **args)
@@ -230,9 +230,88 @@ async def test_unknown_replica_that_stays_attached_is_an_error(fake_server):
 async def test_sample_refuses_multi_host_layouts(fake_server):
     spec = TopologySpec(
         instances=[InstanceSpec(role="primary", port=6379), InstanceSpec(role="replica", port=6379, host=OTHER)]
-    )
+    ).resolved(io_threads=1)
     group = TopologyGroup(HOST, spec, "valkey", "unstable")
     with patch("conductress.topology.asyncio.sleep"):
         await group.start()
     with pytest.raises(NotImplementedError, match="multi-host"):
         await group.sample()
+
+
+# --------------------------------------------------------------------------- task-field plumbing
+
+
+def test_standalone_default_defers_every_setting_to_the_task():
+    spec = TopologySpec.standalone()
+    assert spec.is_standalone
+    assert spec.primary.io_threads is None and spec.primary.server_args == "" and spec.primary.cpu_override == ""
+    assert spec.host_count() == 1
+
+
+def test_resolved_fills_unset_settings_and_orders_role_args_after_task_args():
+    spec = TopologySpec.replica_read(replicas=1, replica_io_threads=4, replica_args="--io-threads-ownership yes")
+    out = spec.resolved(io_threads=7, server_args="--save ''", cpu_override="0-3")
+    assert out.primary.io_threads == 1  # explicit values win
+    assert out.replicas[0].io_threads == 4
+    assert out.replicas[0].server_args == "--save '' --io-threads-ownership yes"
+    assert out.primary.cpu_override == "0-3"
+    plain = TopologySpec.standalone().resolved(io_threads=7)
+    assert plain.primary.io_threads == 7 and plain.primary.own_dir is False
+
+
+@pytest.mark.asyncio
+async def test_group_refuses_a_spec_with_unresolved_io_threads(fake_server):
+    group = TopologyGroup(HOST, TopologySpec.standalone(), "valkey", "unstable")
+    with pytest.raises(RuntimeError, match="no io_threads"):
+        await group.start()
+
+
+def test_replication_hosts_maps_the_legacy_replicas_count():
+    assert TopologySpec.replication_hosts(0) == TopologySpec.standalone()
+    assert TopologySpec.replication_hosts(-1) == TopologySpec.standalone()
+    spec = TopologySpec.replication_hosts(2)
+    assert [(i.role, i.port, i.host_slot, i.own_dir) for i in spec.instances] == [
+        ("primary", 6379, 0, False),
+        ("replica", 6379, 1, False),
+        ("replica", 6379, 2, False),
+    ]
+    assert spec.host_count() == 3
+    assert not spec.is_standalone
+
+
+def test_host_count_counts_slots_and_pinned_addresses():
+    spec = TopologySpec(
+        instances=[
+            InstanceSpec(role="primary", port=6379),
+            InstanceSpec(role="replica", port=6380),  # same host, other port
+            InstanceSpec(role="replica", port=6379, host_slot=1),
+            InstanceSpec(role="replica", port=6379, host=OTHER),
+        ]
+    )
+    assert spec.host_count() == 3
+
+
+def test_bind_hosts_pins_slots_and_rejects_missing_servers():
+    spec = TopologySpec.replication_hosts(1)
+    with pytest.raises(RuntimeError, match="host slot 1"):
+        spec.bind_hosts([HOST])
+    bound = spec.bind_hosts([HOST, OTHER])
+    assert bound.replicas[0].host == OTHER and bound.replicas[0].host_slot == 0
+    assert bound.primary.host is None  # slot 0 stays the default host
+    assert [h.ip for h in bound.hosts(HOST)] == ["10.0.0.1", "10.0.0.2"]
+    with pytest.raises(RuntimeError, match="not bound"):
+        spec.hosts(HOST)
+
+
+def test_spec_round_trips_through_dict_with_hosts_and_slots():
+    spec = TopologySpec(
+        instances=[
+            InstanceSpec(role="primary", port=6379, io_threads=4, own_dir=False),
+            InstanceSpec(role="replica", port=6379, host=OTHER, own_dir=False),
+            InstanceSpec(role="replica", port=6380, host_slot=2),
+        ]
+    )
+    assert TopologySpec.from_dict(spec.to_dict()) == spec
+    assert TopologySpec.from_dict(spec) is spec
+    with pytest.raises(ValueError, match="instances"):
+        TopologySpec.from_dict({"nope": 1})

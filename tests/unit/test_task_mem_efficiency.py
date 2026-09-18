@@ -11,6 +11,7 @@ from conductress.config import MANUALLY_UPLOADED, ServerInfo
 from conductress.file_protocol import BenchmarkResults
 from conductress.server import Server
 from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
+from conductress.topology import TopologySpec
 
 
 class TestMemTaskData:
@@ -23,7 +24,7 @@ class TestMemTaskData:
         task = MemTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="-O2 -g",
@@ -42,7 +43,7 @@ class TestMemTaskData:
         task = MemTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="-O2 -g",
@@ -62,7 +63,7 @@ class TestMemTaskData:
         task = MemTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="-O2 -g",
@@ -82,7 +83,7 @@ class TestMemTaskData:
         task = MemTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="-O2 -g",
@@ -577,7 +578,7 @@ class TestSettleThreading:
         task = MemTaskData(
             source=MANUALLY_UPLOADED,
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="t",
             requirements={},
             make_args="",
@@ -593,7 +594,7 @@ class TestSettleThreading:
         task = MemTaskData(
             source=MANUALLY_UPLOADED,
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="t",
             requirements={},
             make_args="",
@@ -611,7 +612,7 @@ class TestSettleThreading:
         task = MemTaskData(
             source=MANUALLY_UPLOADED,
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="t",
             requirements={},
             make_args="",

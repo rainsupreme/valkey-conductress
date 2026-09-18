@@ -10,6 +10,7 @@ import pytest
 
 from conductress import task_queue
 from conductress.config import ServerInfo
+from conductress.topology import TopologySpec
 
 
 class DummyConfig(types.ModuleType):
@@ -59,7 +60,7 @@ def make_task():
         source="manual",
         specifier="spec",
         make_args="",
-        replicas=1,
+        topology=TopologySpec.replication_hosts(1),
         note="test",
         requirements={},
         extra_data="extra_info",
@@ -88,7 +89,7 @@ def test_invalid_repo_fails():
             source="invalid_repo",
             specifier="spec",
             make_args="",
-            replicas=1,
+            topology=TopologySpec.replication_hosts(1),
             note="test",
             requirements={},
             extra_data="mock_info",
@@ -177,7 +178,7 @@ def test_invalid_source_raises_value_error_with_message():
             source="bad_source",
             specifier="spec",
             make_args="",
-            replicas=1,
+            topology=TopologySpec.replication_hosts(1),
             note="test",
             requirements={},
             extra_data="mock_info",
@@ -190,7 +191,7 @@ def test_valid_source_from_repo_names():
         source="repo1",
         specifier="spec",
         make_args="",
-        replicas=1,
+        topology=TopologySpec.replication_hosts(1),
         note="test",
         requirements={},
         extra_data="mock_info",
@@ -204,9 +205,81 @@ def test_valid_source_manually_uploaded():
         source="manual",
         specifier="spec",
         make_args="",
-        replicas=1,
+        topology=TopologySpec.replication_hosts(1),
         note="test",
         requirements={},
         extra_data="mock_info",
     )
     assert task.source == "manual"
+
+
+# --------------------------------------------------------------------------- topology field
+
+
+def _perf_document(**overrides) -> dict:
+    from conductress.tasks.task_perf_benchmark import PerfTaskData  # noqa: F401  (registers the type)
+
+    doc = {
+        "source": "repo1",
+        "specifier": "abc",
+        "note": "",
+        "requirements": {},
+        "make_args": "",
+        "task_type": "PerfTaskData",
+        "timestamp": "2026-01-01T00:00:00",
+        "test": "get",
+        "val_size": 16,
+        "io_threads": 7,
+        "pipelining": 10,
+        "warmup": 5,
+        "duration": 30,
+        "perf_stat_enabled": False,
+        "has_expire": False,
+        "preload_keys": True,
+    }
+    doc.update(overrides)
+    return doc
+
+
+class TestTopologyField:
+    def test_legacy_replicas_zero_loads_as_standalone(self, _patch_task_queue_config):
+        task = task_queue.BaseTaskData.from_dict(_perf_document(replicas=0))
+        assert task.topology == TopologySpec.standalone()
+        assert not hasattr(task, "replicas")
+
+    def test_legacy_replicas_n_loads_as_replication_hosts(self, _patch_task_queue_config):
+        task = task_queue.BaseTaskData.from_dict(_perf_document(replicas=2))
+        assert task.topology == TopologySpec.replication_hosts(2)
+        assert task.topology.host_count() == 3
+
+    def test_legacy_negative_replicas_is_standalone(self, _patch_task_queue_config):
+        # tui.py used to send -1 as a placeholder; the runner treated it as 0.
+        task = task_queue.BaseTaskData.from_dict(_perf_document(replicas=-1))
+        assert task.topology == TopologySpec.standalone()
+
+    def test_document_with_both_keys_keeps_topology(self, _patch_task_queue_config):
+        doc = _perf_document(replicas=3, topology=TopologySpec.standalone().to_dict())
+        task = task_queue.BaseTaskData.from_dict(doc)
+        assert task.topology == TopologySpec.standalone()
+
+    def test_non_integer_replicas_is_invalid(self, _patch_task_queue_config):
+        with pytest.raises(ValueError, match="replicas must be an integer"):
+            task_queue.BaseTaskData.from_dict(_perf_document(replicas="two"))
+
+    def test_topology_round_trips_through_save_and_load(self, _patch_task_queue_config, temp_dir):
+        task = task_queue.BaseTaskData.from_dict(_perf_document(replicas=1))
+        path = Path(temp_dir) / "t.json"
+        task.save_to_file(path)
+        raw = path.read_text(encoding="utf-8")
+        assert '"replicas"' not in raw and '"topology"' in raw
+        loaded = task_queue.BaseTaskData.from_file(path)
+        assert loaded.topology == task.topology
+
+    def test_constructor_accepts_a_dict_topology(self, _patch_task_queue_config):
+        from conductress.tasks.task_perf_benchmark import PerfTaskData
+
+        doc = _perf_document()
+        doc.pop("task_type")
+        doc.pop("timestamp")
+        task = PerfTaskData(topology=TopologySpec.replication_hosts(1).to_dict(), **doc)
+        assert task.topology == TopologySpec.replication_hosts(1)

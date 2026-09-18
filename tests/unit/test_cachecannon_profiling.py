@@ -14,6 +14,7 @@ from conductress.tasks.task_cachecannon import (
     parse_info_sections,
     snapshot_info,
 )
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +33,7 @@ def _task(**overrides):
         source=_valid_source(),
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="test",
         requirements={},
         test="get",

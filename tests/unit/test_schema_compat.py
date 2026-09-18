@@ -48,3 +48,18 @@ def test_schema_documents_are_versioned_and_closed_at_top_level(schema):
     assert document["$id"].endswith("-v1.json")
     assert document["properties"]["schema_version"] == {"const": 1}
     assert document["additionalProperties"] is False
+
+
+LEGACY_DIR = ROOT / "tests" / "fixtures" / "golden_tasks_legacy_replicas"
+
+
+@pytest.mark.parametrize("fixture", sorted(LEGACY_DIR.glob("*.json")), ids=lambda path: path.stem)
+def test_legacy_replicas_documents_load_as_the_current_golden(tmp_path, fixture, monkeypatch):
+    """Documents written before the ``topology`` field (``replicas: 0``) load and re-save as today's golden."""
+    from conductress import task_queue
+
+    monkeypatch.setattr(task_queue.config, "REPO_NAMES", ["valkey"])
+    task = BaseTaskData.from_file(fixture)
+    output = tmp_path / fixture.name
+    task.save_to_file(output)
+    assert output.read_text(encoding="utf-8") == (GOLDEN_DIR / fixture.name).read_text(encoding="utf-8")

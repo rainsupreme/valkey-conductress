@@ -18,6 +18,7 @@ from conductress.tasks.task_perf_benchmark import (
     compute_aggregated_stats,
     generate_padded_key,
 )
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +34,7 @@ def _make_perf_task_data(test: str = "set", **overrides) -> PerfTaskData:
         source="manual",
         specifier="test",
         make_args="",
-        replicas=1,
+        topology=TopologySpec.replication_hosts(1),
         note="test",
         requirements={},
         test=test,
@@ -65,7 +66,7 @@ class TestPerfTaskData:
             source="manual",
             specifier="test",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="canary",
             requirements={},
             test="get",
@@ -97,7 +98,7 @@ class TestPerfTaskData:
             source="manual",
             specifier="test",
             make_args="",
-            replicas=1,
+            topology=TopologySpec.replication_hosts(1),
             note="test",
             requirements={},
             test="set",

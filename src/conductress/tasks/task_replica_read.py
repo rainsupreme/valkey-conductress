@@ -80,6 +80,12 @@ PRELOAD_DURATION_SECONDS = 1
 READER_MIN_HIT_RATE_PCT = 99.0
 
 
+def _io_threads_of(inst) -> int:
+    if inst.io_threads is None:
+        raise ValueError(f"instance on port {inst.port} has no io_threads")
+    return inst.io_threads
+
+
 @dataclass
 class ReplicaReadTaskData(BaseTaskData):
     """Task data for the replica-read benchmark. See module docstring."""
@@ -98,16 +104,10 @@ class ReplicaReadTaskData(BaseTaskData):
     write_connections: int = 16
     write_threads: int = 4
     write_pipelining: int = 1
-    # Topology -- every instance runs on the runner host. The inherited
-    # ``replicas`` field is the runner's contract for *extra hosts* from
-    # servers.json and must stay 0 here; the instance count is ``replica_count``.
-    replica_count: int = 1
-    io_threads: int = 8  # replica io-threads (the measured instance)
-    primary_io_threads: int = 1
-    base_port: int = DEFAULT_BASE_PORT
-    server_args: str = ""  # every instance
-    primary_args: str = ""  # primary only, after server_args
-    replica_args: str = ""  # replicas only, after server_args
+    # Topology: the inherited ``topology`` field, built with
+    # ``TopologySpec.replica_read`` (primary + replicas on consecutive ports of
+    # the runner host, each with its own working directory). The properties
+    # below read the levers back out of it.
     # Sampling
     sample_interval: float = 1.0
     info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. counters a build under test exposes)
@@ -118,13 +118,14 @@ class ReplicaReadTaskData(BaseTaskData):
         super().__post_init__()
         self.warmup = int(self.warmup)
         self.duration = int(self.duration)
-        if self.replicas != 0:
+        if not self.topology.replicas:
+            raise ValueError("replica-read needs at least one replica in its topology")
+        if self.topology.host_count() != 1:
             raise ValueError(
-                "replica-read runs every instance on the runner host; "
-                f"replicas (extra hosts) must be 0, got {self.replicas}. Use replica_count for the instance count."
+                "replica-read runs every instance on the runner host; the topology must not name other hosts"
             )
-        if self.replica_count < 1:
-            raise ValueError(f"replica_count must be >= 1 for a replica-read task, got {self.replica_count}")
+        if any(i.io_threads is None for i in self.topology.instances):
+            raise ValueError("every replica-read instance must set io_threads")
         if self.write_rate < 1:
             raise ValueError(f"write_rate must be >= 1 req/s, got {self.write_rate}")
         if self.repetitions < 1:
@@ -136,20 +137,28 @@ class ReplicaReadTaskData(BaseTaskData):
         for name in ("connections", "threads", "write_connections", "write_threads", "pipelining", "write_pipelining"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1, got {getattr(self, name)}")
-        # Build the spec once so an invalid layout fails at submission, not on the runner.
-        self.topology_spec()
+
+    @property
+    def replica_count(self) -> int:
+        """Replica instances on the runner host; reads are measured at the first."""
+        return len(self.topology.replicas)
+
+    @property
+    def io_threads(self) -> int:
+        """Replica io-threads (the measured instance)."""
+        return _io_threads_of(self.topology.replicas[0])
+
+    @property
+    def primary_io_threads(self) -> int:
+        return _io_threads_of(self.topology.primary)
+
+    @property
+    def base_port(self) -> int:
+        return self.topology.primary.port
 
     def topology_spec(self) -> TopologySpec:
-        """Instance layout derived from the task levers (validated at construction)."""
-        return TopologySpec.replica_read(
-            replicas=self.replica_count,
-            replica_io_threads=self.io_threads,
-            primary_io_threads=self.primary_io_threads,
-            server_args=self.server_args,
-            primary_args=self.primary_args,
-            replica_args=self.replica_args,
-            base_port=self.base_port,
-        )
+        """The instance layout (the inherited ``topology`` field)."""
+        return self.topology
 
     def extra_info_fields(self) -> list:
         """Extra INFO field names to sample from every instance."""

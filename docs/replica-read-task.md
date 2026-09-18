@@ -25,8 +25,9 @@ logfile and CPU allocation from the topology-aware allocator.
 | replica  | base + 2 ...  | `--io-threads`         | none (extra `--replicas` add fan-out load only) |
 
 `--replicas` is an instance count on the runner host, not a host count: the
-task needs exactly one `servers.json` entry, unlike replication-group tasks
-where each replica is a separate configured host.
+task's topology names one machine, so it needs exactly one `servers.json`
+entry. (A task whose topology places replicas on further host slots needs one
+configured server per slot.)
 
 Server arguments: `--server-args` applies to every instance; `--primary-args`
 and `--replica-args` are appended after it for their role, so a role-specific

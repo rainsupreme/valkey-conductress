@@ -17,6 +17,7 @@ import pytest
 from conductress.config import ServerInfo
 from conductress.file_protocol import FileProtocol
 from conductress.tasks.task_scenario import ScenarioTaskData
+from conductress.topology import TopologySpec
 
 pytestmark = pytest.mark.requires_server
 
@@ -44,7 +45,7 @@ class TestScenarioEndToEnd:
             source="valkey",
             specifier="unstable",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="integration test",
             requirements={},
             scenario="scan-churn",
@@ -128,7 +129,7 @@ class TestScenarioEndToEnd:
             source="valkey",
             specifier="unstable",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="cleanup test",
             requirements={},
             scenario="scan-churn",
@@ -169,7 +170,7 @@ class TestScenarioEndToEnd:
             source="valkey",
             specifier="unstable",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="tmp cleanup test",
             requirements={},
             scenario="multi-exec",

@@ -13,6 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conductress.task_queue import BaseTaskData
+from conductress.topology import TopologySpec
+
 # ---------------------------------------------------------------------------
 # Focused unit tests: GeneratorProfile registry
 # ---------------------------------------------------------------------------
@@ -258,7 +261,7 @@ class TestCrossContamination:
         task = PerfTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="epoch ownership task",
             requirements={},
             make_args="",
@@ -335,7 +338,7 @@ class TestCrossContamination:
         v1_task = PerfTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="v1 task",
             requirements={},
             make_args="",
@@ -366,7 +369,7 @@ class TestCrossContamination:
         v2_task = PerfTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="v2 task",
             requirements={},
             make_args="",
@@ -424,7 +427,7 @@ class TestMixedSweepV2:
         perf_task = PerfTaskData(
             source="valkey",
             specifier="abc",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             make_args="",
@@ -449,7 +452,7 @@ class TestMixedSweepV2:
         return MixedTaskData(
             source="valkey",
             specifier="abc",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             make_args="",
@@ -510,7 +513,7 @@ class TestMixedSweepV2:
         task = MixedTaskData(
             source="valkey",
             specifier="abc",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             make_args="",
@@ -547,7 +550,7 @@ class TestSerialization:
         task = PerfTaskData(
             source="valkey",
             specifier="abc",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="",
@@ -573,7 +576,7 @@ class TestSerialization:
         task = PerfTaskData(
             source="valkey",
             specifier="abc",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="",
@@ -601,6 +604,8 @@ class TestSerialization:
             "note": "",
             "requirements": {},
             "make_args": "",
+            "task_type": "PerfTaskData",
+            "timestamp": "2026-01-01T00:00:00",
             "test": "get",
             "val_size": 16,
             "io_threads": 7,
@@ -612,5 +617,7 @@ class TestSerialization:
             "preload_keys": True,
             # NO generator_profile key
         }
-        task = PerfTaskData(**legacy_dict)
+        task = BaseTaskData.from_dict(legacy_dict)
+        assert isinstance(task, PerfTaskData)
         assert task.generator_profile == ""
+        assert task.topology == TopologySpec.standalone()

@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from conductress.topology import TopologySpec
 from conductress.tui import (
     CommaSeparatedIntsValidator,
     MakeArgsValidator,
@@ -432,7 +433,7 @@ class TestPerfTaskFormCartesianProduct:
         task = PerfTaskData(
             source="repo1",
             specifier="unstable",
-            replicas=-1,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             make_args="",
@@ -461,7 +462,7 @@ class TestPerfTaskFormCartesianProduct:
         task = PerfTaskData(
             source="repo1",
             specifier="unstable",
-            replicas=-1,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             make_args="",

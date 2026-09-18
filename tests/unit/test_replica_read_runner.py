@@ -34,9 +34,11 @@ from conductress.tasks.task_replica_read import (
     METHOD,
     ReplicaReadTaskData,
     ReplicaReadTaskRunner,
+    TopologySpec,
     _Measurement,
     _Placement,
 )
+from conductress.topology import TopologySpec
 
 # A pid no live process can have (pid_max on 64-bit Linux is 4194304), so
 # read_local_thread_stats finds nothing in /proc for it.
@@ -46,12 +48,44 @@ REPLICA_PID = 3002
 HOST = config.ServerInfo(ip="127.0.0.1", username="ec2-user")
 
 
+_LEVERS = (
+    "replica_count",
+    "io_threads",
+    "primary_io_threads",
+    "server_args",
+    "primary_args",
+    "replica_args",
+    "base_port",
+)
+
+
+def _spec(
+    replica_count=1,
+    io_threads=8,
+    primary_io_threads=1,
+    server_args="",
+    primary_args="",
+    replica_args="",
+    base_port=6379,
+):
+    return TopologySpec.replica_read(
+        replicas=replica_count,
+        replica_io_threads=io_threads,
+        primary_io_threads=primary_io_threads,
+        server_args=server_args,
+        primary_args=primary_args,
+        replica_args=replica_args,
+        base_port=base_port,
+    )
+
+
 def _task(**overrides) -> ReplicaReadTaskData:
+    """Build a task; topology levers (replica_count, io_threads, ...) are folded into the spec."""
+    levers = {k: overrides.pop(k) for k in list(overrides) if k in _LEVERS}
     fields = dict(
         source=config.REPO_NAMES[0],
         specifier="unstable",
         make_args="",
-        replicas=0,
         note="",
         requirements={},
         keyspace_count=1000,
@@ -60,6 +94,7 @@ def _task(**overrides) -> ReplicaReadTaskData:
         repetitions=1,
         write_rate=20_000,
         sample_interval=0.01,
+        topology=overrides.pop("topology", None) or _spec(**levers),
     )
     fields.update(overrides)
     return ReplicaReadTaskData(**fields)

@@ -29,6 +29,7 @@ from conductress.config import (
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_cachecannon import CachecannonTaskData
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -221,7 +222,7 @@ class TestV3EpochIsolation:
         perf = PerfTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="v1 task",
             requirements={},
             make_args="",
@@ -239,7 +240,7 @@ class TestV3EpochIsolation:
         mixed = MixedTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="v2 mixed task",
             requirements={},
             make_args="",
@@ -319,7 +320,7 @@ class TestAdaptiveRepetitionsAreReal:
             CachecannonTaskData(
                 source="valkey",
                 specifier="abc123",
-                replicas=0,
+                topology=TopologySpec.standalone(),
                 note="n",
                 requirements={},
                 make_args="",
@@ -333,7 +334,7 @@ class TestAdaptiveRepetitionsAreReal:
             CachecannonTaskData(
                 source="valkey",
                 specifier="abc123",
-                replicas=0,
+                topology=TopologySpec.standalone(),
                 note="n",
                 requirements={},
                 make_args="",
@@ -346,7 +347,7 @@ class TestAdaptiveRepetitionsAreReal:
             CachecannonTaskData(
                 source="valkey",
                 specifier="abc123",
-                replicas=0,
+                topology=TopologySpec.standalone(),
                 note="n",
                 requirements={},
                 make_args="",
@@ -358,7 +359,7 @@ class TestAdaptiveRepetitionsAreReal:
         task = CachecannonTaskData(
             source="valkey",
             specifier="abc123",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="n",
             requirements={},
             make_args="",

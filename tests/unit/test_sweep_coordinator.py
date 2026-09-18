@@ -10,6 +10,7 @@ import pytest
 from conductress.sweep.coordinator import SWEEP_IO_THREADS, SWEEP_TEST, SWEEP_VAL_SIZE, SweepCoordinator
 from conductress.sweep.planner import BenchmarkPoint, Landmark, PointStatus, SweepPlanner, SweepState
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture
@@ -261,7 +262,7 @@ class TestIsMyTask:
             source="valkey",
             specifier="abc123",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             test="get",
@@ -280,7 +281,7 @@ class TestIsMyTask:
             source="valkey",
             specifier="abc123",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="",
             requirements={},
             test="get",

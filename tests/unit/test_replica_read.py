@@ -18,14 +18,47 @@ def _valid_source():
     return config.REPO_NAMES[0]
 
 
+_LEVERS = (
+    "replica_count",
+    "io_threads",
+    "primary_io_threads",
+    "server_args",
+    "primary_args",
+    "replica_args",
+    "base_port",
+)
+
+
+def _spec(
+    replica_count=1,
+    io_threads=8,
+    primary_io_threads=1,
+    server_args="",
+    primary_args="",
+    replica_args="",
+    base_port=6379,
+):
+    return TopologySpec.replica_read(
+        replicas=replica_count,
+        replica_io_threads=io_threads,
+        primary_io_threads=primary_io_threads,
+        server_args=server_args,
+        primary_args=primary_args,
+        replica_args=replica_args,
+        base_port=base_port,
+    )
+
+
 def _task(**overrides) -> ReplicaReadTaskData:
+    """Build a task; topology levers (replica_count, io_threads, ...) are folded into the spec."""
+    levers = {k: overrides.pop(k) for k in list(overrides) if k in _LEVERS}
     fields = dict(
         source=_valid_source(),
         specifier="unstable",
         make_args="",
-        replicas=0,
         note="",
         requirements={},
+        topology=overrides.pop("topology", None) or _spec(**levers),
     )
     fields.update(overrides)
     return ReplicaReadTaskData(**fields)
@@ -177,8 +210,16 @@ def test_task_defaults_and_description():
 @pytest.mark.parametrize(
     "overrides,match",
     [
-        ({"replica_count": 0}, "replica_count"),
-        ({"replicas": 1}, "must be 0"),
+        ({"topology": TopologySpec.standalone(8)}, "at least one replica"),
+        ({"topology": TopologySpec.replication_hosts(1)}, "must not name other hosts"),
+        (
+            {
+                "topology": TopologySpec.replica_read(replicas=1, replica_io_threads=4, primary_io_threads=1).__class__(
+                    instances=[InstanceSpec(role="primary", port=6379), InstanceSpec(role="replica", port=6380)]
+                )
+            },
+            "must set io_threads",
+        ),
         ({"write_rate": 0}, "write_rate"),
         ({"duration": 0}, "duration"),
         ({"sample_interval": 0}, "sample_interval"),
@@ -198,9 +239,9 @@ def test_task_round_trips_through_queue_document(tmp_path):
     loaded = BaseTaskData.from_file(path)
     assert isinstance(loaded, ReplicaReadTaskData)
     assert loaded.replica_count == 2
-    assert loaded.replicas == 0
+    assert loaded.topology == task.topology
     assert loaded.write_rate == 200_000
-    assert loaded.replica_args == "--io-threads-ownership yes"
+    assert loaded.topology.replicas[0].server_args == "--io-threads-ownership yes"
     assert loaded.extra_info_fields() == ["a", "b"]
     assert json.loads(path.read_text())["task_type"] == "ReplicaReadTaskData"
 
@@ -261,7 +302,7 @@ def test_task_needs_exactly_one_configured_server():
 def test_required_server_count_for_replication_group_tasks():
     class _Hosts:
         def __init__(self, replicas):
-            self.replicas = replicas
+            self.topology = TopologySpec.replication_hosts(replicas)
 
     assert required_server_count(_Hosts(0)) == 1
     assert required_server_count(_Hosts(2)) == 3
@@ -289,6 +330,6 @@ def test_cli_add_replica_read_submits_a_single_host_task(mock_queue_cls):
     task = mock_queue.submit_task.call_args.args[0]
     assert isinstance(task, ReplicaReadTaskData)
     assert task.replica_count == 2
-    assert task.replicas == 0
     assert required_server_count(task) == 1
-    assert len(task.topology_spec().replicas) == 2
+    assert len(task.topology.replicas) == 2
+    assert task.topology.host_count() == 1

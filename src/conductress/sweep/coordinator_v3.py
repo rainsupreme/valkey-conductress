@@ -54,6 +54,7 @@ from conductress.sweep.coordinator import BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_cachecannon import CachecannonTaskData
+from conductress.topology import TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             source=self._sweep_source,
             specifier=sweep_task.commit,
             make_args=self._sweep_make_args,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[cachecannon-sweep-v3:{self._sweep_source}/{self.workload_id}] {sweep_task.reason}",
             requirements={},
             test=self._test,
