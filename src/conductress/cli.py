@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from . import config
+from .cachecannon import DEFAULT_CACHECANNON_BINARY
 from .fleet_client import FleetClientError
 from .task_queue import BaseTaskData, TaskQueue
 from .tasks.task_perf_benchmark import PerfTaskData
@@ -81,14 +82,97 @@ def _parse_tests(value: str) -> List[str]:
     return tests
 
 
+def _parse_bytes(value: str, name: str) -> int:
+    """Parse one human-readable byte value, naming the flag in the error."""
+    try:
+        return int(HumanByte.from_human(value))
+    except ValueError as exc:
+        raise ValueError(f"--{name}: {exc}") from exc
+
+
+def _check_cpulist(value: str, name: str) -> None:
+    """Validate a cpulist flag, naming the flag in the error."""
+    try:
+        validate_cpulist(value)
+    except ValueError as exc:
+        raise ValueError(f"--{name}: {exc}") from exc
+
+
+def _source_is_valid(source: str) -> bool:
+    """True if ``source`` is a known repository; otherwise print the error and return False."""
+    if validate_source(source):
+        return True
+    valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+    print(f"Error: Invalid source '{source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    return False
+
+
+# --- arguments shared by every queue add-* command -------------------------------
+#
+# Every task type takes the same build identity (--source/--specifier), the same
+# run-length knobs (--warmup/--duration/--repetitions) and the same footer
+# (--note/--make-args). Each helper takes the per-command help text where the
+# wording carries information (what "duration" means for that task) and fixes
+# the flag names, types and defaults so the commands cannot drift apart.
+
+SOURCE_HELP = "Repository source name (default: valkey)"
+SPECIFIER_HELP = "Branch, tag, or commit (default: unstable)"
+WARMUP_HELP = "Warmup duration (e.g., 30s, 1m)"
+DURATION_HELP = "Test duration (e.g., 5m, 30s)"
+REPETITIONS_HELP = "Number of repetitions"
+
+
+def _add_source_args(parser: argparse.ArgumentParser, specifier_help: str = SPECIFIER_HELP) -> None:
+    """--source / --specifier: which build to test."""
+    parser.add_argument("--source", default="valkey", help=SOURCE_HELP)
+    parser.add_argument("--specifier", default="unstable", help=specifier_help)
+
+
+def _add_run_length_args(
+    parser: argparse.ArgumentParser,
+    *,
+    warmup: Optional[str] = WARMUP_HELP,
+    duration: Optional[str] = DURATION_HELP,
+    repetitions: str = REPETITIONS_HELP,
+) -> None:
+    """--warmup / --duration / --repetitions. Pass ``None`` to omit a flag the task has no use for."""
+    if warmup is not None:
+        parser.add_argument(
+            "--warmup", default=f"{config.DEFAULT_WARMUP}s", help=f"{warmup}. Default: {config.DEFAULT_WARMUP}s"
+        )
+    if duration is not None:
+        parser.add_argument(
+            "--duration", default=f"{config.DEFAULT_DURATION}s", help=f"{duration}. Default: {config.DEFAULT_DURATION}s"
+        )
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"{repetitions}. Default: {config.DEFAULT_REPETITIONS}",
+    )
+
+
+def _add_note_and_build_args(parser: argparse.ArgumentParser, *, plural: bool = False) -> None:
+    """--note / --make-args: the footer every task carries into its result row."""
+    parser.add_argument("--note", default="", help=f"Optional note for the task{'s' if plural else ''}")
+    parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+
+
+def _add_cachecannon_binary_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cachecannon-binary",
+        default=DEFAULT_CACHECANNON_BINARY,
+        help=f"Path to cachecannon binary (default: {DEFAULT_CACHECANNON_BINARY})",
+    )
+
+
 def _add_perf_args(parser: argparse.ArgumentParser) -> None:
     """Add performance benchmark arguments to a parser."""
-    parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    parser.add_argument(
-        "--specifier",
-        default="unstable",
-        help="Branch, tag, or commit (default: unstable)",
-    )
+    _add_source_args(parser)
     parser.add_argument("--tests", required=True, help="Comma-separated test names (e.g., get,set)")
     parser.add_argument(
         "--sizes",
@@ -105,33 +189,15 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         default=str(config.DEFAULT_PIPELINING),
         help=f"Comma-separated pipelining values (e.g., 1,4,10). Default: {config.DEFAULT_PIPELINING}",
     )
-    parser.add_argument(
-        "--warmup",
-        default=f"{config.DEFAULT_WARMUP}s",
-        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s",
-    )
-    parser.add_argument(
-        "--duration",
-        default=f"{config.DEFAULT_DURATION}s",
-        help=f"Test duration (e.g., 5m, 15m). Default: {config.DEFAULT_DURATION}s",
-    )
-    parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions per config. Default: {config.DEFAULT_REPETITIONS}",
+    _add_run_length_args(
+        parser, duration="Test duration (e.g., 5m, 15m)", repetitions="Number of repetitions per config"
     )
     parser.add_argument(
         "--key-sizes",
         default=str(config.DEFAULT_KEY_SIZE),
         help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}",
     )
-    parser.add_argument("--note", default="", help="Optional note for the tasks")
-    parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_note_and_build_args(parser, plural=True)
     parser.add_argument(
         "--perf-stat",
         action="store_true",
@@ -288,8 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     insertion_parser = queue_sub.add_parser(
         "add-insertion", help="Add a finite new-key-only SET task with explicit memory bounds"
     )
-    insertion_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    insertion_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    _add_source_args(insertion_parser)
     insertion_parser.add_argument(
         "--insertions", required=True, help="Exact unique key count (supports K/M/G suffixes)"
     )
@@ -297,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     insertion_parser.add_argument("--key-size", default="16", help="Key size (default: 16 bytes)")
     insertion_parser.add_argument("--io-threads", type=int, default=config.DEFAULT_IO_THREADS)
     insertion_parser.add_argument("--pipelining", type=int, default=config.DEFAULT_PIPELINING)
-    insertion_parser.add_argument("--repetitions", type=int, default=config.DEFAULT_REPETITIONS)
+    _add_run_length_args(insertion_parser, warmup=None, duration=None)
     insertion_parser.add_argument("--maxmemory", required=True, help="Valkey maxmemory bound (for example 8GB)")
     insertion_parser.add_argument("--max-rss", required=True, help="RSS abort ceiling (for example 12GB)")
     insertion_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counters")
@@ -306,13 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
     insertion_parser.add_argument("--bench-threads", type=int, default=0, help="Expert: client thread count")
     insertion_parser.add_argument("--bench-clients", type=int, default=0, help="Expert: total client connections")
     insertion_parser.add_argument("--server-args", default="", help="Extra raw server arguments")
-    insertion_parser.add_argument("--note", default="", help="Optional note for the task")
-    insertion_parser.add_argument("--make-args", default=config.DEFAULT_MAKE_ARGS)
+    _add_note_and_build_args(insertion_parser)
 
     # queue add-memory
     mem_parser = queue_sub.add_parser("add-memory", help="Add memory efficiency tasks to the queue")
-    mem_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    mem_parser.add_argument("--specifier", default="unstable", help="Branch, tag, commit, or path (default: unstable)")
+    _add_source_args(mem_parser, specifier_help="Branch, tag, commit, or path (default: unstable)")
     mem_parser.add_argument(
         "--types",
         default="set,sadd,zadd,hset",
@@ -334,12 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="zadd insertion pattern (default: random). sequential=dense/best-case, "
         "churn=50/50 add-delete steady state. Only affects zadd.",
     )
-    mem_parser.add_argument("--note", default="", help="Optional note for the tasks")
-    mem_parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_note_and_build_args(mem_parser, plural=True)
     mem_parser.add_argument(
         "--settle",
         action="store_true",
@@ -349,8 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # queue add-mixed
     mixed_parser = queue_sub.add_parser("add-mixed", help="Add a mixed GET/SET throughput task (memtier)")
-    mixed_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    mixed_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    _add_source_args(mixed_parser)
     mixed_parser.add_argument(
         "--set-ratio",
         type=int,
@@ -377,28 +434,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(config.DEFAULT_PIPELINING),
         help=f"Comma-separated pipelining values. Default: {config.DEFAULT_PIPELINING}",
     )
-    mixed_parser.add_argument(
-        "--duration",
-        default=f"{config.DEFAULT_DURATION}s",
-        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
-    )
-    mixed_parser.add_argument(
-        "--warmup",
-        default=f"{config.DEFAULT_WARMUP}s",
-        help=f"Warmup duration passed to memtier (0s disables). Default: {config.DEFAULT_WARMUP}s",
-    )
-    mixed_parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
-    )
-    mixed_parser.add_argument("--note", default="", help="Optional note for the tasks")
-    mixed_parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_run_length_args(mixed_parser, warmup="Warmup duration passed to memtier (0s disables)")
+    _add_note_and_build_args(mixed_parser, plural=True)
     mixed_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counter collection")
     mixed_parser.add_argument(
         "--server-cpus",
@@ -451,8 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
         "drives the fork cost. 'large-value-reader' measures how continuous large-value GETs "
         "from a dedicated keyset degrade background workload throughput/latency.",
     )
-    scenario_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    scenario_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    _add_source_args(scenario_parser)
     scenario_parser.add_argument(
         "--io-threads",
         default=str(config.DEFAULT_IO_THREADS),
@@ -463,23 +499,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(config.DEFAULT_PIPELINING),
         help=f"Pipeline depth for background GET. Default: {config.DEFAULT_PIPELINING}",
     )
-    scenario_parser.add_argument(
-        "--duration",
-        default=f"{config.DEFAULT_DURATION}s",
-        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
-    )
-    scenario_parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
-    )
-    scenario_parser.add_argument("--note", default="", help="Optional note for the task")
-    scenario_parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_run_length_args(scenario_parser, warmup=None)
+    _add_note_and_build_args(scenario_parser)
     scenario_parser.add_argument(
         "--perf-stat", action="store_true", help="Enable perf stat hardware counter collection"
     )
@@ -545,8 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
         "add-cachecannon",
         help="Add a cachecannon benchmark task (second-opinion generator, NOT sweep-comparable)",
     )
-    cc_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    cc_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    _add_source_args(cc_parser)
     cc_parser.add_argument(
         "--test",
         default="get",
@@ -582,22 +602,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=config.DEFAULT_IO_THREADS,
         help=f"Server IO threads (default: {config.DEFAULT_IO_THREADS})",
     )
-    cc_parser.add_argument(
-        "--warmup",
-        default=f"{config.DEFAULT_WARMUP}s",
-        help=f"Warmup duration (e.g., 30s, 1m). Default: {config.DEFAULT_WARMUP}s",
-    )
-    cc_parser.add_argument(
-        "--duration",
-        default=f"{config.DEFAULT_DURATION}s",
-        help=f"Test duration (e.g., 5m, 30s). Default: {config.DEFAULT_DURATION}s",
-    )
-    cc_parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
-    )
+    _add_run_length_args(cc_parser)
     cc_parser.add_argument(
         "--keyspace",
         type=int,
@@ -619,11 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Key distribution (default: uniform). 'zipf' concentrates traffic "
         "on hot keys (cachecannon-native zipf, no exponent knob).",
     )
-    cc_parser.add_argument(
-        "--cachecannon-binary",
-        default="/home/ec2-user/cachecannon/target/release/cachecannon",
-        help="Path to cachecannon binary (default: /home/ec2-user/cachecannon/target/release/cachecannon)",
-    )
+    _add_cachecannon_binary_arg(cc_parser)
     cc_parser.add_argument(
         "--server-args",
         default="",
@@ -639,20 +640,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expert: explicit cpulist override for cachecannon client",
     )
-    cc_parser.add_argument("--note", default="", help="Optional note for the task")
-    cc_parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_note_and_build_args(cc_parser)
 
     # queue add-replica-read
     rr_parser = queue_sub.add_parser(
         "add-replica-read",
         help="Add a replica-read task: reads served by a replica while the primary ingests writes at a fixed rate",
     )
-    rr_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
-    rr_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    _add_source_args(rr_parser)
     rr_parser.add_argument(
         "--replicas", type=int, default=1, help="Replica count; reads are measured at the first (default: 1)"
     )
@@ -685,22 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=config.PERF_BENCH_KEYSPACE,
         help=f"Keyspace count, shared by writer and reader (default: {config.PERF_BENCH_KEYSPACE})",
     )
-    rr_parser.add_argument(
-        "--warmup",
-        default=f"{config.DEFAULT_WARMUP}s",
-        help=f"Reader warmup (e.g., 10s). Default: {config.DEFAULT_WARMUP}s",
-    )
-    rr_parser.add_argument(
-        "--duration",
-        default=f"{config.DEFAULT_DURATION}s",
-        help=f"Reader measured duration (e.g., 30s). Default: {config.DEFAULT_DURATION}s",
-    )
-    rr_parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
-    )
+    _add_run_length_args(rr_parser, warmup="Reader warmup (e.g., 10s)", duration="Reader measured duration (e.g., 30s)")
     rr_parser.add_argument(
         "--base-port", type=int, default=6379, help="Primary port; replicas take the following ports (default: 6379)"
     )
@@ -719,18 +699,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Comma-separated extra INFO fields to sample from every instance (e.g. counters a build under test exposes)",
     )
-    rr_parser.add_argument(
-        "--cachecannon-binary",
-        default="/home/ec2-user/cachecannon/target/release/cachecannon",
-        help="Path to cachecannon binary (default: /home/ec2-user/cachecannon/target/release/cachecannon)",
-    )
+    _add_cachecannon_binary_arg(rr_parser)
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
-    rr_parser.add_argument("--note", default="", help="Optional note for the task")
-    rr_parser.add_argument(
-        "--make-args",
-        default=config.DEFAULT_MAKE_ARGS,
-        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
-    )
+    _add_note_and_build_args(rr_parser)
 
     for task_parser in (
         add_parser,
@@ -759,9 +730,7 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
     from conductress.tasks.task_perf_benchmark import BoundedInsertionTaskData
     from conductress.utility import HumanNumber
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
     try:
         insertions = int(HumanNumber.from_human(args.insertions))
@@ -846,12 +815,7 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
 
 def handle_queue_add(args: argparse.Namespace) -> int:
     """Handle 'queue add': validate inputs, generate tasks, and submit them."""
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(
-            f"Error: Invalid source '{args.source}'. " f"Valid sources: {', '.join(valid_sources)}",
-            file=sys.stderr,
-        )
+    if not _source_is_valid(args.source):
         return 1
 
     try:
@@ -971,9 +935,7 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
     from conductress.tasks.task_latency import LatencyTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     if not (0 <= args.set_ratio <= 100):
@@ -1020,9 +982,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     """Handle 'queue add-mixed': submit mixed GET/SET throughput tasks."""
     from conductress.tasks.task_mixed import MixedTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     if not (0 <= args.set_ratio <= 100):
@@ -1151,9 +1111,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     """Handle 'queue add-scenario': submit a pathological-workload scenario task."""
     from conductress.tasks.task_scenario import SCENARIO_CHOICES, ScenarioTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     if args.scenario not in SCENARIO_CHOICES:
@@ -1256,27 +1214,17 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
     """
     from conductress.tasks.task_cachecannon import CachecannonTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     try:
         warmup = _parse_human_time(args.warmup, "warmup")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
         duration = _parse_human_time(args.duration, "duration")
+        val_size = _parse_bytes(args.sizes, "sizes")
+        _check_cpulist(args.server_cpus, "server-cpus")
+        _check_cpulist(args.client_cpus, "client-cpus")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        val_size = int(HumanByte.from_human(args.sizes))
-    except ValueError as e:
-        print(f"Error (--sizes): {e}", file=sys.stderr)
         return 1
 
     if args.repetitions < 1:
@@ -1285,17 +1233,6 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
 
     if not 0 <= args.set_ratio <= 100:
         print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
-        return 1
-
-    try:
-        validate_cpulist(args.server_cpus)
-    except ValueError as e:
-        print(f"Error (--server-cpus): {e}", file=sys.stderr)
-        return 1
-    try:
-        validate_cpulist(args.client_cpus)
-    except ValueError as e:
-        print(f"Error (--client-cpus): {e}", file=sys.stderr)
         return 1
 
     queue = _TaskSubmitter(args)
@@ -1342,7 +1279,7 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
     print(f"  io-threads={args.io_threads} duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
-    if args.cachecannon_binary != "/home/ec2-user/cachecannon/target/release/cachecannon":
+    if args.cachecannon_binary != DEFAULT_CACHECANNON_BINARY:
         print(f"  binary: {args.cachecannon_binary}")
     if args.note:
         print(f"  note: {args.note}")
@@ -1353,28 +1290,16 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
     """Handle 'queue add-replica-read': submit a replica-read benchmark task."""
     from conductress.tasks.task_replica_read import ReplicaReadTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     try:
         warmup = _parse_human_time(args.warmup, "warmup")
         duration = _parse_human_time(args.duration, "duration")
+        val_size = _parse_bytes(args.sizes, "sizes")
+        _check_cpulist(args.client_cpus, "client-cpus")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        val_size = int(HumanByte.from_human(args.sizes))
-    except ValueError as e:
-        print(f"Error (--sizes): {e}", file=sys.stderr)
-        return 1
-
-    try:
-        validate_cpulist(args.client_cpus)
-    except ValueError as e:
-        print(f"Error (--client-cpus): {e}", file=sys.stderr)
         return 1
 
     try:
@@ -1463,9 +1388,7 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
     from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
     from conductress.tasks.task_mem_efficiency import MemTaskData
 
-    if not validate_source(args.source):
-        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
-        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+    if not _source_is_valid(args.source):
         return 1
 
     types = [t.strip() for t in args.types.split(",") if t.strip()]
