@@ -27,7 +27,6 @@ from scipy.stats import t as t_dist
 from conductress.config import PERF_BENCH_KEYSPACE, ServerInfo, get_sweep_engine, should_profile_internals
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
-from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.stormgen import netstat
 from conductress.stormgen.policy import parse_policy
@@ -41,6 +40,7 @@ from conductress.tasks.task_mixed import (
     parse_memtier_total_rps,
     set_ratio_to_memtier_ratio,
 )
+from conductress.topology import TopologyGroup, TopologySpec
 from conductress.utility import RealtimeCommand
 
 logger = logging.getLogger(__name__)
@@ -963,6 +963,7 @@ class ScenarioTaskData(BaseTaskData):
         return ScenarioTaskRunner(
             task_name=self.task_id,
             server_infos=server_infos,
+            topology=self.topology,
             source=self.source,
             specifier=self.specifier,
             make_args=self.make_args,
@@ -1011,9 +1012,11 @@ class ScenarioTaskRunner(BaseTaskRunner):
         overlay_value_size: int = 0,
         overlay_spec: str = "",
         server_sample_ms: int = 0,
+        topology: Optional[TopologySpec] = None,
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
+        self.topology = topology if topology is not None else TopologySpec.standalone()
         self.source = source
         self.specifier = specifier
         self.make_args = make_args
@@ -1135,14 +1138,15 @@ class ScenarioTaskRunner(BaseTaskRunner):
         )
         self.file_protocol.write_status(self.status)
 
-        replication_group = ReplicationGroup(
+        topology_group = TopologyGroup.for_task(
             self.server_infos,
+            self.topology,
             self.source,
             self.specifier,
-            self.io_threads,
-            self.make_args,
-            server_cpu_override=self.server_cpu_override,
+            io_threads=self.io_threads,
+            make_args=self.make_args,
             server_args=self.server_args_effective,
+            cpu_override=self.server_cpu_override,
         )
 
         per_run_rps: List[float] = []
@@ -1157,16 +1161,18 @@ class ScenarioTaskRunner(BaseTaskRunner):
 
                 # Between-rep housekeeping
                 if rep > 0:
-                    await replication_group.stop_all_servers()
-                    server = replication_group.primary or Server(self.server_infos[0].ip)
+                    await topology_group.stop_all_servers()
+                    server = topology_group.primary or Server(self.server_infos[0].ip)
                     await server.run_host_command("sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False)
 
                 # Start server
-                await replication_group.kill_all_valkey_instances()
-                await replication_group.start()
-                if not replication_group.primary:
+                await topology_group.kill_all_valkey_instances()
+                await topology_group.start()
+                if not topology_group.primary:
                     raise RuntimeError("Server failed to start")
-                server = replication_group.primary
+                await topology_group.begin_replication()
+                await topology_group.wait_for_repl_sync()
+                server = topology_group.primary
                 self.commit_hash = server.get_build_hash() or ""
 
                 # Prefill keyspace
@@ -1362,7 +1368,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         await server.run_host_command("rm -f /tmp/multi_exec_payload.resp", check=False)
 
         finally:
-            await replication_group.stop_all_servers()
+            await topology_group.stop_all_servers()
 
         if not per_run_rps:
             raise RuntimeError("No successful repetitions")
@@ -1387,6 +1393,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
 
         # Record results
         detailed_data = {
+            "topology": self.topology.to_dict(),
             "scenario": self.scenario,
             "duration": self.duration,
             "warmup": self.warmup,

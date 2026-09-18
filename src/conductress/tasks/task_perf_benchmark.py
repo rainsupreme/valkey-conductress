@@ -27,9 +27,9 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
-from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.topology import TopologyGroup, TopologySpec
 from conductress.utility import (
     HumanByte,
     HumanNumber,
@@ -161,6 +161,7 @@ class PerfTaskData(BaseTaskData):
             server_infos,
             self.source,
             self.specifier,
+            topology=self.topology,
             io_threads=self.io_threads,
             valsize=self.val_size,
             pipelining=self.pipelining,
@@ -344,6 +345,7 @@ class PerfTaskRunner(BaseTaskRunner):
         client_netns: str = "",
         bench_binary: str = "",
         generator_profile: str = "",
+        topology: Optional[TopologySpec] = None,
     ):
         super().__init__(task_name)
 
@@ -352,6 +354,7 @@ class PerfTaskRunner(BaseTaskRunner):
         # settings
         self.task_name = task_name
         self.server_infos = server_infos
+        self.topology = topology if topology is not None else TopologySpec.standalone()
         self.binary_source = binary_source
         self.specifier = specifier
         # CPU flamegraph stacks expose the server binary's symbols; skip for engines
@@ -551,6 +554,7 @@ class PerfTaskRunner(BaseTaskRunner):
             reps = len(per_run_rps)
 
             detailed_data = {
+                "topology": self.topology.to_dict(),
                 "warmup": self.warmup,
                 "duration": self.duration,
                 "io-threads": self.io_threads,
@@ -601,6 +605,7 @@ class PerfTaskRunner(BaseTaskRunner):
             avg_rps = sum(self.rps_data) / len(self.rps_data)
 
             detailed_data = {
+                "topology": self.topology.to_dict(),
                 "warmup": self.warmup,
                 "duration": self.duration,
                 "io-threads": self.io_threads,
@@ -670,14 +675,15 @@ class PerfTaskRunner(BaseTaskRunner):
 
         self.file_protocol.write_status(self.status)
 
-        replication_group = ReplicationGroup(
+        topology_group = TopologyGroup.for_task(
             self.server_infos,
+            self.topology,
             self.binary_source,
             self.specifier,
-            self.io_threads,
-            self.make_args,
-            server_cpu_override=self.server_cpu_override,
+            io_threads=self.io_threads,
+            make_args=self.make_args,
             server_args=self.server_args,
+            cpu_override=self.server_cpu_override,
         )
 
         benchmark_alloc_tag = None
@@ -690,10 +696,10 @@ class PerfTaskRunner(BaseTaskRunner):
             for rep in range(effective_reps):
                 # Between-rep housekeeping (skip on first rep)
                 if rep > 0:
-                    await replication_group.stop_all_servers()
+                    await topology_group.stop_all_servers()
                     # Drop page caches between reps to prevent drift.
                     # Skip on Intel (large monolithic L3 stays warm).
-                    primary_server = replication_group.primary or Server(self.server_infos[0].ip)
+                    primary_server = topology_group.primary or Server(self.server_infos[0].ip)
                     platform = getattr(primary_server, "_platform_info", None)
                     if platform is None or platform.needs_drop_caches:
                         await primary_server.run_host_command(
@@ -702,14 +708,14 @@ class PerfTaskRunner(BaseTaskRunner):
                         )
 
                 # Start server
-                await replication_group.kill_all_valkey_instances()
-                await replication_group.start()
-                if not replication_group.primary:
+                await topology_group.kill_all_valkey_instances()
+                await topology_group.start()
+                if not topology_group.primary:
                     raise RuntimeError("Replication group failed to start: no primary server available")
 
-                await replication_group.begin_replication()
-                await replication_group.wait_for_repl_sync()
-                server = replication_group.primary
+                await topology_group.begin_replication()
+                await topology_group.wait_for_repl_sync()
+                server = topology_group.primary
                 self.commit_hash = server.get_build_hash() or ""
 
                 # Preload data
@@ -815,7 +821,7 @@ class PerfTaskRunner(BaseTaskRunner):
             self.file_protocol.write_status(self.status)
 
         finally:
-            await replication_group.stop_all_servers()
+            await topology_group.stop_all_servers()
             if benchmark_alloc_tag and client:
                 client.release_cpus(benchmark_alloc_tag)
 
@@ -1097,6 +1103,7 @@ class BoundedInsertionTaskData(BaseTaskData):
         return BoundedInsertionTaskRunner(
             task_name=self.task_id,
             server_infos=server_infos,
+            topology=self.topology,
             binary_source=self.source,
             specifier=self.specifier,
             val_size=self.val_size,
@@ -1144,11 +1151,13 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
         server_args: str,
         bench_threads: int,
         bench_clients: int,
+        topology: Optional[TopologySpec] = None,
     ):
         bounded_server_args = (f"{server_args} --maxmemory {maxmemory_bytes} --maxmemory-policy noeviction").strip()
         super().__init__(
             task_name=task_name,
             server_infos=server_infos,
+            topology=topology,
             binary_source=binary_source,
             specifier=specifier,
             io_threads=io_threads,
@@ -1265,14 +1274,15 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
 
     async def run(self) -> None:
         self.file_protocol.write_status(self.status)
-        replication_group = ReplicationGroup(
+        topology_group = TopologyGroup.for_task(
             self.server_infos,
+            self.topology,
             self.binary_source,
             self.specifier,
-            self.io_threads,
-            self.make_args,
-            server_cpu_override=self.server_cpu_override,
+            io_threads=self.io_threads,
+            make_args=self.make_args,
             server_args=self.server_args,
+            cpu_override=self.server_cpu_override,
         )
         benchmark_alloc_tag = None
         client: Optional[Server] = None
@@ -1283,17 +1293,19 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
         try:
             for rep in range(self.repetitions):
                 if rep > 0:
-                    await replication_group.stop_all_servers()
-                    primary = replication_group.primary or Server(self.server_infos[0].ip)
+                    await topology_group.stop_all_servers()
+                    primary = topology_group.primary or Server(self.server_infos[0].ip)
                     platform = getattr(primary, "_platform_info", None)
                     if platform is None or platform.needs_drop_caches:
                         await primary.run_host_command("sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False)
 
-                await replication_group.kill_all_valkey_instances()
-                await replication_group.start()
-                if not replication_group.primary:
+                await topology_group.kill_all_valkey_instances()
+                await topology_group.start()
+                if not topology_group.primary:
                     raise RuntimeError("Replication group failed to start: no primary server available")
-                server = replication_group.primary
+                await topology_group.begin_replication()
+                await topology_group.wait_for_repl_sync()
+                server = topology_group.primary
                 self.commit_hash = server.get_build_hash() or ""
 
                 empty_count, _ = await server.count_items_expires()
@@ -1337,6 +1349,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             mean_elapsed = sum(float(sample["elapsed_seconds"]) for sample in samples) / len(samples)
             self._perf_duration_seconds = mean_elapsed
             data: dict[str, Any] = {
+                "topology": self.topology.to_dict(),
                 "insertions_per_rep": self.insertions,
                 "key_size": self.key_size,
                 "size": self.valsize,
@@ -1374,7 +1387,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             self.status.end_time = time.time()
             self.file_protocol.write_status(self.status)
         finally:
-            await replication_group.stop_all_servers()
+            await topology_group.stop_all_servers()
             if benchmark_alloc_tag and client:
                 client.release_cpus(benchmark_alloc_tag)
 

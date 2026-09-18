@@ -321,7 +321,6 @@ class CanaryScheduler:
                 "source": profile.source,
                 "specifier": profile.pinned_commit,
                 "timestamp": submitted_at.removesuffix("Z").removesuffix("+00:00"),
-                "replicas": 0,
                 "requirements": {},
                 "make_args": profile.build["make_args"],
                 "note": f"canary {profile.profile_id} v{profile.profile_version} ({utc_date})",

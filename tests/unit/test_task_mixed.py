@@ -102,10 +102,12 @@ def make_mock_server(ip: str = "10.0.0.1", port: int = 6379) -> MagicMock:
 
 
 def make_repl_group(server: MagicMock) -> MagicMock:
-    """Build a mock ReplicationGroup wired to *server* as primary."""
+    """Build a mock TopologyGroup wired to *server* as primary."""
     rg = MagicMock()
     rg.primary = server
     rg.start = AsyncMock()
+    rg.begin_replication = AsyncMock()
+    rg.wait_for_repl_sync = AsyncMock()
     rg.stop_all_servers = AsyncMock()
     rg.kill_all_valkey_instances = AsyncMock()
     return rg
@@ -627,7 +629,7 @@ class TestEndToEndRunnerMock:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
 
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
 
         for cmd in commands:
@@ -655,7 +657,7 @@ class TestEndToEndRunnerMock:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
 
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
 
         prefills = [c for c in commands if "--key-pattern P:P" in c]
@@ -671,7 +673,7 @@ class TestEndToEndRunnerMock:
         rg = make_repl_group(server)
         results = wire_file_protocol(runner)
 
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
 
         assert len(results) == 1
@@ -704,9 +706,10 @@ class TestEndToEndRunnerMock:
         rg = make_repl_group(server)
         results = wire_file_protocol(runner)
 
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
 
+        assert results[0].data["topology"] == TopologySpec.standalone().to_dict()  # every row records its layout
         cc = results[0].data["client_cpu"]
         assert cc["capacity_cores"] == 16  # min(24, cpulist 0-15)
         assert cc["utilization"] == pytest.approx(0.75, abs=0.01)
@@ -720,7 +723,7 @@ class TestEndToEndRunnerMock:
         rg = make_repl_group(server)
         results = wire_file_protocol(runner)
 
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
 
         cc = results[0].data["client_cpu"]
@@ -810,7 +813,7 @@ class TestMixedMeasurementBoundary:
         server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(gnu_time_available=False))
         rg = make_repl_group(server)
         results = wire_file_protocol(runner)
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
         return delays, results[0].data
 
@@ -847,7 +850,7 @@ class TestFinalRepCpuProfile:
         server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(gnu_time_available=False))
         rg = make_repl_group(server)
         results = wire_file_protocol(runner)
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
         assert len(cpu_calls) == 1 and cpu_calls[0]["duration"] == 30 and cpu_calls[0]["delay"] == 5.0
         assert results[0].data["cpu_stacks_main"] == [["func1;func2", 100]]
@@ -860,7 +863,7 @@ class TestFinalRepCpuProfile:
         server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(gnu_time_available=False))
         rg = make_repl_group(server)
         wire_file_protocol(runner)
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
         server.cpu_profile_start.assert_not_called()
 
@@ -884,7 +887,7 @@ class TestFailureCleanup:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):
-            with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
                 await runner.run()
         assert stop_called and wait_called
 
@@ -903,7 +906,7 @@ class TestFailureCleanup:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):
-            with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
                 await runner.run()
         assert cancel_called
 
@@ -922,7 +925,7 @@ class TestFailureCleanup:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Failed to parse memtier output"):
-            with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
                 await runner.run()
         assert stop_called and wait_called and cancel_called
 
@@ -938,7 +941,7 @@ class TestFailureCleanup:
         server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(gnu_time_available=False))
         rg = make_repl_group(server)
         wire_file_protocol(runner)
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
         assert len(stop_count) == 1
 
@@ -957,7 +960,7 @@ class TestWarmupZeroBehavior:
         server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(gnu_time_available=False))
         rg = make_repl_group(server)
         wire_file_protocol(runner)
-        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+        with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
             await runner.run()
         assert delays == [0.0]
 
@@ -1087,7 +1090,7 @@ class TestFailureDuringDelayedWarmup:
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):
-            with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            with patch("conductress.tasks.task_mixed.TopologyGroup", **{"for_task.return_value": rg}):
                 await runner.run()
         server.cpu_profile_cancel.assert_called_once()
 

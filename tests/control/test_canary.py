@@ -525,6 +525,8 @@ class TestEnvelopeCompatibility:
             assert envelope["canary_id"] is not None
             task = BaseTaskData.from_dict(envelope["task"])
             assert task.task_type == "CanaryPerfTaskData"
+            assert "replicas" not in envelope["task"]
+            assert task.topology.is_standalone
             assert task.specifier == "a" * 40
             assert task.bench_clients == 1200
             assert task.bench_threads == 16

@@ -163,6 +163,61 @@ def _add_note_and_build_args(parser: argparse.ArgumentParser, *, plural: bool = 
     )
 
 
+def _add_role_args(parser: argparse.ArgumentParser) -> None:
+    """--primary-args / --replica-args: per-role server arguments, appended after --server-args."""
+    parser.add_argument(
+        "--primary-args", default="", help="Extra raw server arguments for the primary only (after --server-args)"
+    )
+    parser.add_argument(
+        "--replica-args",
+        default="",
+        help="Extra raw server arguments for replicas only (after --server-args); the natural A/B lever for a "
+        "replica-side config change",
+    )
+
+
+def _add_topology_args(parser: argparse.ArgumentParser) -> None:
+    """--topology plus the per-role arguments, for tasks that bring servers up through TopologyGroup."""
+    parser.add_argument(
+        "--topology",
+        default="standalone",
+        help="Server layout: 'standalone' (one instance; the sweep-comparable shape, default) or 'replica:N' "
+        "(primary plus N replicas on consecutive ports of the runner host; the generator still targets the "
+        "primary, so this measures the primary while it replicates). Non-standalone results are NOT "
+        "sweep-comparable.",
+    )
+    _add_role_args(parser)
+
+
+def _parse_topology(args: argparse.Namespace) -> TopologySpec:
+    """Build the TopologySpec for --topology / --primary-args / --replica-args; raises ValueError on bad input."""
+    value = args.topology.strip().lower()
+    if value == "standalone":
+        replicas = 0
+    elif value.startswith("replica:"):
+        replicas = int(value.split(":", 1)[1])
+    else:
+        raise ValueError(f"--topology must be 'standalone' or 'replica:N', got {args.topology!r}")
+    return TopologySpec.on_host_replicas(replicas, primary_args=args.primary_args, replica_args=args.replica_args)
+
+
+def _describe_topology(spec: TopologySpec) -> str:
+    """One line for the submission summary; flags the comparability consequence."""
+    if spec.is_standalone:
+        return "standalone"
+    ports = ", ".join(f":{i.port}" for i in spec.replicas)
+    return f"primary :{spec.primary.port} + {len(spec.replicas)} replica(s) ({ports}) -- NOT sweep-comparable"
+
+
+def _topology_or_none(args: argparse.Namespace) -> Optional[TopologySpec]:
+    """The handler-side boundary for --topology: print the error and return None on bad input."""
+    try:
+        return _parse_topology(args)
+    except ValueError as exc:
+        print(f"Error (--topology): {exc}", file=sys.stderr)
+        return None
+
+
 def _add_cachecannon_binary_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cachecannon-binary",
@@ -199,6 +254,7 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         help=f"Comma-separated key sizes in bytes (0=standard). Default: {config.DEFAULT_KEY_SIZE}",
     )
     _add_note_and_build_args(parser, plural=True)
+    _add_topology_args(parser)
     parser.add_argument(
         "--perf-stat",
         action="store_true",
@@ -373,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     insertion_parser.add_argument("--bench-clients", type=int, default=0, help="Expert: total client connections")
     insertion_parser.add_argument("--server-args", default="", help="Extra raw server arguments")
     _add_note_and_build_args(insertion_parser)
+    _add_topology_args(insertion_parser)
 
     # queue add-memory
     mem_parser = queue_sub.add_parser("add-memory", help="Add memory efficiency tasks to the queue")
@@ -437,6 +494,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_length_args(mixed_parser, warmup="Warmup duration passed to memtier (0s disables)")
     _add_note_and_build_args(mixed_parser, plural=True)
+    _add_topology_args(mixed_parser)
     mixed_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counter collection")
     mixed_parser.add_argument(
         "--server-cpus",
@@ -505,6 +563,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_length_args(scenario_parser, warmup=None)
     _add_note_and_build_args(scenario_parser)
+    _add_topology_args(scenario_parser)
     scenario_parser.add_argument(
         "--perf-stat", action="store_true", help="Enable perf stat hardware counter collection"
     )
@@ -641,6 +700,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Value size in bytes for populate and measure (default: {config.LATENCY_VAL_SIZE})",
     )
 
+    _add_topology_args(lat_parser)
     # queue add-cachecannon
     cc_parser = queue_sub.add_parser(
         "add-cachecannon",
@@ -721,6 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expert: explicit cpulist override for cachecannon client",
     )
     _add_note_and_build_args(cc_parser)
+    _add_topology_args(cc_parser)
     cc_parser.add_argument(
         "--rate",
         type=int,
@@ -784,12 +845,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-port", type=int, default=6379, help="Primary port; replicas take the following ports (default: 6379)"
     )
     rr_parser.add_argument("--server-args", default="", help="Extra raw server arguments for EVERY instance")
-    rr_parser.add_argument("--primary-args", default="", help="Extra raw server arguments for the primary only")
-    rr_parser.add_argument(
-        "--replica-args",
-        default="",
-        help="Extra raw server arguments for replicas only; the natural A/B lever for a replica-side config change",
-    )
+    _add_role_args(rr_parser)
     rr_parser.add_argument(
         "--sample-interval", type=float, default=1.0, help="INFO sampling cadence in seconds (default: 1.0)"
     )
@@ -845,6 +901,9 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
 
     if not _source_is_valid(args.source):
         return 1
+    topology = _topology_or_none(args)
+    if topology is None:
+        return 1
     try:
         insertions = int(HumanNumber.from_human(args.insertions))
         val_size = int(HumanByte.from_human(args.size))
@@ -890,28 +949,32 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    task = BoundedInsertionTaskData(
-        source=args.source,
-        specifier=args.specifier,
-        make_args=args.make_args,
-        topology=TopologySpec.standalone(),
-        note=args.note,
-        requirements={},
-        val_size=val_size,
-        key_size=key_size,
-        io_threads=args.io_threads,
-        pipelining=args.pipelining,
-        insertions=insertions,
-        repetitions=args.repetitions,
-        maxmemory_bytes=maxmemory_bytes,
-        max_rss_bytes=max_rss_bytes,
-        perf_stat_enabled=args.perf_stat,
-        server_cpu_override=args.server_cpus,
-        benchmark_cpu_override=args.client_cpus,
-        server_args=args.server_args,
-        bench_threads=args.bench_threads,
-        bench_clients=args.bench_clients,
-    )
+    try:
+        task = BoundedInsertionTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            topology=topology,
+            note=args.note,
+            requirements={},
+            val_size=val_size,
+            key_size=key_size,
+            io_threads=args.io_threads,
+            pipelining=args.pipelining,
+            insertions=insertions,
+            repetitions=args.repetitions,
+            maxmemory_bytes=maxmemory_bytes,
+            max_rss_bytes=max_rss_bytes,
+            perf_stat_enabled=args.perf_stat,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
+            server_args=args.server_args,
+            bench_threads=args.bench_threads,
+            bench_clients=args.bench_clients,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     queue = _TaskSubmitter(args)
     queue.submit_task(task)
     submission = queue.finish()
@@ -919,6 +982,7 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
         return 0
     print(f"Queued bounded insertion task: {insertions} unique SETs per repetition")
     print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  topology: {_describe_topology(topology)}")
     print(f"  key={key_size}B value={val_size}B io-threads={args.io_threads} pipeline={args.pipelining}")
     print(f"  maxmemory={maxmemory_bytes} max-rss={max_rss_bytes} reps={args.repetitions}")
     if args.note:
@@ -929,6 +993,9 @@ def handle_queue_add_insertion(args: argparse.Namespace) -> int:
 def handle_queue_add(args: argparse.Namespace) -> int:
     """Handle 'queue add': validate inputs, generate tasks, and submit them."""
     if not _source_is_valid(args.source):
+        return 1
+    topology = _topology_or_none(args)
+    if topology is None:
         return 1
 
     try:
@@ -997,7 +1064,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             source=args.source,
             specifier=args.specifier,
             make_args=args.make_args,
-            topology=TopologySpec.standalone(),
+            topology=topology,
             note=args.note,
             requirements={},
             test=test,
@@ -1026,6 +1093,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         return 0
     print(f"Queued {len(combinations)} task(s):")
     print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  topology: {_describe_topology(topology)}")
     print(f"  tests={tests} sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.make_args:
@@ -1050,6 +1118,9 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
 
     if not _source_is_valid(args.source):
         return 1
+    topology = _topology_or_none(args)
+    if topology is None:
+        return 1
 
     if not (0 <= args.set_ratio <= 100):
         print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
@@ -1066,7 +1137,7 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
         source=args.source,
         specifier=args.specifier,
         make_args=LATENCY_MAKE_ARGS,
-        topology=TopologySpec.standalone(),
+        topology=topology,
         note=args.note or default_note,
         requirements={},
         target_rps=args.target_rps,
@@ -1082,6 +1153,7 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     if _finish_submission(submission, args):
         return 0
     print(f"Queued latency task: {args.specifier[:8]} @ {args.target_rps} rps (id: {task.task_id})")
+    print(f"  topology: {_describe_topology(topology)}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
     if args.set_ratio > 0:
@@ -1096,6 +1168,9 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     from conductress.tasks.task_mixed import MixedTaskData
 
     if not _source_is_valid(args.source):
+        return 1
+    topology = _topology_or_none(args)
+    if topology is None:
         return 1
 
     if not (0 <= args.set_ratio <= 100):
@@ -1179,7 +1254,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
             source=args.source,
             specifier=args.specifier,
             make_args=args.make_args,
-            topology=TopologySpec.standalone(),
+            topology=topology,
             note=args.note,
             requirements={},
             set_ratio=args.set_ratio,
@@ -1210,6 +1285,7 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     total_conns = eff_t * eff_c
     print(f"Queued {len(combinations)} mixed task(s) ({ratio_str}):")
     print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  topology: {_describe_topology(topology)}")
     print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
     print(f"  connections={total_conns} ({eff_t} threads × {eff_c} clients)")
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
@@ -1262,6 +1338,9 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     from conductress.tasks.task_scenario import SCENARIO_CHOICES, ScenarioTaskData
 
     if not _source_is_valid(args.source):
+        return 1
+    topology = _topology_or_none(args)
+    if topology is None:
         return 1
 
     if args.scenario not in SCENARIO_CHOICES:
@@ -1336,7 +1415,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
             source=args.source,
             specifier=args.specifier,
             make_args=args.make_args,
-            topology=TopologySpec.standalone(),
+            topology=topology,
             note=args.note,
             requirements={},
             scenario=args.scenario,
@@ -1364,6 +1443,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
 
     print(f"Queued scenario task: {args.scenario}")
     print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  topology: {_describe_topology(topology)}")
     print(f"  io-threads={io_threads} pipeline={pipelining}")
     print(f"  duration={duration}s reps={args.repetitions}")
     if args.background_set_ratio > 0:
@@ -1388,6 +1468,9 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
     from conductress.tasks.task_cachecannon import CachecannonTaskData
 
     if not _source_is_valid(args.source):
+        return 1
+    topology = _topology_or_none(args)
+    if topology is None:
         return 1
 
     try:
@@ -1423,7 +1506,7 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         source=args.source,
         specifier=args.specifier,
         make_args=args.make_args,
-        topology=TopologySpec.standalone(),
+        topology=topology,
         note=args.note,
         requirements={},
         test=args.test,
@@ -1453,6 +1536,7 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
 
     print(f"Queued cachecannon task (NOT sweep-comparable):")
     print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  topology: {_describe_topology(topology)}")
     if args.rate > 0:
         print(f"  rate={args.rate} req/s (open loop)")
     if args.perf_stat or args.info_sections:
