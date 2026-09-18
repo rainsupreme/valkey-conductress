@@ -28,3 +28,14 @@ build/
 !brand/**/*.png
 sweep_data/
 .venv
+
+# Runner runtime output written into the project root (see config.py,
+# status.py, status_export.py, generator_profiles.py, sweep_config.py,
+# bootstrap.py). Per-host state, never source.
+failed/
+failed_tasks.jsonl
+last_crash.json
+status/
+generators/
+sweep_config.json
+memtier_benchmark
