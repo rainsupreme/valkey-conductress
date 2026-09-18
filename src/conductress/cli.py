@@ -722,6 +722,73 @@ def build_parser() -> argparse.ArgumentParser:
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
     _add_note_and_build_args(rr_parser)
 
+    # queue add-storm
+    storm_parser = queue_sub.add_parser(
+        "add-storm",
+        help="Add a connection-storm task: a burst of reconnecting clients while the server main thread stalls",
+    )
+    _add_source_args(storm_parser)
+    storm_parser.add_argument("--io-threads", type=int, default=1, help="Server IO threads (default: 1)")
+    storm_parser.add_argument("--clients", type=int, default=2000, help="Number of storm clients (default: 2000)")
+    storm_parser.add_argument(
+        "--burst-ms",
+        type=int,
+        default=200,
+        help="Window over which client first-attempts are spread uniformly (default: 200)",
+    )
+    storm_parser.add_argument(
+        "--connect-timeout-ms", type=float, default=1000.0, help="Per-connect timeout in ms (default: 1000)"
+    )
+    storm_parser.add_argument(
+        "--reply-timeout-ms", type=float, default=500.0, help="Per-reply timeout in ms (default: 500)"
+    )
+    storm_parser.add_argument(
+        "--policy",
+        default="fixed:200",
+        help="Reconnect policy: immediate, fixed:<ms>, or exp:<base_ms>:<max_ms>[:jitter] (default: fixed:200)",
+    )
+    storm_parser.add_argument(
+        "--handshake",
+        default="HELLO 3",
+        help="';'-separated handshake commands each client sends after connect "
+        "(default: 'HELLO 3'; pass '' for no handshake)",
+    )
+    storm_parser.add_argument(
+        "--first-command",
+        default="GET stormkey",
+        help="First command each client issues after the handshake (default: 'GET stormkey'; "
+        "the runner prefills the key 'stormkey')",
+    )
+    storm_parser.add_argument(
+        "--duration", type=float, default=20.0, help="Total run duration in seconds (default: 20)"
+    )
+    storm_parser.add_argument(
+        "--stall",
+        default="none",
+        help="Server stall injector: none or debug-sleep:<seconds> (default: none)",
+    )
+    storm_parser.add_argument(
+        "--stall-after",
+        type=float,
+        default=5.0,
+        help="Seconds into the run at which the stall is injected (default: 5.0)",
+    )
+    storm_parser.add_argument(
+        "--workers", type=int, default=1, help="Worker processes the clients fan out across (default: 1)"
+    )
+    storm_parser.add_argument(
+        "--bind-addrs",
+        default="",
+        help="','-separated loopback source addresses to spread ephemeral ports across (default: none)",
+    )
+    storm_parser.add_argument(
+        "--tick-ms", type=int, default=100, help="INFO sampling and timeline bucket width in ms (default: 100)"
+    )
+    storm_parser.add_argument("--server-args", default="", help="Extra raw server arguments")
+    storm_parser.add_argument("--server-cpus", default="", help="Expert: explicit cpulist override for server")
+    storm_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for the generator")
+    _add_note_and_build_args(storm_parser)
+
     for task_parser in (
         add_parser,
         insertion_parser,
@@ -731,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
         lat_parser,
         cc_parser,
         rr_parser,
+        storm_parser,
     ):
         _add_remote_routing_args(task_parser)
 
@@ -1498,6 +1566,74 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_storm(args: argparse.Namespace) -> int:
+    """Handle 'queue add-storm': submit a connection-storm benchmark task."""
+    from conductress.tasks.task_storm import StormTaskData
+
+    if not _source_is_valid(args.source):
+        return 1
+
+    try:
+        _check_cpulist(args.server_cpus, "server-cpus")
+        _check_cpulist(args.client_cpus, "client-cpus")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        task = StormTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=0,
+            note=args.note,
+            requirements={},
+            io_threads=args.io_threads,
+            server_args=args.server_args,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
+            clients=args.clients,
+            burst_ms=args.burst_ms,
+            connect_timeout_ms=args.connect_timeout_ms,
+            reply_timeout_ms=args.reply_timeout_ms,
+            policy=args.policy,
+            handshake=args.handshake,
+            first_command=args.first_command,
+            duration_s=args.duration,
+            stall=args.stall,
+            stall_after_s=args.stall_after,
+            workers=args.workers,
+            bind_addrs=args.bind_addrs,
+            tick_ms=args.tick_ms,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    queue = _TaskSubmitter(args)
+    queue.submit_task(task)
+    submission = queue.finish()
+    if _finish_submission(submission, args):
+        return 0
+
+    print("Queued connection-storm task (results are their own series, not sweep-comparable):")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(f"  clients={args.clients} burst={args.burst_ms}ms workers={args.workers}")
+    print(f"  reconnect policy={args.policy} handshake={args.handshake or '-'} first-command={args.first_command!r}")
+    print(
+        f"  connect-timeout={args.connect_timeout_ms}ms reply-timeout={args.reply_timeout_ms}ms "
+        f"duration={args.duration:g}s"
+    )
+    print(f"  stall={args.stall} at {args.stall_after:g}s  io-threads={args.io_threads}  tick={args.tick_ms}ms")
+    if args.bind_addrs:
+        print(f"  bind-addrs: {args.bind_addrs}")
+    if args.server_args:
+        print(f"  server-args: {args.server_args}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
+
+
 def handle_queue_list(args: argparse.Namespace) -> int:
     """Handle 'queue list': show all pending tasks."""
     queue = TaskQueue()
@@ -1567,6 +1703,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_add_cachecannon(args)
         if args.queue_command == "add-replica-read":
             return handle_queue_add_replica_read(args)
+        if args.queue_command == "add-storm":
+            return handle_queue_add_storm(args)
         if args.queue_command == "remove":
             return handle_queue_remove(args)
         if args.queue_command == "clear":

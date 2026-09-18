@@ -10,12 +10,7 @@ import random
 import pytest
 
 from conductress.stormgen import metrics, netstat
-from conductress.stormgen.policy import (
-    ExponentialPolicy,
-    FixedPolicy,
-    ImmediatePolicy,
-    parse_policy,
-)
+from conductress.stormgen.policy import ExponentialPolicy, FixedPolicy, ImmediatePolicy, parse_policy
 from conductress.stormgen.resp import ProtocolError, ReplyParser, encode_command
 
 # --------------------------------------------------------------------------- policy
