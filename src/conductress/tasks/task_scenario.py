@@ -29,7 +29,9 @@ from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
+from conductress.stormgen import netstat
 from conductress.stormgen.policy import parse_policy
+from conductress.stormgen.resp import ReplyParser, encode_command
 from conductress.stormgen.stall import parse_stall
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.tasks.task_mixed import (
@@ -422,6 +424,184 @@ def storm_uses_debug_sleep(spec: Dict[str, Any]) -> bool:
     return parse_stall(str(spec.get("stall", "none"))).kind == "debug-sleep"
 
 
+# --------------------------------------------------------------------------- server-side sampler
+
+# Fields pulled from the INFO clients + INFO stats replies each tick. All are
+# O(1) on the server, so the sampler is one extra idle client.
+_SAMPLED_INT_FIELDS = (
+    "connected_clients",
+    "total_connections_received",
+    "rejected_connections",
+    "total_commands_processed",
+)
+# A reply that arrives later than this multiple of the tick is a gap: the main
+# thread was busy (stalled) and could not answer INFO on time.
+GAP_TICK_MULTIPLE = 5
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+
+def parse_info_fields(blob: str) -> Dict[str, int]:
+    """Extract the sampled integer fields from one or more INFO reply blobs.
+
+    INFO replies are ``key:value`` lines. Only the fields in
+    ``_SAMPLED_INT_FIELDS`` are kept, and only when they parse as integers;
+    everything else (human-readable config, non-numeric values) is dropped.
+    """
+    out: Dict[str, int] = {}
+    for line in blob.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        if key in _SAMPLED_INT_FIELDS:
+            try:
+                out[key] = int(value.strip())
+            except ValueError:
+                continue
+    return out
+
+
+def sampler_gaps(rows: List[Dict[str, Any]], tick_ms: int) -> List[Dict[str, float]]:
+    """Return the intervals where a sample's reply came back late (a gap).
+
+    Pure function. A gap is a row whose ``t_reply - t_sent`` exceeds
+    ``GAP_TICK_MULTIPLE`` times the tick: the server's main thread was busy
+    (typically the stall) and could not answer ``INFO`` on time. Each gap is
+    ``{"t_sent": ..., "t_reply": ...}`` (wall-clock), which the plot uses to
+    break lines and draw a grey marker. The reply is never retried; the late
+    ``t_reply`` is recorded as-is, so a gap is data, not an error.
+    """
+    threshold = GAP_TICK_MULTIPLE * (tick_ms / 1000.0)
+    gaps: List[Dict[str, float]] = []
+    for row in rows:
+        t_sent = row.get("t_sent")
+        t_reply = row.get("t_reply")
+        if t_sent is None or t_reply is None:
+            continue
+        if (t_reply - t_sent) > threshold:
+            gaps.append({"t_sent": float(t_sent), "t_reply": float(t_reply)})
+    return gaps
+
+
+class ServerSampler:
+    """Polls one server's INFO counters on a fixed cadence, over one connection.
+
+    Overlay-agnostic: started just before the overlay and stopped after the
+    background measurement ends, for any scenario that opts in
+    (``server_sample_ms > 0``). Each tick sends ``INFO clients`` and
+    ``INFO stats`` in a single write and reads both replies on a persistent
+    connection, stamping wall-clock ``t_sent`` / ``t_reply`` so the row shares
+    the same clock as the storm's ``origin_wall`` and the stall record.
+
+    When the runner and the server share a host (loopback -- the fleet today),
+    each tick also reads ``/proc/net/netstat`` TcpExt ``ListenOverflows`` /
+    ``ListenDrops`` as deltas from the first tick, reusing
+    :mod:`conductress.stormgen.netstat`. When the server is remote those two
+    fields are ``None`` (logged once), because the counters are the runner
+    host's, not the server's.
+
+    Gaps are never retried inside a tick: while the main thread is stalled the
+    reply simply arrives late and the real ``t_reply`` is recorded.
+    """
+
+    def __init__(self, host: str, port: int, tick_ms: int, connect_timeout: float = 5.0):
+        self.host = host
+        self.port = port
+        self.tick_ms = tick_ms
+        self.connect_timeout = connect_timeout
+        self.rows: List[Dict[str, Any]] = []
+        self._local = host in _LOOPBACK_HOSTS
+        self._baseline: Optional[netstat.ListenCounters] = None
+        # Created lazily in run(): asyncio.Event() needs a running loop on 3.9,
+        # and the sampler is constructed from sync code (and sync tests).
+        self._stop: Optional[asyncio.Event] = None
+        self._stop_requested = False
+        self._remote_logged = False
+
+    def stop(self) -> None:
+        self._stop_requested = True
+        if self._stop is not None:
+            self._stop.set()
+
+    async def run(self) -> None:
+        """Sample until :meth:`stop` is set. Never raises out; a failed tick is skipped."""
+        self._stop = asyncio.Event()
+        if self._stop_requested:
+            self._stop.set()
+        interval = self.tick_ms / 1000.0
+        reader = writer = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=self.connect_timeout
+            )
+            if self._local:
+                self._baseline = netstat.read_counters()
+            else:
+                logger.info("ServerSampler: server %s is remote; listen-overflow counters recorded as null", self.host)
+            while not self._stop.is_set():
+                await self._one_tick(reader, writer)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    pass
+        except (OSError, asyncio.TimeoutError) as exc:
+            logger.warning("ServerSampler could not connect to %s:%s: %s", self.host, self.port, exc)
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except (OSError, asyncio.TimeoutError):
+                    pass
+
+    async def _one_tick(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """One INFO clients + INFO stats round-trip; append a row (best effort)."""
+        t_sent = time.time()
+        try:
+            writer.write(encode_command("INFO", "clients") + encode_command("INFO", "stats"))
+            await writer.drain()
+            first = await self._read_reply(reader)
+            second = await self._read_reply(reader)
+        except (OSError, asyncio.TimeoutError, ConnectionError) as exc:
+            self.stop()
+            logger.warning("ServerSampler read failed: %s", exc)
+            return
+        t_reply = time.time()
+        fields = parse_info_fields(f"{first}\n{second}")
+        row: Dict[str, Any] = {"t_sent": t_sent, "t_reply": t_reply}
+        for name in _SAMPLED_INT_FIELDS:
+            row[name] = fields.get(name)
+        row["listen_overflows"], row["listen_drops"] = self._netstat_deltas()
+        self.rows.append(row)
+
+    def _netstat_deltas(self) -> Tuple[Optional[int], Optional[int]]:
+        """(ListenOverflows, ListenDrops) delta from the first tick; (None, None) if remote/unreadable."""
+        if not self._local or self._baseline is None:
+            return None, None
+        current = netstat.read_counters()
+        if current is None:
+            return None, None
+        return (
+            current.listen_overflows - self._baseline.listen_overflows,
+            current.listen_drops - self._baseline.listen_drops,
+        )
+
+    @staticmethod
+    async def _read_reply(reader: asyncio.StreamReader) -> str:
+        """Read exactly one RESP reply (a bulk string for INFO) and return it as text."""
+        parser = ReplyParser()
+        while True:
+            complete, value = parser.try_parse()
+            if complete:
+                return value if isinstance(value, str) else ("" if value is None else str(value))
+            chunk = await reader.read(65536)
+            if not chunk:
+                # Connection closed mid-reply; return whatever parsed (usually "").
+                complete, value = parser.try_parse()
+                return value if (complete and isinstance(value, str)) else ""
+            parser.feed(chunk)
+
+
 # --------------------------------------------------------------------------- overlay drivers
 
 
@@ -633,6 +813,7 @@ def storm_metrics_namespace(document: Dict[str, Any]) -> Dict[str, Any]:
             "burst_actual_ms": metrics.get("burst_actual_ms"),
             "stall": document.get("stall"),
             "timeline": metrics.get("timeline"),
+            "origin_wall": document.get("origin_wall"),
             "schema_version": document.get("schema_version"),
             "generator_config": document.get("config"),
         }
@@ -685,6 +866,7 @@ class ScenarioTaskData(BaseTaskData):
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
     overlay_value_size: int = 0  # value size for the large-value-reader overlay keyset (0 = default 10KB)
     overlay_spec: str = ""  # JSON object string parameterising an overlay (connection-storm only, for now)
+    server_sample_ms: int = 0  # server INFO-sampler cadence in ms (0 = off); connection-storm defaults to 100 via CLI
 
     def __post_init__(self):
         super().__post_init__()
@@ -695,6 +877,10 @@ class ScenarioTaskData(BaseTaskData):
             raise ValueError(f"background_set_ratio must be 0-100, got {self.background_set_ratio}")
         if self.overlay_value_size < 0:
             raise ValueError(f"overlay_value_size must be >= 0, got {self.overlay_value_size}")
+        # 0 = sampler off; otherwise >= 20 ms so the row count stays bounded
+        # (100 ms over a 60 s measurement is 600 rows).
+        if self.server_sample_ms != 0 and self.server_sample_ms < 20:
+            raise ValueError(f"server_sample_ms must be 0 (off) or >= 20, got {self.server_sample_ms}")
         if self.scenario == CONNECTION_STORM:
             # Parse eagerly so a bad spec fails at submission, not on a runner.
             parse_storm_spec(self.overlay_spec)
@@ -744,6 +930,7 @@ class ScenarioTaskData(BaseTaskData):
             server_args=self.server_args,
             overlay_value_size=self.overlay_value_size,
             overlay_spec=self.overlay_spec,
+            server_sample_ms=self.server_sample_ms,
         )
 
 
@@ -772,6 +959,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         server_args: str = "",
         overlay_value_size: int = 0,
         overlay_spec: str = "",
+        server_sample_ms: int = 0,
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -794,6 +982,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.server_args = server_args
         self.overlay_value_size = overlay_value_size
         self.overlay_spec = overlay_spec
+        self.server_sample_ms = server_sample_ms
 
         # Build the overlay driver once. connection-storm runs the standalone
         # generator; every other scenario uses the unchanged shell-command path.
@@ -912,6 +1101,8 @@ class ScenarioTaskRunner(BaseTaskRunner):
         try:
             for rep in range(self.repetitions):
                 overlay_handle: Any = None
+                sampler: Optional[ServerSampler] = None
+                sampler_task: Optional["asyncio.Task"] = None
 
                 # Between-rep housekeeping
                 if rep > 0:
@@ -967,12 +1158,20 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if self.perf_stat_enabled:
                         await server.perf_stat_start()
 
+                    # Server-side sampler (opt-in via server_sample_ms). Started
+                    # just before the overlay so it captures the pre-overlay
+                    # baseline, stopped after the background measurement ends.
+                    if self.server_sample_ms > 0:
+                        sampler = ServerSampler(server.ip, server.port, self.server_sample_ms)
+                        sampler_task = asyncio.ensure_future(sampler.run())
+
                     # Start overlay driver (CommandOverlay for the shell-command
                     # scenarios; StormOverlay for connection-storm). The offset
                     # of the overlay start relative to the background RPS series
                     # is recorded so a reader can align the memtier dip with the
                     # stall/storm timeline (see how bgsave's ~40% offset works).
                     measure_start = time.monotonic()
+                    measure_start_wall = time.time()
                     overlay_handle = await self._overlay.start(server, self.file_protocol.work_dir)
 
                     # Brief delay to let overlay establish connections
@@ -994,7 +1193,19 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         f"--json-out-file {json_out} "
                         f"--hide-histogram"
                     )
+                    background_start_wall = time.time()
                     stdout, _ = await server.run_host_command(measure_cmd)
+                    background_end_wall = time.time()
+
+                    # Stop the sampler (background measurement is over) and collect rows.
+                    server_timeline: List[Dict[str, Any]] = []
+                    if sampler is not None and sampler_task is not None:
+                        sampler.stop()
+                        try:
+                            await sampler_task
+                        except asyncio.CancelledError:
+                            pass
+                        server_timeline = sampler.rows
 
                     # Stop the overlay and collect its result
                     overlay_result = await self._overlay.finish(server, overlay_handle)
@@ -1030,6 +1241,16 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     # Compute scenario-specific metrics
                     scenario_metrics: Dict[str, Any] = {"scenario": self.scenario}
                     scenario_metrics["overlay_start_offset_s"] = round(overlay_start_offset_s, 3)
+                    # Wall-clock anchors: one shared axis for every series. A plot
+                    # aligns the memtier dip (background_start_wall), the server
+                    # sampler rows (their own t_sent), and the storm timeline
+                    # (storm.origin_wall) against these.
+                    scenario_metrics["measure_start_wall"] = measure_start_wall
+                    scenario_metrics["background_start_wall"] = background_start_wall
+                    scenario_metrics["background_end_wall"] = background_end_wall
+                    if self.server_sample_ms > 0:
+                        scenario_metrics["server_timeline"] = server_timeline
+                        scenario_metrics["server_timeline_tick_ms"] = self.server_sample_ms
 
                     # Overlay's own ops/s rate, where it has one (command overlays
                     # parse it; the storm has none and returns rate=None).
@@ -1075,6 +1296,13 @@ class ScenarioTaskRunner(BaseTaskRunner):
                                         acc[k] = acc.get(k, 0) + v
 
                 finally:
+                    # Stop the sampler if a rep failed before it was stopped.
+                    if sampler is not None and sampler_task is not None and not sampler_task.done():
+                        sampler.stop()
+                        try:
+                            await sampler_task
+                        except (asyncio.CancelledError, Exception):  # pylint: disable=broad-except
+                            pass
                     # Ensure the overlay is always torn down, even on failure.
                     if overlay_handle is not None:
                         await self._overlay.abort(server, overlay_handle)

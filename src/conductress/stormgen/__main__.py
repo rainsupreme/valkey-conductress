@@ -179,6 +179,7 @@ def build_document(result: StormResult) -> dict:
     )
     return {
         "schema_version": SCHEMA_VERSION,
+        "origin_wall": result.origin_wall,
         "config": {
             "host": config.host,
             "port": config.port,
