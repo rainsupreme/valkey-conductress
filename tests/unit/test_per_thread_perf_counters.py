@@ -71,6 +71,28 @@ class TestParsePerThread:
         assert "LLC-load-misses" not in res["all"]
         assert "LLC-load-misses" not in res["main"]
 
+    def test_multi_hyphen_comm_tid_recovery(self, tmp_path):
+        # comm "valkey-server" contains a hyphen; TID must be the trailing digits
+        path = self._write(
+            tmp_path,
+            "   valkey-server-100     1,000      instructions\n",
+        )
+        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", [])
+        assert res["main"]["instructions"] == 1000
+        assert res["all"]["instructions"] == 1000
+
+    def test_missing_file_returns_empty_buckets(self, tmp_path):
+        res = ProfilingManager.parse_perf_stat_per_thread(tmp_path / "nope.txt", "100", ["101"])
+        assert res == {"all": {}, "main": {}, "io": {}}
+
+    def test_no_io_tids_leaves_io_empty(self, tmp_path):
+        path = self._write(tmp_path, PER_THREAD_OUTPUT)
+        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", [])
+        assert res["io"] == {}
+        assert res["main"]["instructions"] == 14_000_000_000
+        # io thread rows still counted toward the process-wide total
+        assert res["all"]["instructions"] == 60_000_000_000
+
 
 # The same shape perf writes when `perf_event_paranoid=2` denies an unprivileged
 # caller kernel counting: every event carries a `:u` modifier and the software
@@ -136,27 +158,37 @@ class TestDetectPerfStatScope:
     def test_missing_file_is_none(self, tmp_path):
         assert ProfilingManager.detect_perf_stat_scope(tmp_path / "nope.txt") is None
 
-    def test_multi_hyphen_comm_tid_recovery(self, tmp_path):
-        # comm "valkey-server" contains a hyphen; TID must be the trailing digits
-        path = self._write(
-            tmp_path,
-            "   valkey-server-100     1,000      instructions\n",
-        )
-        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", [])
-        assert res["main"]["instructions"] == 1000
-        assert res["all"]["instructions"] == 1000
 
-    def test_missing_file_returns_empty_buckets(self, tmp_path):
-        res = ProfilingManager.parse_perf_stat_per_thread(tmp_path / "nope.txt", "100", ["101"])
-        assert res == {"all": {}, "main": {}, "io": {}}
+class TestTracepointEvents:
+    """raw_syscalls:sys_enter carries a colon inside its name; the parser must keep the
+    whole name as the key and the scope detector must not read the colon as a modifier."""
 
-    def test_no_io_tids_leaves_io_empty(self, tmp_path):
-        path = self._write(tmp_path, PER_THREAD_OUTPUT)
-        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", [])
-        assert res["io"] == {}
-        assert res["main"]["instructions"] == 14_000_000_000
-        # io thread rows still counted toward the process-wide total
-        assert res["all"]["instructions"] == 60_000_000_000
+    TRACEPOINT_OUTPUT = """\
+ Performance counter stats for thread id '100,101':
+
+   valkey-server-100      5,000,000,000      cycles
+        io_thd_1-101      5,000,000,000      cycles
+   valkey-server-100            120,000      raw_syscalls:sys_enter
+        io_thd_1-101          1,900,000      raw_syscalls:sys_enter
+
+ 2.001 seconds time elapsed
+"""
+
+    def test_tracepoint_key_kept_whole(self, tmp_path):
+        path = tmp_path / "perf_stat.txt"
+        path.write_text(self.TRACEPOINT_OUTPUT)
+        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", ["101"])
+        assert res["main"]["raw_syscalls:sys_enter"] == 120_000
+        assert res["io"]["raw_syscalls:sys_enter"] == 1_900_000
+        assert res["all"]["raw_syscalls:sys_enter"] == 2_020_000
+
+    def test_tracepoint_does_not_change_scope(self, tmp_path):
+        path = tmp_path / "perf_stat.txt"
+        path.write_text(self.TRACEPOINT_OUTPUT)
+        assert ProfilingManager.detect_perf_stat_scope(path) == "user+kernel"
+
+    def test_tracepoint_is_in_common_event_list(self):
+        assert "raw_syscalls:sys_enter" in ProfilingManager.PERF_EVENTS_COMMON
 
 
 class TestPerfStatTarget:

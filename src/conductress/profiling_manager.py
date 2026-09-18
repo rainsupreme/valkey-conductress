@@ -267,7 +267,11 @@ class ProfilingManager:
     PERF_EVENTS_COMMON = [
         "instructions",
         "cycles",
-        "context-switches",  # software event: no PMU slot, works unprivileged
+        "context-switches",  # software event: no PMU slot
+        # Tracepoint: counts every syscall entry across the monitored threads, so
+        # syscalls per request falls straight out of the row (instructions-per-req
+        # style). Tracepoints need root; perf stat runs under sudo for that reason.
+        "raw_syscalls:sys_enter",
         "L1-icache-load-misses",
         "L1-dcache-load-misses",
         "branch-misses",
