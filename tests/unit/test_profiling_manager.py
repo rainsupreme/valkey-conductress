@@ -173,6 +173,30 @@ class TestPerfStatReport:
         assert result["io"]["cycles"] == 500
 
     @pytest.mark.asyncio
+    async def test_records_counting_scope(self, manager, mock_host, tmp_path):
+        result_dir = tmp_path / "results"
+        result_dir.mkdir()
+        manager._main_tid = "100"
+        manager._io_tids = []
+        assert manager.perf_stat_scope is None
+
+        async def fake_get_remote(src, dest):
+            dest.write_text("   valkey-server-100     1000      instructions:u\n")
+
+        mock_host.get_remote_file = fake_get_remote
+        result = await manager.perf_stat_report(result_dir)
+        # Event name is normalised, the scope it came from is kept alongside.
+        assert result["main"] == {"instructions": 1000}
+        assert manager.perf_stat_scope == "user"
+
+        async def fake_get_remote_full(src, dest):
+            dest.write_text("   valkey-server-100     1000      instructions\n")
+
+        mock_host.get_remote_file = fake_get_remote_full
+        await manager.perf_stat_report(result_dir)
+        assert manager.perf_stat_scope == "user+kernel"
+
+    @pytest.mark.asyncio
     async def test_raises_if_result_dir_missing(self, manager, tmp_path):
         with pytest.raises(FileNotFoundError):
             await manager.perf_stat_report(tmp_path / "nonexistent")

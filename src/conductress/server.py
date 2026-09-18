@@ -490,6 +490,11 @@ class Server:
         """Copy perf stat results and return parsed counters."""
         return await self._profiling.perf_stat_report(result_dir)
 
+    @property
+    def perf_stat_scope(self) -> Optional[str]:
+        """Counting scope of the last perf stat report ("user+kernel", "user", ...), or None."""
+        return self._profiling.perf_stat_scope
+
     @staticmethod
     def parse_perf_stat(path: Path) -> dict:
         """Parse perf stat output file into a dict of event_name -> count."""

@@ -786,6 +786,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.duration = duration
         self.repetitions = repetitions
         self.perf_stat_enabled = perf_stat_enabled
+        self._perf_stat_scope: Optional[str] = None
         self.note = note
         self.server_cpu_override = server_cpu_override
         self.benchmark_cpu_override = benchmark_cpu_override
@@ -1063,6 +1064,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         server.perf_stat_wait()
                         result_dir = self.file_protocol.get_result_dir()
                         rep_counters = await server.perf_stat_report(result_dir)
+                        self._perf_stat_scope = server.perf_stat_scope or self._perf_stat_scope
                         if rep_counters:
                             if perf_counters is None:
                                 perf_counters = rep_counters
@@ -1133,6 +1135,8 @@ class ScenarioTaskRunner(BaseTaskRunner):
             detailed_data["overlay_keyspace"] = LARGE_VALUE_READER_KEYSPACE
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
+            if self._perf_stat_scope:
+                detailed_data["perf_counters_scope"] = self._perf_stat_scope
             detailed_data["perf_duration_seconds"] = float(self.duration)
             detailed_data["perf_rep_count"] = len(per_run_rps)
 

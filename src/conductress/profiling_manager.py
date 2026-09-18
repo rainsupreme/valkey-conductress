@@ -35,6 +35,10 @@ class ProfilingManager:
         # Shared by the CPU-profile (flamegraph) and per-thread perf-stat paths.
         self._main_tid: Optional[str] = None
         self._io_tids: list[str] = []
+        # Counting scope of the most recent perf stat report ("user+kernel" or
+        # "user"), derived from the event modifiers perf wrote (``cycles`` vs
+        # ``cycles:u``). None until a report has been parsed.
+        self._perf_stat_scope: Optional[str] = None
 
     @property
     def target_pid(self) -> int:
@@ -43,6 +47,11 @@ class ProfilingManager:
     @target_pid.setter
     def target_pid(self, pid: int) -> None:
         self._target_pid = pid
+
+    @property
+    def perf_stat_scope(self) -> Optional[str]:
+        """Counting scope of the last parsed perf stat report, or None."""
+        return self._perf_stat_scope
 
     # =========================================================================
     # CPU PROFILE (per-thread flamegraph stacks)
@@ -327,6 +336,14 @@ class ProfilingManager:
         ``perf_stat_stop`` remains race-free: removing the sentinel while
         perf is still in the delay sleep just means perf will start and
         immediately see the sentinel gone, exiting cleanly.
+
+        Runs under ``sudo``, like ``perf record`` in this module. Runners set
+        ``kernel.perf_event_paranoid=2``, and at that level an unprivileged
+        ``perf stat`` silently counts user space only (every event is written
+        with a ``:u`` modifier), which drops the syscall/TCP share of a network
+        server's cycles and makes software events such as
+        ``context-switches`` read 0. ``parse_perf_stat_per_thread`` records
+        the scope it actually sees, so a row can always be told apart.
         """
         events = self._build_perf_event_string()
         ip = self._host.ip
@@ -335,7 +352,7 @@ class ProfilingManager:
         delay_prefix = f"sleep {delay_seconds} && " if delay_seconds > 0 else ""
 
         command = (
-            f'{delay_prefix}perf stat --per-thread -e "{events}" {target} -o {PERF_STATS_PATH} '
+            f'{delay_prefix}sudo perf stat --per-thread -e "{events}" {target} -o {PERF_STATS_PATH} '
             f"-- sh -c 'while [ -f {PERF_STAT_STATUS_FILE} ]; do sleep 1; done'"
         )
         if ip in ["127.0.0.1", "localhost"]:
@@ -384,7 +401,47 @@ class ProfilingManager:
             raise FileNotFoundError(f"Result directory {result_dir} must exist")
         local_path = result_dir / "perf_stat.txt"
         await self._host.get_remote_file(Path(PERF_STATS_PATH), local_path)
+        self._perf_stat_scope = self.detect_perf_stat_scope(local_path)
         return self.parse_perf_stat_per_thread(local_path, self._main_tid, self._io_tids)
+
+    PERF_SCOPE_USER_KERNEL = "user+kernel"
+    PERF_SCOPE_USER = "user"
+    PERF_SCOPE_KERNEL = "kernel"
+    PERF_SCOPE_MIXED = "mixed"
+
+    @staticmethod
+    def detect_perf_stat_scope(path: Path) -> Optional[str]:
+        """Return the counting scope perf actually used, from the event modifiers.
+
+        perf appends ``:u`` to every event when ``perf_event_paranoid`` denies an
+        unprivileged caller kernel counting, and ``:k`` for kernel-only requests;
+        an unmodified name means user+kernel. Returns ``"user+kernel"``,
+        ``"user"``, ``"kernel"``, ``"mixed"`` (modifiers disagree across rows), or
+        None when the file has no counted rows.
+        """
+        if not path.exists():
+            return None
+        scopes: set[str] = set()
+        for line in path.read_text().splitlines():
+            parts = line.strip().split()
+            if len(parts) < 3 or parts[0].startswith("#") or "-" not in parts[0]:
+                continue
+            try:
+                int(parts[1].replace(",", ""))
+            except ValueError:
+                continue  # <not counted> / <not supported> / stalled-cycles comment rows
+            event = parts[2].removesuffix(":")
+            if event.endswith(":u"):
+                scopes.add(ProfilingManager.PERF_SCOPE_USER)
+            elif event.endswith(":k"):
+                scopes.add(ProfilingManager.PERF_SCOPE_KERNEL)
+            else:
+                scopes.add(ProfilingManager.PERF_SCOPE_USER_KERNEL)
+        if not scopes:
+            return None
+        if len(scopes) == 1:
+            return scopes.pop()
+        return ProfilingManager.PERF_SCOPE_MIXED
 
     @staticmethod
     def parse_perf_stat_per_thread(
@@ -395,8 +452,10 @@ class ProfilingManager:
         Per-thread rows look like ``comm-TID  <count>  <event>  [# ...]  [(pct%)]``
         where ``comm`` may itself contain hyphens (e.g. ``valkey-server-2770433``),
         so the TID is recovered by right-splitting the first token on ``-``. Rows
-        with ``<not counted>`` / ``<not supported>`` values are skipped. Counts are
-        summed per event within each bucket:
+        with ``<not counted>`` / ``<not supported>`` values are skipped. The
+        ``:u`` / ``:k`` event modifiers are stripped so event names stay stable
+        across privilege levels; ``detect_perf_stat_scope`` reports what they
+        said. Counts are summed per event within each bucket:
 
         * ``all``  — every monitored TID (process-wide total)
         * ``main`` — rows whose TID == ``main_tid``
