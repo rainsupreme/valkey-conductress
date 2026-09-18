@@ -82,6 +82,19 @@ change on a single build.
    to know where the generators run; `--client-cpus` supplies that as well as
    the allocator does, so the check runs either way.
 
+   The runner process is itself a CPU consumer on the benchmark host: its log
+   and status writes plus the per-second sampler measured about 0.35 of a core
+   on a 192-CPU runner, and unpinned it lands on an arbitrary core, where the
+   check correctly reported it as foreign (`1 unallocated core(s) busy: {129:
+   0.155}`). For the task's duration the runner therefore allocates two
+   management cores through the same allocator, pins every thread of itself to
+   them, and runs the sampler shell (which executes under sshd, not under the
+   runner) under `taskset -c` on the same cores; the verdict lists them as
+   `runner` in the claimed CPU map. Generators are launched under the mask the
+   runner had before pinning, since a child inherits its parent's mask at fork
+   and would otherwise be dragged onto the management cores. The mask is
+   restored when the run ends, including on failure.
+
 ## Result row
 
 `method = "replica-read"`, `score` = mean reader rps over reps, `cv`/`reps`

@@ -23,6 +23,7 @@ working lever.
 
 import asyncio
 import logging
+import shlex
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -535,7 +536,7 @@ class TopologyGroup:
 
     # ------------------------------------------------------------------ sampling
 
-    async def sample(self, extra_fields: Optional[list] = None, cpu: bool = True) -> dict:
+    async def sample(self, extra_fields: Optional[list] = None, cpu: bool = True, pin_cpus: str = "") -> dict:
         """One ``INFO replication stats`` snapshot per instance.
 
         All instances are queried from ONE remote shell invocation, back to
@@ -555,6 +556,10 @@ class TopologyGroup:
         the sample gains ``"cores"`` (``{cpu: {busy, idle, softirq, total}}``)
         and ``"threads"`` (``{port: {tid: {comm, ticks}}}``). These are
         cumulative; ``cpu_sampling`` turns consecutive samples into utilisation.
+
+        ``pin_cpus`` (a cpulist) runs the remote shell under ``taskset`` so the
+        sampling work itself lands on known cores rather than wherever sshd
+        schedules it.
         """
         if self.primary is None:
             raise RuntimeError("topology not started")
@@ -570,8 +575,14 @@ class TopologyGroup:
         ]
         if cpu:
             parts.append(cpu_sampling.cpu_sample_command({s.port: s.valkey_pid for s in self.servers}))
+        command = "; ".join(parts)
+        if pin_cpus:
+            # The shell runs under sshd, not under the caller, so it does not
+            # inherit the caller's affinity; pin it explicitly so the sampling
+            # work lands on cores the bottleneck verdict treats as claimed.
+            command = f"taskset -c {pin_cpus} sh -c {shlex.quote(command)}"
         t = time.monotonic()
-        out, _ = await self.primary.run_host_command("; ".join(parts), check=False)
+        out, _ = await self.primary.run_host_command(command, check=False)
         if not cpu:
             return {"t": t, "instances": parse_multi_info(out, extra_fields)}
         info_lines, procstat_lines, thread_lines = cpu_sampling.split_sections(out, _SAMPLE_SEPARATOR)
