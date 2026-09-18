@@ -201,16 +201,16 @@ def _series(reader_util, *, replica_cpu=1.0, loop_duty=0.8, foreign_busy=0.0, n=
     return samples
 
 
-def _verdict(samples, **overrides):
-    kwargs = {
-        "replica_port": 6380,
-        "replica_pid": REPLICA_PID,
-        "primary_port": 6379,
-        "primary_pid": PRIMARY_PID,
-        "allocated_cpus": ALLOC,
-    }
-    kwargs.update(overrides)
-    return cs.bottleneck_verdict(samples, **kwargs)
+def _parties(allocated_cpus=ALLOC) -> cs.Parties:
+    return cs.Parties(
+        replica=cs.ServerIdentity(6380, REPLICA_PID),
+        primary=cs.ServerIdentity(6379, PRIMARY_PID),
+        allocated_cpus=allocated_cpus,
+    )
+
+
+def _verdict(samples, allocated_cpus=ALLOC, **kwargs):
+    return cs.bottleneck_verdict(samples, _parties(allocated_cpus), **kwargs)
 
 
 def test_verdict_server_when_reader_has_headroom_and_host_is_clean():

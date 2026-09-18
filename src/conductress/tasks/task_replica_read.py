@@ -471,14 +471,13 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self._check_guards(m.reader, m.writer)
         primary, replica = _primary_and_replica(group)
         lag = replication_lag_stats(m.samples, primary.port, replica.port)
-        bottleneck = cpu_sampling.bottleneck_verdict(
-            m.samples,
-            replica_port=replica.port,
-            replica_pid=replica.valkey_pid,
-            primary_port=primary.port,
-            primary_pid=primary.valkey_pid,
+        parties = cpu_sampling.Parties(
+            replica=cpu_sampling.ServerIdentity(replica.port, replica.valkey_pid),
+            primary=cpu_sampling.ServerIdentity(primary.port, primary.valkey_pid),
             allocated_cpus=self._allocated_cpus(group, placement),
-            window_start=m.reader_started + self.task.warmup,
+        )
+        bottleneck = cpu_sampling.bottleneck_verdict(
+            m.samples, parties, window_start=m.reader_started + self.task.warmup
         )
         log = self.logger.info if bottleneck["valid"] else self.logger.warning
         log(
