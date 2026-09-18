@@ -20,6 +20,9 @@ control = [
     "aiohttp==3.10.11",
     "jsonschema==4.23.0",
 ]
+plots = [
+    "matplotlib>=3.5,<4.0",
+]
 dev = [
     "black>=23.0,<25.0",
     "flake8>=6.0,<8.0",

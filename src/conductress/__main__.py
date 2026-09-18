@@ -61,6 +61,7 @@ def main() -> None:
     )
     subparsers.add_parser("setup", help="Run setup/bootstrap")
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)", add_help=False)
+    subparsers.add_parser("plot", help="Render a figure from a task's results", add_help=False)
     subparsers.add_parser("fleet", help="Discover and inspect benchmark runners", add_help=False)
     subparsers.add_parser("remote", help="Inspect and cancel remote tasks", add_help=False)
     subparsers.add_parser("canary", help="Canary drift monitoring", add_help=False)
@@ -232,6 +233,11 @@ def main() -> None:
         from conductress.cli import main as cli_main
 
         sys.exit(cli_main(["queue"] + remaining))
+
+    elif args.command == "plot":
+        from conductress.cli import main as cli_main
+
+        sys.exit(cli_main(["plot"] + remaining))
 
     elif args.command in {"fleet", "remote", "canary"}:
         from conductress.fleet_cli import main as fleet_cli_main

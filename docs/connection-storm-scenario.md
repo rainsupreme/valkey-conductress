@@ -64,6 +64,9 @@ optional; each falls back to a default.
   "Cold-server first-contact cost".
 - `--storm-bind-addrs` -- `,`-separated loopback source addresses to spread the
   clients' ephemeral ports across (see "Ephemeral-port exhaustion").
+- `--server-sample-ms` -- poll the server's INFO counters every N ms during the
+  measurement (`0` = off, else `>= 20`). connection-storm defaults to 100 when
+  the flag is absent (see "The server-side sampler").
 
 ## The three storm mechanisms
 
@@ -130,6 +133,9 @@ Under the per-rep scenario metrics (and aggregated in results):
   first-attempt start minus first); compare against `--storm-burst-ms`.
 - `storm.stall` -- the stall record (kind, wall-clock start/end).
 - `storm.timeline` -- per-bucket `started`/`connected`/`timeouts` counts.
+- `storm.origin_wall` -- the generator's monotonic origin in wall-clock
+  (`time.time()`) seconds, so the storm timeline can be placed on the shared
+  axis (see "Time axis"). Present from generator `schema_version` 2 onward.
 - `storm.generator_config`, `storm.schema_version` -- provenance.
 
 The scenario also records `overlay_start_offset_s`: how long after the
@@ -137,6 +143,92 @@ background measurement began the overlay started (the 1 s connect-establish
 delay, matching how bgsave's ~40%-of-duration offset lets a reader align the
 memtier dip with the overlay event). Use it to line up the background RPS dip
 with the stall/storm timeline.
+
+## The server-side sampler
+
+The scenario also records the **server's own view over time**. When
+`server_sample_ms > 0` a sampler opens one persistent connection to the server
+under test and, every `server_sample_ms` milliseconds, sends `INFO clients`
+and `INFO stats` in one write and reads both replies. `connection-storm`
+enables it at 100 ms by default (`--server-sample-ms` overrides; `0` turns it
+off); other scenarios leave it off unless the flag is given. Validation refuses
+a cadence below 20 ms so the row count stays bounded (100 ms over a 60 s
+measurement is 600 rows).
+
+Each row is `{t_sent, t_reply, connected_clients, total_connections_received,
+rejected_connections, total_commands_processed, listen_overflows,
+listen_drops}`. `t_sent`/`t_reply` are wall-clock (`time.time()`). The
+`connected_clients` ramp after the stall clears is the mechanism made visible:
+the main thread resumes accepting and answering, and the count climbs back to
+the client population.
+
+- **Cost.** `INFO clients` / `INFO stats` are O(1), and the sampler is ONE extra
+  client -- so `connected_clients` reads one higher than the storm's own
+  population while the sampler is connected.
+- **Gaps are data, never retried.** While the main thread is stalled, `INFO`
+  does not return; the sampler does not time out and retry inside a tick -- the
+  reply simply arrives late and the real `t_reply` is recorded. A consumer
+  detects a gap as `t_reply - t_sent > 5 x tick` (helper `sampler_gaps(rows,
+  tick_ms)`); the plot uses it to break the line and draw a grey marker.
+- **Kernel counters are local-only.** When the runner and the server share a
+  host (loopback, the fleet today) each row carries `ListenOverflows` /
+  `ListenDrops` as deltas from the first tick, read from `/proc/net/netstat`
+  (reusing `conductress.stormgen.netstat`). When the server is remote those two
+  fields are `null` (logged once) -- the counters would be the runner host's,
+  not the server's.
+
+Storage: `scenario_metrics["server_timeline"]` (the rows) and
+`scenario_metrics["server_timeline_tick_ms"]`, per repetition.
+
+## Time axis
+
+Every series can be placed on one wall-clock axis. The runner records, per
+repetition, `measure_start_wall` (just before the overlay starts),
+`background_start_wall` (just before the memtier command) and
+`background_end_wall`. The generator records `storm.origin_wall` (its monotonic
+origin in wall-clock). The stall record's `started`/`ended` are already
+wall-clock.
+
+Plot convention: **`t = 0` is `storm.stall.started` when a stall exists,
+otherwise `measure_start_wall`.** Each series then maps by subtracting `t0`:
+the background buckets from `background_start_wall + second`, the sampler rows
+from their own `t_reply`, and the storm timeline from `storm.origin_wall +
+t_ms/1000`. This replaces the older ~1 s inference via `overlay_start_offset_s`.
+
+## Plotting
+
+With the `plots` extra installed (`pip install 'conductress[plots]'`):
+
+```
+conductress plot connection-storm <task-id> [<task-id> <task-id>] \
+    --out fig.png [--rep N] [--xrange=-3:8]
+```
+
+One column per task id (at most three), four rows sharing the x axis:
+
+1. background throughput (memtier `interval_rps`, step plot at 1 s)
+2. `connected_clients` (server sampler, line broken across gaps)
+3. listen-queue overflows (cumulative, its own row and scale -- not a twin
+   axis; an empty row with a note when the server was remote)
+4. storm clients: `timeouts` per bucket as bars, cumulative `connected` as a
+   light filled area behind them
+
+Every row carries the stall band, a dash-dot quiescence marker, and grey
+vertical lines where the sampler had gaps. Repetitions draw as thin lines with
+the median rep bold; `--rep N` draws one. Colour is per column (before/after
+side-by-side, one hue each); series within a column are told apart by row, not
+colour. The default figure is 1500x1100 px at 100 dpi.
+
+Example (from local calibration, two backlog configurations side by side):
+each column is one task; row 1 shows background GET/s dipping to near zero
+inside the stall band and recovering after; row 2 shows `connected_clients`
+flat during the stall then ramping back to the full client population once the
+main thread resumes accepting; row 3 shows the cumulative listen-queue
+overflow climbing only while the accept queue is starved; row 4 shows the
+timeout bars concentrated around the stall with the cumulative-connected fill
+rising to the quiescence marker. (No image is committed here: the repository's
+`.gitignore` excludes `*.png` outside `brand/`, so a rendered figure lives with
+the run, produced by the `conductress plot` command above.)
 
 ## Auto-added `--enable-debug-command local`
 

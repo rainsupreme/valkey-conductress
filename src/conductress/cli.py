@@ -813,6 +813,20 @@ def build_parser() -> argparse.ArgumentParser:
     # queue clear
     queue_sub.add_parser("clear", help="Remove all pending tasks from the queue")
 
+    # plot subcommand
+    plot_parser = subparsers.add_parser("plot", help="Render a figure from a task's results")
+    plot_sub = plot_parser.add_subparsers(dest="plot_command", title="figures")
+    storm_plot = plot_sub.add_parser(
+        "connection-storm",
+        help="Render the connection-storm figure (one column per task id, max 3)",
+    )
+    storm_plot.add_argument("task_ids", nargs="+", help="Task id(s) whose scenario result to plot (max 3)")
+    storm_plot.add_argument("--out", required=True, help="Output PNG path")
+    storm_plot.add_argument(
+        "--rep", type=int, default=None, help="Plot a single repetition index (default: all, median bold)"
+    )
+    storm_plot.add_argument("--xrange", default=None, help="Axis range in seconds, e.g. -3:8")
+
     return parser
 
 
@@ -1673,6 +1687,69 @@ def handle_queue_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_xrange(spec: Optional[str]) -> Optional[Tuple[float, float]]:
+    """Parse an ``--xrange`` spec like ``-3:8`` into ``(lo, hi)`` or None.
+
+    Raises ValueError on a malformed spec so the CLI can report it.
+    """
+    if spec is None:
+        return None
+    text = spec.strip()
+    if not text:
+        return None
+    # rsplit on the LAST colon so a negative lower bound (-3:8) parses.
+    lo_str, sep, hi_str = text.rpartition(":")
+    if not sep:
+        raise ValueError(f"--xrange must be LO:HI, got {spec!r}")
+    try:
+        lo, hi = float(lo_str), float(hi_str)
+    except ValueError as exc:
+        raise ValueError(f"--xrange bounds must be numbers, got {spec!r}") from exc
+    if hi <= lo:
+        raise ValueError(f"--xrange HI must be greater than LO, got {spec!r}")
+    return (lo, hi)
+
+
+def handle_plot(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Handle 'plot connection-storm': render a task's results to a PNG."""
+    if args.plot_command != "connection-storm":
+        parser.print_usage()
+        return 1
+
+    try:
+        xrange = parse_xrange(args.xrange)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if len(args.task_ids) > 3:
+        print("Error: at most 3 task ids (columns) are supported", file=sys.stderr)
+        return 1
+
+    try:
+        from conductress.plots.connection_storm import build_storm_figure, load_run_views
+    except ImportError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        views = load_run_views(args.task_ids)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        figure = build_storm_figure(views, rep=args.rep, xrange=xrange)
+    except ImportError as e:
+        # matplotlib missing surfaces here too (builder imports it).
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    figure.savefig(args.out)
+    print(f"wrote {args.out}")
+    return 0
+
+
 def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command == "queue":
         if args.queue_command is None:
@@ -1702,6 +1779,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_remove(args)
         if args.queue_command == "clear":
             return handle_queue_clear(args)
+    if args.command == "plot":
+        return handle_plot(args, parser)
     parser.print_usage()
     return 1
 
