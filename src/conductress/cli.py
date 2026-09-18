@@ -482,11 +482,14 @@ def build_parser() -> argparse.ArgumentParser:
             "expiry-heavy",
             "bgsave",
             "large-value-reader",
+            "connection-storm",
         ],
         help="Pathological workload scenario to run. 'bgsave' fires a single BGSAVE at ~40%% of "
         "duration; fork+COW impact shows up in the interval timeseries. Dataset size (prefill) "
         "drives the fork cost. 'large-value-reader' measures how continuous large-value GETs "
-        "from a dedicated keyset degrade background workload throughput/latency.",
+        "from a dedicated keyset degrade background workload throughput/latency. "
+        "'connection-storm' overlays a burst of reconnecting clients (optionally while a stall "
+        "blocks the main thread); parameterise it with the --storm-* flags.",
     )
     _add_source_args(scenario_parser)
     scenario_parser.add_argument(
@@ -533,6 +536,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Value size in bytes for the large-value-reader overlay's dedicated keyset "
         "(default: 10240 = 10KB). Only used when --scenario=large-value-reader; ignored otherwise.",
+    )
+    # connection-storm overlay parameters -- serialized into overlay_spec (JSON).
+    # Only valid with --scenario connection-storm; rejected otherwise.
+    storm_group = scenario_parser.add_argument_group(
+        "connection-storm overlay", "Only valid with --scenario connection-storm"
+    )
+    storm_group.add_argument("--storm-clients", type=int, default=None, help="Storm client population (default: 2000)")
+    storm_group.add_argument(
+        "--storm-burst-ms", type=int, default=None, help="Window first-attempts are spread over (default: 200)"
+    )
+    storm_group.add_argument(
+        "--storm-connect-timeout-ms", type=float, default=None, help="Per-connect timeout in ms (default: 1000)"
+    )
+    storm_group.add_argument(
+        "--storm-reply-timeout-ms", type=float, default=None, help="Per-reply timeout in ms (default: 500)"
+    )
+    storm_group.add_argument(
+        "--storm-policy",
+        default=None,
+        help="Reconnect policy: immediate, fixed:<ms>, exp:<base_ms>:<max_ms>[:jitter] (default: fixed:200)",
+    )
+    storm_group.add_argument(
+        "--storm-stall", default=None, help="Stall injector: none or debug-sleep:<seconds> (default: none)"
+    )
+    storm_group.add_argument(
+        "--storm-burst-after-stall-ms",
+        type=int,
+        default=None,
+        help="Stall-first: start the burst this many ms after the stall is issued (default: 200)",
+    )
+    storm_group.add_argument(
+        "--storm-burst-first",
+        action="store_true",
+        help="Legacy ordering: burst first, then stall (default is stall-first)",
+    )
+    storm_group.add_argument(
+        "--storm-prewarm-connections",
+        type=int,
+        default=None,
+        help="Throwaway connections opened before the baseline (default: = --storm-clients; 0 disables)",
+    )
+    storm_group.add_argument(
+        "--storm-workers",
+        type=int,
+        default=None,
+        help="Worker processes clients fan out across (default: 0 = auto, min(8, cpu_count))",
+    )
+    storm_group.add_argument(
+        "--storm-handshake",
+        action="append",
+        default=None,
+        help="Handshake command each client sends after connect, repeatable (default: 'HELLO 3')",
+    )
+    storm_group.add_argument(
+        "--storm-first-command",
+        default=None,
+        help="First command each client issues after the handshake (default: 'GET storm:key')",
+    )
+    storm_group.add_argument(
+        "--storm-bind-addrs",
+        default=None,
+        help="','-separated loopback source addresses to spread ephemeral ports across",
     )
 
     # queue add-latency
@@ -1126,6 +1191,42 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_scenario_overlay_spec(args: argparse.Namespace) -> str:
+    """Assemble the connection-storm overlay_spec JSON from --storm-* args.
+
+    Pure function over ``args``: returns a JSON object string containing only
+    the storm keys the user set (unset flags fall back to the spec defaults at
+    parse time). Enforces that --storm-* flags are given only with
+    --scenario connection-storm. Raises ValueError on a gating violation.
+    """
+    import json as _json
+
+    storm_map = {
+        "clients": args.storm_clients,
+        "burst_ms": args.storm_burst_ms,
+        "connect_timeout_ms": args.storm_connect_timeout_ms,
+        "reply_timeout_ms": args.storm_reply_timeout_ms,
+        "policy": args.storm_policy,
+        "stall": args.storm_stall,
+        "burst_after_stall_ms": args.storm_burst_after_stall_ms,
+        "prewarm_connections": args.storm_prewarm_connections,
+        "workers": args.storm_workers,
+        "first_command": args.storm_first_command,
+    }
+    spec: dict = {k: v for k, v in storm_map.items() if v is not None}
+    if args.storm_burst_first:
+        spec["burst_first"] = True
+    if args.storm_handshake is not None:
+        spec["handshake"] = [h for h in args.storm_handshake if h.strip()]
+    if args.storm_bind_addrs is not None:
+        spec["bind_addrs"] = [a.strip() for a in args.storm_bind_addrs.split(",") if a.strip()]
+
+    given = bool(spec)
+    if given and args.scenario != "connection-storm":
+        raise ValueError("--storm-* flags are only valid with --scenario connection-storm")
+    return _json.dumps(spec) if spec else ""
+
+
 def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     """Handle 'queue add-scenario': submit a pathological-workload scenario task."""
     from conductress.tasks.task_scenario import SCENARIO_CHOICES, ScenarioTaskData
@@ -1184,27 +1285,38 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         )
         return 1
 
+    try:
+        overlay_spec = build_scenario_overlay_spec(args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     queue = _TaskSubmitter(args)
-    task = ScenarioTaskData(
-        source=args.source,
-        specifier=args.specifier,
-        make_args=args.make_args,
-        replicas=0,
-        note=args.note,
-        requirements={},
-        scenario=args.scenario,
-        val_size=config.DEFAULT_VAL_SIZE,
-        io_threads=io_threads,
-        pipelining=pipelining,
-        duration=duration,
-        repetitions=args.repetitions,
-        perf_stat_enabled=args.perf_stat,
-        server_cpu_override=args.server_cpus,
-        benchmark_cpu_override=args.client_cpus,
-        server_args=args.server_args,
-        background_set_ratio=args.background_set_ratio,
-        overlay_value_size=args.overlay_value_size,
-    )
+    try:
+        task = ScenarioTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=0,
+            note=args.note,
+            requirements={},
+            scenario=args.scenario,
+            val_size=config.DEFAULT_VAL_SIZE,
+            io_threads=io_threads,
+            pipelining=pipelining,
+            duration=duration,
+            repetitions=args.repetitions,
+            perf_stat_enabled=args.perf_stat,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
+            server_args=args.server_args,
+            background_set_ratio=args.background_set_ratio,
+            overlay_value_size=args.overlay_value_size,
+            overlay_spec=overlay_spec,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     queue.submit_task(task)
     submission = queue.finish()
     if _finish_submission(submission, args):
@@ -1218,6 +1330,8 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         print(f"  background-set-ratio={args.background_set_ratio}%")
     if args.overlay_value_size > 0:
         print(f"  overlay-value-size={args.overlay_value_size}B")
+    if overlay_spec:
+        print(f"  overlay-spec: {overlay_spec}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
     if args.note:

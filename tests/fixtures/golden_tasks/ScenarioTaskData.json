@@ -19,5 +19,6 @@
   "benchmark_cpu_override": "",
   "background_set_ratio": 0,
   "server_args": "",
-  "overlay_value_size": 0
+  "overlay_value_size": 0,
+  "overlay_spec": ""
 }
