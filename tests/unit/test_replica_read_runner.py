@@ -365,8 +365,9 @@ async def test_judge_passes_replica_identity_and_placement_into_the_verdict(fake
     group = FakeGroup(HOST, runner.spec, "valkey", "unstable", "")
     captured = {}
 
-    def fake_verdict(samples, **kwargs):
+    def fake_verdict(samples, parties, **kwargs):
         captured["samples"] = samples
+        captured["parties"] = parties
         captured.update(kwargs)
         return {"verdict": cs.VERDICT_SERVER, "valid": True, "reason": "test"}
 
@@ -390,9 +391,10 @@ async def test_judge_passes_replica_identity_and_placement_into_the_verdict(fake
 
     row = runner._judge(group, 1, _Placement(reader_cpus="20,21", writer_cpus="30"), m)
 
-    assert captured["replica_port"] == 6380 and captured["replica_pid"] == REPLICA_PID
-    assert captured["primary_port"] == 6379 and captured["primary_pid"] == PRIMARY_PID
-    assert captured["allocated_cpus"] == {"primary": [0], "replica": [1, 2], "reader": [20, 21], "writer": [30]}
+    parties = captured["parties"]
+    assert parties.replica == cs.ServerIdentity(6380, REPLICA_PID)
+    assert parties.primary == cs.ServerIdentity(6379, PRIMARY_PID)
+    assert parties.allocated_cpus == {"primary": [0], "replica": [1, 2], "reader": [20, 21], "writer": [30]}
     assert captured["window_start"] == 1007.0  # reader start + warmup
     assert row["lag"]["max_bytes"] == 200 and row["bottleneck"]["verdict"] == cs.VERDICT_SERVER
     # Stored samples keep the INFO series but drop the raw cumulative counters.

@@ -36,6 +36,7 @@ difference between consecutive samples divided by the wall time between them.
 """
 
 import glob
+from dataclasses import dataclass
 from typing import Optional
 
 USER_HZ = 100
@@ -305,23 +306,47 @@ def _mean_over(cores: dict, cpus: list, key: str) -> Optional[float]:
     return sum(vals) / len(vals) if vals else None
 
 
-def bottleneck_verdict(
-    samples: list,
-    *,
-    replica_port: int,
-    replica_pid: Optional[int],
-    primary_port: int,
-    primary_pid: Optional[int],
-    allocated_cpus: dict,
-    window_start: float = 0.0,
-) -> dict:
-    """Decide what bounded the score and return the evidence alongside.
+@dataclass(frozen=True)
+class ServerIdentity:
+    """How to find one server instance in the samples: its INFO port and main pid."""
+
+    port: int
+    pid: Optional[int]
+
+
+@dataclass(frozen=True)
+class Parties:
+    """Who took part in a run and which cores each was given.
 
     ``allocated_cpus`` maps a label (``"primary"``, ``"replica"``, ``"reader"``,
     ``"writer"``, further replicas as ``"replica:<port>"``) to its CPU list.
     Cores in none of the lists are *foreign*: anything busy there is not ours.
-    An empty ``"reader"`` list means the generators were not pinned by the
-    allocator, so foreign-core detection is skipped rather than guessed.
+    An empty ``"reader"`` list means the generators were not pinned, so
+    foreign-core detection is skipped rather than guessed.
+    """
+
+    replica: ServerIdentity
+    primary: ServerIdentity
+    allocated_cpus: dict
+
+    @property
+    def reader_cpus(self) -> list:
+        """Cores the reader generator was pinned to (empty: unpinned)."""
+        return list(self.allocated_cpus.get("reader") or [])
+
+    @property
+    def replica_cpus(self) -> list:
+        """Cores the measured replica was pinned to."""
+        return list(self.allocated_cpus.get("replica") or [])
+
+    @property
+    def claimed_cpus(self) -> set:
+        """Every core some party was given; the rest of the host is foreign."""
+        return {cpu for cpus in self.allocated_cpus.values() for cpu in cpus}
+
+
+def bottleneck_verdict(samples: list, parties: Parties, *, window_start: float = 0.0) -> dict:
+    """Decide what bounded the score and return the evidence alongside.
 
     Verdicts, in precedence order:
 
@@ -350,27 +375,26 @@ def bottleneck_verdict(
             "thresholds": thresholds,
         }
 
-    replica = _server_summary(
-        thread_utilization(window, lambda s: (s.get("threads") or {}).get(replica_port)),
-        replica_pid,
-        eventloop_duty(window, replica_port),
-    )
-    primary = _server_summary(
-        thread_utilization(window, lambda s: (s.get("threads") or {}).get(primary_port)),
-        primary_pid,
-        eventloop_duty(window, primary_port),
-    )
-    reader = _generator_summary(
-        thread_utilization(window, lambda s: (s.get("generators") or {}).get("reader"), time_key="t_local")
-    )
-    writer = _generator_summary(
-        thread_utilization(window, lambda s: (s.get("generators") or {}).get("writer"), time_key="t_local")
-    )
+    def server_summary(who: ServerIdentity) -> dict:
+        return _server_summary(
+            thread_utilization(window, lambda s: (s.get("threads") or {}).get(who.port)),
+            who.pid,
+            eventloop_duty(window, who.port),
+        )
+
+    def generator_summary(role: str) -> dict:
+        return _generator_summary(
+            thread_utilization(window, lambda s: (s.get("generators") or {}).get(role), time_key="t_local")
+        )
+
+    replica = server_summary(parties.replica)
+    primary = server_summary(parties.primary)
+    reader = generator_summary("reader")
+    writer = generator_summary("writer")
     cores = core_utilization(window)
 
-    claimed = {cpu for cpus in allocated_cpus.values() for cpu in cpus}
-    reader_cpus = list(allocated_cpus.get("reader") or [])
-    foreign_cpus = sorted(c for c in cores if c not in claimed) if reader_cpus else []
+    reader_cpus = parties.reader_cpus
+    foreign_cpus = sorted(c for c in cores if c not in parties.claimed_cpus) if reader_cpus else []
     foreign_busy = {c: cores[c]["busy_mean"] for c in foreign_cpus if cores[c]["busy_mean"] > FOREIGN_BUSY_MAX}
     core_summary = {
         "sampled": len(cores),
@@ -378,9 +402,9 @@ def bottleneck_verdict(
         "foreign_cores": len(foreign_cpus),
         "foreign_busy_max": max(foreign_busy.values(), default=(0.0 if foreign_cpus else None)),
         "foreign_busy_cores": {str(c): round(v, 4) for c, v in sorted(foreign_busy.items())},
-        "replica_softirq_share": _mean_over(cores, list(allocated_cpus.get("replica") or []), "softirq_mean"),
+        "replica_softirq_share": _mean_over(cores, parties.replica_cpus, "softirq_mean"),
         "reader_softirq_share": _mean_over(cores, reader_cpus, "softirq_mean"),
-        "replica_busy_mean": _mean_over(cores, list(allocated_cpus.get("replica") or []), "busy_mean"),
+        "replica_busy_mean": _mean_over(cores, parties.replica_cpus, "busy_mean"),
     }
 
     reader_peak = reader["max_thread_util"] or 0.0
