@@ -158,6 +158,37 @@ class ReplicaReadTaskData(BaseTaskData):
         return ReplicaReadTaskRunner(self, server_infos)
 
 
+@dataclass(frozen=True)
+class _Placement:
+    """Where the two generators run (cpulists; empty means unpinned)."""
+
+    reader_cpus: str
+    writer_cpus: str
+
+
+@dataclass(frozen=True)
+class _Measurement:
+    """Everything one measure phase produced, handed to the judge phase."""
+
+    reader: dict
+    writer: dict
+    samples: list
+    reader_started: float  # monotonic; the verdict window opens at reader_started + warmup
+    reader_toml: str
+    writer_toml: str
+
+
+def _primary_and_replica(group: TopologyGroup) -> tuple:
+    """The primary and the measured (first) replica of a started topology."""
+    if group.primary is None or not group.replicas:
+        raise RuntimeError("topology not started")
+    return group.primary, group.replicas[0]
+
+
+def _endpoint(server: Server) -> str:
+    return f"{server.ip}:{server.port}"
+
+
 class ReplicaReadTaskRunner(BaseTaskRunner):
     """Run the replica-read benchmark. See module docstring for the phases."""
 
@@ -170,6 +201,10 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self.host = server_infos[0]
         self.spec = task.topology_spec()
         self.commit_hash = ""
+        # Generator placement: allocated on the first rep, released when the run ends.
+        self._client: Optional[Server] = None
+        self._reader_tag: Optional[AllocationTag] = None
+        self._writer_tag: Optional[AllocationTag] = None
         self.title = (
             f"replica-read, {task.source}:{task.specifier}, {task.replicas} replica(s), "
             f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
@@ -258,200 +293,237 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
     # ------------------------------------------------------------------ run
 
     async def run(self):
+        """Bring up, preload, measure, judge, repeat; record once at the end."""
         task = self.task
         self.logger.info("preparing: %s", self.title)
         self.file_protocol.write_status(self.status)
 
         group = TopologyGroup(self.host, self.spec, task.source, task.specifier, task.make_args)
-        client: Optional[Server] = None
-        reader_tag: Optional[AllocationTag] = None
-        writer_tag: Optional[AllocationTag] = None
         reps: list = []
-        reader_toml = writer_toml = ""
-
+        last: Optional[_Measurement] = None
         try:
-            for rep in range(task.repetitions):
-                if rep > 0:
-                    await group.stop_all_servers()
-                    await Server(self.host.ip, username=self.host.username).run_host_command(
-                        "sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False
-                    )
-
-                # 1. topology
-                await group.kill_all_valkey_instances()
-                await group.start()
-                await group.begin_replication()
-                await group.wait_for_repl_sync()
-                primary, replica = group.primary, group.replicas[0]
-                assert primary is not None
-                self.commit_hash = primary.get_build_hash() or ""
-
-                if client is None:
-                    client = Server("127.0.0.1")
-                    await client.ensure_host_cpu_allocation()
-                    reader_tag = self._allocate_client_cpus(client, "reader", task.threads)
-                    writer_tag = self._allocate_client_cpus(client, "writer", task.write_threads)
-                reader_cpus = self._cpu_list(client, reader_tag)
-                writer_cpus = self._cpu_list(client, writer_tag)
-                primary_ep = f"{primary.ip}:{primary.port}"
-                replica_ep = f"{replica.ip}:{replica.port}"
-
-                # 2. preload at the primary, then let replication drain
-                self.status.state = "running"
-                self.file_protocol.write_status(self.status)
-                preload_toml = self._toml(
-                    f"preload_rep{rep + 1}.toml",
-                    generate_toml_config(
-                        duration=PRELOAD_DURATION_SECONDS,
-                        warmup=0,
-                        threads=task.write_threads,
-                        cpu_list=writer_cpus,
-                        endpoint=primary_ep,
-                        connections=max(task.write_connections, 32),
-                        pipeline_depth=16,
-                        keyspace_count=task.keyspace_count,
-                        val_size=task.val_size,
-                        test="get",
-                        prefill=True,
-                    ),
-                )
-                await self._wait_and_parse(self._launch(preload_toml), "preload")
-                await group.wait_for_offsets_caught_up()
-                keys_primary = (await primary.count_items_expires())[0]
-                keys_replica = (await replica.count_items_expires())[0]
-                if keys_replica != keys_primary or keys_primary < task.keyspace_count:
-                    raise RuntimeError(
-                        f"preload mismatch: primary {keys_primary} keys, replica {keys_replica}, "
-                        f"expected >= {task.keyspace_count}"
-                    )
-
-                # 3. measure: writer first, then reader; sample throughout
-                writer_toml = generate_toml_config(
-                    duration=task.warmup + task.duration + WRITER_SLACK_SECONDS,
-                    warmup=0,
-                    threads=task.write_threads,
-                    cpu_list=writer_cpus,
-                    endpoint=primary_ep,
-                    connections=task.write_connections,
-                    pipeline_depth=task.write_pipelining,
-                    keyspace_count=task.keyspace_count,
-                    val_size=task.val_size,
-                    test="set",
-                    rate_limit=task.write_rate,
-                    prefill=False,
-                )
-                reader_toml = generate_toml_config(
-                    duration=task.duration,
-                    warmup=task.warmup,
-                    threads=task.threads,
-                    cpu_list=reader_cpus,
-                    endpoint=replica_ep,
-                    connections=task.connections,
-                    pipeline_depth=task.pipelining,
-                    keyspace_count=task.keyspace_count,
-                    val_size=task.val_size,
-                    test="get",
-                    prefill=False,
-                )
-                writer_path = self._toml(f"writer_rep{rep + 1}.toml", writer_toml)
-                reader_path = self._toml(f"reader_rep{rep + 1}.toml", reader_toml)
-
-                self.status.state = "running"
-                self.file_protocol.write_status(self.status)
-                self.logger.info(
-                    "rep %d/%d: writer %d/s at %s, reader at %s",
-                    rep + 1,
-                    task.repetitions,
-                    task.write_rate,
-                    primary_ep,
-                    replica_ep,
-                )
-
-                samples: list = []
-                writer_cmd = self._launch(writer_path)
-                await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
-                reader_cmd = self._launch(reader_path)
-                reader_started = time.monotonic()
-                sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd, writer_cmd))
-                try:
-                    reader = await self._wait_and_parse(reader_cmd, "reader")
-                finally:
-                    sampler.cancel()
-                    try:
-                        await sampler
-                    except asyncio.CancelledError:
-                        pass
-                writer = await self._wait_and_parse(writer_cmd, "writer")
-
-                # 4. guards
-                hit = reader["hit_rate"]["percent"] if reader["hit_rate"] else 0.0
-                if hit < READER_MIN_HIT_RATE_PCT:
-                    raise RuntimeError(
-                        f"reader hit rate {hit}% < {READER_MIN_HIT_RATE_PCT}%: replica dataset incomplete"
-                    )
-                achieved = writer["throughput_rps"]
-                if achieved < task.write_rate * (1 - WRITE_RATE_TOLERANCE):
-                    raise RuntimeError(
-                        f"writer achieved {achieved:.0f}/s, below {1 - WRITE_RATE_TOLERANCE:.0%} of target "
-                        f"{task.write_rate}/s: primary or writer could not sustain the rate"
-                    )
-
-                lag = replication_lag_stats(samples, primary.port, replica.port)
-                bottleneck = cpu_sampling.bottleneck_verdict(
-                    samples,
-                    replica_port=replica.port,
-                    replica_pid=replica.valkey_pid,
-                    primary_port=primary.port,
-                    primary_pid=primary.valkey_pid,
-                    allocated_cpus=self._allocated_cpus(group, reader_cpus, writer_cpus),
-                    window_start=reader_started + task.warmup,
-                )
-                reps.append(
-                    {
-                        "reader_rps": reader["throughput_rps"],
-                        "reader_latency": reader["latency"],
-                        "reader_hit_rate": reader["hit_rate"],
-                        "writer_rps": achieved,
-                        "writer_latency": writer["latency"],
-                        "lag": lag,
-                        "bottleneck": bottleneck,
-                        "samples": self._slim_samples(samples),
-                    }
-                )
-                log = self.logger.info if bottleneck["valid"] else self.logger.warning
-                log(
-                    "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes, bottleneck=%s (%s)",
-                    rep + 1,
-                    task.repetitions,
-                    reader["throughput_rps"],
-                    achieved,
-                    task.write_rate,
-                    lag.get("max_bytes"),
-                    bottleneck["verdict"],
-                    bottleneck["reason"],
-                )
-
-            await self._record_result(group, reps, reader_toml, writer_toml)
+            for rep in range(1, task.repetitions + 1):
+                await self._bring_up(group, first=rep == 1)
+                placement = await self._place_generators()
+                await self._preload(group, rep, placement)
+                last = await self._measure(group, rep, placement)
+                reps.append(self._judge(group, rep, placement, last))
+            assert last is not None
+            await self._record_result(group, reps, last.reader_toml, last.writer_toml)
             self.status.state = "completed"
             self.status.end_time = time.time()
             self.status.steps_completed = self.status.steps_total
             self.file_protocol.write_status(self.status)
         finally:
             await group.stop_all_servers()
-            if client is not None:
-                for tag in (reader_tag, writer_tag):
-                    if tag:
-                        client._cpu_allocator.release(client.ip, tag)
+            self._release_generators()
+
+    # ------------------------------------------------------------------ phases
+
+    async def _bring_up(self, group: TopologyGroup, first: bool) -> None:
+        """Phase 1: fresh instances, replication wired and synced; records the build hash."""
+        if not first:
+            await group.stop_all_servers()
+            await Server(self.host.ip, username=self.host.username).run_host_command(
+                "sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False
+            )
+        await group.kill_all_valkey_instances()
+        await group.start()
+        await group.begin_replication()
+        await group.wait_for_repl_sync()
+        assert group.primary is not None
+        self.commit_hash = group.primary.get_build_hash() or ""
+
+    async def _place_generators(self) -> "_Placement":
+        """Allocate generator CPUs once (first call) and return their cpulists.
+
+        The allocation outlives the per-rep topology so that every rep's
+        generators sit on the same cores; ``_release_generators`` undoes it.
+        """
+        if self._client is None:
+            self._client = Server("127.0.0.1")
+            await self._client.ensure_host_cpu_allocation()
+            self._reader_tag = self._allocate_client_cpus(self._client, "reader", self.task.threads)
+            self._writer_tag = self._allocate_client_cpus(self._client, "writer", self.task.write_threads)
+        return _Placement(
+            reader_cpus=self._cpu_list(self._client, self._reader_tag),
+            writer_cpus=self._cpu_list(self._client, self._writer_tag),
+        )
+
+    def _release_generators(self) -> None:
+        if self._client is None:
+            return
+        for tag in (self._reader_tag, self._writer_tag):
+            if tag:
+                self._client._cpu_allocator.release(self._client.ip, tag)
+
+    async def _preload(self, group: TopologyGroup, rep: int, placement: "_Placement") -> None:
+        """Phase 2: fill the keyspace at the primary and wait until every replica has all of it."""
+        task = self.task
+        primary, replica = _primary_and_replica(group)
+        self.status.state = "running"
+        self.file_protocol.write_status(self.status)
+        preload_toml = self._toml(
+            f"preload_rep{rep}.toml",
+            generate_toml_config(
+                duration=PRELOAD_DURATION_SECONDS,
+                warmup=0,
+                threads=task.write_threads,
+                cpu_list=placement.writer_cpus,
+                endpoint=_endpoint(primary),
+                connections=max(task.write_connections, 32),
+                pipeline_depth=16,
+                keyspace_count=task.keyspace_count,
+                val_size=task.val_size,
+                test="get",
+                prefill=True,
+            ),
+        )
+        await self._wait_and_parse(self._launch(preload_toml), "preload")
+        await group.wait_for_offsets_caught_up()
+        keys_primary = (await primary.count_items_expires())[0]
+        keys_replica = (await replica.count_items_expires())[0]
+        if keys_replica != keys_primary or keys_primary < task.keyspace_count:
+            raise RuntimeError(
+                f"preload mismatch: primary {keys_primary} keys, replica {keys_replica}, "
+                f"expected >= {task.keyspace_count}"
+            )
+
+    def _generator_configs(self, placement: "_Placement", primary: Server, replica: Server) -> tuple:
+        """(writer_toml, reader_toml) for the measure phase.
+
+        The writer outlives the reader by ``WRITER_SLACK_SECONDS`` so the whole
+        reader window sees the write stream, and still exits on its own.
+        """
+        task = self.task
+        writer_toml = generate_toml_config(
+            duration=task.warmup + task.duration + WRITER_SLACK_SECONDS,
+            warmup=0,
+            threads=task.write_threads,
+            cpu_list=placement.writer_cpus,
+            endpoint=_endpoint(primary),
+            connections=task.write_connections,
+            pipeline_depth=task.write_pipelining,
+            keyspace_count=task.keyspace_count,
+            val_size=task.val_size,
+            test="set",
+            rate_limit=task.write_rate,
+            prefill=False,
+        )
+        reader_toml = generate_toml_config(
+            duration=task.duration,
+            warmup=task.warmup,
+            threads=task.threads,
+            cpu_list=placement.reader_cpus,
+            endpoint=_endpoint(replica),
+            connections=task.connections,
+            pipeline_depth=task.pipelining,
+            keyspace_count=task.keyspace_count,
+            val_size=task.val_size,
+            test="get",
+            prefill=False,
+        )
+        return writer_toml, reader_toml
+
+    async def _measure(self, group: TopologyGroup, rep: int, placement: "_Placement") -> "_Measurement":
+        """Phase 3: fixed-rate writer at the primary, closed-loop reader at the replica, sampled throughout."""
+        task = self.task
+        primary, replica = _primary_and_replica(group)
+        writer_toml, reader_toml = self._generator_configs(placement, primary, replica)
+        writer_path = self._toml(f"writer_rep{rep}.toml", writer_toml)
+        reader_path = self._toml(f"reader_rep{rep}.toml", reader_toml)
+        self.logger.info(
+            "rep %d/%d: writer %d/s at %s, reader at %s",
+            rep,
+            task.repetitions,
+            task.write_rate,
+            _endpoint(primary),
+            _endpoint(replica),
+        )
+
+        samples: list = []
+        writer_cmd = self._launch(writer_path)
+        await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
+        reader_cmd = self._launch(reader_path)
+        reader_started = time.monotonic()
+        sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd, writer_cmd))
+        try:
+            reader = await self._wait_and_parse(reader_cmd, "reader")
+        finally:
+            sampler.cancel()
+            try:
+                await sampler
+            except asyncio.CancelledError:
+                pass
+        writer = await self._wait_and_parse(writer_cmd, "writer")
+        return _Measurement(
+            reader=reader,
+            writer=writer,
+            samples=samples,
+            reader_started=reader_started,
+            reader_toml=reader_toml,
+            writer_toml=writer_toml,
+        )
+
+    def _check_guards(self, reader: dict, writer: dict) -> None:
+        """Phase 4: conditions under which the rep is not the experiment it claims to be."""
+        hit = reader["hit_rate"]["percent"] if reader["hit_rate"] else 0.0
+        if hit < READER_MIN_HIT_RATE_PCT:
+            raise RuntimeError(f"reader hit rate {hit}% < {READER_MIN_HIT_RATE_PCT}%: replica dataset incomplete")
+        achieved = writer["throughput_rps"]
+        target = self.task.write_rate
+        if achieved < target * (1 - WRITE_RATE_TOLERANCE):
+            raise RuntimeError(
+                f"writer achieved {achieved:.0f}/s, below {1 - WRITE_RATE_TOLERANCE:.0%} of target "
+                f"{target}/s: primary or writer could not sustain the rate"
+            )
+
+    def _judge(self, group: TopologyGroup, rep: int, placement: "_Placement", m: "_Measurement") -> dict:
+        """Phases 4-5: apply the guards, then reduce the rep to its result row entry with a verdict."""
+        self._check_guards(m.reader, m.writer)
+        primary, replica = _primary_and_replica(group)
+        lag = replication_lag_stats(m.samples, primary.port, replica.port)
+        bottleneck = cpu_sampling.bottleneck_verdict(
+            m.samples,
+            replica_port=replica.port,
+            replica_pid=replica.valkey_pid,
+            primary_port=primary.port,
+            primary_pid=primary.valkey_pid,
+            allocated_cpus=self._allocated_cpus(group, placement),
+            window_start=m.reader_started + self.task.warmup,
+        )
+        log = self.logger.info if bottleneck["valid"] else self.logger.warning
+        log(
+            "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes, bottleneck=%s (%s)",
+            rep,
+            self.task.repetitions,
+            m.reader["throughput_rps"],
+            m.writer["throughput_rps"],
+            self.task.write_rate,
+            lag.get("max_bytes"),
+            bottleneck["verdict"],
+            bottleneck["reason"],
+        )
+        return {
+            "reader_rps": m.reader["throughput_rps"],
+            "reader_latency": m.reader["latency"],
+            "reader_hit_rate": m.reader["hit_rate"],
+            "writer_rps": m.writer["throughput_rps"],
+            "writer_latency": m.writer["latency"],
+            "lag": lag,
+            "bottleneck": bottleneck,
+            "samples": self._slim_samples(m.samples),
+        }
 
     @staticmethod
-    def _allocated_cpus(group: TopologyGroup, reader_cpus: str, writer_cpus: str) -> dict:
+    def _allocated_cpus(group: TopologyGroup, placement: "_Placement") -> dict:
         """Label -> CPU list for every pinned party; cores in none of them are foreign."""
-        assert group.primary is not None
+        primary, replica = _primary_and_replica(group)
         allocated = {
-            "primary": list(group.primary.server_cpus),
-            "replica": list(group.replicas[0].server_cpus),
-            "reader": parse_cpulist(reader_cpus) if reader_cpus else [],
-            "writer": parse_cpulist(writer_cpus) if writer_cpus else [],
+            "primary": list(primary.server_cpus),
+            "replica": list(replica.server_cpus),
+            "reader": parse_cpulist(placement.reader_cpus) if placement.reader_cpus else [],
+            "writer": parse_cpulist(placement.writer_cpus) if placement.writer_cpus else [],
         }
         for extra in group.replicas[1:]:
             allocated[f"replica:{extra.port}"] = list(extra.server_cpus)
