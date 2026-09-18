@@ -283,3 +283,8 @@ class TestTopologyField:
         doc.pop("timestamp")
         task = PerfTaskData(topology=TopologySpec.replication_hosts(1).to_dict(), **doc)
         assert task.topology == TopologySpec.replication_hosts(1)
+
+    def test_document_with_neither_key_is_standalone(self, _patch_task_queue_config):
+        """The layout key is optional on the wire: the canary scheduler's document omits it."""
+        task = task_queue.BaseTaskData.from_dict(_perf_document())
+        assert task.topology == TopologySpec.standalone()

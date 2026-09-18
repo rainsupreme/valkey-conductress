@@ -1,10 +1,11 @@
-"""TopologySpec/TopologyGroup as the successor of ReplicationGroup.
+"""TopologySpec/TopologyGroup: the one server-layout abstraction.
 
-Two things are pinned here. The spec additions (per-instance host, legacy
-layout, the ``standalone`` factory). And the acceptance test for retiring
-``ReplicationGroup``: driven through the same fake ``Server``, the two classes
-must issue the same calls for the one-instance layout every sweep cell uses,
-and the same set of calls for a two-host replication group.
+Two things are pinned here. The spec (per-instance host and slot, legacy
+layout, the factories, dict round trip). And the bring-up contract: driven
+through a fake ``Server``, the standalone layout every sweep cell uses must
+issue exactly the call sequence the retired single-server code did, and
+``for_task`` must bind configured hosts and fill task settings the way every
+task now relies on.
 """
 
 from pathlib import Path
@@ -13,7 +14,6 @@ from unittest.mock import patch
 import pytest
 
 from conductress.config import ServerInfo
-from conductress.replication_group import ReplicationGroup
 from conductress.topology import InstanceSpec, TopologyGroup, TopologySpec
 
 HOST = ServerInfo(ip="10.0.0.1", username="ec2-user")
@@ -81,7 +81,7 @@ def test_to_dict_carries_host_and_layout():
 
 
 class FakeServer:
-    """Records every call ReplicationGroup or TopologyGroup makes, per (ip, port)."""
+    """Records every call TopologyGroup makes through Server, per (ip, port)."""
 
     log: list = []
     replicas_by_ip: dict = {}
@@ -137,7 +137,7 @@ class FakeServer:
 def fake_server():
     FakeServer.log = []
     FakeServer.replicas_by_ip = {}
-    with patch("conductress.replication_group.Server", FakeServer), patch("conductress.topology.Server", FakeServer):
+    with patch("conductress.topology.Server", FakeServer):
         yield FakeServer
 
 
@@ -146,7 +146,7 @@ def _without_kill(log):
 
 
 async def _drive(group):
-    """Two reps the way the tasks do it: kill (a no-op for ReplicationGroup before its first start), start, wire, stop."""
+    """Two reps the way the tasks do it: kill, start, wire, unwire, stop."""
     for _ in range(2):
         await group.kill_all_valkey_instances()
         await group.start()
@@ -156,52 +156,61 @@ async def _drive(group):
         await group.stop_all_servers()
 
 
-@pytest.mark.asyncio
-async def test_standalone_issues_the_same_calls_as_a_one_server_replication_group(fake_server):
-    """The sweep path: one instance, default port, legacy layout. Call-for-call identical."""
-    args = dict(binary_source="valkey", specifier="unstable", make_args="OPTIMIZATION=-O2")
-    legacy = ReplicationGroup([HOST], threads=7, server_cpu_override="0-7", server_args="--save ''", **args)
-    with patch("conductress.topology.asyncio.sleep"), patch("conductress.replication_group.asyncio.sleep"):
-        await _drive(legacy)
-    legacy_log = list(fake_server.log)
+# The exact sequence the retired single-server bring-up (ReplicationGroup with
+# one host) issued for one rep, recorded through this fake before it was
+# deleted. Every sweep cell runs this layout; the group must keep producing it.
+LEGACY_SINGLE_SERVER_REP = [
+    ("build", "10.0.0.1", 6379, "ec2-user", None, "valkey", "unstable", "OPTIMIZATION=-O2"),
+    ("start", "10.0.0.1", 6379, "/cache/valkey-server", 7, "0-7", "--save ''"),
+    ("replicate", "10.0.0.1", 6379, None, "6379"),
+    ("ready", "10.0.0.1", 6379),
+    ("get_replicas", "10.0.0.1", 6379),
+    ("replicate", "10.0.0.1", 6379, None, "6379"),
+    ("stop", "10.0.0.1", 6379),
+]
 
-    fake_server.log = []
+
+@pytest.mark.asyncio
+async def test_standalone_issues_the_legacy_single_server_call_sequence(fake_server):
+    """The sweep path: one instance, default port, legacy layout. Call-for-call what the old code did."""
     spec = TopologySpec.standalone(7, server_args="--save ''", cpu_override="0-7")
-    new = TopologyGroup(HOST, spec, **args)
+    group = TopologyGroup(HOST, spec, binary_source="valkey", specifier="unstable", make_args="OPTIMIZATION=-O2")
     with patch("conductress.topology.asyncio.sleep"):
-        await _drive(new)
-
-    # ReplicationGroup's pre-start kill is a no-op until it has servers; TopologyGroup
-    # always kills. Everything else must match call for call.
-    assert [e for e in fake_server.log if e[0] != "kill"] == [e for e in legacy_log if e[0] != "kill"]
-    assert fake_server.log.count(("kill", "10.0.0.1")) == 2 and legacy_log.count(("kill", "10.0.0.1")) == 1
-    assert ("build", "10.0.0.1", 6379, "ec2-user", None, "valkey", "unstable", "OPTIMIZATION=-O2") in legacy_log
-    assert new.primary.port == 6379 and new.replicas == []
+        await _drive(group)
+    # The old code's pre-start kill was a no-op until its first start; the group kills every rep.
+    assert _without_kill(fake_server.log) == _without_kill(LEGACY_SINGLE_SERVER_REP * 2)
+    assert fake_server.log.count(("kill", "10.0.0.1")) == 2
+    assert group.primary.port == 6379 and group.replicas == []
 
 
 @pytest.mark.asyncio
-async def test_two_host_group_issues_the_same_set_of_calls(fake_server):
-    """ReplicationGroup starts hosts in parallel and TopologyGroup sequentially, so compare as multisets."""
-    args = dict(binary_source="valkey", specifier="unstable", make_args="")
-    legacy = ReplicationGroup([HOST, OTHER], threads=1, **args)
-    with patch("conductress.replication_group.asyncio.sleep"):
-        await _drive(legacy)
-    legacy_log = sorted(fake_server.log, key=repr)
-
-    fake_server.log = []
-    spec = TopologySpec(
-        instances=[
-            InstanceSpec(role="primary", port=6379, io_threads=1, own_dir=False),
-            InstanceSpec(role="replica", port=6379, io_threads=1, host=OTHER, own_dir=False),
-        ]
+async def test_for_task_binds_hosts_and_resolves_settings_from_the_task(fake_server):
+    """What every task now calls: one constructor that binds servers.json slots and fills task settings."""
+    spec = TopologySpec.replication_hosts(1)
+    group = TopologyGroup.for_task(
+        [HOST, OTHER],
+        spec,
+        "valkey",
+        "unstable",
+        io_threads=7,
+        make_args="",
+        server_args="--save ''",
+        cpu_override="0-7",
     )
-    new = TopologyGroup(HOST, spec, **args)
+    assert [i.resolved_host(HOST).ip for i in group.spec.instances] == ["10.0.0.1", "10.0.0.2"]
+    assert all(
+        i.io_threads == 7 and i.server_args == "--save ''" and i.cpu_override == "0-7" for i in group.spec.instances
+    )
     with patch("conductress.topology.asyncio.sleep"):
-        await _drive(new)
-
-    assert _without_kill(fake_server.log) == _without_kill(legacy_log)
+        await _drive(group)
+    assert ("start", "10.0.0.2", 6379, "/cache/valkey-server", 7, "0-7", "--save ''") in fake_server.log
     assert ("replicate", "10.0.0.2", 6379, "10.0.0.1", "6379") in fake_server.log
     assert fake_server.log.count(("kill", "10.0.0.2")) == 2
+
+    with pytest.raises(RuntimeError, match="host slot 1"):
+        TopologyGroup.for_task([HOST], spec, "valkey", "unstable", io_threads=1)
+    with pytest.raises(ValueError, match="at least one server"):
+        TopologyGroup.for_task([], spec, "valkey", "unstable", io_threads=1)
 
 
 @pytest.mark.asyncio

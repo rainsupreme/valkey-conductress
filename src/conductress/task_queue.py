@@ -41,7 +41,9 @@ def _upgrade_topology_keys(data: dict) -> None:
 
     Documents written before the ``topology`` field carried ``replicas: N``,
     meaning N replicas on the next N configured hosts (``N <= 0``: none). A
-    document carrying both keeps ``topology`` and drops ``replicas``.
+    document carrying both keeps ``topology`` and drops ``replicas``. A
+    document with neither is the single-instance layout every task has always
+    meant by default.
     """
     replicas = data.pop("replicas", None)
     if "topology" in data:
@@ -51,6 +53,8 @@ def _upgrade_topology_keys(data: dict) -> None:
             data["topology"] = TopologySpec.replication_hosts(int(replicas))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid task data: replicas must be an integer, got {replicas!r}") from exc
+    else:
+        data["topology"] = TopologySpec.standalone()
 
 
 @dataclass

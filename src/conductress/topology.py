@@ -11,8 +11,8 @@ default port with the legacy working directory and logfile, and is what every
 single-instance task runs. ``TopologySpec.replica_read`` is a primary plus
 replicas on consecutive ports of the same host, each with its own working
 directory. Instances on distinct hosts are the same spec with a ``host`` per
-entry. ``ReplicationGroup`` is the older one-instance-per-host abstraction;
-its behaviour is preserved here so callers can migrate to ``TopologyGroup``.
+entry.
+
 
 Cluster mode is deliberately representable (``cluster_enabled`` per instance,
 bus port = port + 10000) but not yet driven: the bootstrap step for a cluster
@@ -247,7 +247,7 @@ class TopologySpec:
 
         This is the layout every single-instance task has always run; on the
         default port it produces the same ``valkey-server`` command line and
-        the same files on the host as ``ReplicationGroup`` with one server.
+        the same files on the host as the single-server bring-up it replaced.
         With no arguments it defers every setting to the task (the task-data
         default).
         """
@@ -264,6 +264,33 @@ class TopologySpec:
                 )
             ]
         )
+
+    @classmethod
+    def on_host_replicas(
+        cls,
+        replicas: int,
+        *,
+        primary_args: str = "",
+        replica_args: str = "",
+        base_port: int = DEFAULT_BASE_PORT,
+    ) -> "TopologySpec":
+        """Primary plus ``replicas`` replicas on consecutive ports of the runner host.
+
+        Every instance runs with the task's own io-threads and server arguments
+        (filled by ``resolved``); ``primary_args`` / ``replica_args`` are
+        appended for their role. Each instance has its own working directory.
+        ``replicas == 0`` is ``standalone(server_args=primary_args)``.
+        """
+        if replicas < 0:
+            raise ValueError(f"replicas must be >= 0, got {replicas}")
+        if replicas == 0:
+            if replica_args:
+                raise ValueError("replica_args given but the topology has no replicas")
+            return cls.standalone(server_args=primary_args, port=base_port)
+        instances = [InstanceSpec(role=PRIMARY_ROLE, port=base_port, server_args=primary_args)]
+        for n in range(replicas):
+            instances.append(InstanceSpec(role=REPLICA_ROLE, port=base_port + 1 + n, server_args=replica_args))
+        return cls(instances=instances)
 
     @classmethod
     def replication_hosts(cls, replicas: int) -> "TopologySpec":
@@ -348,6 +375,32 @@ class TopologyGroup:
         self.replicas: list[Server] = []
         # spec instance -> running server, in spec order
         self.by_port: dict[int, Server] = {}
+
+    @classmethod
+    def for_task(
+        cls,
+        server_infos: list,
+        spec: TopologySpec,
+        binary_source: str,
+        specifier: str,
+        *,
+        io_threads: int,
+        make_args: str = "",
+        server_args: str = "",
+        cpu_override: str = "",
+    ) -> "TopologyGroup":
+        """The group a task runs: hosts bound to the runner's servers, settings filled from the task.
+
+        ``server_infos`` are the configured servers the runner handed the task
+        (slot 0 first). This is the one place bind + resolve happens, so every
+        task builds its group the same way.
+        """
+        if not server_infos:
+            raise ValueError("at least one server is required")
+        resolved = spec.bind_hosts(server_infos).resolved(
+            io_threads=io_threads, server_args=server_args, cpu_override=cpu_override
+        )
+        return cls(server_infos[0], resolved, binary_source, specifier, make_args)
 
     def hosts(self) -> list:
         """Distinct hosts this topology touches."""

@@ -24,11 +24,11 @@ from conductress.config import (
     ServerInfo,
 )
 from conductress.file_protocol import BenchmarkStatus
-from conductress.replication_group import ReplicationGroup
 from conductress.runner_identity import get_result_provenance
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.tasks.task_mixed import set_ratio_to_memtier_ratio
+from conductress.topology import TopologyGroup, TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class LatencyTaskData(BaseTaskData):
         return LatencyTaskRunner(
             task_name=self.task_id,
             server_infos=server_infos,
+            topology=self.topology,
             source=self.source,
             specifier=self.specifier,
             make_args=self.make_args,
@@ -95,9 +96,11 @@ class LatencyTaskRunner(BaseTaskRunner):
         server_args: str = "",
         set_ratio: int = 0,
         value_size: int = LATENCY_VAL_SIZE,
+        topology: Optional[TopologySpec] = None,
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
+        self.topology = topology if topology is not None else TopologySpec.standalone()
         self.source = source
         self.specifier = specifier
         self.make_args = make_args
@@ -118,13 +121,15 @@ class LatencyTaskRunner(BaseTaskRunner):
         self.status = BenchmarkStatus(steps_total=self.repetitions * 2, task_type="latency")
         self.file_protocol.write_status(self.status)
 
-        replication_group = ReplicationGroup(
+        topology_group = TopologyGroup.for_task(
             self.server_infos,
+            self.topology,
             self.source,
             self.specifier,
-            self.io_threads,
-            self.make_args,
+            io_threads=self.io_threads,
+            make_args=self.make_args,
             server_args=self.server_args,
+            cpu_override="",
         )
 
         all_reps: list[dict] = []
@@ -135,17 +140,19 @@ class LatencyTaskRunner(BaseTaskRunner):
 
                 # Between-rep: stop server, drop caches
                 if rep > 0:
-                    await replication_group.stop_all_servers()
-                    server = replication_group.primary or Server(self.server_infos[0].ip)
+                    await topology_group.stop_all_servers()
+                    server = topology_group.primary or Server(self.server_infos[0].ip)
                     await server.run_host_command("sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'", check=False)
 
                 # Start fresh server
-                await replication_group.kill_all_valkey_instances()
-                await replication_group.start()
-                if not replication_group.primary:
+                await topology_group.kill_all_valkey_instances()
+                await topology_group.start()
+                if not topology_group.primary:
                     raise RuntimeError("Server failed to start")
+                await topology_group.begin_replication()
+                await topology_group.wait_for_repl_sync()
 
-                server = replication_group.primary
+                server = topology_group.primary
 
                 # Populate keys using memtier (also serves as warmup)
                 populate_cmd = (
@@ -192,7 +199,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                     logger.warning("Failed to parse memtier output for rep %d", rep + 1)
 
         finally:
-            await replication_group.stop_all_servers()
+            await topology_group.stop_all_servers()
 
         if not all_reps:
             raise RuntimeError("No successful latency repetitions")
@@ -277,6 +284,7 @@ class LatencyTaskRunner(BaseTaskRunner):
 
         ratio_note = f", SET={self.set_ratio}%" if self.set_ratio > 0 else ""
         detailed_data: dict = {
+            "topology": self.topology.to_dict(),
             "actual_rps": result["actual_rps"],
             "target_rps": self.target_rps,
             "p50_us": result["p50_us"],

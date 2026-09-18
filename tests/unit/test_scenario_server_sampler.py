@@ -28,6 +28,7 @@ from conductress.tasks.task_scenario import (
     sampler_gaps,
     storm_metrics_namespace,
 )
+from conductress.topology import TopologySpec
 
 HOST = config.ServerInfo(ip="127.0.0.1", username="ec2-user")
 
@@ -37,7 +38,7 @@ def _scenario_task(**overrides) -> ScenarioTaskData:
         source=config.REPO_NAMES[0],
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
         scenario="connection-storm",
@@ -325,21 +326,31 @@ class _FakeServer:
         return "", ""
 
 
-class _FakeReplicationGroup:
+class _FakeTopologyGroup:
     events = []
     server = None
 
     def __init__(self, *args, **kwargs):  # pylint: disable=unused-argument
-        self.primary = _FakeReplicationGroup.server
+        self.primary = _FakeTopologyGroup.server
+
+    @classmethod
+    def for_task(cls, *args, **kwargs):  # pylint: disable=unused-argument
+        return cls()
 
     async def kill_all_valkey_instances(self):
-        _FakeReplicationGroup.events.append("kill")
+        _FakeTopologyGroup.events.append("kill")
 
     async def start(self):
-        _FakeReplicationGroup.events.append("start")
+        _FakeTopologyGroup.events.append("start")
+
+    async def begin_replication(self):
+        _FakeTopologyGroup.events.append("begin-replication")
+
+    async def wait_for_repl_sync(self):
+        _FakeTopologyGroup.events.append("wait-sync")
 
     async def stop_all_servers(self):
-        _FakeReplicationGroup.events.append("stop-all")
+        _FakeTopologyGroup.events.append("stop-all")
 
 
 class _FakeSampler:
@@ -401,8 +412,8 @@ def _storm_doc():
 
 @pytest.mark.asyncio
 async def test_runner_starts_sampler_before_overlay_and_records_rows(monkeypatch, tmp_path):
-    _FakeReplicationGroup.events = []
-    _FakeReplicationGroup.server = _FakeServer()
+    _FakeTopologyGroup.events = []
+    _FakeTopologyGroup.server = _FakeServer()
     _FakeSampler.order = []
 
     real_sleep = module.asyncio.sleep
@@ -410,7 +421,7 @@ async def test_runner_starts_sampler_before_overlay_and_records_rows(monkeypatch
     async def yielding_sleep(_s):
         await real_sleep(0)
 
-    monkeypatch.setattr(module, "ReplicationGroup", _FakeReplicationGroup)
+    monkeypatch.setattr(module, "TopologyGroup", _FakeTopologyGroup)
     monkeypatch.setattr(module, "ServerSampler", _FakeSampler)
     monkeypatch.setattr(module, "StormOverlay", lambda spec, wd: _FakeStormOverlay(spec, wd))
     monkeypatch.setattr(module.asyncio, "sleep", yielding_sleep)

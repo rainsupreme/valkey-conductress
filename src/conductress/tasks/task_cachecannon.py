@@ -38,9 +38,9 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
+from conductress.topology import TopologyGroup, TopologySpec
 from conductress.utility import (
     HumanByte,
     HumanTime,
@@ -214,6 +214,7 @@ class CachecannonTaskData(BaseTaskData):
         return CachecannonTaskRunner(
             task_id=self.task_id,
             server_infos=server_infos,
+            topology=self.topology,
             source=self.source,
             specifier=self.specifier,
             make_args=self.make_args,
@@ -245,7 +246,7 @@ class CachecannonTaskData(BaseTaskData):
 class CachecannonTaskRunner(BaseTaskRunner):
     """Run a cachecannon benchmark against a Valkey server.
 
-    Builds and starts the server using the standard ReplicationGroup machinery,
+    Builds and starts the server through the shared TopologyGroup machinery,
     allocates client CPUs, generates a TOML config, launches cachecannon, and
     parses results.
     """
@@ -279,11 +280,13 @@ class CachecannonTaskRunner(BaseTaskRunner):
         rate_limit: int = 0,
         perf_stat_enabled: bool = False,
         info_sections: Optional[list[str]] = None,
+        topology: Optional[TopologySpec] = None,
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
 
         self.server_infos = server_infos
+        self.topology = topology if topology is not None else TopologySpec.standalone()
         self.source = source
         self.specifier = specifier
         self.make_args = make_args
@@ -392,14 +395,15 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.logger.info("preparing: %s", self.title)
         self.file_protocol.write_status(self.status)
 
-        replication_group = ReplicationGroup(
+        topology_group = TopologyGroup.for_task(
             self.server_infos,
+            self.topology,
             self.source,
             self.specifier,
-            self.io_threads,
-            self.make_args,
-            server_cpu_override=self.server_cpu_override,
+            io_threads=self.io_threads,
+            make_args=self.make_args,
             server_args=self.server_args,
+            cpu_override=self.server_cpu_override,
         )
 
         benchmark_alloc_tag = None
@@ -414,8 +418,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
             for rep in range(effective_reps):
                 # Between-rep housekeeping
                 if rep > 0:
-                    await replication_group.stop_all_servers()
-                    primary_server = replication_group.primary or Server(self.server_infos[0].ip)
+                    await topology_group.stop_all_servers()
+                    primary_server = topology_group.primary or Server(self.server_infos[0].ip)
                     platform = getattr(primary_server, "_platform_info", None)
                     if platform is None or platform.needs_drop_caches:
                         await primary_server.run_host_command(
@@ -424,14 +428,14 @@ class CachecannonTaskRunner(BaseTaskRunner):
                         )
 
                 # Start server
-                await replication_group.kill_all_valkey_instances()
-                await replication_group.start()
-                if not replication_group.primary:
+                await topology_group.kill_all_valkey_instances()
+                await topology_group.start()
+                if not topology_group.primary:
                     raise RuntimeError("Replication group failed to start: no primary")
 
-                await replication_group.begin_replication()
-                await replication_group.wait_for_repl_sync()
-                server = replication_group.primary
+                await topology_group.begin_replication()
+                await topology_group.wait_for_repl_sync()
+                server = topology_group.primary
                 self.commit_hash = server.get_build_hash() or ""
 
                 # Setup client CPU allocation (once)
@@ -680,7 +684,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             self.file_protocol.write_status(self.status)
 
         finally:
-            await replication_group.stop_all_servers()
+            await topology_group.stop_all_servers()
             if benchmark_alloc_tag and client:
                 client.release_cpus(benchmark_alloc_tag)
 
@@ -708,6 +712,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
 
         # Build detailed data
         detailed_data = {
+            "topology": self.topology.to_dict(),
             "warmup": self.warmup,
             "duration": self.duration,
             "io-threads": self.io_threads,
