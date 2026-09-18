@@ -1,13 +1,15 @@
 """Unit tests for the replica-read task and the topology module behind it."""
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from conductress import config
 from conductress.cachecannon import generate_toml_config
-from conductress.cli import build_parser
+from conductress.cli import build_parser, main
 from conductress.task_queue import BaseTaskData
+from conductress.task_runner import required_server_count
 from conductress.tasks.task_replica_read import METHOD, ReplicaReadTaskData, ReplicaReadTaskRunner
 from conductress.topology import InstanceSpec, TopologySpec, parse_multi_info, replication_lag_stats
 
@@ -21,7 +23,7 @@ def _task(**overrides) -> ReplicaReadTaskData:
         source=_valid_source(),
         specifier="unstable",
         make_args="",
-        replicas=1,
+        replicas=0,
         note="",
         requirements={},
     )
@@ -175,7 +177,8 @@ def test_task_defaults_and_description():
 @pytest.mark.parametrize(
     "overrides,match",
     [
-        ({"replicas": 0}, "replicas"),
+        ({"replica_count": 0}, "replica_count"),
+        ({"replicas": 1}, "must be 0"),
         ({"write_rate": 0}, "write_rate"),
         ({"duration": 0}, "duration"),
         ({"sample_interval": 0}, "sample_interval"),
@@ -189,12 +192,13 @@ def test_task_rejects_invalid_levers(overrides, match):
 
 
 def test_task_round_trips_through_queue_document(tmp_path):
-    task = _task(replicas=2, write_rate=200_000, replica_args="--io-threads-ownership yes", info_fields="a, b")
+    task = _task(replica_count=2, write_rate=200_000, replica_args="--io-threads-ownership yes", info_fields="a, b")
     path = tmp_path / "task.json"
     task.save_to_file(path)
     loaded = BaseTaskData.from_file(path)
     assert isinstance(loaded, ReplicaReadTaskData)
-    assert loaded.replicas == 2
+    assert loaded.replica_count == 2
+    assert loaded.replicas == 0
     assert loaded.write_rate == 200_000
     assert loaded.replica_args == "--io-threads-ownership yes"
     assert loaded.extra_info_fields() == ["a", "b"]
@@ -202,7 +206,7 @@ def test_task_round_trips_through_queue_document(tmp_path):
 
 
 def test_runner_title_and_status():
-    task = _task(replicas=1, io_threads=16, write_rate=10_000)
+    task = _task(replica_count=1, io_threads=16, write_rate=10_000)
     runner = ReplicaReadTaskRunner(task, [config.ServerInfo(ip="127.0.0.1", username="ec2-user")])
     assert runner.status.task_type == METHOD
     assert runner.status.steps_total > 0
@@ -242,3 +246,49 @@ def test_cli_add_replica_read_parses_role_args():
     assert args.replica_args == "--io-threads-ownership yes"
     assert args.info_fields == "dplus_speculated,dplus_punted"
     assert args.primary_io_threads == 1
+
+
+def test_task_needs_exactly_one_configured_server():
+    """Every instance runs on the runner host, so the runner's host-count gate must ask for one server.
+
+    Regression: the first live cell was rejected before any phase ran because the
+    instance count had been carried in the inherited ``replicas`` (extra hosts) field.
+    """
+    assert required_server_count(_task(replica_count=1)) == 1
+    assert required_server_count(_task(replica_count=3)) == 1
+
+
+def test_required_server_count_for_replication_group_tasks():
+    class _Hosts:
+        def __init__(self, replicas):
+            self.replicas = replicas
+
+    assert required_server_count(_Hosts(0)) == 1
+    assert required_server_count(_Hosts(2)) == 3
+
+
+@patch("conductress.cli.TaskQueue")
+def test_cli_add_replica_read_submits_a_single_host_task(mock_queue_cls):
+    """CLI --replicas is the instance count; the submitted task must not ask for extra hosts."""
+    mock_queue = MagicMock()
+    mock_queue_cls.return_value = mock_queue
+    exit_code = main(
+        [
+            "queue",
+            "add-replica-read",
+            "--source",
+            _valid_source(),
+            "--specifier",
+            "abc123",
+            "--replicas",
+            "2",
+        ]
+    )
+    assert exit_code == 0
+    assert mock_queue.submit_task.call_count == 1
+    task = mock_queue.submit_task.call_args.args[0]
+    assert isinstance(task, ReplicaReadTaskData)
+    assert task.replica_count == 2
+    assert task.replicas == 0
+    assert required_server_count(task) == 1
+    assert len(task.topology_spec().replicas) == 2
