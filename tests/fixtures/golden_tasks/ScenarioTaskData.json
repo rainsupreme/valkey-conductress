@@ -20,5 +20,6 @@
   "background_set_ratio": 0,
   "server_args": "",
   "overlay_value_size": 0,
-  "overlay_spec": ""
+  "overlay_spec": "",
+  "server_sample_ms": 0
 }

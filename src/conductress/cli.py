@@ -537,6 +537,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Value size in bytes for the large-value-reader overlay's dedicated keyset "
         "(default: 10240 = 10KB). Only used when --scenario=large-value-reader; ignored otherwise.",
     )
+    scenario_parser.add_argument(
+        "--server-sample-ms",
+        type=int,
+        default=None,
+        help="Poll the server's INFO counters every N ms during the measurement (0 = off, else >= 20). "
+        "connection-storm defaults to 100 when this flag is absent; other scenarios default to off.",
+    )
     # connection-storm overlay parameters -- serialized into overlay_spec (JSON).
     # Only valid with --scenario connection-storm; rejected otherwise.
     storm_group = scenario_parser.add_argument_group(
@@ -1291,6 +1298,15 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    # connection-storm samples the server by default (100 ms) unless the flag
+    # says otherwise; other scenarios stay off unless explicitly asked.
+    if args.server_sample_ms is not None:
+        server_sample_ms = args.server_sample_ms
+    elif args.scenario == "connection-storm":
+        server_sample_ms = 100
+    else:
+        server_sample_ms = 0
+
     queue = _TaskSubmitter(args)
     try:
         task = ScenarioTaskData(
@@ -1313,6 +1329,7 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
             background_set_ratio=args.background_set_ratio,
             overlay_value_size=args.overlay_value_size,
             overlay_spec=overlay_spec,
+            server_sample_ms=server_sample_ms,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)

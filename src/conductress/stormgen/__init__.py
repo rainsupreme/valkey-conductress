@@ -24,4 +24,6 @@ others:
 * :mod:`netstat` -- kernel listen-queue overflow counters
 """
 
-SCHEMA_VERSION = 1
+# v2 adds ``origin_wall`` (wall-clock time.time() at the shared monotonic
+# origin) to the result document, so every series can be placed on one axis.
+SCHEMA_VERSION = 2
