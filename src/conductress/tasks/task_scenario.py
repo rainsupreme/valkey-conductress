@@ -15,8 +15,9 @@ import json
 import logging
 import random
 import re
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import sqrt
 from statistics import mean, stdev
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +29,8 @@ from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 from conductress.replication_group import ReplicationGroup
 from conductress.server import Server
+from conductress.stormgen.policy import parse_policy
+from conductress.stormgen.stall import parse_stall
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.tasks.task_mixed import (
     MIXED_CLIENTS,
@@ -36,6 +39,7 @@ from conductress.tasks.task_mixed import (
     parse_memtier_total_rps,
     set_ratio_to_memtier_ratio,
 )
+from conductress.utility import RealtimeCommand
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +52,11 @@ SCENARIO_CHOICES = (
     "expiry-heavy",
     "bgsave",
     "large-value-reader",
+    "connection-storm",
 )
+
+# The scenario whose overlay is the standalone connection-storm generator.
+CONNECTION_STORM = "connection-storm"
 
 # Default value size for the large-value-reader overlay's dedicated keyset (bytes)
 LARGE_VALUE_READER_DEFAULT_SIZE = 10240  # 10 KB
@@ -334,6 +342,331 @@ def build_overlay_command(
         raise ValueError(f"Unknown scenario: {scenario}")
 
 
+# --------------------------------------------------------------------------- storm overlay spec
+
+# Keys the connection-storm overlay_spec JSON may carry, with their defaults.
+# These mirror the standalone generator's CLI so a scenario spec is just the
+# generator's parameters in JSON form.
+STORM_SPEC_DEFAULTS: Dict[str, Any] = {
+    "clients": 2000,
+    "burst_ms": 200,
+    "connect_timeout_ms": 1000.0,
+    "reply_timeout_ms": 500.0,
+    "policy": "fixed:200",
+    "handshake": ["HELLO 3"],
+    "first_command": "GET storm:key",
+    "stall": "none",
+    "burst_after_stall_ms": 200,
+    "burst_first": False,
+    "prewarm_connections": None,  # None -> generator default (= clients)
+    "workers": 0,  # 0 -> generator auto (min(8, cpu_count))
+    "bind_addrs": [],
+}
+# The single key the connection-storm overlay's default first command reads.
+STORM_KEY = "storm:key"
+
+
+def parse_storm_spec(spec: str) -> Dict[str, Any]:
+    """Parse and validate a connection-storm ``overlay_spec`` JSON string.
+
+    Pure function (no I/O): returns a fully-defaulted, validated spec dict, or
+    raises ``ValueError`` with a clear message. An empty string yields all
+    defaults so ``--scenario connection-storm`` works with no ``--storm-*``
+    flags. Unknown keys, the wrong JSON shape, or an invalid policy/stall spec
+    are rejected here, at submission time, rather than on a runner.
+    """
+    text = (spec or "").strip()
+    if not text:
+        parsed: Dict[str, Any] = {}
+    else:
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"connection-storm overlay_spec is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("connection-storm overlay_spec must be a JSON object")
+
+    unknown = set(parsed) - set(STORM_SPEC_DEFAULTS)
+    if unknown:
+        raise ValueError(f"connection-storm overlay_spec has unknown keys: {', '.join(sorted(unknown))}")
+
+    out: Dict[str, Any] = dict(STORM_SPEC_DEFAULTS)
+    out["handshake"] = list(STORM_SPEC_DEFAULTS["handshake"])
+    out["bind_addrs"] = list(STORM_SPEC_DEFAULTS["bind_addrs"])
+    out.update(parsed)
+
+    # Validate the sub-specs eagerly so a typo fails at submission.
+    parse_policy(str(out["policy"]))
+    parse_stall(str(out["stall"]))
+    if int(out["clients"]) < 1:
+        raise ValueError(f"connection-storm clients must be >= 1, got {out['clients']}")
+    if int(out["burst_ms"]) < 0:
+        raise ValueError(f"connection-storm burst_ms must be >= 0, got {out['burst_ms']}")
+    if float(out["connect_timeout_ms"]) <= 0 or float(out["reply_timeout_ms"]) <= 0:
+        raise ValueError("connection-storm connect_timeout_ms and reply_timeout_ms must be > 0")
+    if int(out["workers"]) < 0:
+        raise ValueError(f"connection-storm workers must be >= 0 (0 = auto), got {out['workers']}")
+    if int(out["burst_after_stall_ms"]) < 0:
+        raise ValueError(f"connection-storm burst_after_stall_ms must be >= 0, got {out['burst_after_stall_ms']}")
+    if out["prewarm_connections"] is not None and int(out["prewarm_connections"]) < 0:
+        raise ValueError(f"connection-storm prewarm_connections must be >= 0 or null, got {out['prewarm_connections']}")
+    if not isinstance(out["handshake"], list):
+        raise ValueError("connection-storm handshake must be a JSON array of command strings")
+    if not isinstance(out["bind_addrs"], list):
+        raise ValueError("connection-storm bind_addrs must be a JSON array of source addresses")
+    return out
+
+
+def storm_uses_debug_sleep(spec: Dict[str, Any]) -> bool:
+    """True when the storm spec's stall injector is a debug-sleep (needs enable-debug-command)."""
+    return parse_stall(str(spec.get("stall", "none"))).kind == "debug-sleep"
+
+
+# --------------------------------------------------------------------------- overlay drivers
+
+
+@dataclass
+class OverlayResult:
+    """What an overlay produced: an optional ops/s rate plus arbitrary metrics.
+
+    ``rate`` is the overlay's own ops/s where that is meaningful (the
+    command-string overlays parse it from valkey-benchmark output); it is
+    ``None`` for an overlay that has no single-rate summary (the storm).
+    ``metrics`` is a free-form dict merged into the scenario metrics.
+    """
+
+    rate: Optional[float]
+    metrics: Dict[str, Any] = field(default_factory=dict)
+
+
+class Overlay:
+    """A pathology overlay run concurrently with the background GET load.
+
+    The lifecycle mirrors the runner's existing flow so command overlays are
+    byte-for-byte unchanged: ``start`` launches the overlay (non-blocking) and
+    returns an opaque handle; the runner then measures the background load;
+    ``finish`` stops the overlay and returns its :class:`OverlayResult`. A
+    driver may also declare extra server arguments it needs via
+    ``extra_server_args``.
+    """
+
+    def extra_server_args(self) -> str:
+        """Extra raw server args this overlay requires (appended after the task's)."""
+        return ""
+
+    async def start(self, server: "Server", work_dir: "Any") -> Any:
+        """Launch the overlay; return an opaque handle passed to ``finish``."""
+        raise NotImplementedError
+
+    async def finish(self, server: "Server", handle: Any) -> OverlayResult:
+        """Stop the overlay and return its result."""
+        raise NotImplementedError
+
+    async def abort(self, server: "Server", handle: Any) -> None:
+        """Best-effort teardown when a rep fails before ``finish`` ran."""
+        raise NotImplementedError
+
+
+class CommandOverlay(Overlay):
+    """Adapter around the existing shell-command overlays.
+
+    Produces the IDENTICAL command string ``build_overlay_command`` did and runs
+    it exactly as the runner did before (background process on the server host,
+    killed after the measurement, ops/s parsed from its output), so every
+    pre-existing scenario behaves unchanged.
+    """
+
+    def __init__(self, runner: "ScenarioTaskRunner"):
+        self._runner = runner
+
+    def command(self, server: "Server") -> str:
+        return build_overlay_command(
+            scenario=self._runner.scenario,
+            server_ip=server.ip,
+            port=server.port,
+            duration=self._runner.duration,
+            keyspace=MIXED_KEYSPACE,
+            val_size=self._runner.val_size,
+            overlay_value_size=self._runner.overlay_value_size,
+        )
+
+    async def start(self, server: "Server", work_dir: Any) -> Any:
+        if self._runner.scenario == "multi-exec":
+            await self._runner._write_multi_exec_payload(server)
+        return await self._runner._run_overlay(server, self.command(server))
+
+    async def finish(self, server: "Server", handle: Any) -> OverlayResult:
+        output = await self._runner._kill_overlay(server, handle)
+        rate = self._runner._parse_overlay_rps(output) if output else None
+        return OverlayResult(rate=rate, metrics={})
+
+    async def abort(self, server: "Server", handle: Any) -> None:
+        await self._runner._kill_overlay(server, handle)
+
+
+class StormOverlay(Overlay):
+    """Runs the standalone connection-storm generator as the overlay.
+
+    Launches ``python -m conductress.stormgen --json`` locally (its own
+    asyncio/multiprocessing lifecycle, prewarm and stall injector included),
+    against the same server the background load hits. Produces no single ops/s
+    rate (``rate=None``); its full JSON document is returned as metrics for the
+    runner to fold into the ``storm.*`` namespace.
+    """
+
+    def __init__(self, spec: Dict[str, Any], work_dir: Any):
+        self.spec = spec
+        self._work_dir = work_dir
+
+    def extra_server_args(self) -> str:
+        # DEBUG SLEEP is rejected unless the server enables it. Append the flag
+        # only for a debug-sleep stall; never for any other overlay.
+        return "--enable-debug-command local" if storm_uses_debug_sleep(self.spec) else ""
+
+    def _command(self, server: "Server", json_path: str) -> str:
+        spec = self.spec
+        parts: List[str] = [
+            sys.executable,
+            "-m",
+            "conductress.stormgen",
+            "--host",
+            server.ip,
+            "--port",
+            str(server.port or 6379),
+            "--clients",
+            str(spec["clients"]),
+            "--burst-ms",
+            str(spec["burst_ms"]),
+            "--connect-timeout-ms",
+            _num(spec["connect_timeout_ms"]),
+            "--reply-timeout-ms",
+            _num(spec["reply_timeout_ms"]),
+            "--policy",
+            str(spec["policy"]),
+            "--first-command",
+            str(spec["first_command"]),
+            "--duration-s",
+            _num(self._duration_s()),
+            "--stall",
+            str(spec["stall"]),
+            "--burst-after-stall-ms",
+            str(spec["burst_after_stall_ms"]),
+            "--workers",
+            str(spec["workers"]),
+            "--json",
+            json_path,
+        ]
+        if spec["burst_first"]:
+            parts.append("--burst-first")
+        if spec["prewarm_connections"] is not None:
+            parts += ["--prewarm-connections", str(spec["prewarm_connections"])]
+        handshake = list(spec["handshake"])
+        if handshake:
+            for command in handshake:
+                parts += ["--handshake", str(command)]
+        else:
+            parts += ["--handshake", ""]
+        for addr in spec["bind_addrs"]:
+            parts += ["--bind-addr", str(addr)]
+        return " ".join(_shell_quote(p) for p in parts)
+
+    def _duration_s(self) -> float:
+        # The storm runs for the scenario's measurement window; the caller sets
+        # it via the spec-independent duration passed at construction time.
+        return float(self.spec["_duration_s"])
+
+    async def start(self, server: "Server", work_dir: Any) -> Any:
+        json_path = str(work_dir / "storm_result.json")
+        command_string = self._command(server, json_path)
+        logger.info("connection-storm overlay: %s", command_string)
+        cmd = RealtimeCommand(command_string)
+        cmd.start()
+        return {"cmd": cmd, "json_path": json_path, "lines": []}
+
+    async def finish(self, server: "Server", handle: Any) -> OverlayResult:
+        cmd = handle["cmd"]
+        lines: List[str] = handle["lines"]
+        # Drain to completion (the background measurement has ended by now; the
+        # storm's own duration bounds it).
+        while cmd.is_running():
+            line, _ = cmd.poll_output()
+            while line:
+                lines.append(line)
+                line, _ = cmd.poll_output()
+            await asyncio.sleep(0.5)
+        line, _ = cmd.poll_output()
+        while line:
+            lines.append(line)
+            line, _ = cmd.poll_output()
+        exit_code = getattr(cmd.p, "returncode", None)
+        if exit_code != 0:
+            joined = "\n".join(lines)
+            raise RuntimeError(f"connection-storm generator exited with code {exit_code}. Output:\n{joined[-2000:]}")
+        document = _read_storm_document(handle["json_path"], lines)
+        return OverlayResult(rate=None, metrics=storm_metrics_namespace(document))
+
+    async def abort(self, server: "Server", handle: Any) -> None:
+        cmd = handle.get("cmd") if isinstance(handle, dict) else None
+        if cmd is not None:
+            try:
+                cmd.kill()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+def storm_metrics_namespace(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold a stormgen JSON document into the scenario's ``storm.*`` metric keys."""
+    metrics = document.get("metrics", {})
+    totals = metrics.get("totals", {})
+    quiescence = metrics.get("time_to_quiescence", {})
+    return {
+        "storm": {
+            "quiescence_from_stall_end_s": quiescence.get("from_stall_end"),
+            "quiescence_from_start_s": quiescence.get("from_start"),
+            "amplification": totals.get("amplification"),
+            "attempts": totals.get("attempts"),
+            "connected_clients": totals.get("connected_clients"),
+            "outcomes": metrics.get("outcomes"),
+            "attempt_latency": metrics.get("attempt_latency"),
+            "listen_overflow_delta": document.get("listen_overflow_delta"),
+            "prewarm_listen_overflow_delta": document.get("prewarm_listen_overflow_delta"),
+            "burst_actual_ms": metrics.get("burst_actual_ms"),
+            "stall": document.get("stall"),
+            "timeline": metrics.get("timeline"),
+            "schema_version": document.get("schema_version"),
+            "generator_config": document.get("config"),
+        }
+    }
+
+
+def _read_storm_document(json_path: str, output_lines: List[str]) -> Dict[str, Any]:
+    """Load the stormgen JSON document from its file, or fall back to stdout."""
+    try:
+        with open(json_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        joined = "\n".join(output_lines)
+        start = joined.find("{")
+        if start >= 0:
+            try:
+                return json.loads(joined[start:])
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("connection-storm generator produced no parseable JSON result") from exc
+        raise RuntimeError("connection-storm generator produced no JSON result")
+
+
+def _num(value: float) -> str:
+    """Render a float without a trailing ``.0`` for whole numbers."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _shell_quote(token: str) -> str:
+    """Single-quote a token for a shell command line if it needs quoting."""
+    if token and all(c.isalnum() or c in "._-/=:" for c in token):
+        return token
+    return "'" + token.replace("'", "'\\''") + "'"
+
+
 @dataclass
 class ScenarioTaskData(BaseTaskData):
     """Task data for pathological-workload scenario measurement."""
@@ -351,6 +684,7 @@ class ScenarioTaskData(BaseTaskData):
     background_set_ratio: int = 0
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
     overlay_value_size: int = 0  # value size for the large-value-reader overlay keyset (0 = default 10KB)
+    overlay_spec: str = ""  # JSON object string parameterising an overlay (connection-storm only, for now)
 
     def __post_init__(self):
         super().__post_init__()
@@ -361,6 +695,15 @@ class ScenarioTaskData(BaseTaskData):
             raise ValueError(f"background_set_ratio must be 0-100, got {self.background_set_ratio}")
         if self.overlay_value_size < 0:
             raise ValueError(f"overlay_value_size must be >= 0, got {self.overlay_value_size}")
+        if self.scenario == CONNECTION_STORM:
+            # Parse eagerly so a bad spec fails at submission, not on a runner.
+            parse_storm_spec(self.overlay_spec)
+        elif self.overlay_spec:
+            raise ValueError(f"overlay_spec is only valid for scenario '{CONNECTION_STORM}', not '{self.scenario}'")
+
+    def storm_spec(self) -> Dict[str, Any]:
+        """The validated connection-storm overlay spec (call only for that scenario)."""
+        return parse_storm_spec(self.overlay_spec)
 
     def short_description(self) -> str:
         from conductress.utility import HumanByte, HumanTime
@@ -400,6 +743,7 @@ class ScenarioTaskData(BaseTaskData):
             background_set_ratio=self.background_set_ratio,
             server_args=self.server_args,
             overlay_value_size=self.overlay_value_size,
+            overlay_spec=self.overlay_spec,
         )
 
 
@@ -427,6 +771,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         background_set_ratio: int = 0,
         server_args: str = "",
         overlay_value_size: int = 0,
+        overlay_spec: str = "",
     ):
         super().__init__(task_name)
         self.server_infos = server_infos
@@ -447,6 +792,29 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.background_set_ratio = background_set_ratio
         self.server_args = server_args
         self.overlay_value_size = overlay_value_size
+        self.overlay_spec = overlay_spec
+
+        # Build the overlay driver once. connection-storm runs the standalone
+        # generator; every other scenario uses the unchanged shell-command path.
+        self._storm_spec: Optional[Dict[str, Any]] = None
+        if scenario == CONNECTION_STORM:
+            self._storm_spec = parse_storm_spec(overlay_spec)
+            self._storm_spec["_duration_s"] = float(duration)
+            self._overlay: Overlay = StormOverlay(self._storm_spec, self.file_protocol.work_dir)
+        else:
+            self._overlay = CommandOverlay(self)
+
+        # An overlay may require extra server args (connection-storm + debug-sleep
+        # appends --enable-debug-command local). Record the effective args so a
+        # result reader can see exactly what the server ran with.
+        extra = self._overlay.extra_server_args()
+        self.server_args_effective = f"{server_args} {extra}".strip() if extra else server_args
+        if extra:
+            logger.info(
+                "connection-storm with a debug-sleep stall: appended %r to server args (effective: %r)",
+                extra,
+                self.server_args_effective,
+            )
 
         self.commit_hash = ""
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -533,7 +901,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
             self.io_threads,
             self.make_args,
             server_cpu_override=self.server_cpu_override,
-            server_args=self.server_args,
+            server_args=self.server_args_effective,
         )
 
         per_run_rps: List[float] = []
@@ -542,7 +910,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
 
         try:
             for rep in range(self.repetitions):
-                overlay_pid: Optional[str] = None
+                overlay_handle: Any = None
 
                 # Between-rep housekeeping
                 if rep > 0:
@@ -598,22 +966,17 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if self.perf_stat_enabled:
                         await server.perf_stat_start()
 
-                    # Start overlay driver
-                    if self.scenario == "multi-exec":
-                        await self._write_multi_exec_payload(server)
-                    overlay_cmd = build_overlay_command(
-                        scenario=self.scenario,
-                        server_ip=server.ip,
-                        port=server.port,
-                        duration=self.duration,
-                        keyspace=MIXED_KEYSPACE,
-                        val_size=self.val_size,
-                        overlay_value_size=self.overlay_value_size,
-                    )
-                    overlay_pid = await self._run_overlay(server, overlay_cmd)
+                    # Start overlay driver (CommandOverlay for the shell-command
+                    # scenarios; StormOverlay for connection-storm). The offset
+                    # of the overlay start relative to the background RPS series
+                    # is recorded so a reader can align the memtier dip with the
+                    # stall/storm timeline (see how bgsave's ~40% offset works).
+                    measure_start = time.monotonic()
+                    overlay_handle = await self._overlay.start(server, self.file_protocol.work_dir)
 
                     # Brief delay to let overlay establish connections
                     await asyncio.sleep(1)
+                    overlay_start_offset_s = time.monotonic() - measure_start
 
                     # Run background load measurement (under pathology)
                     json_out = f"/tmp/memtier_scenario_rep{rep}.json"
@@ -632,9 +995,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     )
                     stdout, _ = await server.run_host_command(measure_cmd)
 
-                    # Collect overlay output
-                    overlay_output = await self._kill_overlay(server, overlay_pid)
-                    overlay_pid = None  # cleared
+                    # Stop the overlay and collect its result
+                    overlay_result = await self._overlay.finish(server, overlay_handle)
+                    overlay_handle = None  # cleared
 
                     # Perf stat: stop and collect
                     if self.perf_stat_enabled:
@@ -665,12 +1028,14 @@ class ScenarioTaskRunner(BaseTaskRunner):
 
                     # Compute scenario-specific metrics
                     scenario_metrics: Dict[str, Any] = {"scenario": self.scenario}
+                    scenario_metrics["overlay_start_offset_s"] = round(overlay_start_offset_s, 3)
 
-                    # Parse overlay ops/s from valkey-benchmark output (if available)
-                    if overlay_output:
-                        overlay_rps = self._parse_overlay_rps(overlay_output)
-                        if overlay_rps is not None:
-                            scenario_metrics["overlay_ops_per_sec"] = round(overlay_rps, 1)
+                    # Overlay's own ops/s rate, where it has one (command overlays
+                    # parse it; the storm has none and returns rate=None).
+                    if overlay_result.rate is not None:
+                        scenario_metrics["overlay_ops_per_sec"] = round(overlay_result.rate, 1)
+                    # Overlay-specific metrics (e.g. the storm.* namespace).
+                    scenario_metrics.update(overlay_result.metrics)
 
                     # Dip metrics from interval timeseries
                     if interval_rps:
@@ -708,9 +1073,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
                                         acc[k] = acc.get(k, 0) + v
 
                 finally:
-                    # Ensure overlay is always killed
-                    if overlay_pid:
-                        await self._kill_overlay(server, overlay_pid)
+                    # Ensure the overlay is always torn down, even on failure.
+                    if overlay_handle is not None:
+                        await self._overlay.abort(server, overlay_handle)
                     # Clean up multi-exec payload file if present
                     if self.scenario == "multi-exec":
                         await server.run_host_command("rm -f /tmp/multi_exec_payload.resp", check=False)
@@ -752,6 +1117,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
             "clients": MIXED_CLIENTS,
             "repetitions": self.repetitions,
             "background_set_ratio": self.background_set_ratio,
+            "server_args": self.server_args,
+            "server_args_effective": self.server_args_effective,
+            "overlay_spec": self.overlay_spec,
             "per_run_rps": per_run_rps,
             "mean_rps": mean_rps,
             "ci_95": ci_95,

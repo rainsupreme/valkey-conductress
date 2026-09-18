@@ -24,7 +24,6 @@ def task_family(task_type: str) -> str:
         "ScenarioTaskData": "scenario",
         "LatencyTaskData": "latency",
         "MemTaskData": "memory",
-        "StormTaskData": "storm",
     }.get(task_type, "other")
 
 
@@ -71,10 +70,6 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
     elif task_type == "MemTaskData":
         sizes = document.get("val_sizes") or [0]
         seconds = 180 + len(sizes) * (120 + (90 if document.get("settle") else 0))
-    elif task_type == "StormTaskData":
-        # One server start plus a single timed storm run of duration_s.
-        run_seconds = int(float(document.get("duration_s") or 0))
-        seconds = 90 + run_seconds
     else:
         seconds = DEFAULT_TASK_DURATION_SECONDS
 

@@ -482,11 +482,14 @@ def build_parser() -> argparse.ArgumentParser:
             "expiry-heavy",
             "bgsave",
             "large-value-reader",
+            "connection-storm",
         ],
         help="Pathological workload scenario to run. 'bgsave' fires a single BGSAVE at ~40%% of "
         "duration; fork+COW impact shows up in the interval timeseries. Dataset size (prefill) "
         "drives the fork cost. 'large-value-reader' measures how continuous large-value GETs "
-        "from a dedicated keyset degrade background workload throughput/latency.",
+        "from a dedicated keyset degrade background workload throughput/latency. "
+        "'connection-storm' overlays a burst of reconnecting clients (optionally while a stall "
+        "blocks the main thread); parameterise it with the --storm-* flags.",
     )
     _add_source_args(scenario_parser)
     scenario_parser.add_argument(
@@ -533,6 +536,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Value size in bytes for the large-value-reader overlay's dedicated keyset "
         "(default: 10240 = 10KB). Only used when --scenario=large-value-reader; ignored otherwise.",
+    )
+    # connection-storm overlay parameters -- serialized into overlay_spec (JSON).
+    # Only valid with --scenario connection-storm; rejected otherwise.
+    storm_group = scenario_parser.add_argument_group(
+        "connection-storm overlay", "Only valid with --scenario connection-storm"
+    )
+    storm_group.add_argument("--storm-clients", type=int, default=None, help="Storm client population (default: 2000)")
+    storm_group.add_argument(
+        "--storm-burst-ms", type=int, default=None, help="Window first-attempts are spread over (default: 200)"
+    )
+    storm_group.add_argument(
+        "--storm-connect-timeout-ms", type=float, default=None, help="Per-connect timeout in ms (default: 1000)"
+    )
+    storm_group.add_argument(
+        "--storm-reply-timeout-ms", type=float, default=None, help="Per-reply timeout in ms (default: 500)"
+    )
+    storm_group.add_argument(
+        "--storm-policy",
+        default=None,
+        help="Reconnect policy: immediate, fixed:<ms>, exp:<base_ms>:<max_ms>[:jitter] (default: fixed:200)",
+    )
+    storm_group.add_argument(
+        "--storm-stall", default=None, help="Stall injector: none or debug-sleep:<seconds> (default: none)"
+    )
+    storm_group.add_argument(
+        "--storm-burst-after-stall-ms",
+        type=int,
+        default=None,
+        help="Stall-first: start the burst this many ms after the stall is issued (default: 200)",
+    )
+    storm_group.add_argument(
+        "--storm-burst-first",
+        action="store_true",
+        help="Legacy ordering: burst first, then stall (default is stall-first)",
+    )
+    storm_group.add_argument(
+        "--storm-prewarm-connections",
+        type=int,
+        default=None,
+        help="Throwaway connections opened before the baseline (default: = --storm-clients; 0 disables)",
+    )
+    storm_group.add_argument(
+        "--storm-workers",
+        type=int,
+        default=None,
+        help="Worker processes clients fan out across (default: 0 = auto, min(8, cpu_count))",
+    )
+    storm_group.add_argument(
+        "--storm-handshake",
+        action="append",
+        default=None,
+        help="Handshake command each client sends after connect, repeatable (default: 'HELLO 3')",
+    )
+    storm_group.add_argument(
+        "--storm-first-command",
+        default=None,
+        help="First command each client issues after the handshake (default: 'GET storm:key')",
+    )
+    storm_group.add_argument(
+        "--storm-bind-addrs",
+        default=None,
+        help="','-separated loopback source addresses to spread ephemeral ports across",
     )
 
     # queue add-latency
@@ -722,96 +787,6 @@ def build_parser() -> argparse.ArgumentParser:
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
     _add_note_and_build_args(rr_parser)
 
-    # queue add-storm
-    storm_parser = queue_sub.add_parser(
-        "add-storm",
-        help="Add a connection-storm task: a burst of reconnecting clients while the server main thread stalls",
-    )
-    _add_source_args(storm_parser)
-    storm_parser.add_argument("--io-threads", type=int, default=1, help="Server IO threads (default: 1)")
-    storm_parser.add_argument("--clients", type=int, default=2000, help="Number of storm clients (default: 2000)")
-    storm_parser.add_argument(
-        "--burst-ms",
-        type=int,
-        default=200,
-        help="Window over which client first-attempts are spread uniformly (default: 200)",
-    )
-    storm_parser.add_argument(
-        "--connect-timeout-ms", type=float, default=1000.0, help="Per-connect timeout in ms (default: 1000)"
-    )
-    storm_parser.add_argument(
-        "--reply-timeout-ms", type=float, default=500.0, help="Per-reply timeout in ms (default: 500)"
-    )
-    storm_parser.add_argument(
-        "--policy",
-        default="fixed:200",
-        help="Reconnect policy: immediate, fixed:<ms>, or exp:<base_ms>:<max_ms>[:jitter] (default: fixed:200)",
-    )
-    storm_parser.add_argument(
-        "--handshake",
-        default="HELLO 3",
-        help="';'-separated handshake commands each client sends after connect "
-        "(default: 'HELLO 3'; pass '' for no handshake)",
-    )
-    storm_parser.add_argument(
-        "--first-command",
-        default="GET stormkey",
-        help="First command each client issues after the handshake (default: 'GET stormkey'; "
-        "the runner prefills the key 'stormkey')",
-    )
-    storm_parser.add_argument(
-        "--duration", type=float, default=20.0, help="Total run duration in seconds (default: 20)"
-    )
-    storm_parser.add_argument(
-        "--stall",
-        default="none",
-        help="Server stall injector: none or debug-sleep:<seconds> (default: none)",
-    )
-    storm_parser.add_argument(
-        "--burst-first",
-        action="store_true",
-        help="Legacy ordering: burst first, stall injected --stall-after into the run. "
-        "Default is stall-first (a stall already in progress when clients arrive).",
-    )
-    storm_parser.add_argument(
-        "--burst-after-stall-ms",
-        type=int,
-        default=200,
-        help="Stall-first ordering: start the client burst this many ms after the stall command is issued "
-        "(default: 200)",
-    )
-    storm_parser.add_argument(
-        "--stall-after",
-        type=float,
-        default=5.0,
-        help="Burst-first ordering only: seconds into the run at which the stall is injected (default: 5.0)",
-    )
-    storm_parser.add_argument(
-        "--workers",
-        type=int,
-        default=0,
-        help="Worker processes the clients fan out across (default: 0 = auto, min(8, cpu_count))",
-    )
-    storm_parser.add_argument(
-        "--prewarm-connections",
-        type=int,
-        default=-1,
-        help="Throwaway connections opened and closed before the measured baseline, to pay a cold server's "
-        "per-connection first-contact cost up front (default: -1 = clients; 0 disables to measure cold-start)",
-    )
-    storm_parser.add_argument(
-        "--bind-addrs",
-        default="",
-        help="','-separated loopback source addresses to spread ephemeral ports across (default: none)",
-    )
-    storm_parser.add_argument(
-        "--tick-ms", type=int, default=100, help="INFO sampling and timeline bucket width in ms (default: 100)"
-    )
-    storm_parser.add_argument("--server-args", default="", help="Extra raw server arguments")
-    storm_parser.add_argument("--server-cpus", default="", help="Expert: explicit cpulist override for server")
-    storm_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for the generator")
-    _add_note_and_build_args(storm_parser)
-
     for task_parser in (
         add_parser,
         insertion_parser,
@@ -821,7 +796,6 @@ def build_parser() -> argparse.ArgumentParser:
         lat_parser,
         cc_parser,
         rr_parser,
-        storm_parser,
     ):
         _add_remote_routing_args(task_parser)
 
@@ -1217,6 +1191,42 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_scenario_overlay_spec(args: argparse.Namespace) -> str:
+    """Assemble the connection-storm overlay_spec JSON from --storm-* args.
+
+    Pure function over ``args``: returns a JSON object string containing only
+    the storm keys the user set (unset flags fall back to the spec defaults at
+    parse time). Enforces that --storm-* flags are given only with
+    --scenario connection-storm. Raises ValueError on a gating violation.
+    """
+    import json as _json
+
+    storm_map = {
+        "clients": args.storm_clients,
+        "burst_ms": args.storm_burst_ms,
+        "connect_timeout_ms": args.storm_connect_timeout_ms,
+        "reply_timeout_ms": args.storm_reply_timeout_ms,
+        "policy": args.storm_policy,
+        "stall": args.storm_stall,
+        "burst_after_stall_ms": args.storm_burst_after_stall_ms,
+        "prewarm_connections": args.storm_prewarm_connections,
+        "workers": args.storm_workers,
+        "first_command": args.storm_first_command,
+    }
+    spec: dict = {k: v for k, v in storm_map.items() if v is not None}
+    if args.storm_burst_first:
+        spec["burst_first"] = True
+    if args.storm_handshake is not None:
+        spec["handshake"] = [h for h in args.storm_handshake if h.strip()]
+    if args.storm_bind_addrs is not None:
+        spec["bind_addrs"] = [a.strip() for a in args.storm_bind_addrs.split(",") if a.strip()]
+
+    given = bool(spec)
+    if given and args.scenario != "connection-storm":
+        raise ValueError("--storm-* flags are only valid with --scenario connection-storm")
+    return _json.dumps(spec) if spec else ""
+
+
 def handle_queue_add_scenario(args: argparse.Namespace) -> int:
     """Handle 'queue add-scenario': submit a pathological-workload scenario task."""
     from conductress.tasks.task_scenario import SCENARIO_CHOICES, ScenarioTaskData
@@ -1275,27 +1285,38 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         )
         return 1
 
+    try:
+        overlay_spec = build_scenario_overlay_spec(args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     queue = _TaskSubmitter(args)
-    task = ScenarioTaskData(
-        source=args.source,
-        specifier=args.specifier,
-        make_args=args.make_args,
-        replicas=0,
-        note=args.note,
-        requirements={},
-        scenario=args.scenario,
-        val_size=config.DEFAULT_VAL_SIZE,
-        io_threads=io_threads,
-        pipelining=pipelining,
-        duration=duration,
-        repetitions=args.repetitions,
-        perf_stat_enabled=args.perf_stat,
-        server_cpu_override=args.server_cpus,
-        benchmark_cpu_override=args.client_cpus,
-        server_args=args.server_args,
-        background_set_ratio=args.background_set_ratio,
-        overlay_value_size=args.overlay_value_size,
-    )
+    try:
+        task = ScenarioTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=0,
+            note=args.note,
+            requirements={},
+            scenario=args.scenario,
+            val_size=config.DEFAULT_VAL_SIZE,
+            io_threads=io_threads,
+            pipelining=pipelining,
+            duration=duration,
+            repetitions=args.repetitions,
+            perf_stat_enabled=args.perf_stat,
+            server_cpu_override=args.server_cpus,
+            benchmark_cpu_override=args.client_cpus,
+            server_args=args.server_args,
+            background_set_ratio=args.background_set_ratio,
+            overlay_value_size=args.overlay_value_size,
+            overlay_spec=overlay_spec,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     queue.submit_task(task)
     submission = queue.finish()
     if _finish_submission(submission, args):
@@ -1309,6 +1330,8 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
         print(f"  background-set-ratio={args.background_set_ratio}%")
     if args.overlay_value_size > 0:
         print(f"  overlay-value-size={args.overlay_value_size}B")
+    if overlay_spec:
+        print(f"  overlay-spec: {overlay_spec}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")
     if args.note:
@@ -1589,84 +1612,6 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_queue_add_storm(args: argparse.Namespace) -> int:
-    """Handle 'queue add-storm': submit a connection-storm benchmark task."""
-    from conductress.tasks.task_storm import StormTaskData
-
-    if not _source_is_valid(args.source):
-        return 1
-
-    try:
-        _check_cpulist(args.server_cpus, "server-cpus")
-        _check_cpulist(args.client_cpus, "client-cpus")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        task = StormTaskData(
-            source=args.source,
-            specifier=args.specifier,
-            make_args=args.make_args,
-            replicas=0,
-            note=args.note,
-            requirements={},
-            io_threads=args.io_threads,
-            server_args=args.server_args,
-            server_cpu_override=args.server_cpus,
-            benchmark_cpu_override=args.client_cpus,
-            clients=args.clients,
-            burst_ms=args.burst_ms,
-            connect_timeout_ms=args.connect_timeout_ms,
-            reply_timeout_ms=args.reply_timeout_ms,
-            policy=args.policy,
-            handshake=args.handshake,
-            first_command=args.first_command,
-            duration_s=args.duration,
-            stall=args.stall,
-            burst_first=args.burst_first,
-            burst_after_stall_ms=args.burst_after_stall_ms,
-            stall_after_s=args.stall_after,
-            workers=args.workers,
-            prewarm_connections=args.prewarm_connections,
-            bind_addrs=args.bind_addrs,
-            tick_ms=args.tick_ms,
-        )
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    queue = _TaskSubmitter(args)
-    queue.submit_task(task)
-    submission = queue.finish()
-    if _finish_submission(submission, args):
-        return 0
-
-    prewarm_desc = "clients" if args.prewarm_connections < 0 else str(args.prewarm_connections)
-    ordering = (
-        f"burst-first, stall at {args.stall_after:g}s"
-        if args.burst_first
-        else f"stall-first, burst +{args.burst_after_stall_ms}ms after stall"
-    )
-    print("Queued connection-storm task (results are their own series, not sweep-comparable):")
-    print(f"  source={args.source} specifier={args.specifier}")
-    print(f"  clients={args.clients} burst={args.burst_ms}ms workers={args.workers or 'auto'}")
-    print(f"  reconnect policy={args.policy} handshake={args.handshake or '-'} first-command={args.first_command!r}")
-    print(
-        f"  connect-timeout={args.connect_timeout_ms}ms reply-timeout={args.reply_timeout_ms}ms "
-        f"duration={args.duration:g}s"
-    )
-    print(f"  stall={args.stall}  ordering={ordering}  io-threads={args.io_threads}  tick={args.tick_ms}ms")
-    print(f"  prewarm-connections={prewarm_desc}")
-    if args.bind_addrs:
-        print(f"  bind-addrs: {args.bind_addrs}")
-    if args.server_args:
-        print(f"  server-args: {args.server_args}")
-    if args.note:
-        print(f"  note: {args.note}")
-    return 0
-
-
 def handle_queue_list(args: argparse.Namespace) -> int:
     """Handle 'queue list': show all pending tasks."""
     queue = TaskQueue()
@@ -1736,8 +1681,6 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_add_cachecannon(args)
         if args.queue_command == "add-replica-read":
             return handle_queue_add_replica_read(args)
-        if args.queue_command == "add-storm":
-            return handle_queue_add_storm(args)
         if args.queue_command == "remove":
             return handle_queue_remove(args)
         if args.queue_command == "clear":
