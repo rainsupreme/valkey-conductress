@@ -161,37 +161,41 @@ class FakeGroup:
 
 
 class FakeAllocator:
+    """Records what the runner asked for through Server's client-CPU API."""
+
     def __init__(self):
         self.allocated = {}
         self.released = []
 
-    def get_net_interface_numa(self, ip):  # pylint: disable=unused-argument
-        return 0
-
-    def allocate(self, ip, tag, count, **kwargs):  # pylint: disable=unused-argument
+    def allocate(self, tag, count):
         cpus = list(range(20 + 10 * len(self.allocated), 20 + 10 * len(self.allocated) + count))
         self.allocated[tag.task_id] = cpus
         return cpus
 
-    def get_allocation(self, ip, tag):  # pylint: disable=unused-argument
-        return self.allocated.get(tag.task_id)
-
-    def release(self, ip, tag):  # pylint: disable=unused-argument
-        self.released.append(tag.task_id)
-
 
 class FakeLocalServer:
-    """The module-level ``Server``: generator host (allocator) and drop-caches host."""
+    """The module-level ``Server``: generator host (client CPUs) and drop-caches host."""
 
     allocator = FakeAllocator()
     commands: list = []
 
     def __init__(self, ip, port=None, username=None, instance_dir=None):  # pylint: disable=unused-argument
         self.ip = ip
-        self._cpu_allocator = FakeLocalServer.allocator
 
     async def ensure_host_cpu_allocation(self):
         return None
+
+    def allocate_client_cpus(self, tag, count, *, avoid_tags, minimize_cache_groups=False):
+        assert avoid_tags, "generators must be placed away from the server instances"
+        assert not minimize_cache_groups
+        return FakeLocalServer.allocator.allocate(tag, count)
+
+    def allocated_cpu_list(self, tag):
+        cpus = FakeLocalServer.allocator.allocated.get(tag.task_id)
+        return ",".join(map(str, cpus)) if cpus else ""
+
+    def release_cpus(self, tag):
+        FakeLocalServer.allocator.released.append(tag.task_id)
 
     async def run_host_command(self, command, check=True):  # pylint: disable=unused-argument
         FakeLocalServer.commands.append(command)

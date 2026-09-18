@@ -814,7 +814,7 @@ class PerfTaskRunner(BaseTaskRunner):
         finally:
             await replication_group.stop_all_servers()
             if benchmark_alloc_tag and client:
-                client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
+                client.release_cpus(benchmark_alloc_tag)
 
     def _allocate_benchmark_cpus(self, client: "Server", server: "Server") -> Optional[AllocationTag]:
         """Allocate CPUs for the benchmark client. Returns the tag or None."""
@@ -831,20 +831,16 @@ class PerfTaskRunner(BaseTaskRunner):
         platform = getattr(server, "_platform_info", None)
         is_chiplet = platform is not None and platform.needs_single_cache_pinning
         benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
-        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-        benchmark_cpus = client._cpu_allocator.allocate(
-            client.ip,
+        benchmark_cpus = client.allocate_client_cpus(
             benchmark_alloc_tag,
-            count=self.bench_threads,
-            require_numa=net_numa,
+            self.bench_threads,
             avoid_tags=[server_tag],
-            prefer_different_cache=True,
             minimize_cache_groups=is_chiplet,
         )
         self.logger.info(
-            "Allocated CPUs %s for benchmark client (NUMA node %d)",
+            "Allocated CPUs %s for benchmark client (NUMA node %s)",
             benchmark_cpus,
-            net_numa,
+            client.net_numa_node(),
         )
         return benchmark_alloc_tag
 
@@ -874,7 +870,7 @@ class PerfTaskRunner(BaseTaskRunner):
         benchmark_alloc_tag: Optional[AllocationTag],
     ) -> str:
         """Build the numactl + valkey-benchmark command string."""
-        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
+        net_numa = client.net_numa_node()
         bench_bin = self.bench_binary or self._resolve_generator_binary() or str(PROJECT_ROOT / VALKEY_BENCHMARK)
 
         # Dual-ENI real-NIC hairpin (docs/real-nic-hairpin.md): run the client
@@ -909,7 +905,7 @@ class PerfTaskRunner(BaseTaskRunner):
             from conductress.utility import parse_cpulist
 
             override_cpus = parse_cpulist(self.benchmark_cpu_override)
-            override_nodes = client._cpu_allocator.get_numa_nodes_for_cpus(client.ip, override_cpus)
+            override_nodes = client.cpu_allocator.get_numa_nodes_for_cpus(client.ip, override_cpus)
             membind = ",".join(map(str, override_nodes)) if override_nodes else str(net_numa)
             return (
                 f"{netns_prefix}numactl --physcpubind={self.benchmark_cpu_override} --membind={membind} "
@@ -918,8 +914,7 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"--threads {self.bench_threads}{seed_arg} -q {iteration_args} {self.test_command}"
             )
         elif benchmark_alloc_tag and self._is_local_benchmark(target_ip):
-            allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
-            benchmark_cpu_list = ",".join(map(str, allocated)) if allocated else ""
+            benchmark_cpu_list = client.allocated_cpu_list(benchmark_alloc_tag)
             return (
                 f"{netns_prefix}numactl --physcpubind={benchmark_cpu_list} --membind={net_numa} "
                 f"{bench_bin} -h {bench_target} -d {self.valsize} "
@@ -1376,7 +1371,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
         finally:
             await replication_group.stop_all_servers()
             if benchmark_alloc_tag and client:
-                client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
+                client.release_cpus(benchmark_alloc_tag)
 
 
 class PerfTaskVisualizer(PlotTaskVisualizer):

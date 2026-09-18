@@ -369,6 +369,55 @@ class Server:
             self.server_cpus = []
             self._allocation_tag = None
 
+    # ------------------------------------------------------------------ client CPUs
+    #
+    # Load generators (valkey-benchmark, cachecannon, memtier) run on the same
+    # host as the server under test and must not share its cores. These are the
+    # only allocator operations a task needs; ``cpu_allocator`` is for the rest.
+
+    @property
+    def cpu_allocator(self) -> CpuAllocator:
+        """The host-wide CPU allocator, shared by every ``Server`` in this process."""
+        return self._cpu_allocator
+
+    def net_numa_node(self) -> Optional[int]:
+        """NUMA node of this host's primary network interface (None if unknown)."""
+        return self._cpu_allocator.get_net_interface_numa(self.ip)
+
+    def allocate_client_cpus(
+        self,
+        tag: AllocationTag,
+        count: int,
+        *,
+        avoid_tags: list[AllocationTag],
+        minimize_cache_groups: bool = False,
+    ) -> list[int]:
+        """Allocate ``count`` CPUs for a load generator on this host.
+
+        Placement: the network interface's NUMA node, away from every
+        allocation in ``avoid_tags`` (the servers), preferring a cache group
+        the servers do not use; ``minimize_cache_groups`` packs the client
+        into as few cache groups as possible (chiplet platforms).
+        """
+        return self._cpu_allocator.allocate(
+            self.ip,
+            tag,
+            count=count,
+            require_numa=self.net_numa_node(),
+            avoid_tags=avoid_tags,
+            prefer_different_cache=True,
+            minimize_cache_groups=minimize_cache_groups,
+        )
+
+    def allocated_cpu_list(self, tag: AllocationTag) -> str:
+        """Comma-separated cpulist held by ``tag`` on this host, or "" when it holds none."""
+        allocated = self._cpu_allocator.get_allocation(self.ip, tag)
+        return ",".join(map(str, allocated)) if allocated else ""
+
+    def release_cpus(self, tag: AllocationTag) -> None:
+        """Release whatever ``tag`` holds on this host (a no-op if nothing)."""
+        self._cpu_allocator.release(self.ip, tag)
+
     async def get_available_cpu_count(self) -> int:
         """Get the number of CPUs available on this host."""
         # Ensure host is registered with allocator

@@ -206,7 +206,7 @@ class TestOverrideBypassesAllocator:
 
         # Should return None (skip allocation) and never touch the allocator
         assert result is None
-        mock_client._cpu_allocator.allocate.assert_not_called()
+        mock_client.allocate_client_cpus.assert_not_called()
 
     def test_empty_override_uses_allocator(self):
         """When benchmark_cpu_override is empty, normal allocation path runs."""
@@ -228,8 +228,8 @@ class TestOverrideBypassesAllocator:
         )
 
         mock_client = MagicMock()
-        mock_client._cpu_allocator.get_net_interface_numa.return_value = 0
-        mock_client._cpu_allocator.allocate.return_value = [16, 17, 18, 19]
+        mock_client.net_numa_node.return_value = 0
+        mock_client.allocate_client_cpus.return_value = [16, 17, 18, 19]
         mock_client.ip = "127.0.0.1"
 
         mock_server = MagicMock()
@@ -240,7 +240,7 @@ class TestOverrideBypassesAllocator:
         result = runner._allocate_benchmark_cpus(mock_client, mock_server)
 
         # Should have called the allocator
-        mock_client._cpu_allocator.allocate.assert_called_once()
+        mock_client.allocate_client_cpus.assert_called_once()
         assert result is not None
 
     def test_benchmark_command_uses_override(self):
@@ -263,7 +263,7 @@ class TestOverrideBypassesAllocator:
         )
 
         mock_client = MagicMock()
-        mock_client._cpu_allocator.get_net_interface_numa.return_value = 0
+        mock_client.net_numa_node.return_value = 0
         mock_client.ip = "127.0.0.1"
 
         cmd = runner._build_benchmark_command(mock_client, "127.0.0.1", None)
