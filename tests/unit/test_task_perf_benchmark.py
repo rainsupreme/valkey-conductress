@@ -882,3 +882,18 @@ class TestStorePerfCounters:
         assert detailed["perf_counters"] == {"instructions": 99, "cycles": 33}
         assert "perf_counters_main" not in detailed
         assert "perf_counters_io" not in detailed
+
+    def test_scope_written_beside_counters_when_known(self):
+        runner = _make_runner()
+        runner._perf_stat_scope = "user+kernel"
+        detailed: dict = {}
+        runner._store_perf_counters(detailed, {"all": {"cycles": 20}, "main": {}, "io": {}})
+        assert detailed["perf_counters_scope"] == "user+kernel"
+
+    def test_scope_omitted_when_unknown(self):
+        # Rows written before scope detection existed have no field; a run whose
+        # perf_stat.txt had no counted rows must not invent one either.
+        runner = _make_runner()
+        detailed: dict = {}
+        runner._store_perf_counters(detailed, {"all": {"cycles": 20}, "main": {}, "io": {}})
+        assert "perf_counters_scope" not in detailed

@@ -71,6 +71,71 @@ class TestParsePerThread:
         assert "LLC-load-misses" not in res["all"]
         assert "LLC-load-misses" not in res["main"]
 
+
+# The same shape perf writes when `perf_event_paranoid=2` denies an unprivileged
+# caller kernel counting: every event carries a `:u` modifier and the software
+# event context-switches (kernel-side) legitimately counts 0. This is what the
+# Sep 18 2026 g4bench smoke run produced before perf stat moved under sudo.
+USER_ONLY_OUTPUT = """\
+ Performance counter stats for thread id '100,101':
+
+   valkey-server-100     14,000,000,000      instructions:u    #    2.80  insn per cycle
+        io_thd_1-101     20,000,000,000      instructions:u    #    4.00  insn per cycle
+   valkey-server-100      5,000,000,000      cycles:u
+        io_thd_1-101      5,000,000,000      cycles:u
+   valkey-server-100                  0      context-switches:u
+        io_thd_1-101                  0      context-switches:u
+   valkey-server-100         <not supported>  LLC-load-misses:u
+
+ 2.001 seconds time elapsed
+"""
+
+
+class TestDetectPerfStatScope:
+    def _write(self, tmp_path, text):
+        p = tmp_path / "perf_stat.txt"
+        p.write_text(text)
+        return p
+
+    def test_unmodified_events_are_user_plus_kernel(self, tmp_path):
+        path = self._write(tmp_path, PER_THREAD_OUTPUT)
+        assert ProfilingManager.detect_perf_stat_scope(path) == "user+kernel"
+
+    def test_u_modifier_is_user_only(self, tmp_path):
+        path = self._write(tmp_path, USER_ONLY_OUTPUT)
+        assert ProfilingManager.detect_perf_stat_scope(path) == "user"
+
+    def test_user_only_rows_still_parse_with_stable_event_names(self, tmp_path):
+        # Scope is reported separately; event names never carry the modifier.
+        path = self._write(tmp_path, USER_ONLY_OUTPUT)
+        res = ProfilingManager.parse_perf_stat_per_thread(path, "100", ["101"])
+        assert res["main"]["instructions"] == 14_000_000_000
+        assert res["all"]["context-switches"] == 0
+        assert not any(k.endswith(":u") for k in res["all"])
+
+    def test_k_modifier_is_kernel_only(self, tmp_path):
+        path = self._write(tmp_path, "   valkey-server-100     1000      cycles:k\n")
+        assert ProfilingManager.detect_perf_stat_scope(path) == "kernel"
+
+    def test_disagreeing_modifiers_are_mixed(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "   valkey-server-100     1000      cycles:u\n   valkey-server-100     2000      instructions\n",
+        )
+        assert ProfilingManager.detect_perf_stat_scope(path) == "mixed"
+
+    def test_only_not_counted_rows_is_none(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            " Performance counter stats for thread id '100':\n"
+            "   valkey-server-100     <not counted>      cycles:u\n"
+            " 2.001 seconds time elapsed\n",
+        )
+        assert ProfilingManager.detect_perf_stat_scope(path) is None
+
+    def test_missing_file_is_none(self, tmp_path):
+        assert ProfilingManager.detect_perf_stat_scope(tmp_path / "nope.txt") is None
+
     def test_multi_hyphen_comm_tid_recovery(self, tmp_path):
         # comm "valkey-server" contains a hyphen; TID must be the trailing digits
         path = self._write(

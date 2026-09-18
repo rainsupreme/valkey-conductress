@@ -758,7 +758,13 @@ class TestDelayedPerfStatCommand:
 
     def test_with_delay_has_sleep_prefix(self):
         cmds = self._run_perf_stat(5)
-        assert len(cmds) == 1 and cmds[0].startswith("sleep 5 && perf stat")
+        assert len(cmds) == 1 and cmds[0].startswith("sleep 5 && sudo perf stat")
+
+    def test_runs_under_sudo_for_kernel_counting(self):
+        # perf_event_paranoid=2 on the runners makes an unprivileged perf stat
+        # count user space only (events tagged :u); sudo matches perf record.
+        cmds = self._run_perf_stat(0)
+        assert len(cmds) == 1 and cmds[0].startswith("sudo perf stat --per-thread")
 
 
 class TestDelayedCpuProfileCommand:

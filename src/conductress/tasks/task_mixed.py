@@ -321,6 +321,7 @@ class MixedTaskRunner(BaseTaskRunner):
 
         # CPU profile stacks (flamegraph) — collected on the final rep only
         self._cpu_stacks_main: list[list] = []
+        self._perf_stat_scope: Optional[str] = None
         self._cpu_stacks_io: list[list] = []
 
         self.status = BenchmarkStatus(
@@ -585,6 +586,7 @@ class MixedTaskRunner(BaseTaskRunner):
                         server.perf_stat_wait()
                         result_dir = self.file_protocol.get_result_dir()
                         rep_counters = await server.perf_stat_report(result_dir)
+                        self._perf_stat_scope = server.perf_stat_scope or self._perf_stat_scope
                         if rep_counters:
                             perf_rep_count += 1
                             if perf_counters is None:
@@ -668,6 +670,8 @@ class MixedTaskRunner(BaseTaskRunner):
 
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
+            if self._perf_stat_scope:
+                detailed_data["perf_counters_scope"] = self._perf_stat_scope
             # Counters cover only the scored interval (delay skipped warmup)
             detailed_data["perf_duration_seconds"] = float(self.duration)
             detailed_data["perf_warmup_included"] = False

@@ -313,6 +313,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # engines that opt out (same gate as the memtier mixed task).
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
         self._cpu_stacks_main: list[list] = []
+        self._perf_stat_scope: Optional[str] = None
         self._cpu_stacks_io: list[list] = []
         self._info_deltas_per_rep: list[dict] = []
 
@@ -559,6 +560,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     if perf_armed:
                         server.perf_stat_wait()
                         rep_counters = await server.perf_stat_report(self.file_protocol.get_result_dir())
+                        self._perf_stat_scope = server.perf_stat_scope or self._perf_stat_scope
                         if rep_counters:
                             if perf_counters is None:
                                 perf_counters = rep_counters
@@ -758,6 +760,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # stacks from the last rep, and INFO deltas over each scored window.
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
+            if self._perf_stat_scope:
+                detailed_data["perf_counters_scope"] = self._perf_stat_scope
         if self._cpu_stacks_main:
             detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
             detailed_data["cpu_stacks_io"] = self._cpu_stacks_io

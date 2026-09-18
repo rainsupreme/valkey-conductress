@@ -392,6 +392,7 @@ class PerfTaskRunner(BaseTaskRunner):
         self._is_last_rep = False
         self._current_rep = 0  # 0-indexed current repetition (set by _execute_benchmark_loop)
         self._cpu_stacks_main: list[list] = []
+        self._perf_stat_scope: Optional[str] = None
         self._cpu_stacks_io: list[list] = []
         # Client (load generator) CPU telemetry: cores kept busy by the
         # generator process tree during each measurement window, plus the
@@ -519,6 +520,8 @@ class PerfTaskRunner(BaseTaskRunner):
 
         if all_counters:
             detailed_data["perf_counters"] = all_counters
+            if self._perf_stat_scope:
+                detailed_data["perf_counters_scope"] = self._perf_stat_scope
             detailed_data["perf_duration_seconds"] = (
                 self._perf_duration_seconds if self._perf_duration_seconds is not None else float(self.duration)
             )
@@ -1008,7 +1011,9 @@ class PerfTaskRunner(BaseTaskRunner):
         if self.perf_stat_enabled:
             server.perf_stat_wait()
             result_dir = self.file_protocol.get_result_dir()
-            return await server.perf_stat_report(result_dir)
+            counters = await server.perf_stat_report(result_dir)
+            self._perf_stat_scope = server.perf_stat_scope or self._perf_stat_scope
+            return counters
         return None
 
     def _is_local_benchmark(self, target_ip: str) -> bool:
