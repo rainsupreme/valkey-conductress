@@ -261,35 +261,26 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.logger.info("Local benchmark detected - allocating client CPUs")
         server_tag = AllocationTag(task_id=f"server_{server.ip}_{server.port}", purpose="server")
         benchmark_alloc_tag = AllocationTag(task_id=self.task_name, purpose="benchmark")
-        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
         platform = getattr(server, "_platform_info", None)
         is_chiplet = platform is not None and platform.needs_single_cache_pinning
-        benchmark_cpus = client._cpu_allocator.allocate(
-            client.ip,
+        benchmark_cpus = client.allocate_client_cpus(
             benchmark_alloc_tag,
-            count=self.threads,
-            require_numa=net_numa,
+            self.threads,
             avoid_tags=[server_tag],
-            prefer_different_cache=True,
             minimize_cache_groups=is_chiplet,
         )
         self.logger.info(
-            "Allocated CPUs %s for cachecannon (NUMA node %d)",
+            "Allocated CPUs %s for cachecannon (NUMA node %s)",
             benchmark_cpus,
-            net_numa,
+            client.net_numa_node(),
         )
         return benchmark_alloc_tag
 
     def _get_cpu_list(self, client: "Server", benchmark_alloc_tag: Optional[AllocationTag]) -> str:
-        """Get the comma-separated CPU list for cachecannon's cpu_list config."""
+        """Get the comma-separated CPU list for cachecannon's cpu_list config ("" lets the OS schedule)."""
         if self.benchmark_cpu_override:
             return self.benchmark_cpu_override
-        if benchmark_alloc_tag:
-            allocated = client._cpu_allocator.get_allocation(client.ip, benchmark_alloc_tag)
-            if allocated:
-                return ",".join(map(str, allocated))
-        # Fallback: let the OS schedule
-        return ""
+        return client.allocated_cpu_list(benchmark_alloc_tag) if benchmark_alloc_tag else ""
 
     def _build_command(self, toml_path: str, cpu_list: str) -> str:
         """Build the cachecannon launch command."""
@@ -504,7 +495,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         finally:
             await replication_group.stop_all_servers()
             if benchmark_alloc_tag and client:
-                client._cpu_allocator.release(client.ip, benchmark_alloc_tag)
+                client.release_cpus(benchmark_alloc_tag)
 
     async def _record_result(
         self,

@@ -226,26 +226,14 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             AllocationTag(task_id=f"server_{self.host.ip}_{i.port}", purpose="server") for i in self.spec.instances
         ]
         tag = AllocationTag(task_id=f"{self.task_name}_{purpose}", purpose="benchmark")
-        net_numa = client._cpu_allocator.get_net_interface_numa(client.ip)
-        cpus = client._cpu_allocator.allocate(
-            client.ip,
-            tag,
-            count=count,
-            require_numa=net_numa,
-            avoid_tags=server_tags,
-            prefer_different_cache=True,
-        )
+        cpus = client.allocate_client_cpus(tag, count, avoid_tags=server_tags)
         self.logger.info("Allocated CPUs %s for %s generator", cpus, purpose)
         return tag
 
     def _cpu_list(self, client: Server, tag: Optional[AllocationTag]) -> str:
         if self.task.benchmark_cpu_override:
             return self.task.benchmark_cpu_override
-        if tag:
-            allocated = client._cpu_allocator.get_allocation(client.ip, tag)
-            if allocated:
-                return ",".join(map(str, allocated))
-        return ""
+        return client.allocated_cpu_list(tag) if tag else ""
 
     # ------------------------------------------------------------------ generators
 
@@ -355,7 +343,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             return
         for tag in (self._reader_tag, self._writer_tag):
             if tag:
-                self._client._cpu_allocator.release(self._client.ip, tag)
+                self._client.release_cpus(tag)
 
     async def _preload(self, group: TopologyGroup, rep: int, placement: "_Placement") -> None:
         """Phase 2: fill the keyspace at the primary and wait until every replica has all of it."""

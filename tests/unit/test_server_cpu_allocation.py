@@ -367,3 +367,41 @@ class TestServerCpuAllocation:
 
         # Verify only 3 calls: lsof + ps + pin main + pin 1 IO thread
         assert server.run_host_command.call_count == 4
+
+
+class TestClientCpuApi:
+    """Server.allocate_client_cpus / allocated_cpu_list / release_cpus against the real allocator."""
+
+    def setup_method(self):
+        Server._cpu_allocator = CpuAllocator()
+        Server._cpu_allocator.register_host(
+            "192.168.1.1",
+            all_cpus=list(range(8)),
+            numa_topology={0: [0, 1, 2, 3], 1: [4, 5, 6, 7]},
+            net_interface_numa=1,
+        )
+
+    def test_client_cpus_land_on_net_numa_away_from_the_server(self):
+        client = Server("192.168.1.1", 9000)
+        server_tag = AllocationTag(task_id="server_192.168.1.1_9000", purpose="server")
+        Server._cpu_allocator.allocate("192.168.1.1", server_tag, count=2, require_numa=1)
+        server_cpus = Server._cpu_allocator.get_allocation("192.168.1.1", server_tag)
+
+        tag = AllocationTag(task_id="bench", purpose="benchmark")
+        cpus = client.allocate_client_cpus(tag, 2, avoid_tags=[server_tag])
+
+        assert client.net_numa_node() == 1
+        assert set(cpus) <= {4, 5, 6, 7}
+        assert not set(cpus) & set(server_cpus)
+        assert client.allocated_cpu_list(tag) == ",".join(map(str, cpus))
+        assert client.cpu_allocator is Server._cpu_allocator
+
+    def test_release_and_unknown_tag_are_safe(self):
+        client = Server("192.168.1.1", 9000)
+        tag = AllocationTag(task_id="bench", purpose="benchmark")
+        assert client.allocated_cpu_list(tag) == ""
+        client.release_cpus(tag)  # nothing held: no error
+        client.allocate_client_cpus(tag, 1, avoid_tags=[])
+        assert client.allocated_cpu_list(tag) != ""
+        client.release_cpus(tag)
+        assert client.allocated_cpu_list(tag) == ""
