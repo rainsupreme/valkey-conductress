@@ -575,6 +575,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stall-first: start the burst this many ms after the stall is issued (default: 200)",
     )
     storm_group.add_argument(
+        "--storm-start-delay-s",
+        type=float,
+        default=None,
+        help="Launch the storm generator this many seconds after the overlay starts, so the background "
+        "series has an undisturbed baseline before the stall (default: 5)",
+    )
+    storm_group.add_argument(
         "--storm-burst-first",
         action="store_true",
         help="Legacy ordering: burst first, then stall (default is stall-first)",
@@ -1231,6 +1238,7 @@ def build_scenario_overlay_spec(args: argparse.Namespace) -> str:
         "policy": args.storm_policy,
         "stall": args.storm_stall,
         "burst_after_stall_ms": args.storm_burst_after_stall_ms,
+        "start_delay_s": args.storm_start_delay_s,
         "prewarm_connections": args.storm_prewarm_connections,
         "workers": args.storm_workers,
         "first_command": args.storm_first_command,

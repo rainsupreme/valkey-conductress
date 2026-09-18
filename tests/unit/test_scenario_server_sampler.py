@@ -28,6 +28,7 @@ from conductress.tasks.task_scenario import (
     sampler_gaps,
     storm_metrics_namespace,
 )
+from conductress.topology import TopologySpec
 
 HOST = config.ServerInfo(ip="127.0.0.1", username="ec2-user")
 
@@ -37,7 +38,7 @@ def _scenario_task(**overrides) -> ScenarioTaskData:
         source=config.REPO_NAMES[0],
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
         scenario="connection-storm",
@@ -438,3 +439,68 @@ async def test_runner_starts_sampler_before_overlay_and_records_rows(monkeypatch
     assert "background_end_wall" in per_rep
     # storm.origin_wall folded through.
     assert per_rep["storm"]["origin_wall"] == 1000.0
+
+
+# --------------------------------------------------------------------------- coalesced replies
+# Regression for the first fleet cell (bench, 2026-09-18, task 2026.09.18_22.21.13.806551):
+# both INFO replies of a tick arrived in ONE TCP read; a per-reply parser returned
+# the first and discarded the second, so the next read waited forever and the
+# runner hung at `await sampler_task` until the connection was killed by hand.
+
+
+def _bulk(text: str) -> bytes:
+    body = text.encode()
+    return b"$" + str(len(body)).encode() + b"\r\n" + body + b"\r\n"
+
+
+class _CoalescingReader:
+    """A StreamReader stand-in that delivers everything in one read, then EOF."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self.reads = 0
+
+    async def read(self, _n: int) -> bytes:
+        self.reads += 1
+        data, self._payload = self._payload, b""
+        return data
+
+
+@pytest.mark.asyncio
+async def test_read_reply_keeps_second_reply_from_a_coalesced_read():
+    sampler = module.ServerSampler("127.0.0.1", 6379, tick_ms=100)
+    first_text = "# Clients\r\nconnected_clients:2\r\n"
+    second_text = "# Stats\r\ntotal_connections_received:4002\r\nrejected_connections:0\r\n"
+    reader = _CoalescingReader(_bulk(first_text) + _bulk(second_text))
+
+    first = await asyncio.wait_for(sampler._read_reply(reader), timeout=1.0)  # pylint: disable=protected-access
+    second = await asyncio.wait_for(sampler._read_reply(reader), timeout=1.0)  # pylint: disable=protected-access
+
+    assert first == first_text
+    assert second == second_text
+    # The second reply came from the parser's leftover bytes, not from a new read.
+    assert reader.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_one_tick_parses_both_replies_from_one_read():
+    sampler = module.ServerSampler("10.0.0.5", 6379, tick_ms=100)  # remote: netstat recorded as null
+    payload = _bulk("# Clients\r\nconnected_clients:7\r\n") + _bulk(
+        "# Stats\r\ntotal_connections_received:11\r\nrejected_connections:1\r\ntotal_commands_processed:99\r\n"
+    )
+    reader = _CoalescingReader(payload)
+
+    class _Writer:
+        def write(self, _data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+    await asyncio.wait_for(sampler._one_tick(reader, _Writer()), timeout=1.0)  # pylint: disable=protected-access
+    assert len(sampler.rows) == 1
+    row = sampler.rows[0]
+    assert row["connected_clients"] == 7
+    assert row["total_connections_received"] == 11
+    assert row["rejected_connections"] == 1
+    assert row["total_commands_processed"] == 99
