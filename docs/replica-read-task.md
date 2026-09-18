@@ -24,6 +24,10 @@ logfile and CPU allocation from the topology-aware allocator.
 | replica  | base + 1      | `--io-threads`         | reader: cachecannon GET, closed loop, `--connections`/`--threads`/`--pipelining` |
 | replica  | base + 2 ...  | `--io-threads`         | none (extra `--replicas` add fan-out load only) |
 
+`--replicas` is an instance count on the runner host, not a host count: the
+task needs exactly one `servers.json` entry, unlike replication-group tasks
+where each replica is a separate configured host.
+
 Server arguments: `--server-args` applies to every instance; `--primary-args`
 and `--replica-args` are appended after it for their role, so a role-specific
 flag overrides a shared one (valkey applies later command-line config over

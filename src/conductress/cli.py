@@ -1457,9 +1457,10 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
             source=args.source,
             specifier=args.specifier,
             make_args=args.make_args,
-            replicas=args.replicas,
+            replicas=0,  # single-host task: no extra servers.json hosts
             note=args.note,
             requirements={},
+            replica_count=args.replicas,
             val_size=val_size,
             pipelining=args.pipelining,
             connections=args.connections,

@@ -51,7 +51,7 @@ def _task(**overrides) -> ReplicaReadTaskData:
         source=config.REPO_NAMES[0],
         specifier="unstable",
         make_args="",
-        replicas=1,
+        replicas=0,
         note="",
         requirements={},
         keyspace_count=1000,
@@ -423,7 +423,7 @@ def test_judge_applies_guards_before_computing_anything(faked):
 
 def test_allocated_cpus_includes_extra_replicas(faked):
     FakeGroup.instances[6381] = FakeInstance(6381, 3003, [5, 6], keys=1000)
-    runner = faked(replicas=2)
+    runner = faked(replica_count=2)
     group = FakeGroup(HOST, runner.spec, "valkey", "unstable", "")
     allocated = runner._allocated_cpus(group, _Placement(reader_cpus="", writer_cpus="9"))
     assert allocated["replica:6381"] == [5, 6]

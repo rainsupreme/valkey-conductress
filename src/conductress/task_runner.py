@@ -34,6 +34,16 @@ from .task_queue import BaseTaskData, TaskQueue
 logger = logging.getLogger(__name__)
 
 
+def required_server_count(task_data: BaseTaskData) -> int:
+    """How many servers.json hosts a task needs: one, plus one per replica host.
+
+    ``replicas`` counts *hosts* handed to a ``ReplicationGroup``. Tasks that
+    lay out several instances on the runner host keep it at 0 and carry their
+    own instance count.
+    """
+    return task_data.replicas + 1 if task_data.replicas > 0 else 1
+
+
 class TaskSubscriber(Protocol):
     """Protocol for task completion subscribers."""
 
@@ -187,9 +197,12 @@ class TaskRunner:
     async def __run_task(self, task_data: BaseTaskData) -> None:
         """Run a task, ensuring CPU allocations are released on failure."""
         servers = get_servers()
-        server_count = task_data.replicas + 1 if task_data.replicas > 0 else 1
+        server_count = required_server_count(task_data)
         if len(servers) < server_count:
-            raise RuntimeError(f"Not enough servers for {task_data.replicas} replicas. Found {len(servers)} servers.")
+            raise RuntimeError(
+                f"Task needs {server_count} configured server(s) ({task_data.replicas} replica hosts); "
+                f"servers.json has {len(servers)}."
+            )
 
         task_runner: BaseTaskRunner = task_data.prepare_task_runner(servers[:server_count])
         try:
