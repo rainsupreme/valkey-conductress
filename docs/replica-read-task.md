@@ -73,9 +73,9 @@ change on a single build.
    ceiling. cachecannon's worker threads block in their poller, so their CPU
    time does track load and is safe to threshold. Confirming a ceiling needs a
    load step (the same run at a higher connection count showing no gain),
-   which is a separate control run, not yet built. Foreign-core detection is
-   skipped when `--client-cpus` is used, because the allocator then does not
-   know which cores belong to the generators.
+   which is a separate control run, not yet built. Foreign-core detection needs
+   to know where the generators run; `--client-cpus` supplies that as well as
+   the allocator does, so the check runs either way.
 
 ## Result row
 
