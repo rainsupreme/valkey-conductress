@@ -11,6 +11,13 @@ Round 4: delayed-start perf/profile measurement boundary tests.
 
 Round 5: cancellation, lifecycle correctness, cleanup.
 
+Round 6 (warmup-compatible hotfix): replaces --warmup-period with a
+separate unscored memtier invocation.  Tests verify: exact warmup command
+shape, warmup=0 omission, scored command has no warmup option, perf/profile
+armed with delay=0 after warmup, warmup failure before collectors armed,
+measurement failure cleanup, result warmup_method provenance, GNU-time
+wraps scored invocation only.
+
 Consolidated: shared fixtures for mock servers, replication groups, and
 runner construction to reduce boilerplate across end-to-end tests.
 """
@@ -27,6 +34,7 @@ from conductress.tasks.task_mixed import (
     MAX_MEMTIER_CLIENTS,
     MAX_MEMTIER_THREADS,
     MIXED_CLIENTS,
+    MIXED_KEYSPACE,
     MIXED_THREADS,
     MixedTaskData,
     MixedTaskRunner,
@@ -125,25 +133,75 @@ def gnu_time_cmd_router(
     memtier_stdout: str = MEMTIER_STDOUT_FULL,
     gnu_time_stderr: str = GNU_TIME_STDERR_8CORE,
     fail_on_measure: bool = False,
+    fail_on_warmup: bool = False,
     garbage_output: bool = False,
 ):
     """Return an async side_effect for server.run_host_command covering
-    the standard GNU-time probe → prefill → measure → result pipeline."""
+    the standard GNU-time probe → prefill → warmup → measure → result pipeline.
+
+    Warmup-compatible: warmup commands use --test-time but NOT /usr/bin/time.
+    Scored commands use --test-time and may be wrapped with /usr/bin/time.
+    """
 
     async def capture_cmd(cmd, check=True):
         if "time --version" in cmd:
             return ("GNU time 1.9", "") if gnu_time_available else ("", "")
         if "key-pattern P:P" in cmd:
             return ("OK", "")
-        if fail_on_measure and ("--test-time" in cmd or "/usr/bin/time -v" in cmd):
+        # Warmup invocation: has --test-time but no /usr/bin/time wrapper
+        # and no --warmup-period.  Distinguish from scored by absence of
+        # GNU time wrapper (scored with gnu_time uses /usr/bin/time -v).
+        # For non-gnu-time runs, we distinguish by checking the test_time value.
+        if fail_on_warmup and "--test-time" in cmd and "/usr/bin/time -v" not in cmd:
+            # Only fail if this is the warmup (shorter test-time than duration)
+            # The scored invocation without gnu_time also lacks /usr/bin/time,
+            # but we can't perfectly distinguish here.  The test wires warmup
+            # failure specifically.
+            raise RuntimeError("Simulated warmup failure")
+        if fail_on_measure and ("--test-time" in cmd and "/usr/bin/time -v" in cmd):
             raise RuntimeError("Simulated memtier crash")
-        if garbage_output and ("--test-time" in cmd or "/usr/bin/time -v" in cmd):
-            return ("GARBAGE OUTPUT", "")
+        if fail_on_measure and ("--test-time" in cmd and "/usr/bin/time -v" not in cmd):
+            # For non-gnu-time scored: check if this is not warmup
+            # We'll use a heuristic: the mock routes warmup through ok first
+            if not hasattr(capture_cmd, "_warmup_done"):
+                capture_cmd._warmup_done = True  # type: ignore[attr-defined]
+                return (MEMTIER_STDOUT_FULL, "")  # warmup succeeds
+            raise RuntimeError("Simulated memtier crash")
+        if garbage_output and (
+            "/usr/bin/time -v" in cmd or ("--test-time" in cmd and not hasattr(capture_cmd, "_warmup_done_garbage"))
+        ):
+            if "/usr/bin/time -v" in cmd:
+                return ("GARBAGE OUTPUT", "")
+            # Warmup ok, scored garbage
+            if hasattr(capture_cmd, "_warmup_done_garbage"):
+                return ("GARBAGE OUTPUT", "")
+            capture_cmd._warmup_done_garbage = True  # type: ignore[attr-defined]
+            return (MEMTIER_STDOUT_FULL, "")  # warmup ok
         if "/usr/bin/time -v" in cmd:
             return (memtier_stdout, gnu_time_stderr)
         return (memtier_stdout, "")
 
     return capture_cmd
+
+
+def _simple_cmd_router(
+    *,
+    gnu_time_available: bool = True,
+    memtier_stdout: str = MEMTIER_STDOUT_FULL,
+    gnu_time_stderr: str = GNU_TIME_STDERR_8CORE,
+):
+    """Simpler command router that tracks all commands for inspection."""
+    commands: list[str] = []
+
+    async def capture(cmd, check=True):
+        commands.append(cmd)
+        if "time --version" in cmd:
+            return ("GNU time 1.9", "") if gnu_time_available else ("", "")
+        if "/usr/bin/time -v" in cmd:
+            return (memtier_stdout, gnu_time_stderr)
+        return (memtier_stdout, "")
+
+    return commands, capture
 
 
 @pytest.fixture(autouse=True)
@@ -527,11 +585,55 @@ class TestTasksetAndCommands:
         cmd = r._build_timed_command("~/conductress/memtier_benchmark --test-time 30")
         assert cmd == "/usr/bin/time -v ~/conductress/memtier_benchmark --test-time 30"
 
-    def test_positive_warmup_builds_memtier_option(self):
-        assert make_runner(warmup=7)._build_warmup_arg() == "--warmup-period 7 "
 
-    def test_zero_warmup_omits_memtier_option(self):
-        assert make_runner(warmup=0)._build_warmup_arg() == ""
+# =============================================================================
+# Base args and warmup command construction
+# =============================================================================
+
+
+class TestMemtierBaseArgs:
+    """Tests for _build_memtier_base_args — single source of truth for both
+    warmup and scored invocations."""
+
+    def test_contains_all_workload_params(self):
+        r = make_runner(set_ratio=20, val_size=512, pipelining=10)
+        args = r._build_memtier_base_args("10.0.0.1", 6379)
+        assert "--server 10.0.0.1" in args
+        assert "--port 6379" in args
+        assert "--ratio 1:4" in args
+        assert "--key-pattern R:R" in args
+        assert f"--key-maximum {MIXED_KEYSPACE}" in args
+        assert "--data-size 512" in args
+        assert "--pipeline 10" in args
+        assert "--hide-histogram" in args
+        assert "--threads 8" in args
+        assert "--clients 50" in args
+
+    def test_no_warmup_period_in_base_args(self):
+        """Base args must NEVER contain --warmup-period."""
+        r = make_runner(warmup=10)
+        args = r._build_memtier_base_args("10.0.0.1", 6379)
+        assert "--warmup-period" not in args
+
+    def test_no_test_time_in_base_args(self):
+        """--test-time is caller responsibility, not in base args."""
+        r = make_runner()
+        args = r._build_memtier_base_args("10.0.0.1", 6379)
+        assert "--test-time" not in args
+
+    def test_overridden_concurrency(self):
+        r = make_runner(memtier_threads=24, memtier_clients=100)
+        args = r._build_memtier_base_args("10.0.0.1", 6379)
+        assert "--threads 24" in args
+        assert "--clients 100" in args
+
+    def test_pure_set_ratio(self):
+        r = make_runner(set_ratio=100)
+        assert "--ratio 1:0" in r._build_memtier_base_args("10.0.0.1", 6379)
+
+    def test_pure_get_ratio(self):
+        r = make_runner(set_ratio=0)
+        assert "--ratio 0:1" in r._build_memtier_base_args("10.0.0.1", 6379)
 
 
 # =============================================================================
@@ -564,6 +666,7 @@ class TestCapacityModel:
     def test_unavailable_no_utilization(self):
         m = make_runner()._compute_client_cpu_meta()
         assert m["measurement_method"] == "unavailable"
+        assert m["measurement_window"] == "scored_only"
         assert "utilization" not in m
 
     def test_empirical_data_produces_utilization(self):
@@ -571,6 +674,7 @@ class TestCapacityModel:
         r._client_cores_busy_per_rep = [4.5, 5.0, 4.8]
         m = r._compute_client_cpu_meta()
         assert m["measurement_method"] == "gnu_time"
+        assert m["measurement_window"] == "scored_only"
         assert m["utilization"] == pytest.approx(0.625, abs=0.01)
         assert m["saturated"] is False
 
@@ -609,19 +713,94 @@ class TestEndToEndRunnerMock:
     """E2E tests: commands, GNU time parsing, result schema, capacity model."""
 
     @pytest.mark.asyncio
+    async def test_warmup_as_separate_invocation(self):
+        """Warmup > 0 produces a separate memtier --test-time {warmup}
+        command BEFORE the scored invocation, with no --warmup-period."""
+        runner = make_runner(repetitions=1, warmup=5)
+        server = make_mock_server()
+        commands, capture = _simple_cmd_router()
+        server.run_host_command = AsyncMock(side_effect=capture)
+        rg = make_repl_group(server)
+        wire_file_protocol(runner)
+
+        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            await runner.run()
+
+        # Filter non-probe, non-prefill, non-cache commands
+        memtier_cmds = [c for c in commands if "--test-time" in c]
+        assert len(memtier_cmds) == 2, f"Expected warmup + scored, got {len(memtier_cmds)}: {memtier_cmds}"
+
+        warmup_cmd = memtier_cmds[0]
+        scored_cmd = memtier_cmds[1]
+
+        # Warmup uses --test-time 5 and is NOT wrapped with /usr/bin/time
+        assert "--test-time 5" in warmup_cmd
+        assert "--warmup-period" not in warmup_cmd
+        assert "/usr/bin/time" not in warmup_cmd
+
+        # Scored uses --test-time 30 and is wrapped with /usr/bin/time
+        assert "--test-time 30" in scored_cmd
+        assert "--warmup-period" not in scored_cmd
+        assert "/usr/bin/time -v" in scored_cmd
+
+    @pytest.mark.asyncio
+    async def test_warmup_zero_omits_warmup_invocation(self):
+        """Warmup = 0 should not produce any warmup invocation."""
+        runner = make_runner(repetitions=1, warmup=0)
+        server = make_mock_server()
+        commands, capture = _simple_cmd_router()
+        server.run_host_command = AsyncMock(side_effect=capture)
+        rg = make_repl_group(server)
+        wire_file_protocol(runner)
+
+        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            await runner.run()
+
+        memtier_cmds = [c for c in commands if "--test-time" in c]
+        # Only scored invocation
+        assert len(memtier_cmds) == 1
+        assert "--test-time 30" in memtier_cmds[0]
+        assert "--warmup-period" not in memtier_cmds[0]
+
+    @pytest.mark.asyncio
+    async def test_warmup_and_scored_share_workload_shape(self):
+        """Both warmup and scored must use identical workload params."""
+        runner = make_runner(repetitions=1, warmup=7, set_ratio=50, val_size=1024, pipelining=20)
+        server = make_mock_server()
+        commands, capture = _simple_cmd_router()
+        server.run_host_command = AsyncMock(side_effect=capture)
+        rg = make_repl_group(server)
+        wire_file_protocol(runner)
+
+        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            await runner.run()
+
+        memtier_cmds = [c for c in commands if "--test-time" in c]
+        assert len(memtier_cmds) == 2
+        warmup_cmd, scored_cmd = memtier_cmds
+
+        # Same workload parameters
+        for param in [
+            "--ratio 1:1",
+            "--data-size 1024",
+            "--pipeline 20",
+            "--key-pattern R:R",
+            f"--key-maximum {MIXED_KEYSPACE}",
+            "--threads 8",
+            "--clients 50",
+        ]:
+            assert param in warmup_cmd, f"Missing {param} in warmup: {warmup_cmd}"
+            assert param in scored_cmd, f"Missing {param} in scored: {scored_cmd}"
+
+        # Different --test-time values
+        assert "--test-time 7" in warmup_cmd
+        assert "--test-time 30" in scored_cmd
+
+    @pytest.mark.asyncio
     async def test_default_commands_no_taskset(self):
         runner = make_runner(repetitions=1)
         server = make_mock_server()
-        commands: list[str] = []
-
-        async def capture(cmd, check=True):
-            commands.append(cmd)
-            if "time --version" in cmd:
-                return ("GNU time 1.9", "")
-            if "/usr/bin/time -v" in cmd:
-                return (MEMTIER_STDOUT_FULL, GNU_TIME_STDERR_8CORE)
-            return (MEMTIER_STDOUT_FULL, "")
-
+        commands, capture = _simple_cmd_router()
         server.run_host_command = AsyncMock(side_effect=capture)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
@@ -633,23 +812,12 @@ class TestEndToEndRunnerMock:
             assert "taskset" not in cmd
         prefills = [c for c in commands if "--key-pattern P:P" in c]
         assert len(prefills) == 1 and "--threads 8" in prefills[0] and "--clients 50" in prefills[0]
-        measures = [c for c in commands if "/usr/bin/time -v" in c]
-        assert len(measures) == 1 and "--warmup-period 5" in measures[0]
 
     @pytest.mark.asyncio
     async def test_pinned_commands_have_taskset(self):
         runner = make_runner(repetitions=1, benchmark_cpu_override="0-7,16-23")
         server = make_mock_server()
-        commands: list[str] = []
-
-        async def capture(cmd, check=True):
-            commands.append(cmd)
-            if "time --version" in cmd:
-                return ("GNU time 1.9", "")
-            if "/usr/bin/time -v" in cmd:
-                return (MEMTIER_STDOUT_FULL, GNU_TIME_STDERR_8CORE)
-            return (MEMTIER_STDOUT_FULL, "")
-
+        commands, capture = _simple_cmd_router()
         server.run_host_command = AsyncMock(side_effect=capture)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
@@ -659,8 +827,10 @@ class TestEndToEndRunnerMock:
 
         prefills = [c for c in commands if "--key-pattern P:P" in c]
         assert prefills[0].startswith("taskset -c 0-7,16-23 ")
-        timed = [c for c in commands if "/usr/bin/time -v" in c]
-        assert "taskset -c 0-7,16-23" in timed[0]
+        # Warmup and scored also pinned
+        test_time_cmds = [c for c in commands if "--test-time" in c]
+        for cmd in test_time_cmds:
+            assert "taskset -c 0-7,16-23" in cmd
 
     @pytest.mark.asyncio
     async def test_gnu_time_parsed_into_result(self):
@@ -677,10 +847,27 @@ class TestEndToEndRunnerMock:
         d = results[0].data
         assert d["server_cpu_override"] == "0-8"
         assert d["warmup_applied"] is True
+        assert d["warmup_method"] == "separate_invocation"
         cc = d["client_cpu"]
         assert cc["measurement_method"] == "gnu_time"
         assert cc["cores_busy_per_rep"][0] == pytest.approx(8.023, abs=0.01)
         assert cc["saturated"] is True
+
+    @pytest.mark.asyncio
+    async def test_warmup_zero_result_provenance(self):
+        """warmup=0 result records warmup_method='none'."""
+        runner = make_runner(repetitions=1, warmup=0)
+        server = make_mock_server()
+        server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router())
+        rg = make_repl_group(server)
+        results = wire_file_protocol(runner)
+
+        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            await runner.run()
+
+        d = results[0].data
+        assert d["warmup_applied"] is False
+        assert d["warmup_method"] == "none"
 
     @pytest.mark.asyncio
     async def test_pinned_capacity_in_result(self):
@@ -726,9 +913,27 @@ class TestEndToEndRunnerMock:
         assert cc["measurement_method"] == "unavailable"
         assert "utilization" not in cc
 
+    @pytest.mark.asyncio
+    async def test_scored_command_never_has_warmup_period(self):
+        """Even with warmup > 0, the scored command MUST NOT contain --warmup-period."""
+        runner = make_runner(repetitions=1, warmup=15)
+        server = make_mock_server()
+        commands, capture = _simple_cmd_router(gnu_time_available=False)
+        server.run_host_command = AsyncMock(side_effect=capture)
+        rg = make_repl_group(server)
+        wire_file_protocol(runner)
+
+        with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+            await runner.run()
+
+        scored_cmds = [c for c in commands if "--test-time 30" in c]
+        assert len(scored_cmds) >= 1
+        for cmd in scored_cmds:
+            assert "--warmup-period" not in cmd
+
 
 # =============================================================================
-# Delayed perf stat / CPU profile measurement boundary tests
+# Perf stat / CPU profile measurement boundary tests
 # =============================================================================
 
 
@@ -788,7 +993,7 @@ class TestDelayedCpuProfileCommand:
 
 
 class TestMixedMeasurementBoundary:
-    """perf_stat_start gets delay=warmup; result records duration-only."""
+    """Perf stat and CPU profile are armed with delay=0 after warmup completes."""
 
     @pytest.mark.asyncio
     async def _run_with_warmup(self, warmup: int) -> tuple[list[float], dict]:
@@ -808,14 +1013,16 @@ class TestMixedMeasurementBoundary:
         return delays, results[0].data
 
     @pytest.mark.asyncio
-    async def test_perf_delay_equals_warmup(self):
+    async def test_perf_delay_zero_after_warmup(self):
+        """With warmup=7, perf_stat_start gets delay=0 (warmup already ran)."""
         delays, data = await self._run_with_warmup(7)
-        assert delays == [7.0]
+        assert delays == [0.0]
         assert data["perf_duration_seconds"] == 30.0
         assert data["perf_warmup_included"] is False
 
     @pytest.mark.asyncio
-    async def test_warmup_zero_no_delay(self):
+    async def test_warmup_zero_perf_delay_zero(self):
+        """With warmup=0, perf_stat_start still gets delay=0."""
         delays, data = await self._run_with_warmup(0)
         assert delays == [0.0]
         assert data["perf_duration_seconds"] == 30.0
@@ -842,7 +1049,8 @@ class TestFinalRepCpuProfile:
         results = wire_file_protocol(runner)
         with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
             await runner.run()
-        assert len(cpu_calls) == 1 and cpu_calls[0]["duration"] == 30 and cpu_calls[0]["delay"] == 5.0
+        # Profile armed once (final rep), with delay=0 (warmup already ran)
+        assert len(cpu_calls) == 1 and cpu_calls[0]["duration"] == 30 and cpu_calls[0]["delay"] == 0.0
         assert results[0].data["cpu_stacks_main"] == [["func1;func2", 100]]
 
     @pytest.mark.asyncio
@@ -867,13 +1075,24 @@ class TestFailureCleanup:
 
     @pytest.mark.asyncio
     async def test_perf_stopped_on_memtier_failure(self):
-        runner = make_runner(repetitions=1, perf_stat_enabled=True)
+        """Perf stat is cleaned up when the scored invocation fails."""
+        runner = make_runner(repetitions=1, warmup=0, perf_stat_enabled=True)
         server = make_mock_server()
         stop_called, wait_called = [], []
         server.perf_stat_start = AsyncMock()
         server.perf_stat_stop = AsyncMock(side_effect=lambda: stop_called.append(True))
         server.perf_stat_wait = MagicMock(side_effect=lambda: wait_called.append(True))
-        server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(fail_on_measure=True))
+
+        async def fail_scored(cmd, check=True):
+            if "time --version" in cmd:
+                return ("", "")
+            if "--key-pattern P:P" in cmd:
+                return ("OK", "")
+            if "--test-time" in cmd:
+                raise RuntimeError("Simulated memtier crash")
+            return ("OK", "")
+
+        server.run_host_command = AsyncMock(side_effect=fail_scored)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):
@@ -883,7 +1102,7 @@ class TestFailureCleanup:
 
     @pytest.mark.asyncio
     async def test_cpu_profile_cancelled_on_failure(self):
-        runner = make_runner(repetitions=1, perf_stat_enabled=True)
+        runner = make_runner(repetitions=1, warmup=0, perf_stat_enabled=True)
         runner._profile_internals = True
         server = make_mock_server()
         cancel_called = []
@@ -892,7 +1111,17 @@ class TestFailureCleanup:
         server.perf_stat_wait = MagicMock()
         server.cpu_profile_start = MagicMock()
         server.cpu_profile_cancel = MagicMock(side_effect=lambda: cancel_called.append(True))
-        server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(fail_on_measure=True))
+
+        async def fail_scored(cmd, check=True):
+            if "time --version" in cmd:
+                return ("", "")
+            if "--key-pattern P:P" in cmd:
+                return ("OK", "")
+            if "--test-time" in cmd:
+                raise RuntimeError("Simulated memtier crash")
+            return ("OK", "")
+
+        server.run_host_command = AsyncMock(side_effect=fail_scored)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):
@@ -901,8 +1130,40 @@ class TestFailureCleanup:
         assert cancel_called
 
     @pytest.mark.asyncio
+    async def test_warmup_failure_no_collectors_armed(self):
+        """If warmup fails, perf stat and CPU profile are NOT armed yet."""
+        runner = make_runner(repetitions=1, warmup=5, perf_stat_enabled=True)
+        runner._profile_internals = True
+        server = make_mock_server()
+        server.perf_stat_start = AsyncMock()
+        server.cpu_profile_start = MagicMock()
+
+        call_count = 0
+
+        async def fail_warmup(cmd, check=True):
+            nonlocal call_count
+            if "time --version" in cmd:
+                return ("", "")
+            if "--key-pattern P:P" in cmd:
+                return ("OK", "")
+            if "--test-time 5" in cmd:
+                raise RuntimeError("Simulated warmup failure")
+            call_count += 1
+            return (MEMTIER_STDOUT_FULL, "")
+
+        server.run_host_command = AsyncMock(side_effect=fail_warmup)
+        rg = make_repl_group(server)
+        wire_file_protocol(runner)
+        with pytest.raises(RuntimeError, match="Simulated warmup failure"):
+            with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
+                await runner.run()
+        # Perf stat and CPU profile should NOT have been armed
+        server.perf_stat_start.assert_not_awaited()
+        server.cpu_profile_start.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_collectors_cleaned_on_rps_parse_failure(self):
-        runner = make_runner(repetitions=1, perf_stat_enabled=True)
+        runner = make_runner(repetitions=1, warmup=0, perf_stat_enabled=True)
         runner._profile_internals = True
         server = make_mock_server()
         stop_called, wait_called, cancel_called = [], [], []
@@ -911,7 +1172,17 @@ class TestFailureCleanup:
         server.perf_stat_wait = MagicMock(side_effect=lambda: wait_called.append(True))
         server.cpu_profile_start = MagicMock()
         server.cpu_profile_cancel = MagicMock(side_effect=lambda: cancel_called.append(True))
-        server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(garbage_output=True))
+
+        async def garbage_scored(cmd, check=True):
+            if "time --version" in cmd:
+                return ("", "")
+            if "--key-pattern P:P" in cmd:
+                return ("OK", "")
+            if "--test-time" in cmd:
+                return ("GARBAGE OUTPUT", "")
+            return ("OK", "")
+
+        server.run_host_command = AsyncMock(side_effect=garbage_scored)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Failed to parse memtier output"):
@@ -921,7 +1192,7 @@ class TestFailureCleanup:
 
     @pytest.mark.asyncio
     async def test_no_double_stop_on_success(self):
-        runner = make_runner(repetitions=1, perf_stat_enabled=True)
+        runner = make_runner(repetitions=1, warmup=0, perf_stat_enabled=True)
         server = make_mock_server()
         stop_count = []
         server.perf_stat_start = AsyncMock()
@@ -953,9 +1224,6 @@ class TestWarmupZeroBehavior:
         with patch("conductress.tasks.task_mixed.ReplicationGroup", return_value=rg):
             await runner.run()
         assert delays == [0.0]
-
-    def test_warmup_zero_no_warmup_period_in_command(self):
-        assert make_runner(warmup=0)._build_warmup_arg() == ""
 
 
 # =============================================================================
@@ -1068,7 +1336,8 @@ class TestFailureDuringDelayedWarmup:
 
     @pytest.mark.asyncio
     async def test_cancel_prompt_on_delayed_warmup_failure(self):
-        runner = make_runner(repetitions=1, warmup=60, perf_stat_enabled=True)
+        """If measurement fails after warmup, cancel is still called."""
+        runner = make_runner(repetitions=1, warmup=5, perf_stat_enabled=True)
         runner._profile_internals = True
         server = make_mock_server()
         server.perf_stat_start = AsyncMock()
@@ -1076,7 +1345,21 @@ class TestFailureDuringDelayedWarmup:
         server.perf_stat_wait = MagicMock()
         server.cpu_profile_start = MagicMock()
         server.cpu_profile_cancel = MagicMock()
-        server.run_host_command = AsyncMock(side_effect=gnu_time_cmd_router(fail_on_measure=True))
+
+        async def fail_scored(cmd, check=True):
+            if "time --version" in cmd:
+                return ("", "")
+            if "--key-pattern P:P" in cmd:
+                return ("OK", "")
+            # Warmup succeeds (--test-time 5)
+            if "--test-time 5" in cmd:
+                return (MEMTIER_STDOUT_FULL, "")
+            # Scored fails (--test-time 30)
+            if "--test-time 30" in cmd:
+                raise RuntimeError("Simulated memtier crash")
+            return ("OK", "")
+
+        server.run_host_command = AsyncMock(side_effect=fail_scored)
         rg = make_repl_group(server)
         wire_file_protocol(runner)
         with pytest.raises(RuntimeError, match="Simulated memtier crash"):

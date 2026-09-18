@@ -2,6 +2,18 @@
 
 Drives a configurable ratio of GET and SET commands at maximum throughput,
 measuring combined RPS across N repetitions with server restarts between reps.
+
+Warmup compatibility note (Sep 2026):
+    The deployed g4bench memtier binary (d52544b1) does NOT support the
+    ``--warmup-period`` flag.  Instead, warmup is implemented as a separate
+    unscored memtier invocation with the exact same workload shape (ratio,
+    key pattern, keyspace, data size, pipeline, threads, clients, taskset)
+    and ``--test-time {warmup}``.  Its output is discarded, but a non-zero
+    exit code fails the task.  For warmup=0 the invocation is omitted
+    entirely.  Perf stat and CPU profiling are armed with delay_seconds=0
+    immediately *after* the warmup invocation completes, so counters cover
+    only the scored measurement interval.  Client GNU-time CPU accounting
+    wraps the scored invocation only.
 """
 
 import datetime
@@ -355,9 +367,27 @@ class MixedTaskRunner(BaseTaskRunner):
             return f"taskset -c {self.benchmark_cpu_override} "
         return ""
 
-    def _build_warmup_arg(self) -> str:
-        """Return memtier's warmup option, or an empty string when disabled."""
-        return f"--warmup-period {self.warmup} " if self.warmup > 0 else ""
+    def _build_memtier_base_args(self, server_ip: str, server_port: int) -> str:
+        """Build the shared memtier arguments used by both warmup and scored invocations.
+
+        Encapsulates: server endpoint, protocol, threads, clients, ratio,
+        key pattern, keyspace, data size, pipeline, hide-histogram.
+        Caller is responsible for prefixing taskset and suffixing --test-time.
+
+        This single source of truth prevents warmup/scored drift: any change
+        to the workload shape applies to both invocations automatically.
+        """
+        ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
+        return (
+            f"~/conductress/memtier_benchmark "
+            f"--server {server_ip} --port {server_port} --protocol redis "
+            f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
+            f"--ratio {ratio_str} --key-pattern R:R "
+            f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
+            f"--data-size {self.val_size} "
+            f"--pipeline {self.pipelining} "
+            f"--hide-histogram"
+        )
 
     def _build_timed_command(self, cmd: str) -> str:
         """Wrap a command with /usr/bin/time -v for CPU accounting.
@@ -403,6 +433,7 @@ class MixedTaskRunner(BaseTaskRunner):
         meta: dict = {
             "capacity_cores": capacity_cores,
             "capacity_basis": capacity_basis,
+            "measurement_window": "scored_only",
             "memtier_threads": self.memtier_threads,
             "memtier_clients": self.memtier_clients,
             "total_connections": self.total_connections,
@@ -429,10 +460,19 @@ class MixedTaskRunner(BaseTaskRunner):
         return meta
 
     async def run(self) -> None:
-        """Execute N repetitions of mixed GET/SET benchmark with memtier."""
+        """Execute N repetitions of mixed GET/SET benchmark with memtier.
+
+        Warmup is implemented as a separate unscored memtier invocation
+        (same workload shape, ``--test-time {warmup}``) rather than
+        ``--warmup-period`` which is not supported by the deployed memtier
+        binary (d52544b1).  Perf stat and CPU profiling are armed with
+        delay_seconds=0 immediately after warmup completes, so counters
+        cover only the scored interval.  GNU-time CPU accounting wraps
+        the scored invocation only.
+        """
         logger.info(
             "Mixed benchmark: %d%%SET/%d%%GET, v=%d, io=%d, P=%d, %ds x %d reps, "
-            "%d threads x %d clients = %d connections",
+            "%d threads x %d clients = %d connections, warmup=%ds",
             self.set_ratio,
             100 - self.set_ratio,
             self.val_size,
@@ -443,6 +483,7 @@ class MixedTaskRunner(BaseTaskRunner):
             self.memtier_threads,
             self.memtier_clients,
             self.total_connections,
+            self.warmup,
         )
         self.file_protocol.write_status(self.status)
 
@@ -483,7 +524,7 @@ class MixedTaskRunner(BaseTaskRunner):
                     # Probe GNU time availability on the benchmark host
                     await self._probe_gnu_time(server)
 
-                # Build taskset prefix — applied to both prefill and measure
+                # Build taskset prefix — applied to prefill, warmup, and measure
                 taskset_pfx = self._build_taskset_prefix()
 
                 # Prefill keyspace so GETs hit (same approach as perf task)
@@ -501,38 +542,41 @@ class MixedTaskRunner(BaseTaskRunner):
                 self.status.steps_completed = rep * 2 + 1
                 self.file_protocol.write_status(self.status)
 
+                # Build shared base args for warmup and scored phases
+                base_args = self._build_memtier_base_args(server.ip, server.port)
+
+                # --- Warmup phase: separate unscored invocation ---
+                # Uses the exact same workload shape but --test-time {warmup}.
+                # Output is discarded; failure aborts the task.
+                if self.warmup > 0:
+                    warmup_cmd = f"{taskset_pfx}{base_args} --test-time {self.warmup}"
+                    logger.info("Rep %d/%d: running %ds warmup phase", rep + 1, self.repetitions, self.warmup)
+                    await server.run_host_command(warmup_cmd)
+
                 # --- Collector-armed region: any path from here must go
                 # through the finally block to stop/join collectors. ---
                 perf_armed = False
                 perf_stopped = False
                 cpu_profile_armed = False
                 try:
-                    # Perf stat: arm with delay so counters skip the warmup phase.
+                    # Perf stat: arm with delay_seconds=0 — warmup already
+                    # completed above, so counters start immediately with
+                    # the scored invocation.
                     if self.perf_stat_enabled:
-                        await server.perf_stat_start(delay_seconds=float(self.warmup))
+                        await server.perf_stat_start(delay_seconds=0)
                         perf_armed = True
 
-                    # CPU profile: arm on the final rep only, with the same delay.
+                    # CPU profile: arm on the final rep only, delay_seconds=0.
                     if is_last_rep and self.perf_stat_enabled and self._profile_internals:
-                        server.cpu_profile_start(self.duration, delay_seconds=float(self.warmup))
+                        server.cpu_profile_start(self.duration, delay_seconds=0)
                         cpu_profile_armed = True
 
-                    # Run measurement phase (memtier handles warmup + scored interval)
-                    ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
-                    measure_cmd = (
-                        f"{taskset_pfx}~/conductress/memtier_benchmark "
-                        f"--server {server.ip} --port {server.port} --protocol redis "
-                        f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
-                        f"--ratio {ratio_str} --key-pattern R:R "
-                        f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
-                        f"--data-size {self.val_size} "
-                        f"--pipeline {self.pipelining} "
-                        f"{self._build_warmup_arg()}"
-                        f"--test-time {self.duration} "
-                        f"--hide-histogram"
-                    )
+                    # Run scored measurement phase — no warmup option,
+                    # duration-only.
+                    measure_cmd = f"{taskset_pfx}{base_args} " f"--test-time {self.duration}"
 
                     # Wrap with GNU time for empirical client CPU measurement
+                    # (scored invocation only — excludes warmup)
                     use_gnu_time = self._gnu_time_available is True
                     if use_gnu_time:
                         timed_cmd = self._build_timed_command(measure_cmd)
@@ -646,6 +690,7 @@ class MixedTaskRunner(BaseTaskRunner):
             "duration": self.duration,
             "warmup": self.warmup,
             "warmup_applied": self.warmup > 0,
+            "warmup_method": "separate_invocation" if self.warmup > 0 else "none",
             "io_threads": self.io_threads,
             "pipeline": self.pipelining,
             "size": self.val_size,
@@ -664,11 +709,12 @@ class MixedTaskRunner(BaseTaskRunner):
 
         # Client CPU provenance — mixed-task-specific metadata block with
         # capacity model, empirical measurement, and saturation detection.
+        # GNU-time wraps scored invocation only (excludes warmup).
         detailed_data["client_cpu"] = self._compute_client_cpu_meta()
 
         if perf_counters:
             detailed_data["perf_counters"] = perf_counters
-            # Counters cover only the scored interval (delay skipped warmup)
+            # Counters cover only the scored interval (armed after warmup)
             detailed_data["perf_duration_seconds"] = float(self.duration)
             detailed_data["perf_warmup_included"] = False
             detailed_data["perf_rep_count"] = perf_rep_count or 1

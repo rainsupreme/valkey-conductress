@@ -192,7 +192,14 @@ class TestAnalysisCompare:
                     score=base_score + delta,
                     warmup=5,
                 )
-                record["data"].update({"threads": threads, "clients": clients, "warmup_applied": True})
+                record["data"].update(
+                    {
+                        "threads": threads,
+                        "clients": clients,
+                        "warmup_applied": True,
+                        "warmup_method": "separate_invocation",
+                    }
+                )
                 records.append(record)
 
         path = tmp_path / "output.jsonl"
@@ -201,8 +208,8 @@ class TestAnalysisCompare:
 
         assert len(rows) == 2
         assert {row.method for row in rows} == {
-            "perf-mixed-20set-w5-wa1-t8-c50",
-            "perf-mixed-20set-w5-wa1-t24-c50",
+            "perf-mixed-20set-w5-wa1-wmseparate_invocation-t8-c50",
+            "perf-mixed-20set-w5-wa1-wmseparate_invocation-t24-c50",
         }
 
     def test_historical_noop_warmup_does_not_merge_with_active_warmup(self, tmp_path):
@@ -216,6 +223,8 @@ class TestAnalysisCompare:
                     warmup=5,
                 )
                 record["data"].update({"threads": 8, "clients": 50, "warmup_applied": warmup_applied})
+                if warmup_applied:
+                    record["data"]["warmup_method"] = "separate_invocation"
                 records.append(record)
 
         path = tmp_path / "output.jsonl"
@@ -223,8 +232,8 @@ class TestAnalysisCompare:
         rows = AnalysisModule(results_path=path).compare("a", "b")
 
         assert {row.method for row in rows} == {
-            "perf-mixed-20set-w5-wa0-t8-c50",
-            "perf-mixed-20set-w5-wa1-t8-c50",
+            "perf-mixed-20set-w5-wa0-wmlegacy-t8-c50",
+            "perf-mixed-20set-w5-wa1-wmseparate_invocation-t8-c50",
         }
 
 
