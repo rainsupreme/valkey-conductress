@@ -11,6 +11,7 @@ import pytest
 from conductress import nudge_hook
 from conductress.nudge_hook import NudgeHook
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +39,7 @@ def _make_perf_task() -> PerfTaskData:
         source="valkey",
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="test note",
         requirements={},
         test="get",

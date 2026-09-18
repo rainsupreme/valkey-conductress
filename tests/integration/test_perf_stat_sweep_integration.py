@@ -18,6 +18,7 @@ from conductress.file_protocol import FileProtocol
 from conductress.sweep.exporter import _compute_metric, export_perf_metrics
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 
 class TestPerfStatSweepIntegration:
@@ -44,7 +45,7 @@ class TestPerfStatSweepIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="perf stat integration test",
             requirements={},
             make_args="",
@@ -101,7 +102,7 @@ class TestPerfStatSweepIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="unstable",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="export pipeline test",
             requirements={},
             make_args="",

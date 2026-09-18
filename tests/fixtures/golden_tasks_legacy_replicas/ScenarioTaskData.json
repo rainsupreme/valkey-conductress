@@ -1,21 +1,7 @@
 {
   "source": "valkey",
   "specifier": "abc123",
-  "topology": {
-    "instances": [
-      {
-        "role": "primary",
-        "port": 6379,
-        "io_threads": null,
-        "server_args": "",
-        "cpu_override": "",
-        "cluster_enabled": false,
-        "host": null,
-        "host_slot": 0,
-        "own_dir": false
-      }
-    ]
-  },
+  "replicas": 0,
   "note": "golden",
   "requirements": {},
   "make_args": "",

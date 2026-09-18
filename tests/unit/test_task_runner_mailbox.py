@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from conductress.task_runner import TaskRunner
+from conductress.topology import TopologySpec
 
 
 class ExitLoop(Exception):
@@ -89,7 +90,7 @@ async def test_management_calls_surround_but_never_occur_inside_task_execution()
     task = MagicMock(
         task_id="remote-task",
         task_type="PerfTaskData",
-        replicas=0,
+        topology=TopologySpec.standalone(),
     )
     runner = TaskRunner(mailbox=mailbox, management_settle_seconds=0)
     runner._choose_next = MagicMock(side_effect=[task, ExitLoop()])

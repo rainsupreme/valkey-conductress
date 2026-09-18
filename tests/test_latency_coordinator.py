@@ -10,6 +10,7 @@ from conductress.config import LATENCY_TARGET_RPS
 from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 from conductress.tasks.task_latency import LatencyTaskData
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +107,7 @@ class TestIsMyTask:
             source="valkey",
             specifier="ccc",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             target_rps=100000,
@@ -119,7 +120,7 @@ class TestIsMyTask:
             source="valkey",
             specifier="ccc",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             target_rps=100000,
@@ -133,7 +134,7 @@ class TestIsMyTask:
             source="valkey",
             specifier="ccc",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             test="get",
@@ -165,7 +166,7 @@ class TestExtractResult:
             source="valkey",
             specifier="ccc",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             target_rps=100000,
@@ -219,7 +220,7 @@ class TestLatencyTaskSerialization:
             source="valkey",
             specifier="abc123def456",
             make_args="",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="test",
             requirements={},
             target_rps=LATENCY_TARGET_RPS,

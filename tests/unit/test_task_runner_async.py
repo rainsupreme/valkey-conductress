@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from conductress.task_runner import TaskRunner
+from conductress.topology import TopologySpec
 
 
 class _ExitLoop(Exception):
@@ -83,7 +84,7 @@ class TestTaskRunnerLoop:
         runner._subscribers.append(subscriber)
 
         task = MagicMock()
-        task.replicas = 0
+        task.topology = TopologySpec.standalone()
         mock_task_runner = MagicMock()
         mock_task_runner.run = AsyncMock()
         mock_task_runner.file_protocol = MagicMock()
@@ -183,7 +184,7 @@ class TestTaskRunnerLoop:
             runner = TaskRunner()
 
             task = MagicMock()
-            task.replicas = 0
+            task.topology = TopologySpec.standalone()
             task.task_id = "2026.01.01_00.00.00.000000"
             task.note = "test"
             task.source = "valkey"

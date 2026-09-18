@@ -5,6 +5,7 @@ import pytest
 from conductress import config
 from conductress.cli import main
 from conductress.tasks.task_perf_benchmark import BoundedInsertionTaskData, checked_memory_snapshot
+from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +20,7 @@ def make_task(**overrides):
     values = dict(
         source="repo1",
         specifier="abc123",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="bounded",
         requirements={},
         make_args="",
@@ -64,7 +65,7 @@ def test_task_rejects_unsafe_or_unbounded_shapes():
     with pytest.raises(ValueError, match="must not be negative"):
         make_task(bench_threads=-1)
     with pytest.raises(ValueError, match="do not support replicas"):
-        make_task(replicas=1)
+        make_task(topology=TopologySpec.replication_hosts(1))
 
 
 def test_checked_memory_snapshot_accepts_below_limits_and_rejects_crossings():

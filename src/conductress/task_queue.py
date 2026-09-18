@@ -14,6 +14,7 @@ from typing import ClassVar, Dict, Optional, Type
 
 from . import config
 from .file_protocol import FileProtocol
+from .topology import TopologySpec
 from .utility import datetime_to_task_id
 
 _ENVELOPE_TASK_ID_KEY = "__envelope_task_id"
@@ -35,13 +36,36 @@ def _validate_envelope_task_id(task_id: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _upgrade_topology_keys(data: dict) -> None:
+    """Rewrite a task document's layout keys in place to the current ``topology`` form.
+
+    Documents written before the ``topology`` field carried ``replicas: N``,
+    meaning N replicas on the next N configured hosts (``N <= 0``: none). A
+    document carrying both keeps ``topology`` and drops ``replicas``.
+    """
+    replicas = data.pop("replicas", None)
+    if "topology" in data:
+        data["topology"] = TopologySpec.from_dict(data["topology"])
+    elif replicas is not None:
+        try:
+            data["topology"] = TopologySpec.replication_hosts(int(replicas))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid task data: replicas must be an integer, got {replicas!r}") from exc
+
+
 @dataclass
 class BaseTaskData(ABC):
     """Task for benchmarking"""
 
     source: str
     specifier: str
-    replicas: int
+    # The server layout the task runs against: which instances, on which
+    # hosts and ports, in which roles. ``TopologySpec.standalone()`` is one
+    # instance on the runner with the legacy working directory and logfile,
+    # the shape every sweep cell measures. Documents from before this field
+    # carried ``replicas: N`` (N extra configured hosts); ``from_dict`` maps
+    # that to ``TopologySpec.replication_hosts(N)``.
+    topology: TopologySpec
     note: str
     requirements: dict
     make_args: str
@@ -75,6 +99,7 @@ class BaseTaskData(ABC):
         # __init__(), asdict(), or subclass constructors.
         if not hasattr(self, "_override_task_id"):
             self._override_task_id: Optional[str] = None
+        self.topology = TopologySpec.from_dict(self.topology)
         if self.source != config.MANUALLY_UPLOADED and self.source not in config.REPO_NAMES:
             raise ValueError(f"Unknown source: {self.source}. Valid: {config.REPO_NAMES + [config.MANUALLY_UPLOADED]}")
 
@@ -138,6 +163,7 @@ class BaseTaskData(ABC):
             raise ValueError(f"Invalid task data: {exc}") from exc
         if task_type not in BaseTaskData.__task_registry:
             raise ValueError(f"Unknown task type: {task_type}")
+        _upgrade_topology_keys(data)
         result = BaseTaskData.__task_registry[task_type](**data)
         result.timestamp = timestamp
         if envelope_task_id is not None:

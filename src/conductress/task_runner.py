@@ -35,13 +35,12 @@ logger = logging.getLogger(__name__)
 
 
 def required_server_count(task_data: BaseTaskData) -> int:
-    """How many servers.json hosts a task needs: one, plus one per replica host.
+    """How many servers.json hosts a task needs: the distinct machines its topology names.
 
-    ``replicas`` counts *hosts* handed to a ``ReplicationGroup``. Tasks that
-    lay out several instances on the runner host keep it at 0 and carry their
-    own instance count.
+    Several instances on the runner host count once; a replica on host slot N
+    needs N+1 configured servers.
     """
-    return task_data.replicas + 1 if task_data.replicas > 0 else 1
+    return task_data.topology.host_count()
 
 
 class TaskSubscriber(Protocol):
@@ -199,10 +198,7 @@ class TaskRunner:
         servers = get_servers()
         server_count = required_server_count(task_data)
         if len(servers) < server_count:
-            raise RuntimeError(
-                f"Task needs {server_count} configured server(s) ({task_data.replicas} replica hosts); "
-                f"servers.json has {len(servers)}."
-            )
+            raise RuntimeError(f"Task needs {server_count} configured server(s); servers.json has {len(servers)}.")
 
         task_runner: BaseTaskRunner = task_data.prepare_task_runner(servers[:server_count])
         try:

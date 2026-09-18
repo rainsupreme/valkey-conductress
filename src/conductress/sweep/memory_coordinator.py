@@ -17,6 +17,7 @@ from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_mem_efficiency import MemTaskData
+from conductress.topology import TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             source=self._sweep_source,
             specifier=sweep_task.commit,
             make_args=make_args,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[memory-sweep:{self._workload.label}] {sweep_task.reason}",
             requirements={},
             type=self._workload.command,

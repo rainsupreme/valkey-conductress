@@ -37,6 +37,7 @@ from conductress.sweep.git_ops import fetch_ref, get_head, get_merge_commits, ge
 from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
 from conductress.task_queue import BaseTaskData, TaskQueue
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +449,7 @@ class SweepCoordinator(BaseSweepCoordinator):
             source=self._sweep_source,
             specifier=sweep_task.commit,
             make_args=self._sweep_make_args,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[perf-sweep:{self._sweep_source}/{self.workload_id}] {sweep_task.reason}",
             requirements={},
             test=self._test,

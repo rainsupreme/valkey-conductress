@@ -8,6 +8,7 @@ from conductress.config import ServerInfo
 from conductress.file_protocol import BenchmarkStatus, FileProtocol, MetricData
 from conductress.task_runner import TaskRunner
 from conductress.tasks.task_perf_benchmark import PerfTaskRunner
+from conductress.topology import TopologySpec
 
 
 class TestPerfTaskRunnerIntegration:
@@ -110,7 +111,7 @@ class TestTaskRunnerCleanup:
 
         # Create a mock task that uses file protocol
         mock_task_data = MagicMock()
-        mock_task_data.replicas = 0
+        mock_task_data.topology = TopologySpec.standalone()
 
         # Create a mock task runner with file protocol
         mock_task_runner = MagicMock()
@@ -144,7 +145,7 @@ class TestTaskRunnerCleanup:
 
         # Create a mock task that raises an exception
         mock_task_data = MagicMock()
-        mock_task_data.replicas = 0
+        mock_task_data.topology = TopologySpec.standalone()
 
         mock_task_runner = MagicMock()
         mock_task_runner.run = AsyncMock(side_effect=RuntimeError("Test error"))

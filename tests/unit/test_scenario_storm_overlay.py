@@ -26,6 +26,7 @@ from conductress.tasks.task_scenario import (
     storm_metrics_namespace,
     storm_uses_debug_sleep,
 )
+from conductress.topology import TopologySpec
 
 HOST = config.ServerInfo(ip="127.0.0.1", username="ec2-user")
 
@@ -38,7 +39,7 @@ def _scenario_task(**overrides) -> ScenarioTaskData:
         source=config.REPO_NAMES[0],
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
         scenario="eval-storm",

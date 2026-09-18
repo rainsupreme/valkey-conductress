@@ -24,7 +24,7 @@ working lever.
 import asyncio
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -51,16 +51,28 @@ INSTANCE_DIR_ROOT = Path("~") / "conductress-instances"
 
 @dataclass
 class InstanceSpec:
-    """One valkey-server process in a topology."""
+    """One valkey-server process in a topology.
+
+    ``io_threads``, ``server_args`` and ``cpu_override`` are the instance's own
+    settings. ``None`` / empty means "the task's setting": a spec stored in a
+    task document stays truthful without repeating values the task already
+    carries as result-row axes. ``TopologySpec.resolved`` fills them before
+    the group starts.
+    """
 
     role: str
     port: int
-    io_threads: int = 1
+    io_threads: Optional[int] = None
     server_args: str = ""
     cpu_override: str = ""
     cluster_enabled: bool = False
-    # ``None`` = the host the TopologyGroup is given (the runner itself).
+    # Where the instance runs. ``host`` pins an explicit machine. Otherwise
+    # ``host_slot`` is an index into the runner's configured servers
+    # (servers.json): slot 0 is the runner itself, slot N a further host. The
+    # runner binds slots to hosts with ``TopologySpec.bind_hosts`` before the
+    # group starts.
     host: Optional[ServerInfo] = None
+    host_slot: int = 0
     # A dedicated working directory keeps two instances on one host from
     # clobbering each other's RDB. ``False`` is the legacy layout (no --dir,
     # cwd of the launching shell) that the single-instance tasks have always
@@ -74,21 +86,41 @@ class InstanceSpec:
             raise ValueError(
                 f"port must be in 1024..{MAX_INSTANCE_PORT} (cluster bus needs port+10000), got {self.port}"
             )
-        if self.io_threads < 1:
+        if self.io_threads is not None and self.io_threads < 1:
             raise ValueError(f"io_threads must be >= 1, got {self.io_threads}")
+        if self.host_slot < 0:
+            raise ValueError(f"host_slot must be >= 0, got {self.host_slot}")
 
     @property
     def instance_dir(self) -> Optional[Path]:
         """Working directory (``--dir``) for this instance on the host, or ``None`` for the legacy layout."""
         return INSTANCE_DIR_ROOT / str(self.port) if self.own_dir else None
 
+    @property
+    def host_key(self):
+        """Identity of the machine this instance runs on, before binding: ip or slot."""
+        return ("ip", self.host.ip) if self.host is not None else ("slot", self.host_slot)
+
     def resolved_host(self, default: ServerInfo) -> ServerInfo:
-        """The host this instance runs on, given the group's default."""
-        return self.host if self.host is not None else default
+        """The host this instance runs on, given the group's default (slot 0)."""
+        if self.host is not None:
+            return self.host
+        if self.host_slot != 0:
+            raise RuntimeError(f"host_slot {self.host_slot} is not bound to a host; call TopologySpec.bind_hosts first")
+        return default
 
     def to_dict(self) -> dict:
         """JSON-able form for the result row."""
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InstanceSpec":
+        """Inverse of ``to_dict``."""
+        fields = dict(data)
+        host = fields.get("host")
+        if isinstance(host, dict):
+            fields["host"] = ServerInfo(**host)
+        return cls(**fields)
 
 
 @dataclass
@@ -103,7 +135,7 @@ class TopologySpec:
             raise ValueError(f"topology needs exactly one primary, got {len(primaries)}")
         # A port may repeat across hosts (the multi-host layout uses the
         # default port everywhere) but not within one.
-        endpoints = [(i.host.ip if i.host else None, i.port) for i in self.instances]
+        endpoints = [(i.host_key, i.port) for i in self.instances]
         if len(set(endpoints)) != len(endpoints):
             raise ValueError(f"instance ports must be unique per host, got {[i.port for i in self.instances]}")
 
@@ -122,22 +154,89 @@ class TopologySpec:
         """True when any instance declares cluster mode."""
         return any(i.cluster_enabled for i in self.instances)
 
+    @property
+    def is_standalone(self) -> bool:
+        """One instance on the default port with the legacy layout: the sweep-comparable shape."""
+        if len(self.instances) != 1:
+            return False
+        inst = self.instances[0]
+        return inst.port == DEFAULT_BASE_PORT and not inst.own_dir and not inst.cluster_enabled
+
+    def host_count(self) -> int:
+        """How many distinct machines the layout needs, before binding.
+
+        Unpinned instances count by slot, pinned ones by address; slot 0 is
+        the runner. This is what the runner checks against its configured
+        servers before it claims a task.
+        """
+        keys = {i.host_key for i in self.instances}
+        slots = [k[1] for k in keys if k[0] == "slot"]
+        ips = [k for k in keys if k[0] == "ip"]
+        # Slots are contiguous from 0: needing slot 2 means three configured hosts.
+        return (max(slots) + 1 if slots else 0) + len(ips)
+
     def hosts(self, default: ServerInfo) -> list:
-        """Distinct hosts the layout touches, in first-appearance order."""
+        """Distinct hosts the layout touches, in first-appearance order (slots must be bound)."""
         seen: dict = {}
         for inst in self.instances:
             host = inst.resolved_host(default)
             seen.setdefault(host.ip, host)
         return list(seen.values())
 
+    def bind_hosts(self, servers: list) -> "TopologySpec":
+        """Pin every slot-addressed instance to ``servers[slot]``; slot 0 stays the default host.
+
+        The runner calls this with its configured servers so the group only
+        ever sees explicit hosts or "the default host".
+        """
+        bound = []
+        for inst in self.instances:
+            if inst.host is None and inst.host_slot > 0:
+                if inst.host_slot >= len(servers):
+                    raise RuntimeError(
+                        f"topology needs host slot {inst.host_slot} but only {len(servers)} server(s) are configured"
+                    )
+                bound.append(replace(inst, host=servers[inst.host_slot], host_slot=0))
+            else:
+                bound.append(inst)
+        return TopologySpec(instances=bound)
+
+    def resolved(self, *, io_threads: int, server_args: str = "", cpu_override: str = "") -> "TopologySpec":
+        """Fill every instance's unset settings from the task's own.
+
+        ``server_args`` from the task go first and the instance's role-specific
+        arguments after, so a role-specific flag overrides a shared one (valkey
+        applies later command-line config over earlier).
+        """
+        out = []
+        for inst in self.instances:
+            out.append(
+                replace(
+                    inst,
+                    io_threads=inst.io_threads if inst.io_threads is not None else io_threads,
+                    server_args=" ".join(a for a in (server_args, inst.server_args) if a),
+                    cpu_override=inst.cpu_override or cpu_override,
+                )
+            )
+        return TopologySpec(instances=out)
+
     def to_dict(self) -> dict:
         """JSON-able form for the result row."""
         return {"instances": [i.to_dict() for i in self.instances]}
 
     @classmethod
+    def from_dict(cls, data) -> "TopologySpec":
+        """Inverse of ``to_dict``; passes a ``TopologySpec`` through unchanged."""
+        if isinstance(data, cls):
+            return data
+        if not isinstance(data, dict) or not isinstance(data.get("instances"), list):
+            raise ValueError("topology must be an object with an 'instances' list")
+        return cls(instances=[InstanceSpec.from_dict(i) for i in data["instances"]])
+
+    @classmethod
     def standalone(
         cls,
-        io_threads: int,
+        io_threads: Optional[int] = None,
         *,
         server_args: str = "",
         cpu_override: str = "",
@@ -149,6 +248,8 @@ class TopologySpec:
         This is the layout every single-instance task has always run; on the
         default port it produces the same ``valkey-server`` command line and
         the same files on the host as ``ReplicationGroup`` with one server.
+        With no arguments it defers every setting to the task (the task-data
+        default).
         """
         return cls(
             instances=[
@@ -163,6 +264,20 @@ class TopologySpec:
                 )
             ]
         )
+
+    @classmethod
+    def replication_hosts(cls, replicas: int) -> "TopologySpec":
+        """The legacy ``replicas: N`` layout: primary on the runner, N replicas on the next N configured hosts.
+
+        Default port and legacy working directory everywhere, settings deferred
+        to the task. ``replicas <= 0`` is ``standalone()``.
+        """
+        if replicas <= 0:
+            return cls.standalone()
+        instances = [InstanceSpec(role=PRIMARY_ROLE, port=DEFAULT_BASE_PORT, own_dir=False)]
+        for slot in range(1, replicas + 1):
+            instances.append(InstanceSpec(role=REPLICA_ROLE, port=DEFAULT_BASE_PORT, host_slot=slot, own_dir=False))
+        return cls(instances=instances)
 
     @classmethod
     def replica_read(
@@ -252,6 +367,11 @@ class TopologyGroup:
                 "cluster_enabled is declared in the spec but the cluster bootstrap "
                 "(ADDSLOTS/MEET/REPLICATE) is not implemented yet; run non-cluster"
             )
+        unresolved = [i.port for i in self.spec.instances if i.io_threads is None]
+        if unresolved:
+            raise RuntimeError(
+                f"instances on port(s) {unresolved} have no io_threads; call TopologySpec.resolved(...) with the task's settings first"
+            )
         # ``self.servers`` is filled incrementally so a failure partway through
         # still lets ``stop_all_servers`` tear down what did start.
         self.servers = []
@@ -263,6 +383,8 @@ class TopologyGroup:
         await self._detach_unknown_replicas()
 
     async def _start_instance(self, inst: InstanceSpec) -> Server:
+        if inst.io_threads is None:  # start() rejects this earlier; keeps the call below well-typed
+            raise RuntimeError(f"instance on port {inst.port} has no io_threads")
         host = inst.resolved_host(self.host)
         server = Server(host.ip, inst.port, host.username, instance_dir=inst.instance_dir)
         cached_binary_path = await server.ensure_binary_cached(self.binary_source, self.specifier, self.make_args)

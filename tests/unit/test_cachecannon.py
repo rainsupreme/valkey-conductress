@@ -7,6 +7,7 @@ from conductress.tasks.task_cachecannon import (
     generate_toml_config,
     parse_json_results,
 )
+from conductress.topology import TopologySpec
 
 
 def _valid_source():
@@ -334,7 +335,7 @@ def test_task_data_short_description():
         source=_valid_source(),
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="test",
         requirements={},
         test="get",
@@ -358,7 +359,7 @@ def test_task_data_short_description_mixed_zipf():
         source=_valid_source(),
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="test",
         requirements={},
         test="get",
@@ -398,7 +399,7 @@ def test_task_data_serialization_roundtrip():
         source=_valid_source(),
         specifier="abc123",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="roundtrip test",
         requirements={},
         test="get",
@@ -449,7 +450,7 @@ def test_runner_construction():
         source=_valid_source(),
         specifier="abc123",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
     )

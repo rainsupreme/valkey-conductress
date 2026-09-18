@@ -8,6 +8,7 @@ import pytest
 from conductress.config import ServerInfo
 from conductress.file_protocol import FileProtocol
 from conductress.tasks.task_perf_benchmark import PerfTaskData
+from conductress.topology import TopologySpec
 
 
 class TestPerfTaskIntegration:
@@ -34,7 +35,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="integration test",
             requirements={},
             make_args="",
@@ -100,7 +101,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"{command_name} test",
             requirements={},
             make_args="",
@@ -139,7 +140,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="no preload test",
             requirements={},
             make_args="",
@@ -179,7 +180,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="expiration test",
             requirements={},
             make_args="",
@@ -218,7 +219,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="heartbeat test",
             requirements={},
             make_args="",
@@ -261,7 +262,7 @@ class TestPerfTaskIntegration:
             task_data = PerfTaskData(
                 source="valkey",
                 specifier="8.0",
-                replicas=0,
+                topology=TopologySpec.standalone(),
                 note="error test",
                 requirements={},
                 make_args="",
@@ -303,7 +304,7 @@ class TestPerfTaskIntegration:
         original_task = PerfTaskData(
             source="valkey",
             specifier="v7.2.0",
-            replicas=1,
+            topology=TopologySpec.replication_hosts(1),
             note="serialization test",
             requirements={"memory": "4GB"},
             make_args="-O3 -march=native",
@@ -348,7 +349,7 @@ class TestPerfTaskIntegration:
         task_data = PerfTaskData(
             source="valkey",
             specifier="8.0",
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note="profiling test",
             requirements={},
             make_args="",

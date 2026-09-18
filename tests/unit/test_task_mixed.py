@@ -83,6 +83,7 @@ _RUNNER_DEFAULTS = dict(
     duration=30,
     repetitions=3,
 )
+from conductress.topology import TopologySpec
 
 
 def make_runner(**overrides) -> MixedTaskRunner:
@@ -164,7 +165,7 @@ def _make_task(**overrides) -> MixedTaskData:
         source="valkey",
         specifier="unstable",
         make_args="",
-        replicas=0,
+        topology=TopologySpec.standalone(),
         note="",
         requirements={},
         set_ratio=20,

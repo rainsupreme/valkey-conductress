@@ -21,7 +21,6 @@ _TASK_ATTRS = (
     "pipelining",
     "warmup",
     "duration",
-    "replicas",
     "note",
 )
 

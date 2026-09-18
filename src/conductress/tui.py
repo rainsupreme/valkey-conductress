@@ -30,6 +30,7 @@ from textual.widgets.selection_list import Selection
 from conductress.file_protocol import FileProtocol
 from conductress.tasks.task_mem_efficiency import MemTaskData, MemTaskRunner
 from conductress.tasks.task_perf_benchmark import PerfTaskData, PerfTaskRunner, PerfTaskVisualizer
+from conductress.topology import TopologySpec
 from conductress.tui_data_service import TUIDataService
 
 from . import config
@@ -819,7 +820,7 @@ class PerfTaskForm(BaseTaskForm):
             task = PerfTaskData(
                 source=specifier[0],
                 specifier=specifier[1],
-                replicas=-1,  # TODO configurable replicas
+                topology=TopologySpec.standalone(),
                 note=note,
                 requirements={},
                 make_args=make_args,
@@ -908,7 +909,7 @@ class MemTaskForm(BaseTaskForm):
                 val_sizes=sizes,
                 type=test,
                 has_expire=expire_keys,
-                replicas=-1,
+                topology=TopologySpec.standalone(),
                 note=note,
                 requirements={},
                 make_args=make_args,

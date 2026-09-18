@@ -21,6 +21,7 @@ from conductress.sweep.coordinator import BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_latency import LATENCY_REPS, LatencyTaskData
+from conductress.topology import TopologySpec
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class LatencySweepCoordinator(BaseSweepCoordinator):
             source=SWEEP_SOURCE,
             specifier=sweep_task.commit,
             make_args=LATENCY_MAKE_ARGS,
-            replicas=0,
+            topology=TopologySpec.standalone(),
             note=f"[latency-sweep] {sweep_task.reason} (100K rps flat)",
             requirements={},
             target_rps=LATENCY_TARGET_RPS,
