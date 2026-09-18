@@ -34,10 +34,24 @@ Phases per run:
     3. start an INFO sampler on a persistent connection (per tick:
        connected_clients, total_connections_received, rejected_connections;
        gaps recorded when the sampler is itself stalled)
-    4. take the kernel listen-overflow baseline
-    5. run the storm generator subprocess with the stall injector
-    6. read the generator's JSON, take the listen-overflow delta
-    7. assemble results, stop the server
+    4. run the storm generator subprocess, which itself: prewarms the server
+       with throwaway connections, takes the kernel listen-overflow baseline
+       AFTER prewarm, injects the stall, and (by default, stall-first) starts
+       the client burst shortly after the stall command is issued
+    5. read the generator's JSON: the measured listen-overflow delta, the
+       prewarm phase's own delta, and the reduced metrics
+    6. assemble results, stop the server
+
+Ordering: the realistic scenario is a stall already in progress when
+reconnecting clients arrive, so the default is stall-first (burst starts
+``burst_after_stall_ms`` after the stall is issued). ``burst_first`` restores
+the legacy ordering (burst first, stall at ``stall_after_s``).
+
+Prewarm: a cold server pays a per-connection first-contact cost that overflows
+its listen queue on the first large burst even with no stall; prewarming with
+throwaway connections pays it before the baseline so it does not contaminate
+the measured storm. ``prewarm_connections=0`` disables it to measure the
+cold-start effect itself.
 
 Extending: additional stall injectors (busy Lua, large scans), a background
 closed-loop load, and cluster mode are natural follow-ups; see docs.
@@ -52,7 +66,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from conductress.config import ServerInfo
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
@@ -108,8 +122,18 @@ class StormTaskData(BaseTaskData):
     first_command: str = DEFAULT_FIRST_COMMAND
     duration_s: float = 20.0
     stall: str = "none"  # none | debug-sleep:<seconds>
-    stall_after_s: float = 5.0
-    workers: int = 1
+    # Ordering. Default is stall-first: the burst starts burst_after_stall_ms
+    # after the stall command is issued (the realistic case -- a stall already
+    # in progress when reconnecting clients arrive). burst_first restores the
+    # legacy ordering (burst first, stall injected stall_after_s into the run).
+    burst_first: bool = False
+    burst_after_stall_ms: int = 200
+    stall_after_s: float = 5.0  # burst_first only
+    workers: int = 0  # 0 = auto (min(8, cpu_count))
+    # Prewarm: -1 = default (= clients); 0 disables; >0 explicit count. A cold
+    # server pays a per-connection first-contact cost that overflows its listen
+    # queue on the first large burst; prewarming pays it before measurement.
+    prewarm_connections: int = -1
     bind_addrs: str = ""  # ','-separated loopback source addresses; '' = none
     tick_ms: int = 100
     # Background closed-loop load is a v1 non-goal; kept as an explicit field so
@@ -128,14 +152,20 @@ class StormTaskData(BaseTaskData):
             raise ValueError(f"burst_ms must be >= 0, got {self.burst_ms}")
         if self.connect_timeout_ms <= 0 or self.reply_timeout_ms <= 0:
             raise ValueError("connect_timeout_ms and reply_timeout_ms must be > 0")
-        if self.workers < 1:
-            raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if self.workers < 0:
+            raise ValueError(f"workers must be >= 0 (0 = auto), got {self.workers}")
+        if self.burst_after_stall_ms < 0:
+            raise ValueError(f"burst_after_stall_ms must be >= 0, got {self.burst_after_stall_ms}")
+        if self.prewarm_connections < -1:
+            raise ValueError(f"prewarm_connections must be >= 0, or -1 for default, got {self.prewarm_connections}")
         if self.tick_ms <= 0:
             raise ValueError(f"tick_ms must be > 0, got {self.tick_ms}")
-        if self.stall_after_s < 0 or self.stall_after_s >= self.duration_s:
+        # stall_after_s only governs the legacy burst-first ordering; in that
+        # mode the stall must fire and clear inside the run.
+        if self.burst_first and (self.stall_after_s < 0 or self.stall_after_s >= self.duration_s):
             raise ValueError(
-                f"stall_after_s ({self.stall_after_s}) must be in [0, duration_s={self.duration_s}); "
-                "the stall has to fire and clear inside the run"
+                f"stall_after_s ({self.stall_after_s}) must be in [0, duration_s={self.duration_s}) "
+                "when burst_first is set; the stall has to fire and clear inside the run"
             )
         if self.background_load != "none":
             raise ValueError("background_load other than 'none' is not implemented yet")
@@ -143,6 +173,10 @@ class StormTaskData(BaseTaskData):
         # before a runner ever claims the task.
         parse_policy(self.policy)
         parse_stall(self.stall)
+
+    def prewarm_flag(self) -> Optional[int]:
+        """Prewarm count for the generator flag: None means the generator's default (= clients)."""
+        return None if self.prewarm_connections < 0 else self.prewarm_connections
 
     def handshake_commands(self) -> List[str]:
         """Handshake commands as a list (empty means no handshake)."""
@@ -259,15 +293,22 @@ class StormTaskRunner(BaseTaskRunner):
             _fmt(task.duration_s),
             "--stall",
             task.stall,
+            "--burst-after-stall-ms",
+            str(task.burst_after_stall_ms),
             "--stall-after-s",
             _fmt(task.stall_after_s),
             "--workers",
-            str(task.workers),
+            str(task.workers),  # 0 -> generator's auto default
             "--bucket-ms",
             str(task.tick_ms),
             "--json",
             json_path,
         ]
+        if task.burst_first:
+            parts.append("--burst-first")
+        prewarm = task.prewarm_flag()
+        if prewarm is not None:
+            parts += ["--prewarm-connections", str(prewarm)]
         handshake = task.handshake_commands()
         if handshake:
             for command in handshake:
@@ -410,8 +451,12 @@ class StormTaskRunner(BaseTaskRunner):
             "first_command": self.task.first_command,
             "duration_s": self.task.duration_s,
             "stall": parse_stall(self.task.stall).describe(),
+            "burst_first": self.task.burst_first,
+            "burst_after_stall_ms": self.task.burst_after_stall_ms,
             "stall_after_s": self.task.stall_after_s,
-            "workers": self.task.workers,
+            "burst_actual_ms": reduced.get("burst_actual_ms"),
+            "workers": (doc.get("config") or {}).get("workers", self.task.workers),
+            "prewarm_connections": (doc.get("config") or {}).get("prewarm_connections"),
             "bind_addrs": self.task.bind_addr_list(),
             "tick_ms": self.task.tick_ms,
             "server_args": self.task.server_args,
@@ -426,6 +471,7 @@ class StormTaskRunner(BaseTaskRunner):
             "timeline": reduced.get("timeline"),
             "stall_record": doc.get("stall"),
             "listen_overflow_delta": doc.get("listen_overflow_delta"),
+            "prewarm_listen_overflow_delta": doc.get("prewarm_listen_overflow_delta"),
             "info_timeline": outcome.info_samples,
             "info_sampler_gaps": outcome.sampler_gaps,
             "schema_version": doc.get("schema_version"),

@@ -49,6 +49,22 @@ class ClientConfig:
     bind_addrs: Optional[List[str]] = None
 
 
+@dataclass
+class AttemptResult:
+    """The outcome of one connect+command attempt.
+
+    ``resolved_at`` is the clock time the attempt resolved -- reply receipt for
+    a success, or the failure moment otherwise -- and is what the event's
+    ``t_end`` records. For a success, ``reader``/``writer`` carry the open
+    connection so the caller can hold it after recording the event.
+    """
+
+    outcome: str
+    resolved_at: float
+    reader: Optional[asyncio.StreamReader] = None
+    writer: Optional[asyncio.StreamWriter] = None
+
+
 def _classify_error(exc: BaseException) -> str:
     """Map a connection exception to a storm outcome label."""
     if isinstance(exc, asyncio.TimeoutError):
@@ -107,11 +123,17 @@ class StormClient:
             if complete:
                 return
 
-    async def _one_attempt(self) -> str:
-        """Run a single connect+command attempt; return its outcome label.
+    async def _one_attempt(self) -> "AttemptResult":
+        """Run a single connect+command attempt.
 
-        On ``connected`` the connection is held open until the deadline; the
-        returned outcome is still ``connected`` and the caller stops retrying.
+        Returns an :class:`AttemptResult` whose ``resolved_at`` is the clock
+        time the attempt *resolved* -- for a success, the moment the first
+        reply arrived, NOT the end of the idle hold. The hold is a separate
+        phase that keeps a connected client alive; it is not part of the
+        attempt's latency, and folding it in would corrupt attempt latency,
+        time-to-quiescence and recovery. On success the open reader/writer are
+        returned so the caller can hold the connection after the event is
+        recorded.
         """
         writer: Optional[asyncio.StreamWriter] = None
         try:
@@ -122,14 +144,17 @@ class StormClient:
             try:
                 await self._handshake_and_command(reader, opened_writer)
             except asyncio.TimeoutError:
-                return "reply_timeout"
-            # Success: hold the connection open and idle until the run ends.
-            await self._hold_open(reader)
-            return "connected"
+                # Resolved (as a failure) now; close in finally.
+                return AttemptResult("reply_timeout", self._clock(), None, None)
+            # Resolved as a success the instant the first reply arrived.
+            resolved_at = self._clock()
+            held_reader, held_writer = reader, opened_writer
+            writer = None  # ownership passes to the caller's hold phase
+            return AttemptResult("connected", resolved_at, held_reader, held_writer)
         except asyncio.TimeoutError:
-            return "connect_timeout"
+            return AttemptResult("connect_timeout", self._clock(), None, None)
         except (ConnectionError, OSError, socket.gaierror) as exc:
-            return _classify_error(exc)
+            return AttemptResult(_classify_error(exc), self._clock(), None, None)
         finally:
             if writer is not None:
                 writer.close()
@@ -138,39 +163,52 @@ class StormClient:
                 except (OSError, asyncio.TimeoutError):
                     pass
 
-    async def _hold_open(self, reader: asyncio.StreamReader) -> None:
-        """Keep an established connection idle until the deadline.
+    async def _hold_open(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Keep an established connection idle until the deadline, then close it.
 
         A real long-lived client neither sends nor expects traffic while idle;
-        a server-initiated close (EOF) simply ends the hold early.
+        a server-initiated close (EOF) simply ends the hold early. This runs
+        AFTER the attempt's ``connected`` event is recorded, so its duration
+        never enters the attempt latency.
         """
-        remaining = self._deadline - self._clock()
-        if remaining <= 0:
-            return
         try:
-            await asyncio.wait_for(reader.read(1), timeout=remaining)
-        except asyncio.TimeoutError:
-            return
-        except (ConnectionError, OSError):
-            return
+            remaining = self._deadline - self._clock()
+            if remaining > 0:
+                try:
+                    await asyncio.wait_for(reader.read(1), timeout=remaining)
+                except asyncio.TimeoutError:
+                    pass
+                except (ConnectionError, OSError):
+                    pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (OSError, asyncio.TimeoutError):
+                pass
 
     async def run(self, events: List[dict]) -> None:
-        """Attempt until connected or the deadline passes; append one event per attempt."""
+        """Attempt until connected or the deadline passes; append one event per attempt.
+
+        A connected attempt's event is recorded at reply receipt, then the
+        connection is held open until the deadline as a separate phase.
+        """
         attempt = 0
         while self._clock() < self._deadline:
             t_start = self._clock()
-            outcome = await self._one_attempt()
-            t_end = self._clock()
+            result = await self._one_attempt()
             events.append(
                 {
                     "client_id": self.client_id,
                     "attempt": attempt,
                     "t_start": t_start,
-                    "t_end": t_end,
-                    "outcome": outcome,
+                    "t_end": result.resolved_at,
+                    "outcome": result.outcome,
                 }
             )
-            if outcome == "connected":
+            if result.outcome == "connected":
+                assert result.reader is not None and result.writer is not None
+                await self._hold_open(result.reader, result.writer)
                 return
             delay = self.policy.next_delay(attempt)
             attempt += 1

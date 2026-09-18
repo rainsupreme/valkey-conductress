@@ -25,7 +25,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .resp import ReplyParser, encode_command
 
@@ -45,8 +45,16 @@ class StallInjector(ABC):
     kind: str = "none"
 
     @abstractmethod
-    async def run(self, host: str, port: int, connect_timeout: float) -> StallRecord:
-        """Perform the stall (opening its own connection) and return its record."""
+    async def run(
+        self, host: str, port: int, connect_timeout: float, on_issued: Optional[Callable[[], None]] = None
+    ) -> StallRecord:
+        """Perform the stall (opening its own connection) and return its record.
+
+        ``on_issued`` is called once, right after the stall command has been
+        sent (``record.started`` set), so a caller can anchor other work (a
+        client burst) to the moment the stall began rather than to when its
+        reply returns.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -65,7 +73,9 @@ class NoStall(StallInjector):
 
     kind = "none"
 
-    async def run(self, host: str, port: int, connect_timeout: float) -> StallRecord:
+    async def run(
+        self, host: str, port: int, connect_timeout: float, on_issued: Optional[Callable[[], None]] = None
+    ) -> StallRecord:
         return StallRecord(kind=self.kind)
 
     def describe(self) -> str:
@@ -91,13 +101,17 @@ class DebugSleepStall(StallInjector):
             raise ValueError(f"debug-sleep seconds must be > 0, got {seconds}")
         self.seconds = seconds
 
-    async def run(self, host: str, port: int, connect_timeout: float) -> StallRecord:
+    async def run(
+        self, host: str, port: int, connect_timeout: float, on_issued: Optional[Callable[[], None]] = None
+    ) -> StallRecord:
         record = StallRecord(kind=self.kind)
         reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=connect_timeout)
         try:
             writer.write(encode_command("DEBUG", "SLEEP", _fmt_seconds(self.seconds)))
             await writer.drain()
             record.started = time.time()
+            if on_issued is not None:
+                on_issued()
             parser = ReplyParser()
             # The reply arrives only after the sleep completes; read until we
             # have one full reply. A generous ceiling guards against a hang.

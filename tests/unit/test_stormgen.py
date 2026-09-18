@@ -284,5 +284,32 @@ def test_timeline_empty_events():
 
 def test_summarize_assembles_all_sections():
     doc = metrics.summarize(_storm_events(), client_count=2, stall_end=0.6)
-    assert set(doc) == {"totals", "outcomes", "attempt_latency", "time_to_quiescence", "timeline"}
+    assert set(doc) == {
+        "totals",
+        "burst_actual_ms",
+        "outcomes",
+        "attempt_latency",
+        "time_to_quiescence",
+        "timeline",
+    }
     assert doc["totals"]["amplification"] == pytest.approx(1.5)
+
+
+def test_burst_actual_ms_is_span_of_first_attempt_starts():
+    # First-attempt (attempt==0) starts at 0.02 and 0.12 -> span 100 ms.
+    assert metrics.burst_actual_ms(_storm_events()) == pytest.approx(100.0)
+
+
+def test_burst_actual_ms_zero_for_single_client():
+    events = [_ev(0, 0, 0.0, 0.1, "connected")]
+    assert metrics.burst_actual_ms(events) == 0.0
+
+
+def test_burst_actual_ms_ignores_retry_attempts():
+    # Only attempt==0 events count; a later retry does not widen the burst span.
+    events = [
+        _ev(0, 0, 0.00, 0.10, "connect_timeout"),
+        _ev(0, 1, 5.00, 5.10, "connected"),
+        _ev(1, 0, 0.05, 0.15, "connected"),
+    ]
+    assert metrics.burst_actual_ms(events) == pytest.approx(50.0)

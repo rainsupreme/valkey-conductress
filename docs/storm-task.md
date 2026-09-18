@@ -21,7 +21,7 @@ conductress queue add-storm \
     --clients 2000 --burst-ms 200 \
     --connect-timeout-ms 1000 --reply-timeout-ms 500 \
     --policy fixed:200 \
-    --stall debug-sleep:2 --stall-after 5 \
+    --stall debug-sleep:2 --burst-after-stall-ms 200 \
     --duration 20 --io-threads 1
 ```
 
@@ -42,11 +42,23 @@ Key levers:
   (default `GET stormkey`; the runner prefills the key `stormkey`).
 - `--stall` -- the stall injector: `none` (a baseline/control run) or
   `debug-sleep:<seconds>` (`DEBUG SLEEP`, which blocks the main thread and is
-  portable across Redis and Valkey).
-- `--stall-after` -- seconds into the run at which the stall fires. It must
-  fire and clear inside the run window.
-- `--workers` -- worker processes the clients fan out across, for populations
-  too large for one process's event loop.
+  portable across Redis and Valkey). `DEBUG SLEEP` requires the server to be
+  started with `enable-debug-command` (`local` or `yes`); on a default build
+  the command is rejected and the stall is a no-op.
+- **Ordering** -- by default the storm is *stall-first*: the stall command is
+  issued, then the client burst starts `--burst-after-stall-ms` (default 200)
+  later. This is the realistic scenario -- a stall already in progress when
+  reconnecting clients arrive. Pass `--burst-first` for the legacy ordering
+  (burst first, stall injected `--stall-after` seconds into the run); in that
+  mode `--stall-after` must fire and clear inside the run window.
+- `--workers` -- worker processes the clients fan out across. Default is
+  `min(8, cpu_count)`: a single event loop opens only a few thousand
+  connections per second, so a one-process "200 ms" burst of a few thousand
+  clients actually spans far longer. The achieved span is reported as
+  `burst_actual_ms` so undershoot is visible.
+- `--prewarm-connections` -- throwaway connections opened and closed before the
+  measured baseline (default `= --clients`; `0` disables). See "Cold-server
+  first-contact cost" below for why this exists.
 - `--bind-addrs` -- `,`-separated loopback source addresses to spread the
   clients' ephemeral ports across (see "Ephemeral-port exhaustion" below).
 - `--io-threads` -- server I/O threads. Note this does **not** change which
@@ -102,7 +114,14 @@ sweep-comparable with throughput history). The `data` block carries:
   and `from_stall_end` (the score).
 - `timeline` -- per-bucket counts (`started`, `connected`, `timeouts`) at the
   `--tick-ms` width, so the storm's shape over time can be plotted.
-- `listen_overflow_delta` -- the mechanism-1 counters.
+- `burst_actual_ms` -- the span the burst actually took (last first-attempt
+  start minus first). Compare it against the nominal `--burst-ms`: a large
+  overshoot means the generator could not open connections fast enough, so raise
+  `--workers`.
+- `listen_overflow_delta` -- the mechanism-1 counters for the measured storm.
+- `prewarm_listen_overflow_delta` -- the same counters for the prewarm phase
+  alone (see "Cold-server first-contact cost"). Interesting in its own right:
+  it is where a cold server's first-contact overflow is paid.
 - `info_timeline` -- per-tick server INFO samples (`connected_clients`,
   `total_connections_received`, `rejected_connections`) from a persistent
   connection, and `info_sampler_gaps` -- ticks where the sampler's own
@@ -110,6 +129,45 @@ sweep-comparable with throughput history). The `data` block carries:
   never confused with "could not observe".
 - `generator_config`, `stall_record`, `schema_version` -- provenance for
   reproducing the run.
+
+## Cold-server first-contact cost
+
+A freshly started server overflows its listen queue on the **first** large
+connection burst even with no stall injected, and takes zero overflows on an
+identical second burst. Observed on this setup: a 2000-connection burst against
+a fresh server (default `tcp-backlog` 511) drives roughly 1000-1250
+`ListenOverflows`/`ListenDrops`, reproduced across several fresh servers; an
+identical immediate second burst against the same server takes zero.
+
+The cost is **per-connection**, not per-byte or allocator-related: prewarming
+with 2000 throwaway connections removes it, while prewarming with tens of MB of
+key data, or exercising a specific allocator size class, does not. The
+underlying mechanism is **not established here** -- this is recorded as an
+observed cold-server effect, not attributed to any specific cause.
+
+Because this first-contact overflow would otherwise contaminate a stall
+measurement (a run would show overflows whether or not the stall caused them),
+the generator and task run a **prewarm phase** by default: they open
+`--prewarm-connections` connections (default `= --clients`) with the same
+handshake, close them, wait briefly, and only then take the netstat baseline.
+The prewarm phase's own overflow delta is recorded separately as
+`prewarm_listen_overflow_delta`, so the cold-start effect stays visible instead
+of being hidden. Set `--prewarm-connections 0` to disable prewarm and measure
+the cold-start effect itself.
+
+**Prewarm reduces this overflow but does not always eliminate it, because two
+separate causes overlap.** One is the cold-server per-connection first-contact
+cost above, which prewarm addresses. The other is purely the **burst rate**:
+when the client burst opens connections faster than the server drains its
+`tcp-backlog`-bounded accept queue, the queue overflows no matter how warm the
+server is. The two are separable in the result: compare a warmed run's measured
+overflow against `prewarm_listen_overflow_delta` and `burst_actual_ms`. A high
+worker count (the default) makes the burst sharp enough that the rate cause
+dominates and prewarm barely moves the measured overflow; a single-worker,
+slower burst leaves prewarm with more of the cold-start cost to remove. Neither
+cause's mechanism is attributed here beyond "connections arrived faster than the
+server accepted them" -- treat both as observed effects to control for, not as
+findings about server internals.
 
 ## Cross-engine and environment caveats
 
@@ -122,6 +180,10 @@ sweep-comparable with throughput history). The `data` block carries:
   unrealistically fast client. It is excellent for comparing two builds or two
   configurations on the same host; it is not a model of a production network
   path.
+- **Generator ramp rate.** Even fanned across processes, the generator opens a
+  finite number of connections per second, so `burst_actual_ms` can exceed the
+  nominal `--burst-ms` for a large, short burst. Read the achieved span, not the
+  nominal one, when reasoning about how sharp the burst really was.
 - **Ephemeral-port exhaustion.** Every client connection consumes an ephemeral
   port in the `(source_ip, dest_ip:port)` tuple space, which caps near ~28k
   ports for a single source address. A large storm can exhaust the client's own

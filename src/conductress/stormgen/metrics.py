@@ -74,6 +74,21 @@ def totals(events: List[dict], client_count: int) -> Dict[str, float]:
     }
 
 
+def burst_actual_ms(events: List[dict]) -> float:
+    """Wall span the burst actually took: last first-attempt start minus first.
+
+    Uses each client's attempt-index-0 ``t_start``. The nominal ``--burst-ms``
+    is the window the generator *aims* to spread first attempts over; this is
+    what it *achieved*, so an undershoot (the event loop cannot open
+    connections fast enough to hit the nominal rate) is visible in the result.
+    Zero when fewer than two clients started.
+    """
+    first_starts = sorted(e["t_start"] for e in events if e.get("attempt") == 0)
+    if len(first_starts) < 2:
+        return 0.0
+    return (first_starts[-1] - first_starts[0]) * 1000.0
+
+
 def attempt_latency_percentiles(events: List[dict]) -> Dict[str, float]:
     """Percentiles of per-attempt duration (t_end - t_start) in milliseconds."""
     durations = sorted((e["t_end"] - e["t_start"]) * 1000.0 for e in events if e["t_end"] >= e["t_start"])
@@ -173,6 +188,7 @@ def summarize(
     """Assemble every metric into one document (no I/O)."""
     return {
         "totals": totals(events, client_count),
+        "burst_actual_ms": burst_actual_ms(events),
         "outcomes": outcome_counts(events),
         "attempt_latency": attempt_latency_percentiles(events),
         "time_to_quiescence": time_to_quiescence(events, client_count, storm_start=storm_start, stall_end=stall_end),

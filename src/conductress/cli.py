@@ -768,13 +768,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Server stall injector: none or debug-sleep:<seconds> (default: none)",
     )
     storm_parser.add_argument(
+        "--burst-first",
+        action="store_true",
+        help="Legacy ordering: burst first, stall injected --stall-after into the run. "
+        "Default is stall-first (a stall already in progress when clients arrive).",
+    )
+    storm_parser.add_argument(
+        "--burst-after-stall-ms",
+        type=int,
+        default=200,
+        help="Stall-first ordering: start the client burst this many ms after the stall command is issued "
+        "(default: 200)",
+    )
+    storm_parser.add_argument(
         "--stall-after",
         type=float,
         default=5.0,
-        help="Seconds into the run at which the stall is injected (default: 5.0)",
+        help="Burst-first ordering only: seconds into the run at which the stall is injected (default: 5.0)",
     )
     storm_parser.add_argument(
-        "--workers", type=int, default=1, help="Worker processes the clients fan out across (default: 1)"
+        "--workers",
+        type=int,
+        default=0,
+        help="Worker processes the clients fan out across (default: 0 = auto, min(8, cpu_count))",
+    )
+    storm_parser.add_argument(
+        "--prewarm-connections",
+        type=int,
+        default=-1,
+        help="Throwaway connections opened and closed before the measured baseline, to pay a cold server's "
+        "per-connection first-contact cost up front (default: -1 = clients; 0 disables to measure cold-start)",
     )
     storm_parser.add_argument(
         "--bind-addrs",
@@ -1601,8 +1624,11 @@ def handle_queue_add_storm(args: argparse.Namespace) -> int:
             first_command=args.first_command,
             duration_s=args.duration,
             stall=args.stall,
+            burst_first=args.burst_first,
+            burst_after_stall_ms=args.burst_after_stall_ms,
             stall_after_s=args.stall_after,
             workers=args.workers,
+            prewarm_connections=args.prewarm_connections,
             bind_addrs=args.bind_addrs,
             tick_ms=args.tick_ms,
         )
@@ -1616,15 +1642,22 @@ def handle_queue_add_storm(args: argparse.Namespace) -> int:
     if _finish_submission(submission, args):
         return 0
 
+    prewarm_desc = "clients" if args.prewarm_connections < 0 else str(args.prewarm_connections)
+    ordering = (
+        f"burst-first, stall at {args.stall_after:g}s"
+        if args.burst_first
+        else f"stall-first, burst +{args.burst_after_stall_ms}ms after stall"
+    )
     print("Queued connection-storm task (results are their own series, not sweep-comparable):")
     print(f"  source={args.source} specifier={args.specifier}")
-    print(f"  clients={args.clients} burst={args.burst_ms}ms workers={args.workers}")
+    print(f"  clients={args.clients} burst={args.burst_ms}ms workers={args.workers or 'auto'}")
     print(f"  reconnect policy={args.policy} handshake={args.handshake or '-'} first-command={args.first_command!r}")
     print(
         f"  connect-timeout={args.connect_timeout_ms}ms reply-timeout={args.reply_timeout_ms}ms "
         f"duration={args.duration:g}s"
     )
-    print(f"  stall={args.stall} at {args.stall_after:g}s  io-threads={args.io_threads}  tick={args.tick_ms}ms")
+    print(f"  stall={args.stall}  ordering={ordering}  io-threads={args.io_threads}  tick={args.tick_ms}ms")
+    print(f"  prewarm-connections={prewarm_desc}")
     if args.bind_addrs:
         print(f"  bind-addrs: {args.bind_addrs}")
     if args.server_args:

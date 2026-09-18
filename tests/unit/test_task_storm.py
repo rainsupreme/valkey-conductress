@@ -67,17 +67,37 @@ def test_bind_addr_list():
     [
         ({"clients": 0}, "clients"),
         ({"duration_s": 0}, "duration_s"),
-        ({"workers": 0}, "workers"),
+        ({"workers": -1}, "workers"),
+        ({"prewarm_connections": -2}, "prewarm_connections"),
+        ({"burst_after_stall_ms": -1}, "burst_after_stall_ms"),
         ({"tick_ms": 0}, "tick_ms"),
         ({"policy": "bogus"}, "policy"),
         ({"stall": "bogus"}, "stall"),
-        ({"stall_after_s": 5.0, "duration_s": 5.0}, "stall_after_s"),
+        ({"burst_first": True, "stall_after_s": 5.0, "duration_s": 5.0}, "stall_after_s"),
         ({"background_load": "cachecannon"}, "background_load"),
     ],
 )
 def test_validation_rejects_bad_fields(overrides, match):
     with pytest.raises(ValueError, match=match):
         _task(**overrides)
+
+
+def test_workers_zero_is_auto_not_rejected():
+    task = _task(workers=0)
+    assert task.workers == 0  # 0 = auto (min(8, cpu_count)), resolved by the generator
+
+
+def test_stall_after_s_not_validated_in_default_stall_first_mode():
+    # Default ordering is stall-first, so stall_after_s (a burst-first lever)
+    # need not fit inside duration_s.
+    task = _task(stall_after_s=99.0, duration_s=5.0)
+    assert task.burst_first is False
+
+
+def test_prewarm_flag_default_is_none_zero_is_zero():
+    assert _task().prewarm_flag() is None  # -1 sentinel -> generator default (= clients)
+    assert _task(prewarm_connections=0).prewarm_flag() == 0
+    assert _task(prewarm_connections=500).prewarm_flag() == 500
 
 
 def test_queue_round_trip_preserves_every_field(tmp_path):
@@ -97,8 +117,11 @@ def test_queue_round_trip_preserves_every_field(tmp_path):
         first_command="PING",
         duration_s=17.0,
         stall="debug-sleep:3",
+        burst_first=True,
+        burst_after_stall_ms=333,
         stall_after_s=4.0,
         workers=2,
+        prewarm_connections=1500,
         bind_addrs="127.0.0.2,127.0.0.3",
         tick_ms=50,
         io_threads=4,
@@ -121,8 +144,11 @@ def test_queue_round_trip_preserves_every_field(tmp_path):
         "first_command",
         "duration_s",
         "stall",
+        "burst_first",
+        "burst_after_stall_ms",
         "stall_after_s",
         "workers",
+        "prewarm_connections",
         "bind_addrs",
         "tick_ms",
         "io_threads",
@@ -305,11 +331,13 @@ class FakeCommand:
 def _document(recovery=1.5, amplification=2.3, from_start=6.0):
     return {
         "schema_version": 1,
-        "config": {"clients": 30},
+        "config": {"clients": 30, "workers": 4, "prewarm_connections": 30},
         "stall": {"kind": "debug-sleep", "started": 100.0, "ended": 102.0, "stall_end_relative": 2.0},
         "listen_overflow_delta": {"ListenOverflows": 512, "ListenDrops": 512},
+        "prewarm_listen_overflow_delta": {"ListenOverflows": 900, "ListenDrops": 900},
         "metrics": {
             "totals": {"clients": 30, "attempts": 69, "amplification": amplification, "connected_clients": 30},
+            "burst_actual_ms": 175.0,
             "outcomes": {"connected": 30, "connect_timeout": 20, "reply_timeout": 19},
             "attempt_latency": {"p50_ms": 100, "p99_ms": 500, "max_ms": 900},
             "time_to_quiescence": {"from_start": from_start, "from_stall_end": recovery},
@@ -368,6 +396,10 @@ async def test_run_executes_phases_and_records_recovery_as_score(faked):
     assert data["recovery_lower_is_better"] is True
     assert data["amplification"] == pytest.approx(2.3)
     assert data["listen_overflow_delta"] == {"ListenOverflows": 512, "ListenDrops": 512}
+    assert data["prewarm_listen_overflow_delta"] == {"ListenOverflows": 900, "ListenDrops": 900}
+    assert data["burst_actual_ms"] == pytest.approx(175.0)
+    assert data["workers"] == 4  # resolved by the generator (from its config echo)
+    assert data["prewarm_connections"] == 30
     assert data["schema_version"] == 1
     # INFO sampler produced at least one sample from the fake server.
     assert data["info_timeline"] and data["info_timeline"][0]["connected_clients"] == 42
@@ -414,3 +446,19 @@ async def test_generator_command_includes_no_handshake_flag(faked):
     # An empty handshake is passed explicitly so the generator sends none.
     assert "--handshake ''" in command or "--handshake ''" in command.replace('"', "'")
     assert "--stall debug-sleep:2" in command
+
+
+def test_generator_command_default_is_stall_first_with_prewarm(faked):
+    runner = faked()  # defaults: stall-first, prewarm = clients (sentinel -1 -> flag omitted)
+    command = runner._stormgen_command("127.0.0.1", 6379, "/tmp/out.json")
+    assert "--burst-after-stall-ms 200" in command
+    assert "--burst-first" not in command  # stall-first is the default
+    assert "--prewarm-connections" not in command  # -1 sentinel -> generator's own default (= clients)
+    assert "--workers 0" in command  # 0 -> generator auto default
+
+
+def test_generator_command_burst_first_and_explicit_prewarm(faked):
+    runner = faked(burst_first=True, prewarm_connections=0)
+    command = runner._stormgen_command("127.0.0.1", 6379, "/tmp/out.json")
+    assert "--burst-first" in command
+    assert "--prewarm-connections 0" in command

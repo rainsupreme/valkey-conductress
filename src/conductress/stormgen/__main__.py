@@ -8,7 +8,7 @@ Run without the rest of the harness::
 
 Emits one JSON result document (to ``--json`` and/or stdout) with a
 ``schema_version`` field, the reduced metrics, the stall record, and the
-kernel listen-overflow deltas.
+kernel listen-overflow deltas (the measured storm's and the prewarm phase's).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import List, Optional
 
 from . import SCHEMA_VERSION, metrics
 from .policy import parse_policy
-from .runner import StormConfig, StormResult, run_storm
+from .runner import StormConfig, StormResult, default_workers, run_storm
 from .stall import parse_stall
 
 
@@ -70,13 +70,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Server stall injector: none or debug-sleep:<seconds> (default: none)",
     )
     parser.add_argument(
+        "--burst-first",
+        action="store_true",
+        help="Legacy ordering: start the client burst first and inject the stall --stall-after-s into the run. "
+        "Default is stall-first (the realistic case: a stall already in progress when clients arrive).",
+    )
+    parser.add_argument(
+        "--burst-after-stall-ms",
+        type=int,
+        default=200,
+        help="Stall-first ordering: start the client burst this many ms after the stall command is issued "
+        "(default: 200)",
+    )
+    parser.add_argument(
         "--stall-after-s",
         type=float,
         default=1.0,
-        help="Seconds into the run at which the stall is injected (default: 1.0)",
+        help="Burst-first ordering only: seconds into the run at which the stall is injected (default: 1.0)",
     )
     parser.add_argument(
-        "--workers", type=int, default=1, help="Worker processes across which clients fan out (default: 1)"
+        "--workers",
+        type=int,
+        default=0,
+        help=f"Worker processes across which clients fan out (default: min(8, cpu_count) = {default_workers()}; "
+        "a single event loop cannot open connections fast enough for a large burst)",
+    )
+    parser.add_argument(
+        "--prewarm-connections",
+        type=int,
+        default=None,
+        help="Open this many throwaway connections (same handshake) and close them before the measured baseline, "
+        "to pay a cold server's per-connection first-contact cost up front (default: = --clients; 0 disables, "
+        "so the cold-start effect itself can be measured)",
     )
     parser.add_argument(
         "--bind-addr",
@@ -114,8 +139,12 @@ def config_from_args(args: argparse.Namespace) -> StormConfig:
         raise ValueError(f"--clients must be >= 1, got {args.clients}")
     if args.duration_s <= 0:
         raise ValueError(f"--duration-s must be > 0, got {args.duration_s}")
-    if args.workers < 1:
-        raise ValueError(f"--workers must be >= 1, got {args.workers}")
+    if args.workers < 0:
+        raise ValueError(f"--workers must be >= 0 (0 = auto), got {args.workers}")
+    if args.prewarm_connections is not None and args.prewarm_connections < 0:
+        raise ValueError(f"--prewarm-connections must be >= 0, got {args.prewarm_connections}")
+    if args.burst_after_stall_ms < 0:
+        raise ValueError(f"--burst-after-stall-ms must be >= 0, got {args.burst_after_stall_ms}")
     return StormConfig(
         host=args.host,
         port=args.port,
@@ -130,7 +159,10 @@ def config_from_args(args: argparse.Namespace) -> StormConfig:
         first_command=args.first_command,
         workers=args.workers,
         bind_addrs=args.bind_addr,
+        burst_first=args.burst_first,
+        burst_after_stall_ms=args.burst_after_stall_ms,
         stall_after_s=args.stall_after_s,
+        prewarm_connections=args.prewarm_connections,
         bucket_ms=args.bucket_ms,
     )
 
@@ -158,9 +190,12 @@ def build_document(result: StormResult) -> dict:
             "policy": config.policy().describe(),
             "handshake": list(config.handshake),
             "first_command": config.first_command,
-            "workers": config.workers,
+            "workers": config.resolved_workers(),
             "stall": config.stall().describe(),
+            "burst_first": config.burst_first,
+            "burst_after_stall_ms": config.burst_after_stall_ms,
             "stall_after_s": config.stall_after_s,
+            "prewarm_connections": result.prewarm_connections,
             "bucket_ms": config.bucket_ms,
             "bind_addrs": list(config.bind_addrs) if config.bind_addrs else [],
         },
@@ -171,6 +206,7 @@ def build_document(result: StormResult) -> dict:
             "stall_end_relative": result.stall_end_relative(),
         },
         "listen_overflow_delta": result.listen_delta,
+        "prewarm_listen_overflow_delta": result.prewarm_listen_delta,
         "metrics": reduced,
     }
 
