@@ -29,13 +29,25 @@ class Server:
 
     # These are remote paths - they exist on the valkey server
     path_root = Path("~")
-    server_logfile = path_root / "valkey-server.log"
+    # Per-instance working directory (``--dir``); None = legacy single-instance
+    # behaviour. Class-level default so a handle built without __init__ (tests
+    # use Server.__new__) still has the attribute.
+    instance_dir: Optional[Path] = None
 
     # =============================================================================
     # INITIALIZATION AND FACTORY METHODS
     # =============================================================================
 
-    def __init__(self, ip: str, port: int = 6379, username="") -> None:
+    def __init__(self, ip: str, port: int = 6379, username="", instance_dir: Optional[Path] = None) -> None:
+        """Create a handle for one valkey-server process on ``ip``:``port``.
+
+        ``instance_dir`` is the server's working directory (``--dir``). It is
+        required when several instances share one host: replication writes
+        ``temp-<pid>.rdb`` and renames it to ``dump.rdb`` in the working
+        directory, so two instances in the same directory would clobber each
+        other's RDB. ``None`` keeps the legacy behaviour (no ``--dir``, cwd of
+        the launching shell) for the single-instance tasks.
+        """
         self._host = SshHost(ip, username)
         self._binary = BinaryManager(self._host)
         self._profiling = ProfilingManager(self._host)
@@ -43,6 +55,7 @@ class Server:
         self.ip = ip
         self.port = port
         self.username = username
+        self.instance_dir = instance_dir
 
         self.logger = logging.getLogger(self.__class__.__name__ + "." + ip)
 
@@ -85,6 +98,18 @@ class Server:
     @make_args.setter
     def make_args(self, value: str) -> None:
         self._binary.make_args = value
+
+    @property
+    def server_logfile(self) -> Path:
+        """Remote logfile for this instance.
+
+        The default port keeps the historical ``~/valkey-server.log`` name so
+        existing tooling that tails it keeps working; any other port gets its
+        own file so instances sharing a host do not interleave their logs.
+        """
+        if self.port == 6379:
+            return Server.path_root / "valkey-server.log"
+        return Server.path_root / f"valkey-server-{self.port}.log"
 
     @classmethod
     async def with_build(
@@ -526,10 +551,15 @@ class Server:
         if server_args:
             self.args.append(server_args)
 
+        dir_arg = ""
+        if self.instance_dir is not None:
+            await self.run_host_command(f"mkdir -p {self.instance_dir}")
+            dir_arg = f"--dir {self.instance_dir} "
+
         command = (
             f"{cached_binary_path} --port {self.port} "
             f'--save "" --protected-mode no --daemonize yes '
-            f"--logfile {Server.server_logfile} " + " ".join(self.args)
+            f"--logfile {self.server_logfile} " + dir_arg + " ".join(self.args)
         )
 
         # Optionally bind memory to NUMA node for consistent performance
@@ -621,10 +651,10 @@ class Server:
 
         # clean up any rdb files from replication or snapshotting
         # valkey will automatically load "dump.rdb" if it is present in its working dir
-        await self.run_host_command(
-            f"rm -f {Server.path_root}/*.rdb {config.PROJECT_ROOT}/*.rdb",
-            check=False,
-        )
+        rdb_dirs = f"{Server.path_root}/*.rdb {config.PROJECT_ROOT}/*.rdb"
+        if self.instance_dir is not None:
+            rdb_dirs += f" {self.instance_dir}/*.rdb"
+        await self.run_host_command(f"rm -f {rdb_dirs}", check=False)
         # clean up any files created by profiling or other metric collection
         await self._profiling.cleanup()
 
@@ -633,7 +663,7 @@ class Server:
         try:
             # Valkey crash dumps start with this signature
             crash_log, _ = await self.run_host_command(
-                f"grep -n 'CRASHED BY SIGNAL\\|=== VALKEY BUG REPORT' {Server.server_logfile} "
+                f"grep -n 'CRASHED BY SIGNAL\\|=== VALKEY BUG REPORT' {self.server_logfile} "
                 f"| tail -1 | cut -d: -f1",
                 check=False,
             )
@@ -641,10 +671,10 @@ class Server:
             if crash_line:
                 # Grab 10 lines before the crash marker through EOF
                 start = max(1, int(crash_line) - 10)
-                log_tail, _ = await self.run_host_command(f"sed -n '{start},$p' {Server.server_logfile}", check=False)
+                log_tail, _ = await self.run_host_command(f"sed -n '{start},$p' {self.server_logfile}", check=False)
             else:
                 # No crash signature found — grab last 100 lines as fallback
-                log_tail, _ = await self.run_host_command(f"tail -100 {Server.server_logfile}", check=False)
+                log_tail, _ = await self.run_host_command(f"tail -100 {self.server_logfile}", check=False)
             if log_tail.strip():
                 self.logger.error("=== valkey-server crash log ===\n%s", log_tail.strip())
         except Exception:

@@ -646,6 +646,92 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
     )
 
+    # queue add-replica-read
+    rr_parser = queue_sub.add_parser(
+        "add-replica-read",
+        help="Add a replica-read task: reads served by a replica while the primary ingests writes at a fixed rate",
+    )
+    rr_parser.add_argument("--source", default="valkey", help="Repository source name (default: valkey)")
+    rr_parser.add_argument("--specifier", default="unstable", help="Branch, tag, or commit (default: unstable)")
+    rr_parser.add_argument(
+        "--replicas", type=int, default=1, help="Replica count; reads are measured at the first (default: 1)"
+    )
+    rr_parser.add_argument(
+        "--io-threads", type=int, default=8, help="Replica io-threads -- the measured instance (default: 8)"
+    )
+    rr_parser.add_argument(
+        "--primary-io-threads", type=int, default=1, help="Primary io-threads (default: 1; it only ingests writes)"
+    )
+    rr_parser.add_argument(
+        "--write-rate",
+        type=int,
+        default=50_000,
+        help="Fixed write rate at the primary in SET/s, the replication-stream rate (default: 50000)",
+    )
+    rr_parser.add_argument("--write-connections", type=int, default=16, help="Writer connections (default: 16)")
+    rr_parser.add_argument("--write-threads", type=int, default=4, help="Writer generator threads (default: 4)")
+    rr_parser.add_argument("--write-pipelining", type=int, default=1, help="Writer pipeline depth (default: 1)")
+    rr_parser.add_argument(
+        "--sizes",
+        default=str(config.DEFAULT_VAL_SIZE),
+        help=f"Value size in bytes (e.g., 512, 1KB). Default: {config.DEFAULT_VAL_SIZE}",
+    )
+    rr_parser.add_argument("--pipelining", type=int, default=1, help="Reader pipeline depth (default: 1)")
+    rr_parser.add_argument("--connections", type=int, default=400, help="Reader connections (default: 400)")
+    rr_parser.add_argument("--threads", type=int, default=8, help="Reader generator threads (default: 8)")
+    rr_parser.add_argument(
+        "--keyspace",
+        type=int,
+        default=config.PERF_BENCH_KEYSPACE,
+        help=f"Keyspace count, shared by writer and reader (default: {config.PERF_BENCH_KEYSPACE})",
+    )
+    rr_parser.add_argument(
+        "--warmup",
+        default=f"{config.DEFAULT_WARMUP}s",
+        help=f"Reader warmup (e.g., 10s). Default: {config.DEFAULT_WARMUP}s",
+    )
+    rr_parser.add_argument(
+        "--duration",
+        default=f"{config.DEFAULT_DURATION}s",
+        help=f"Reader measured duration (e.g., 30s). Default: {config.DEFAULT_DURATION}s",
+    )
+    rr_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.DEFAULT_REPETITIONS,
+        help=f"Number of repetitions. Default: {config.DEFAULT_REPETITIONS}",
+    )
+    rr_parser.add_argument(
+        "--base-port", type=int, default=6379, help="Primary port; replicas take the following ports (default: 6379)"
+    )
+    rr_parser.add_argument("--server-args", default="", help="Extra raw server arguments for EVERY instance")
+    rr_parser.add_argument("--primary-args", default="", help="Extra raw server arguments for the primary only")
+    rr_parser.add_argument(
+        "--replica-args",
+        default="",
+        help="Extra raw server arguments for replicas only; the natural A/B lever for a replica-side config change",
+    )
+    rr_parser.add_argument(
+        "--sample-interval", type=float, default=1.0, help="INFO sampling cadence in seconds (default: 1.0)"
+    )
+    rr_parser.add_argument(
+        "--info-fields",
+        default="",
+        help="Comma-separated extra INFO fields to sample from every instance (e.g. counters a build under test exposes)",
+    )
+    rr_parser.add_argument(
+        "--cachecannon-binary",
+        default="/home/ec2-user/cachecannon/target/release/cachecannon",
+        help="Path to cachecannon binary (default: /home/ec2-user/cachecannon/target/release/cachecannon)",
+    )
+    rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
+    rr_parser.add_argument("--note", default="", help="Optional note for the task")
+    rr_parser.add_argument(
+        "--make-args",
+        default=config.DEFAULT_MAKE_ARGS,
+        help=f"Build arguments. Default: '{config.DEFAULT_MAKE_ARGS}'",
+    )
+
     for task_parser in (
         add_parser,
         insertion_parser,
@@ -654,6 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
         scenario_parser,
         lat_parser,
         cc_parser,
+        rr_parser,
     ):
         _add_remote_routing_args(task_parser)
 
@@ -1262,6 +1349,99 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
+    """Handle 'queue add-replica-read': submit a replica-read benchmark task."""
+    from conductress.tasks.task_replica_read import ReplicaReadTaskData
+
+    if not validate_source(args.source):
+        valid_sources = config.REPO_NAMES + [config.MANUALLY_UPLOADED]
+        print(f"Error: Invalid source '{args.source}'. Valid: {', '.join(valid_sources)}", file=sys.stderr)
+        return 1
+
+    try:
+        warmup = _parse_human_time(args.warmup, "warmup")
+        duration = _parse_human_time(args.duration, "duration")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        val_size = int(HumanByte.from_human(args.sizes))
+    except ValueError as e:
+        print(f"Error (--sizes): {e}", file=sys.stderr)
+        return 1
+
+    try:
+        validate_cpulist(args.client_cpus)
+    except ValueError as e:
+        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+        return 1
+
+    try:
+        task = ReplicaReadTaskData(
+            source=args.source,
+            specifier=args.specifier,
+            make_args=args.make_args,
+            replicas=args.replicas,
+            note=args.note,
+            requirements={},
+            val_size=val_size,
+            pipelining=args.pipelining,
+            connections=args.connections,
+            threads=args.threads,
+            keyspace_count=args.keyspace,
+            warmup=warmup,
+            duration=duration,
+            repetitions=args.repetitions,
+            write_rate=args.write_rate,
+            write_connections=args.write_connections,
+            write_threads=args.write_threads,
+            write_pipelining=args.write_pipelining,
+            io_threads=args.io_threads,
+            primary_io_threads=args.primary_io_threads,
+            base_port=args.base_port,
+            server_args=args.server_args,
+            primary_args=args.primary_args,
+            replica_args=args.replica_args,
+            sample_interval=args.sample_interval,
+            info_fields=args.info_fields,
+            cachecannon_binary=args.cachecannon_binary,
+            benchmark_cpu_override=args.client_cpus,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    queue = _TaskSubmitter(args)
+    queue.submit_task(task)
+    submission = queue.finish()
+    if _finish_submission(submission, args):
+        return 0
+
+    print("Queued replica-read task:")
+    print(f"  source={args.source} specifier={args.specifier}")
+    print(
+        f"  topology: primary :{args.base_port} (io-threads={args.primary_io_threads}) + {args.replicas} replica(s) (io-threads={args.io_threads})"
+    )
+    print(
+        f"  writer: {args.write_rate} SET/s, {args.write_connections}c P{args.write_pipelining} {args.write_threads}t at the primary"
+    )
+    print(f"  reader: GET size={val_size} P{args.pipelining} {args.connections}c {args.threads}t at the first replica")
+    print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions} keyspace={args.keyspace}")
+    for label, value in (
+        ("server-args", args.server_args),
+        ("primary-args", args.primary_args),
+        ("replica-args", args.replica_args),
+    ):
+        if value:
+            print(f"  {label}: {value}")
+    if args.info_fields:
+        print(f"  info-fields: {args.info_fields}")
+    if args.note:
+        print(f"  note: {args.note}")
+    return 0
+
+
 def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
     """Per-item user data bytes for a memory workload at a custom value/member size.
 
@@ -1426,6 +1606,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_add_latency(args)
         if args.queue_command == "add-cachecannon":
             return handle_queue_add_cachecannon(args)
+        if args.queue_command == "add-replica-read":
+            return handle_queue_add_replica_read(args)
         if args.queue_command == "remove":
             return handle_queue_remove(args)
         if args.queue_command == "clear":
