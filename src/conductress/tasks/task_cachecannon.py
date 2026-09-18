@@ -10,6 +10,7 @@ Config: TOML file generated per-run in the result directory.
 """
 
 import datetime
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ from conductress.config import (
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
     ServerInfo,
+    get_sweep_engine,
+    should_profile_internals,
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
@@ -68,6 +71,72 @@ def _should_stop_adaptive(per_run_rps: list, rep: int, min_reps: int, target_cv:
     return should_stop_adaptive(per_run_rps, rep, min_reps, target_cv)
 
 
+def parse_info_sections(spec: str) -> list[str]:
+    """Normalize a comma-separated INFO section list ('stats, io_uring' -> ['stats','io_uring']).
+
+    Section names are passed to `INFO <section>`; only [a-z0-9_] is accepted so a
+    task payload cannot smuggle anything else into the command line.
+    """
+    sections: list[str] = []
+    for raw in (spec or "").split(","):
+        name = raw.strip().lower()
+        if not name:
+            continue
+        if not all(ch.isalnum() or ch == "_" for ch in name):
+            raise ValueError(f"invalid INFO section name: {raw!r}")
+        if name not in sections:
+            sections.append(name)
+    return sections
+
+
+def is_scored_sample_line(line: str) -> bool:
+    """True for a cachecannon per-second NDJSON sample, emitted only during the scored window."""
+    stripped = line.strip()
+    if not stripped.startswith("{") or '"sample"' not in stripped:
+        return False
+    try:
+        doc = json.loads(stripped)
+    except ValueError:
+        return False
+    return isinstance(doc, dict) and doc.get("type") == "sample"
+
+
+async def snapshot_info(server: "Server", sections: list[str]) -> dict[str, dict[str, str]]:
+    """Fetch `INFO <section>` for each section; a failing section is recorded as {}."""
+    out: dict[str, dict[str, str]] = {}
+    for section in sections:
+        try:
+            out[section] = await server.info(section)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("INFO %s snapshot failed: %s", section, e)
+            out[section] = {}
+    return out
+
+
+def info_window_deltas(t0: dict[str, dict[str, str]], t1: dict[str, dict[str, str]], window_secs: float) -> dict:
+    """Numeric field deltas (t1 - t0) per section over the scored window.
+
+    Non-numeric fields are dropped (they are configuration, not counters);
+    numeric fields that did not change are kept as 0 so consumers can tell
+    "counter exists and was idle" from "counter absent on this build".
+    """
+    deltas: dict[str, dict[str, float]] = {}
+    for section, fields1 in t1.items():
+        fields0 = t0.get(section, {})
+        sec: dict[str, float] = {}
+        for key, v1 in fields1.items():
+            v0 = fields0.get(key)
+            if v0 is None:
+                continue
+            try:
+                d = float(v1) - float(v0)
+            except ValueError:
+                continue
+            sec[key] = int(d) if d.is_integer() else d
+        deltas[section] = sec
+    return {"window_secs": round(window_secs, 3), "sections": deltas}
+
+
 @dataclass
 class CachecannonTaskData(BaseTaskData):
     """Data class for cachecannon benchmark task.
@@ -96,6 +165,9 @@ class CachecannonTaskData(BaseTaskData):
     max_reps: int = 0  # 0 = fixed reps; >0 = adaptive mode upper limit
     target_cv: float = 0.0  # adaptive: stop early when 95% CI half-width (% of mean) <= this; 0 = disabled
     sweep_commit: str = ""  # non-empty marks this as a sweep task
+    rate_limit: int = 0  # fixed total req/s (open loop); 0 = closed loop (unlimited)
+    perf_stat_enabled: bool = False  # perf stat per-thread counters every rep; CPU flamegraph on the last rep
+    info_sections: str = ""  # comma-separated INFO sections to snapshot at the scored-window edges
 
     def __post_init__(self):
         super().__post_init__()
@@ -113,6 +185,9 @@ class CachecannonTaskData(BaseTaskData):
             )
         if self.target_cv < 0:
             raise ValueError(f"target_cv must be >= 0, got {self.target_cv}")
+        if self.rate_limit < 0:
+            raise ValueError(f"rate_limit must be >= 0, got {self.rate_limit}")
+        self.info_sections = ",".join(parse_info_sections(self.info_sections))
         if self.target_cv > 0 and self.max_reps <= self.repetitions:
             raise ValueError(
                 f"target_cv={self.target_cv} requires max_reps > repetitions "
@@ -128,9 +203,10 @@ class CachecannonTaskData(BaseTaskData):
         return label
 
     def short_description(self) -> str:
+        rate = f", {self.rate_limit} req/s" if self.rate_limit > 0 else ""
         return (
             f"cachecannon {self.workload_label()}, {HumanByte.to_human(self.val_size)} values, "
-            f"P{self.pipelining}, {self.connections}c, {self.threads}t, "
+            f"P{self.pipelining}, {self.connections}c, {self.threads}t{rate}, "
             f"{HumanTime.to_human(self.duration)} x{self.repetitions}"
         )
 
@@ -160,6 +236,9 @@ class CachecannonTaskData(BaseTaskData):
             set_ratio=self.set_ratio,
             distribution=self.distribution,
             note=self.note,
+            rate_limit=self.rate_limit,
+            perf_stat_enabled=self.perf_stat_enabled,
+            info_sections=parse_info_sections(self.info_sections),
         )
 
 
@@ -197,6 +276,9 @@ class CachecannonTaskRunner(BaseTaskRunner):
         distribution: str = "uniform",
         max_reps: int = 0,
         target_cv: float = 0.0,
+        rate_limit: int = 0,
+        perf_stat_enabled: bool = False,
+        info_sections: Optional[list[str]] = None,
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
@@ -224,6 +306,15 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.set_ratio = set_ratio
         self.distribution = distribution
         self.note = note
+        self.rate_limit = rate_limit
+        self.perf_stat_enabled = perf_stat_enabled
+        self.info_sections = list(info_sections or [])
+        # CPU flamegraph stacks expose the server binary's symbols; skipped for
+        # engines that opt out (same gate as the memtier mixed task).
+        self._profile_internals = should_profile_internals(get_sweep_engine(source))
+        self._cpu_stacks_main: list[list] = []
+        self._cpu_stacks_io: list[list] = []
+        self._info_deltas_per_rep: list[dict] = []
 
         self.commit_hash = ""
         self._client_cores_busy_per_rep: list[float] = []
@@ -235,9 +326,10 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.workload = workload
         effective_reps = max_reps if max_reps > 0 else repetitions
         rep_label = f"x{repetitions}" if effective_reps == repetitions else f"x{repetitions}-{effective_reps}"
+        rate_label = f", {rate_limit} req/s" if rate_limit > 0 else ""
         self.title = (
             f"cachecannon {workload}, {source}:{specifier}, io-threads={io_threads}, "
-            f"P{pipelining}, {connections}c, {threads}t, "
+            f"P{pipelining}, {connections}c, {threads}t{rate_label}, "
             f"{HumanTime.to_human(duration)} {rep_label}"
         )
 
@@ -314,6 +406,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         server = None
         per_run_rps: list[float] = []
         all_results: list[dict] = []
+        perf_counters: Optional[dict] = None
 
         try:
             effective_reps = self.max_reps if self.max_reps > 0 else self.repetitions
@@ -370,6 +463,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     test=self.test,
                     set_ratio=self.set_ratio,
                     distribution=self.distribution,
+                    rate_limit=self.rate_limit,
                 )
 
                 # Write TOML to result directory
@@ -384,35 +478,126 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 self.status.state = "running"
                 self.file_protocol.write_status(self.status)
 
-                # Launch cachecannon -- it handles its own warmup internally
-                command = RealtimeCommand(command_string)
-                command.start()
-
-                # Collect output (cachecannon runs to completion).
-                # CPU telemetry: sample_process_tree_cpu returns None once the
-                # root exits, so refresh the last-known sample each poll cycle.
+                # Profiling: perf stat every rep and a CPU flamegraph on the last
+                # scheduled rep, plus optional INFO snapshots at both edges of the
+                # scored window. cachecannon runs prefill + warmup + scored window
+                # in one process and only emits per-second "sample" lines during
+                # the scored window, so the first sample line (not a fixed sleep,
+                # which would start during a 3M-key prefill) arms the collectors;
+                # they are read at process exit. The edge is placed within one poll
+                # period (1 s) of the true boundary and the actual window length is
+                # recorded with the deltas. Same arm/stop/collect discipline as the
+                # memtier mixed task: each collector is stopped exactly once, in the
+                # finally block if need be.
+                is_last_rep = rep == effective_reps - 1
+                perf_armed = False
+                perf_stopped = False
+                cpu_profile_armed = False
+                window_started = False
+                info_t0: Optional[dict[str, dict[str, str]]] = None
+                info_t0_time: Optional[float] = None
+                info_t1: Optional[dict[str, dict[str, str]]] = None
+                info_t1_time: Optional[float] = None
                 output_lines: list[str] = []
-                client_cpu_t0 = time.monotonic()
-                client_cpu_s0 = sample_process_tree_cpu(command.p.pid) if command.p else None
-                client_cpu_t1: Optional[float] = None
-                client_cpu_s1: Optional[float] = None
-                while command.is_running():
+                try:
+                    # Launch cachecannon -- it handles its own prefill and warmup
+                    command = RealtimeCommand(command_string)
+                    command.start()
+
+                    # Collect output (cachecannon runs to completion).
+                    # CPU telemetry: sample_process_tree_cpu returns None once the
+                    # root exits, so refresh the last-known sample each poll cycle.
+                    client_cpu_t0 = time.monotonic()
+                    client_cpu_s0 = sample_process_tree_cpu(command.p.pid) if command.p else None
+                    client_cpu_t1: Optional[float] = None
+                    client_cpu_s1: Optional[float] = None
+                    while command.is_running():
+                        line, _ = command.poll_output()
+                        while line is not None and line != "":
+                            output_lines.append(line)
+                            if not window_started and is_scored_sample_line(line):
+                                window_started = True
+                            line, _ = command.poll_output()
+                        if command.p:
+                            sample = sample_process_tree_cpu(command.p.pid)
+                            if sample is not None:
+                                client_cpu_s1 = sample
+                                client_cpu_t1 = time.monotonic()
+                        if window_started and not perf_armed and not cpu_profile_armed and info_t0 is None:
+                            # First poll after the scored window opened: arm everything.
+                            if self.perf_stat_enabled:
+                                await server.perf_stat_start()
+                                perf_armed = True
+                            if is_last_rep and self.perf_stat_enabled and self._profile_internals:
+                                # Leave a margin so the record ends before the load does.
+                                server.cpu_profile_start(max(1, self.duration - 2))
+                                cpu_profile_armed = True
+                            if self.info_sections:
+                                info_t0 = await snapshot_info(server, self.info_sections)
+                                info_t0_time = time.monotonic()
+                            if not (self.perf_stat_enabled or self.info_sections):
+                                window_started = False  # nothing to arm; stop re-checking
+                        time.sleep(1)
+
+                    # INFO snapshot at the end of the scored window (server still up).
+                    if self.info_sections and info_t0 is not None:
+                        info_t1 = await snapshot_info(server, self.info_sections)
+                        info_t1_time = time.monotonic()
+
+                    # Perf stat: stop counting (scored phase is over).
+                    if perf_armed:
+                        await server.perf_stat_stop()
+                        perf_stopped = True
+
+                    # Drain remaining output
                     line, _ = command.poll_output()
                     while line is not None and line != "":
                         output_lines.append(line)
                         line, _ = command.poll_output()
-                    if command.p:
-                        sample = sample_process_tree_cpu(command.p.pid)
-                        if sample is not None:
-                            client_cpu_s1 = sample
-                            client_cpu_t1 = time.monotonic()
-                    time.sleep(1)
 
-                # Drain remaining output
-                line, _ = command.poll_output()
-                while line is not None and line != "":
-                    output_lines.append(line)
-                    line, _ = command.poll_output()
+                    # Collect perf stat counters per rep and sum across reps.
+                    if perf_armed:
+                        server.perf_stat_wait()
+                        rep_counters = await server.perf_stat_report(self.file_protocol.get_result_dir())
+                        if rep_counters:
+                            if perf_counters is None:
+                                perf_counters = rep_counters
+                            else:
+                                for bucket, events in rep_counters.items():
+                                    acc = perf_counters.setdefault(bucket, {})
+                                    for k, v in events.items():
+                                        acc[k] = acc.get(k, 0) + v
+                        perf_armed = False  # stopped, joined, and reported
+
+                    # Collect CPU profile stacks on the last rep.
+                    if cpu_profile_armed:
+                        try:
+                            cpu_main, cpu_io = await server.cpu_profile_collect()
+                            if cpu_main:
+                                self._cpu_stacks_main = cpu_main
+                                self._cpu_stacks_io = cpu_io
+                        except Exception as e:  # pylint: disable=broad-exception-caught
+                            self.logger.warning("CPU profile collection failed: %s", e)
+                        cpu_profile_armed = False  # fully consumed
+                finally:
+                    if perf_armed:
+                        if not perf_stopped:
+                            try:
+                                await server.perf_stat_stop()
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                pass
+                        try:
+                            server.perf_stat_wait()
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            pass
+                    if cpu_profile_armed:
+                        try:
+                            server.cpu_profile_cancel()
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            pass
+
+                if info_t0 is not None and info_t1 is not None and info_t0_time and info_t1_time:
+                    self._info_deltas_per_rep.append(info_window_deltas(info_t0, info_t1, info_t1_time - info_t0_time))
 
                 # Check exit code (is_running() returned False, so p.poll() has run)
                 exit_code = command.p.returncode if command.p else None
@@ -484,7 +669,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             # Record aggregated results
             if server is None:
                 raise RuntimeError("No server available for recording results")
-            await self._record_result(server, per_run_rps, all_results, toml_content)
+            await self._record_result(server, per_run_rps, all_results, toml_content, perf_counters)
 
             # Final status
             self.status.state = "completed"
@@ -503,6 +688,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         per_run_rps: list[float],
         all_results: list[dict],
         toml_content: str,
+        perf_counters: Optional[dict] = None,
     ):
         """Record the final benchmark result."""
         completion_time = datetime.datetime.now()
@@ -530,6 +716,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             "keyspace_count": self.keyspace_count,
             "set_ratio": self.set_ratio,
             "distribution": self.distribution,
+            "rate_limit": self.rate_limit,
             "cachecannon_binary": self.cachecannon_binary,
             "toml_config": toml_content,
             "lscpu": lscpu_output,
@@ -566,6 +753,17 @@ class CachecannonTaskRunner(BaseTaskRunner):
             detailed_data["client_cpu"] = summarize_client_cpu(
                 self._client_cores_busy_per_rep, self._client_allocated_cores
             )
+
+        # Profiling (opt-in): summed per-thread hardware counters, flamegraph
+        # stacks from the last rep, and INFO deltas over each scored window.
+        if perf_counters:
+            detailed_data["perf_counters"] = perf_counters
+        if self._cpu_stacks_main:
+            detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
+            detailed_data["cpu_stacks_io"] = self._cpu_stacks_io
+        if self._info_deltas_per_rep:
+            detailed_data["info_sections"] = self.info_sections
+            detailed_data["info_deltas_per_rep"] = self._info_deltas_per_rep
 
         results = BenchmarkResults(
             method=f"cachecannon-{self.workload.replace(' ', '-')}",

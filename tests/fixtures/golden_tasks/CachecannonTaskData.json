@@ -25,5 +25,8 @@
   "distribution": "uniform",
   "max_reps": 0,
   "target_cv": 0.0,
-  "sweep_commit": ""
+  "sweep_commit": "",
+  "rate_limit": 0,
+  "perf_stat_enabled": false,
+  "info_sections": ""
 }

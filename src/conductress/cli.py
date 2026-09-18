@@ -641,6 +641,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expert: explicit cpulist override for cachecannon client",
     )
     _add_note_and_build_args(cc_parser)
+    cc_parser.add_argument(
+        "--rate",
+        type=int,
+        default=0,
+        help="Fixed total request rate in req/s across all connections (open loop). "
+        "Default 0 = closed loop (each connection sends as fast as replies return)",
+    )
+    cc_parser.add_argument(
+        "--perf-stat",
+        action="store_true",
+        help="Collect perf stat hardware counters per thread (main vs I/O threads) on every rep "
+        "and a CPU flamegraph on the last rep",
+    )
+    cc_parser.add_argument(
+        "--info-sections",
+        default="",
+        help="Comma-separated INFO sections (e.g. 'stats,io_uring') to snapshot at the start and "
+        "end of each scored window; numeric field deltas are stored in the result",
+    )
 
     # queue add-replica-read
     rr_parser = queue_sub.add_parser(
@@ -1234,6 +1253,16 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
     if not 0 <= args.set_ratio <= 100:
         print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
         return 1
+    if args.rate < 0:
+        print(f"Error: --rate must be >= 0 (0 = closed loop), got {args.rate}", file=sys.stderr)
+        return 1
+    try:
+        from conductress.tasks.task_cachecannon import parse_info_sections
+
+        parse_info_sections(args.info_sections)
+    except ValueError as e:
+        print(f"Error (--info-sections): {e}", file=sys.stderr)
+        return 1
 
     queue = _TaskSubmitter(args)
     task = CachecannonTaskData(
@@ -1259,6 +1288,9 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         benchmark_cpu_override=args.client_cpus,
         set_ratio=args.set_ratio,
         distribution=args.distribution,
+        rate_limit=args.rate,
+        perf_stat_enabled=args.perf_stat,
+        info_sections=args.info_sections,
     )
     queue.submit_task(task)
     submission = queue.finish()
@@ -1267,6 +1299,10 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
 
     print(f"Queued cachecannon task (NOT sweep-comparable):")
     print(f"  source={args.source} specifier={args.specifier}")
+    if args.rate > 0:
+        print(f"  rate={args.rate} req/s (open loop)")
+    if args.perf_stat or args.info_sections:
+        print(f"  perf-stat={'on' if args.perf_stat else 'off'} info-sections={args.info_sections or '-'}")
     if args.set_ratio > 0:
         print(
             f"  workload=mixed {args.set_ratio}%SET/{100 - args.set_ratio}%GET size={val_size} pipeline={args.pipelining}"

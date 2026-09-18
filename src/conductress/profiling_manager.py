@@ -258,6 +258,7 @@ class ProfilingManager:
     PERF_EVENTS_COMMON = [
         "instructions",
         "cycles",
+        "context-switches",  # software event: no PMU slot, works unprivileged
         "L1-icache-load-misses",
         "L1-dcache-load-misses",
         "branch-misses",
