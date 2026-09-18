@@ -171,7 +171,10 @@ class FakeGroup:
     async def stop_all_servers(self):
         FakeGroup.events.append("stop-all")
 
-    async def sample(self, extra_fields=None, cpu=True):  # pylint: disable=unused-argument
+    pins: list = []  # pin_cpus seen by sample(), per call
+
+    async def sample(self, extra_fields=None, cpu=True, pin_cpus=""):  # pylint: disable=unused-argument
+        FakeGroup.pins.append(pin_cpus)
         """Cumulative counters advancing one second per call; replica main spins, cores idle."""
         if self._t0 is None:
             self._t0 = time.monotonic()
@@ -249,6 +252,7 @@ class FakeCommand:
     results = {}  # role -> NDJSON line, set per test
     running_polls = {"preload": 1, "writer": 1, "reader": 8}
     launched: list = []
+    commands: list = []  # full command strings, in launch order
 
     def __init__(self, command: str):
         self.command = command
@@ -259,6 +263,7 @@ class FakeCommand:
 
     def start(self):
         FakeCommand.launched.append(self.role)
+        FakeCommand.commands.append(self.command)
 
     def is_running(self):
         self._polls += 1
@@ -285,6 +290,11 @@ def faked(monkeypatch, tmp_path):
     FakeLocalServer.allocator = FakeAllocator()
     FakeLocalServer.commands = []
     FakeCommand.launched = []
+    FakeCommand.commands = []
+    FakeGroup.pins = []
+    pinned: list = []
+    monkeypatch.setattr(module, "current_affinity_cpulist", lambda: "0-191")
+    monkeypatch.setattr(module, "pin_current_process", pinned.append)
     FakeCommand.results = {
         "preload": _cc_result(50_000),
         "writer": _cc_result(19_800, hit_pct=0.0, command="set"),
@@ -306,6 +316,7 @@ def faked(monkeypatch, tmp_path):
         runner.file_protocol.write_results = MagicMock()
         return runner
 
+    make_runner.pinned = pinned  # every pin_current_process() call, in order
     return make_runner
 
 
@@ -327,9 +338,15 @@ async def test_run_executes_phases_in_order_and_records_once(faked):
     # One TOML per generator per rep, numbered from 1.
     names = sorted(p.name for p in runner.file_protocol.work_dir.glob("*.toml"))
     assert names == sorted(f"{r}_rep{n}.toml" for r in ("preload", "writer", "reader") for n in (1, 2))
-    # Generator CPUs allocated once, both released at the end.
+    # Generator and management CPUs allocated once, all released at the end.
     assert sorted(FakeLocalServer.allocator.released) == sorted(FakeLocalServer.allocator.allocated)
-    assert len(FakeLocalServer.allocator.released) == 2
+    assert len(FakeLocalServer.allocator.released) == 3
+    # The runner pinned itself to the management cores for the whole task and restored its mask at the end;
+    # the generators were launched under the ORIGINAL mask so they did not inherit the pin.
+    runner_cpus = ",".join(map(str, FakeLocalServer.allocator.allocated[f"{runner.task_name}_runner"]))
+    assert faked.pinned == [runner_cpus, "0-191"]
+    assert all(cmd.startswith("taskset -c 0-191 ") for cmd in FakeCommand.commands)
+    assert set(FakeGroup.pins) == {runner_cpus}
     # Recorded exactly once, with both reps and the reader's exact throughput as the score.
     runner.file_protocol.write_results.assert_called_once()
     results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
@@ -350,7 +367,8 @@ async def test_run_stops_servers_and_releases_generators_when_a_rep_fails(faked)
         await runner.run()
 
     assert FakeGroup.events[-1] == "stop-all"
-    assert len(FakeLocalServer.allocator.released) == 2
+    assert len(FakeLocalServer.allocator.released) == 3
+    assert faked.pinned[-1] == "0-191"  # mask restored even on failure
     assert FakeCommand.launched == ["preload"]  # never reached the measure phase
     runner.file_protocol.write_results.assert_not_called()
 
@@ -361,8 +379,9 @@ async def test_run_with_client_cpu_override_skips_the_allocator(faked):
 
     await runner.run()
 
-    assert FakeLocalServer.allocator.allocated == {}
-    assert FakeLocalServer.allocator.released == []
+    # Generators take the override; the runner still gets (and pins to) management cores.
+    assert list(FakeLocalServer.allocator.allocated) == [f"{runner.task_name}_runner"]
+    assert FakeLocalServer.allocator.released == [f"{runner.task_name}_runner"]
     results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
     assert 'cpu_list = "40,41"' in results.data["reader_toml"]
     # An override is still a pinning: the CPU map is complete, so the foreign check runs.
@@ -428,12 +447,18 @@ async def test_judge_passes_replica_identity_and_placement_into_the_verdict(fake
         writer_toml="w",
     )
 
-    row = runner._judge(group, 1, _Placement(reader_cpus="20,21", writer_cpus="30"), m)
+    row = runner._judge(group, 1, _Placement(reader_cpus="20,21", writer_cpus="30", runner_cpus="190,191"), m)
 
     parties = captured["parties"]
     assert parties.replica == cs.ServerIdentity(6380, REPLICA_PID)
     assert parties.primary == cs.ServerIdentity(6379, PRIMARY_PID)
-    assert parties.allocated_cpus == {"primary": [0], "replica": [1, 2], "reader": [20, 21], "writer": [30]}
+    assert parties.allocated_cpus == {
+        "primary": [0],
+        "replica": [1, 2],
+        "reader": [20, 21],
+        "writer": [30],
+        "runner": [190, 191],
+    }
     assert captured["window_start"] == 1007.0  # reader start + warmup
     assert row["lag"]["max_bytes"] == 200 and row["bottleneck"]["verdict"] == cs.VERDICT_SERVER
     # Stored samples keep the INFO series but drop the raw cumulative counters.
@@ -502,7 +527,7 @@ async def test_sample_loop_survives_a_failed_sample(faked, monkeypatch):
     calls = {"n": 0}
     good_sample = group.sample
 
-    async def flaky(extra_fields=None, cpu=True):
+    async def flaky(extra_fields=None, cpu=True, pin_cpus=""):  # pylint: disable=unused-argument
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("ssh hiccup")

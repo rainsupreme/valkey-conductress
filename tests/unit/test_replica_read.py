@@ -333,3 +333,12 @@ def test_cli_add_replica_read_submits_a_single_host_task(mock_queue_cls):
     assert required_server_count(task) == 1
     assert len(task.topology.replicas) == 2
     assert task.topology.host_count() == 1
+
+
+def test_format_cpulist_collapses_runs():
+    from conductress.tasks.task_replica_read import format_cpulist
+
+    assert format_cpulist([]) == ""
+    assert format_cpulist([3]) == "3"
+    assert format_cpulist([0, 1, 2, 5, 7, 8]) == "0-2,5,7-8"
+    assert format_cpulist(list(range(192))) == "0-191"

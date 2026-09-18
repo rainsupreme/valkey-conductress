@@ -324,3 +324,28 @@ def test_spec_round_trips_through_dict_with_hosts_and_slots():
     assert TopologySpec.from_dict(spec) is spec
     with pytest.raises(ValueError, match="instances"):
         TopologySpec.from_dict({"nope": 1})
+
+
+@pytest.mark.asyncio
+async def test_sample_runs_the_remote_shell_under_taskset_when_pinned(fake_server):
+    """The sampler shell runs under sshd, so its pin has to be explicit in the command."""
+    captured = {}
+
+    async def run_host_command(command, check=True):  # pylint: disable=unused-argument
+        captured["command"] = command
+        return ("", "")
+
+    group = TopologyGroup(HOST, TopologySpec.standalone(1), "valkey", "unstable")
+    with patch("conductress.topology.asyncio.sleep"):
+        await group.start()
+    group.primary.run_host_command = run_host_command
+
+    await group.sample(cpu=False)
+    assert not captured["command"].startswith("taskset")
+    await group.sample(cpu=False, pin_cpus="190,191")
+    assert captured["command"].startswith("taskset -c 190,191 sh -c ")
+    # The inner command survives quoting intact (single quotes from the separator echo included).
+    import shlex
+
+    inner = shlex.split(captured["command"])[-1]
+    assert "info replication stats" in inner and "=== conductress-instance 6379" in inner

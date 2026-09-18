@@ -42,6 +42,8 @@ follow-up (see topology.py).
 import asyncio
 import datetime
 import logging
+import os
+import subprocess
 import time
 from dataclasses import dataclass
 from statistics import mean, stdev
@@ -78,6 +80,32 @@ WRITE_RATE_TOLERANCE = 0.10
 PRELOAD_DURATION_SECONDS = 1
 # Reader must hit: every key was written to the primary and replicated.
 READER_MIN_HIT_RATE_PCT = 99.0
+# Cores the runner process confines itself to while a task runs. Its steady
+# work (log and status writes, the per-second sampler) measured ~0.35 of a
+# core on a 192-CPU runner and otherwise lands on an unallocated core, where
+# the bottleneck verdict correctly reports it as foreign interference.
+RUNNER_MANAGEMENT_CPUS = 2
+
+
+def current_affinity_cpulist() -> str:
+    """This process's CPU mask as a compact cpulist (e.g. ``0-191``)."""
+    return format_cpulist(sorted(os.sched_getaffinity(0)))
+
+
+def pin_current_process(cpulist: str) -> None:
+    """Confine every thread of this process to ``cpulist`` (``taskset -a``)."""
+    subprocess.run(["taskset", "-acp", cpulist, str(os.getpid())], check=True, capture_output=True)
+
+
+def format_cpulist(cpus: list) -> str:
+    """``[0, 1, 2, 5]`` -> ``"0-2,5"``."""
+    ranges: list = []
+    for cpu in cpus:
+        if ranges and cpu == ranges[-1][1] + 1:
+            ranges[-1][1] = cpu
+        else:
+            ranges.append([cpu, cpu])
+    return ",".join(f"{a}-{b}" if a != b else str(a) for a, b in ranges)
 
 
 def _io_threads_of(inst) -> int:
@@ -177,10 +205,20 @@ class ReplicaReadTaskData(BaseTaskData):
 
 @dataclass(frozen=True)
 class _Placement:
-    """Where the two generators run (cpulists; empty means unpinned)."""
+    """Where the generators and the runner itself run (cpulists; empty means unpinned).
+
+    ``runner_cpus`` are the management cores this process (its log/status
+    writes and the per-second sampler) is confined to for the task's duration,
+    so the bottleneck verdict can count them as claimed rather than foreign.
+    ``launch_cpus`` is the mask this process had before pinning; generators are
+    launched under it because a child inherits its parent's mask at fork and
+    must not be dragged onto the management cores.
+    """
 
     reader_cpus: str
     writer_cpus: str
+    runner_cpus: str = ""
+    launch_cpus: str = ""
 
 
 @dataclass(frozen=True)
@@ -222,6 +260,9 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self._client: Optional[Server] = None
         self._reader_tag: Optional[AllocationTag] = None
         self._writer_tag: Optional[AllocationTag] = None
+        # Management cores for this process; ``_launch_cpus`` is the mask to restore.
+        self._runner_tag: Optional[AllocationTag] = None
+        self._launch_cpus: str = ""
         self.title = (
             f"replica-read, {task.source}:{task.specifier}, {task.replica_count} replica(s), "
             f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
@@ -236,15 +277,19 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
     # ------------------------------------------------------------------ CPU placement
 
     def _allocate_client_cpus(self, client: Server, purpose: str, count: int) -> Optional[AllocationTag]:
-        """Allocate ``count`` CPUs for a generator, away from every server instance."""
+        """Allocate ``count`` CPUs for a generator, away from every server instance (None under --client-cpus)."""
         if self.task.benchmark_cpu_override:
             return None
+        return self._allocate(client, purpose, count)
+
+    def _allocate(self, client: Server, purpose: str, count: int) -> AllocationTag:
+        """Allocate ``count`` client-side CPUs tagged ``purpose``, away from every server instance."""
         server_tags = [
             AllocationTag(task_id=f"server_{self.host.ip}_{i.port}", purpose="server") for i in self.spec.instances
         ]
         tag = AllocationTag(task_id=f"{self.task_name}_{purpose}", purpose="benchmark")
         cpus = client.allocate_client_cpus(tag, count, avoid_tags=server_tags)
-        self.logger.info("Allocated CPUs %s for %s generator", cpus, purpose)
+        self.logger.info("Allocated CPUs %s for %s", cpus, purpose)
         return tag
 
     def _cpu_list(self, client: Server, tag: Optional[AllocationTag]) -> str:
@@ -261,7 +306,8 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         return str(path)
 
     def _launch(self, toml_path: str) -> RealtimeCommand:
-        command = RealtimeCommand(f"{self.task.cachecannon_binary} {toml_path}")
+        prefix = f"taskset -c {self._launch_cpus} " if self._launch_cpus else ""
+        command = RealtimeCommand(f"{prefix}{self.task.cachecannon_binary} {toml_path}")
         command.start()
         return command
 
@@ -340,25 +386,40 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self.commit_hash = group.primary.get_build_hash() or ""
 
     async def _place_generators(self) -> "_Placement":
-        """Allocate generator CPUs once (first call) and return their cpulists.
+        """Allocate generator and management CPUs once (first call) and return their cpulists.
 
         The allocation outlives the per-rep topology so that every rep's
         generators sit on the same cores; ``_release_generators`` undoes it.
+        The runner process pins itself to the management cores for the whole
+        task: its own work (log and status writes, the per-second sampler)
+        otherwise lands on arbitrary cores and reads as foreign interference
+        in the bottleneck verdict.
         """
         if self._client is None:
             self._client = Server("127.0.0.1")
             await self._client.ensure_host_cpu_allocation()
             self._reader_tag = self._allocate_client_cpus(self._client, "reader", self.task.threads)
             self._writer_tag = self._allocate_client_cpus(self._client, "writer", self.task.write_threads)
+            self._runner_tag = self._allocate(self._client, "runner", RUNNER_MANAGEMENT_CPUS)
+            runner_cpus = self._client.allocated_cpu_list(self._runner_tag) if self._runner_tag else ""
+            if runner_cpus:
+                self._launch_cpus = current_affinity_cpulist()
+                pin_current_process(runner_cpus)
+                self.logger.info("Pinned runner to management CPUs %s (was %s)", runner_cpus, self._launch_cpus)
         return _Placement(
             reader_cpus=self._cpu_list(self._client, self._reader_tag),
             writer_cpus=self._cpu_list(self._client, self._writer_tag),
+            runner_cpus=self._client.allocated_cpu_list(self._runner_tag) if self._runner_tag else "",
+            launch_cpus=self._launch_cpus,
         )
 
     def _release_generators(self) -> None:
         if self._client is None:
             return
-        for tag in (self._reader_tag, self._writer_tag):
+        if self._launch_cpus:
+            pin_current_process(self._launch_cpus)
+            self._launch_cpus = ""
+        for tag in (self._reader_tag, self._writer_tag, self._runner_tag):
             if tag:
                 self._client.release_cpus(tag)
 
@@ -451,7 +512,9 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
         reader_cmd = self._launch(reader_path)
         reader_started = time.monotonic()
-        sampler = asyncio.create_task(self._sample_loop(group, samples, reader_cmd, writer_cmd))
+        sampler = asyncio.create_task(
+            self._sample_loop(group, samples, reader_cmd, writer_cmd, pin_cpus=placement.runner_cpus)
+        )
         try:
             reader = await self._wait_and_parse(reader_cmd, "reader")
         finally:
@@ -528,6 +591,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "replica": list(replica.server_cpus),
             "reader": parse_cpulist(placement.reader_cpus) if placement.reader_cpus else [],
             "writer": parse_cpulist(placement.writer_cpus) if placement.writer_cpus else [],
+            "runner": parse_cpulist(placement.runner_cpus) if placement.runner_cpus else [],
         }
         for extra in group.replicas[1:]:
             allocated[f"replica:{extra.port}"] = list(extra.server_cpus)
@@ -539,6 +603,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         samples: list,
         reader_cmd: RealtimeCommand,
         writer_cmd: Optional[RealtimeCommand] = None,
+        pin_cpus: str = "",
     ) -> None:
         """Sample the topology (remote shell) and the two local generators once per interval.
 
@@ -551,7 +616,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         writer_pid = self._pid(writer_cmd)
         while reader_cmd.is_running():
             try:
-                sample = await group.sample(fields)
+                sample = await group.sample(fields, pin_cpus=pin_cpus)
                 sample["t_local"] = time.monotonic()
                 sample["generators"] = {
                     "reader": cpu_sampling.read_local_thread_stats(reader_pid),
