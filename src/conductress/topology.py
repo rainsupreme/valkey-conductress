@@ -23,7 +23,6 @@ working lever.
 
 import asyncio
 import logging
-import shlex
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -576,13 +575,8 @@ class TopologyGroup:
         if cpu:
             parts.append(cpu_sampling.cpu_sample_command({s.port: s.valkey_pid for s in self.servers}))
         command = "; ".join(parts)
-        if pin_cpus:
-            # The shell runs under sshd, not under the caller, so it does not
-            # inherit the caller's affinity; pin it explicitly so the sampling
-            # work lands on cores the bottleneck verdict treats as claimed.
-            command = f"taskset -c {pin_cpus} sh -c {shlex.quote(command)}"
         t = time.monotonic()
-        out, _ = await self.primary.run_host_command(command, check=False)
+        out, _ = await self.primary.run_host_command(command, check=False, pin_cpus=pin_cpus)
         if not cpu:
             return {"t": t, "instances": parse_multi_info(out, extra_fields)}
         info_lines, procstat_lines, thread_lines = cpu_sampling.split_sections(out, _SAMPLE_SEPARATOR)

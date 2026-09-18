@@ -42,8 +42,6 @@ follow-up (see topology.py).
 import asyncio
 import datetime
 import logging
-import os
-import subprocess
 import time
 from dataclasses import dataclass
 from statistics import mean, stdev
@@ -80,32 +78,6 @@ WRITE_RATE_TOLERANCE = 0.10
 PRELOAD_DURATION_SECONDS = 1
 # Reader must hit: every key was written to the primary and replicated.
 READER_MIN_HIT_RATE_PCT = 99.0
-# Cores the runner process confines itself to while a task runs. Its steady
-# work (log and status writes, the per-second sampler) measured ~0.35 of a
-# core on a 192-CPU runner and otherwise lands on an unallocated core, where
-# the bottleneck verdict correctly reports it as foreign interference.
-RUNNER_MANAGEMENT_CPUS = 2
-
-
-def current_affinity_cpulist() -> str:
-    """This process's CPU mask as a compact cpulist (e.g. ``0-191``)."""
-    return format_cpulist(sorted(os.sched_getaffinity(0)))
-
-
-def pin_current_process(cpulist: str) -> None:
-    """Confine every thread of this process to ``cpulist`` (``taskset -a``)."""
-    subprocess.run(["taskset", "-acp", cpulist, str(os.getpid())], check=True, capture_output=True)
-
-
-def format_cpulist(cpus: list) -> str:
-    """``[0, 1, 2, 5]`` -> ``"0-2,5"``."""
-    ranges: list = []
-    for cpu in cpus:
-        if ranges and cpu == ranges[-1][1] + 1:
-            ranges[-1][1] = cpu
-        else:
-            ranges.append([cpu, cpu])
-    return ",".join(f"{a}-{b}" if a != b else str(a) for a, b in ranges)
 
 
 def _io_threads_of(inst) -> int:
@@ -207,18 +179,15 @@ class ReplicaReadTaskData(BaseTaskData):
 class _Placement:
     """Where the generators and the runner itself run (cpulists; empty means unpinned).
 
-    ``runner_cpus`` are the management cores this process (its log/status
-    writes and the per-second sampler) is confined to for the task's duration,
-    so the bottleneck verdict can count them as claimed rather than foreign.
-    ``launch_cpus`` is the mask this process had before pinning; generators are
-    launched under it because a child inherits its parent's mask at fork and
-    must not be dragged onto the management cores.
+    ``runner_cpus`` are the management cores the runner process is pinned to
+    for this task (``BaseTaskRunner.management_cpus``, set by the task runner
+    loop); the bottleneck verdict counts them as claimed rather than foreign,
+    and the sampler shell is pinned there too.
     """
 
     reader_cpus: str
     writer_cpus: str
     runner_cpus: str = ""
-    launch_cpus: str = ""
 
 
 @dataclass(frozen=True)
@@ -260,9 +229,6 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self._client: Optional[Server] = None
         self._reader_tag: Optional[AllocationTag] = None
         self._writer_tag: Optional[AllocationTag] = None
-        # Management cores for this process; ``_launch_cpus`` is the mask to restore.
-        self._runner_tag: Optional[AllocationTag] = None
-        self._launch_cpus: str = ""
         self.title = (
             f"replica-read, {task.source}:{task.specifier}, {task.replica_count} replica(s), "
             f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
@@ -306,8 +272,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         return str(path)
 
     def _launch(self, toml_path: str) -> RealtimeCommand:
-        prefix = f"taskset -c {self._launch_cpus} " if self._launch_cpus else ""
-        command = RealtimeCommand(f"{prefix}{self.task.cachecannon_binary} {toml_path}")
+        command = RealtimeCommand(f"{self.task.cachecannon_binary} {toml_path}")
         command.start()
         return command
 
@@ -386,40 +351,28 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self.commit_hash = group.primary.get_build_hash() or ""
 
     async def _place_generators(self) -> "_Placement":
-        """Allocate generator and management CPUs once (first call) and return their cpulists.
+        """Allocate generator CPUs once (first call) and return their cpulists.
 
         The allocation outlives the per-rep topology so that every rep's
         generators sit on the same cores; ``_release_generators`` undoes it.
-        The runner process pins itself to the management cores for the whole
-        task: its own work (log and status writes, the per-second sampler)
-        otherwise lands on arbitrary cores and reads as foreign interference
-        in the bottleneck verdict.
+        The runner's own management cores come from the task runner loop
+        (``self.management_cpus``) and are reported alongside.
         """
         if self._client is None:
             self._client = Server("127.0.0.1")
             await self._client.ensure_host_cpu_allocation()
             self._reader_tag = self._allocate_client_cpus(self._client, "reader", self.task.threads)
             self._writer_tag = self._allocate_client_cpus(self._client, "writer", self.task.write_threads)
-            self._runner_tag = self._allocate(self._client, "runner", RUNNER_MANAGEMENT_CPUS)
-            runner_cpus = self._client.allocated_cpu_list(self._runner_tag) if self._runner_tag else ""
-            if runner_cpus:
-                self._launch_cpus = current_affinity_cpulist()
-                pin_current_process(runner_cpus)
-                self.logger.info("Pinned runner to management CPUs %s (was %s)", runner_cpus, self._launch_cpus)
         return _Placement(
             reader_cpus=self._cpu_list(self._client, self._reader_tag),
             writer_cpus=self._cpu_list(self._client, self._writer_tag),
-            runner_cpus=self._client.allocated_cpu_list(self._runner_tag) if self._runner_tag else "",
-            launch_cpus=self._launch_cpus,
+            runner_cpus=self.management_cpus,
         )
 
     def _release_generators(self) -> None:
         if self._client is None:
             return
-        if self._launch_cpus:
-            pin_current_process(self._launch_cpus)
-            self._launch_cpus = ""
-        for tag in (self._reader_tag, self._writer_tag, self._runner_tag):
+        for tag in (self._reader_tag, self._writer_tag):
             if tag:
                 self._client.release_cpus(tag)
 
@@ -678,6 +631,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
 
         detailed = {
             "topology": self.spec.to_dict(),
+            "management_cpus": self.management_cpus,
             "server_cpus": {s.port: s.server_cpus for s in group.servers},
             "warmup": task.warmup,
             "duration": task.duration,

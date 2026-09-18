@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shlex
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -408,6 +409,19 @@ class Server:
             prefer_different_cache=True,
             minimize_cache_groups=minimize_cache_groups,
         )
+
+    def allocate_management_cpus(self, tag: AllocationTag, count: int) -> list[int]:
+        """Allocate ``count`` CPUs for host-side housekeeping (the runner process itself).
+
+        Placement is chosen so that nothing a server or generator would have
+        been given moves: the highest-numbered free CPUs, on a NUMA node other
+        than the network interface's when the host has more than one.
+        """
+        nodes = self._cpu_allocator.get_numa_nodes(self.ip)
+        net_numa = self.net_numa_node()
+        other_nodes = [n for n in nodes if n != net_numa]
+        require_numa = other_nodes[-1] if other_nodes else None
+        return self._cpu_allocator.allocate(self.ip, tag, count=count, require_numa=require_numa, from_end=True)
 
     def allocated_cpu_list(self, tag: AllocationTag) -> str:
         """Comma-separated cpulist held by ``tag`` on this host, or "" when it holds none."""
@@ -848,8 +862,16 @@ class Server:
         """Access the underlying SSH connection (for asyncssh.scp compatibility)."""
         return self._host.ssh
 
-    async def run_host_command(self, command: str, check: bool = True) -> tuple[str, str]:
-        """Run a terminal command on the server and return (stdout, stderr)."""
+    async def run_host_command(self, command: str, check: bool = True, pin_cpus: str = "") -> tuple[str, str]:
+        """Run a terminal command on the server and return (stdout, stderr).
+
+        ``pin_cpus`` (a cpulist) runs the command under ``taskset``. Host
+        commands execute under sshd, not under this process, so they never
+        inherit its affinity; work that must not land on measured cores (a
+        sampler, a profiler) names its cores here.
+        """
+        if pin_cpus:
+            command = f"taskset -c {pin_cpus} sh -c {shlex.quote(command)}"
         return await self._host.run_host_command(command, check)
 
     async def check_file_exists(self, path: Path) -> bool:

@@ -26,6 +26,7 @@ from .config import (
 )
 from .file_protocol import FileProtocol
 from .nudge_hook import NudgeHook
+from .runner_affinity import ManagementCores, is_local_host
 from .runner_mailbox import RunnerMailbox
 from .server import Server
 from .status_export import build_status, export_status
@@ -201,7 +202,14 @@ class TaskRunner:
             raise RuntimeError(f"Task needs {server_count} configured server(s); servers.json has {len(servers)}.")
 
         task_runner: BaseTaskRunner = task_data.prepare_task_runner(servers[:server_count])
+        # Pin this process to management cores for the task's duration when the
+        # benchmark host is this machine (its CPU time is otherwise interference).
+        management: Optional[ManagementCores] = None
+        if is_local_host(servers[0].ip):
+            management = ManagementCores(Server(servers[0].ip, username=servers[0].username), task_data.task_id)
         try:
+            if management is not None:
+                task_runner.management_cpus = await management.acquire()
             await task_runner.run()
             task_runner.file_protocol.mark_completed_and_cleanup()
         except Exception:
@@ -214,6 +222,9 @@ class TaskRunner:
             except Exception as cleanup_err:
                 logger.warning("Failed to release CPU allocations: %s", cleanup_err)
             raise
+        finally:
+            if management is not None:
+                management.release()
 
     def _publish_boundary(self, state: str, task: Optional[BaseTaskData]) -> None:
         if self._mailbox is None and not self._publish_target:

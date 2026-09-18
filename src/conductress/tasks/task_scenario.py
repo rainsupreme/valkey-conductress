@@ -1394,6 +1394,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         # Record results
         detailed_data = {
             "topology": self.topology.to_dict(),
+            "management_cpus": self.management_cpus,
             "scenario": self.scenario,
             "duration": self.duration,
             "warmup": self.warmup,

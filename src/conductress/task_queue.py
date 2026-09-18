@@ -197,6 +197,10 @@ class BaseTaskRunner(ABC):
     def __init__(self, task_name: str):
         self.task_name = task_name
         self.file_protocol = FileProtocol(task_name, role_id="client")
+        # Cores the runner process is pinned to for this task ("" if unpinned);
+        # set by TaskRunner before run(). A task that checks for foreign CPU
+        # activity treats them as claimed.
+        self.management_cpus: str = ""
 
     @abstractmethod
     async def run(self) -> None:

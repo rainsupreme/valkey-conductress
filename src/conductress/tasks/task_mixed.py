@@ -650,6 +650,7 @@ class MixedTaskRunner(BaseTaskRunner):
         # Record results
         detailed_data = {
             "topology": self.topology.to_dict(),
+            "management_cpus": self.management_cpus,
             "set_ratio": self.set_ratio,
             "memtier_ratio": set_ratio_to_memtier_ratio(self.set_ratio),
             "duration": self.duration,
