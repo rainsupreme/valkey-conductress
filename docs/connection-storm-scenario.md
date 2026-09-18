@@ -54,6 +54,14 @@ optional; each falls back to a default.
   later. This is the realistic case: a stall already in progress when
   reconnecting clients arrive. Pass `--storm-burst-first` for the legacy
   ordering (burst first, stall injected part-way through).
+- `--storm-start-delay-s` -- launch the generator this many seconds after the
+  overlay starts (default 5). The background measurement begins about one
+  second after the overlay starts, so the stall lands roughly `delay - 1`
+  seconds into the memtier series and the series carries an undisturbed
+  baseline before it. The storm's own duration is the measurement window minus
+  this delay minus a 2 s margin (never below 5 s), so it ends before the
+  background measurement does. Set `0` to start the storm together with the
+  measurement.
 - `--storm-workers` -- worker processes the clients fan out across. Default
   `0` = auto (`min(8, cpu_count)`): a single event loop opens only a few
   thousand connections per second, so a one-process "200 ms" burst of a few
@@ -136,6 +144,9 @@ Under the per-rep scenario metrics (and aggregated in results):
 - `storm.origin_wall` -- the generator's monotonic origin in wall-clock
   (`time.time()`) seconds, so the storm timeline can be placed on the shared
   axis (see "Time axis"). Present from generator `schema_version` 2 onward.
+- `storm.launched_wall` -- when the runner launched the generator process
+  (wall-clock), `--storm-start-delay-s` after the overlay started; the
+  generator's prewarm runs between this and `storm.origin_wall`.
 - `storm.generator_config`, `storm.schema_version` -- provenance.
 
 The scenario also records `overlay_start_offset_s`: how long after the

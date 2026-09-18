@@ -371,3 +371,113 @@ def test_cli_no_storm_flags_yields_empty_spec():
         ["queue", "add-scenario", "--scenario", "connection-storm", "--source", config.REPO_NAMES[0]]
     )
     assert cli.build_scenario_overlay_spec(args) == ""
+
+
+# --------------------------------------------------------------------------- start delay
+# The first fleet cell showed the stall landing at the very start of the
+# background measurement (no undisturbed baseline in the memtier series). The
+# storm now launches start_delay_s after the overlay starts.
+
+
+def test_parse_storm_spec_start_delay_default_and_validation():
+    assert parse_storm_spec("")["start_delay_s"] == 5.0
+    assert parse_storm_spec(json.dumps({"start_delay_s": 8}))["start_delay_s"] == 8
+    with pytest.raises(ValueError):
+        parse_storm_spec(json.dumps({"start_delay_s": -1}))
+
+
+def test_storm_duration_is_window_minus_delay_and_margin():
+    spec = parse_storm_spec(json.dumps({"start_delay_s": 5}))
+    spec["_duration_s"] = 30.0
+    assert (
+        StormOverlay(spec, "/tmp")._duration_s() == 30.0 - 5.0 - StormOverlay.STORM_END_MARGIN_S
+    )  # pylint: disable=protected-access
+    short = parse_storm_spec(json.dumps({"start_delay_s": 5}))
+    short["_duration_s"] = 5.0
+    assert (
+        StormOverlay(short, "/tmp")._duration_s() == StormOverlay.STORM_MIN_DURATION_S
+    )  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_storm_overlay_launches_after_delay_and_finish_waits(monkeypatch, tmp_path):
+    launched = []
+
+    class FakeCommand:
+        def __init__(self, command):
+            self.command = command
+            self.p = type("P", (), {"returncode": None})()
+            self._polls = 0
+
+        def start(self):
+            launched.append(self.command)
+            with open(tmp_path / "storm_result.json", "w", encoding="utf-8") as handle:
+                json.dump(_storm_document(), handle)
+
+        def is_running(self):
+            self._polls += 1
+            if self._polls <= 1:
+                return True
+            self.p.returncode = 0
+            return False
+
+        def poll_output(self):
+            return None, None
+
+    monkeypatch.setattr(module, "RealtimeCommand", FakeCommand)
+
+    spec = parse_storm_spec(json.dumps({"start_delay_s": 0.05}))
+    spec["_duration_s"] = 30.0
+    overlay = StormOverlay(spec, tmp_path)
+    server = _FakeServer()
+
+    handle = await overlay.start(server, tmp_path)
+    # start() returns before the generator is launched: the background
+    # measurement must not be delayed by the storm's own delay.
+    assert launched == []
+    result = await overlay.finish(server, handle)
+    assert len(launched) == 1
+    assert "--duration-s 27.95" in launched[0]  # 30 - 0.05 delay - 2.0 margin
+    assert result.metrics["storm"]["launched_wall"] is not None
+
+
+@pytest.mark.asyncio
+async def test_storm_overlay_abort_cancels_pending_launch(monkeypatch, tmp_path):
+    launched = []
+
+    class FakeCommand:
+        def __init__(self, command):
+            self.command = command
+
+        def start(self):
+            launched.append(self.command)
+
+    monkeypatch.setattr(module, "RealtimeCommand", FakeCommand)
+    spec = parse_storm_spec(json.dumps({"start_delay_s": 30}))
+    spec["_duration_s"] = 60.0
+    overlay = StormOverlay(spec, tmp_path)
+    handle = await overlay.start(_FakeServer(), tmp_path)
+    await overlay.abort(_FakeServer(), handle)
+    await module.asyncio.sleep(0)
+    assert handle["launch"].cancelled() or handle["launch"].done()
+    assert launched == []
+
+
+def test_cli_storm_start_delay_flag_serializes():
+    from conductress import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "queue",
+            "add-scenario",
+            "--scenario",
+            "connection-storm",
+            "--source",
+            config.REPO_NAMES[0],
+            "--storm-start-delay-s",
+            "8",
+        ]
+    )
+    spec = json.loads(cli.build_scenario_overlay_spec(args))
+    assert spec["start_delay_s"] == 8.0

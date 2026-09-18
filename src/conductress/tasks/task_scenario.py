@@ -360,6 +360,9 @@ STORM_SPEC_DEFAULTS: Dict[str, Any] = {
     "stall": "none",
     "burst_after_stall_ms": 200,
     "burst_first": False,
+    # Launch the generator this long after the overlay starts, so the background
+    # series carries an undisturbed baseline before the stall and the burst.
+    "start_delay_s": 5.0,
     "prewarm_connections": None,  # None -> generator default (= clients)
     "workers": 0,  # 0 -> generator auto (min(8, cpu_count))
     "bind_addrs": [],
@@ -410,6 +413,8 @@ def parse_storm_spec(spec: str) -> Dict[str, Any]:
         raise ValueError(f"connection-storm workers must be >= 0 (0 = auto), got {out['workers']}")
     if int(out["burst_after_stall_ms"]) < 0:
         raise ValueError(f"connection-storm burst_after_stall_ms must be >= 0, got {out['burst_after_stall_ms']}")
+    if float(out["start_delay_s"]) < 0:
+        raise ValueError(f"connection-storm start_delay_s must be >= 0, got {out['start_delay_s']}")
     if out["prewarm_connections"] is not None and int(out["prewarm_connections"]) < 0:
         raise ValueError(f"connection-storm prewarm_connections must be >= 0 or null, got {out['prewarm_connections']}")
     if not isinstance(out["handshake"], list):
@@ -517,6 +522,9 @@ class ServerSampler:
         self._stop: Optional[asyncio.Event] = None
         self._stop_requested = False
         self._remote_logged = False
+        # One RESP parser per connection: leftover bytes from a read that
+        # carried more than one reply belong to the next reply, not the bin.
+        self._parser = ReplyParser()
 
     def stop(self) -> None:
         self._stop_requested = True
@@ -534,6 +542,7 @@ class ServerSampler:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), timeout=self.connect_timeout
             )
+            self._parser = ReplyParser()
             if self._local:
                 self._baseline = netstat.read_counters()
             else:
@@ -586,10 +595,16 @@ class ServerSampler:
             current.listen_drops - self._baseline.listen_drops,
         )
 
-    @staticmethod
-    async def _read_reply(reader: asyncio.StreamReader) -> str:
-        """Read exactly one RESP reply (a bulk string for INFO) and return it as text."""
-        parser = ReplyParser()
+    async def _read_reply(self, reader: asyncio.StreamReader) -> str:
+        """Read exactly one RESP reply (a bulk string for INFO) and return it as text.
+
+        The parser is per connection, not per reply: the two INFO replies of a
+        tick normally arrive in ONE TCP read, and a per-reply parser would
+        return the first reply and drop the bytes of the second along with
+        itself, leaving the next read waiting forever for a reply the server
+        has already sent.
+        """
+        parser = self._parser
         while True:
             complete, value = parser.try_parse()
             if complete:
@@ -750,20 +765,51 @@ class StormOverlay(Overlay):
             parts += ["--bind-addr", str(addr)]
         return " ".join(_shell_quote(p) for p in parts)
 
+    # Seconds kept back from the storm's duration so it ends before the
+    # background measurement does (the generator's prewarm and the runner's
+    # settle sleep both precede the storm's own clock).
+    STORM_END_MARGIN_S = 2.0
+    STORM_MIN_DURATION_S = 5.0
+
     def _duration_s(self) -> float:
-        # The storm runs for the scenario's measurement window; the caller sets
-        # it via the spec-independent duration passed at construction time.
-        return float(self.spec["_duration_s"])
+        """The storm's own duration: the measurement window minus the start delay and a margin."""
+        window = float(self.spec["_duration_s"])
+        remaining = window - float(self.spec["start_delay_s"]) - self.STORM_END_MARGIN_S
+        if remaining < self.STORM_MIN_DURATION_S:
+            logger.warning(
+                "connection-storm: start_delay_s %.1f leaves %.1fs of a %.1fs window; clamping the storm to %.1fs",
+                float(self.spec["start_delay_s"]),
+                remaining,
+                window,
+                self.STORM_MIN_DURATION_S,
+            )
+            return self.STORM_MIN_DURATION_S
+        return remaining
 
     async def start(self, server: "Server", work_dir: Any) -> Any:
         json_path = str(work_dir / "storm_result.json")
         command_string = self._command(server, json_path)
-        logger.info("connection-storm overlay: %s", command_string)
-        cmd = RealtimeCommand(command_string)
-        cmd.start()
-        return {"cmd": cmd, "json_path": json_path, "lines": []}
+        handle: Dict[str, Any] = {"cmd": None, "json_path": json_path, "lines": [], "launch": None}
+        delay = float(self.spec["start_delay_s"])
+
+        async def _launch() -> None:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            logger.info("connection-storm overlay: %s", command_string)
+            cmd = RealtimeCommand(command_string)
+            cmd.start()
+            handle["cmd"] = cmd
+            handle["launched_wall"] = time.time()
+
+        # Returning immediately keeps the runner's flow unchanged: the background
+        # measurement starts on schedule and the storm lands start_delay_s later.
+        handle["launch"] = asyncio.ensure_future(_launch())
+        return handle
 
     async def finish(self, server: "Server", handle: Any) -> OverlayResult:
+        launch = handle.get("launch")
+        if launch is not None:
+            await launch
         cmd = handle["cmd"]
         lines: List[str] = handle["lines"]
         # Drain to completion (the background measurement has ended by now; the
@@ -783,9 +829,14 @@ class StormOverlay(Overlay):
             joined = "\n".join(lines)
             raise RuntimeError(f"connection-storm generator exited with code {exit_code}. Output:\n{joined[-2000:]}")
         document = _read_storm_document(handle["json_path"], lines)
-        return OverlayResult(rate=None, metrics=storm_metrics_namespace(document))
+        metrics = storm_metrics_namespace(document)
+        metrics["storm"]["launched_wall"] = handle.get("launched_wall")
+        return OverlayResult(rate=None, metrics=metrics)
 
     async def abort(self, server: "Server", handle: Any) -> None:
+        launch = handle.get("launch") if isinstance(handle, dict) else None
+        if launch is not None and not launch.done():
+            launch.cancel()
         cmd = handle.get("cmd") if isinstance(handle, dict) else None
         if cmd is not None:
             try:
