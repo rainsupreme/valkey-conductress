@@ -352,31 +352,6 @@ WantedBy=multi-user.target
 """
 
 
-SYSTEMD_STATUS_SERVICE_TEMPLATE = """\
-[Unit]
-Description=Conductress status export
-
-[Service]
-Type=oneshot
-User={user}
-WorkingDirectory={workdir}
-ExecStart=/usr/bin/python3 -m conductress status-export{publish_arg}
-"""
-
-SYSTEMD_STATUS_TIMER_TEMPLATE = """\
-[Unit]
-Description=Export Conductress status every 60s
-
-[Timer]
-OnBootSec=10s
-OnUnitActiveSec=60s
-AccuracySec=5s
-
-[Install]
-WantedBy=timers.target
-"""
-
-
 async def ensure_memtier(host: Host) -> None:
     """Ensure memtier_benchmark is installed at the pinned commit.
 
@@ -533,38 +508,32 @@ async def install_systemd_service(host: Host) -> None:
         host.log_info_msg("Conductress service already running")
 
 
-async def install_status_timer(host: Host) -> None:
-    """Install the status export timer (writes status.json every 60s)."""
-    has_systemd = await host.run("command -v systemctl >/dev/null 2>&1 && echo yes || echo no", check=False)
-    if "yes" not in has_systemd:
+STATUS_TIMER_UNITS = (
+    "/etc/systemd/system/conductress-status.service",
+    "/etc/systemd/system/conductress-status.timer",
+)
+
+
+async def retire_status_timer(host: Host) -> None:
+    """Disable and remove the per-minute ``conductress-status.timer`` if a host still has it.
+
+    The runner publishes status itself at task boundaries (``TaskRunner``
+    ``starting``/final/idle snapshots), which replaced the networked
+    60-second timer. The timer was never removed from bootstrap, so a
+    re-bootstrapped host got it back: ``python3 -m conductress status-export
+    --publish`` every minute, ~12 CPU-seconds per run across 64 threads on
+    whatever cores the scheduler picked, which the replica-read bottleneck
+    verdict reported as a busy unallocated core on five cells in a row
+    (g4bench, Sep 19 2026) before the attribution named it. Idempotent: a
+    host without the unit files issues no systemd commands.
+    """
+    present = [path for path in STATUS_TIMER_UNITS if await path_exists(host, Path(path), expected_type="file")]
+    if not present:
         return
-
-    workdir = host.get_home_path() / "conductress"
-    user = host.username or "ec2-user"
-
-    service_content = SYSTEMD_STATUS_SERVICE_TEMPLATE.format(
-        user=user, workdir=workdir, publish_arg=f" --publish {PUBLISH_TARGET}"
-    )
-    timer_content = SYSTEMD_STATUS_TIMER_TEMPLATE
-
-    service_path = "/etc/systemd/system/conductress-status.service"
-    timer_path = "/etc/systemd/system/conductress-status.timer"
-
-    # Install service
-    existing = await host.run(f"cat {service_path} 2>/dev/null || echo ''", check=False)
-    if existing.strip() != service_content.strip():
-        escaped = service_content.replace("'", "'\\''")
-        await host.run(f"echo '{escaped}' | sudo tee {service_path} > /dev/null")
-
-    # Install timer
-    existing = await host.run(f"cat {timer_path} 2>/dev/null || echo ''", check=False)
-    if existing.strip() != timer_content.strip():
-        escaped = timer_content.replace("'", "'\\''")
-        await host.run(f"echo '{escaped}' | sudo tee {timer_path} > /dev/null")
-        await host.run("sudo systemctl daemon-reload")
-
-    await host.run("sudo systemctl enable --now conductress-status.timer", check=False)
-    host.log_info_msg("Status export timer installed and running")
+    host.log_info_msg("Retiring the per-minute status timer (boundary publication replaced it)")
+    await host.run("sudo systemctl disable --now conductress-status.timer", check=False)
+    await host.run("sudo rm -f " + " ".join(present), check=False)
+    await host.run("sudo systemctl daemon-reload", check=False)
 
 
 async def update_host(server_info: config.ServerInfo):
@@ -591,7 +560,7 @@ async def update_host(server_info: config.ServerInfo):
 
     # Install and enable systemd service for the runner
     await install_systemd_service(host)
-    await install_status_timer(host)
+    await retire_status_timer(host)
 
     host.log_info_msg("Ensuring config repos cloned...")
     await asyncio.gather(*(ensure_git_repo_cloned(host, repo_url, target_dir) for repo_url, target_dir in REPOSITORIES))

@@ -76,25 +76,33 @@ At restart:
 
 ## Boundary-only status migration
 
-The existing `conductress-status.timer` performs network rsync every 60 seconds and must remain active during initial shadow verification. After boundary status appears reliably on the dashboard:
+Migration is complete fleet-wide (Sep 2026). The per-minute
+`conductress-status.timer` (`python3 -m conductress status-export --publish`
+every 60 s) is retired: `bootstrap.py` now disables and removes the unit
+files wherever it still finds them (`retire_status_timer`), so a
+re-bootstrapped host does not get it back. The runner publishes at task
+boundaries and while idle from its own loop; the `status-export` CLI
+subcommand remains for a manual one-off export.
 
-```bash
-sudo systemctl disable --now conductress-status.timer
-```
+The timer had been left enabled on one runner (g4bench) after the migration.
+Each run consumed ~12 CPU-seconds across 64 threads on whatever cores the
+scheduler picked, and the replica-read bottleneck verdict reported it as a
+busy unallocated core on five consecutive cells before the thread
+attribution named it. A runner that reports `host` with a `python3` main
+thread on a random core is the signature of this timer having come back.
 
-Then set this environment variable in the runner service:
+The runner service should still carry:
 
 ```text
 CONDUCTRESS_BOUNDARY_STATUS_ONLY=1
 ```
 
-The dashboard field `measurement_isolation.status_timer_migration_required` remains true until that explicit deployment step is complete. The code does not disable systemd units automatically.
+The dashboard field `measurement_isolation.status_timer_migration_required` reflects that variable.
 
 Rollback:
 
 1. Set `--fleet-mode off` and restart the runner.
-2. Re-enable `conductress-status.timer` if boundary-only publication had replaced it.
-3. Leave any accepted journal entry intact until its outcome is reconciled; do not delete it manually.
+2. Leave any accepted journal entry intact until its outcome is reconciled; do not delete it manually.
 
 ## Read-only monitoring fields
 
@@ -118,7 +126,7 @@ These fields only report state. They expose no queue, cancel, or execution contr
 3. Enable `shadow` on `armbench`; verify status/authentication over several boundaries.
 4. Enable `live`; submit one harmless task and verify claim/import/accept/outcome.
 5. Verify data-host access logs show no runner requests between starting and completion boundaries.
-6. Disable the periodic status timer and set `CONDUCTRESS_BOUNDARY_STATUS_ONLY=1`.
+6. Confirm bootstrap retired the periodic status timer (`systemctl is-enabled conductress-status.timer` reports not-found) and set `CONDUCTRESS_BOUNDARY_STATUS_ONLY=1`.
 7. Observe at least three clean boundaries.
 8. Repeat sequentially for `g4bench`, `bench`, then `intelbench`.
 

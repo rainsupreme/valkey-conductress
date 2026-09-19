@@ -10,6 +10,7 @@ from conductress.bootstrap import (
     ensure_file_descriptor_limits,
     load_requirements,
     path_exists,
+    retire_status_timer,
     update_amazon_packages,
     update_pip_packages,
     update_rhel_packages,
@@ -351,3 +352,64 @@ class TestPathExists:
 
         with pytest.raises(RuntimeError, match="Expected .* to be a symlink"):
             await path_exists(host, "/some/file", expected_type="symlink")
+
+
+class TestRetireStatusTimer:
+    """The per-minute status timer must be removed where present and left alone where absent."""
+
+    @staticmethod
+    def _host(present: set):
+        host = MagicMock(spec=Host)
+        host.log_info_msg = MagicMock()
+        commands = []
+
+        async def fake_run(command, *args, **kwargs):
+            commands.append(command)
+            if command.startswith("test -e"):
+                # path_exists probe: quoted path is the first test's argument
+                path = command.split('"')[1]
+                exists = path in present
+                # e f d L -> exists, is file, is dir, is symlink
+                return "0\n0\n1\n1\n" if exists else "1\n1\n1\n1\n"
+            return ""
+
+        host.run = fake_run
+        return host, commands
+
+    @pytest.mark.asyncio
+    async def test_removes_units_and_disables_timer_when_present(self):
+        host, commands = self._host(
+            {"/etc/systemd/system/conductress-status.service", "/etc/systemd/system/conductress-status.timer"}
+        )
+        await retire_status_timer(host)
+        actions = [c for c in commands if not c.startswith("test -e")]
+        assert actions[0] == "sudo systemctl disable --now conductress-status.timer"
+        assert actions[1].startswith("sudo rm -f ")
+        assert "/etc/systemd/system/conductress-status.service" in actions[1]
+        assert "/etc/systemd/system/conductress-status.timer" in actions[1]
+        assert actions[2] == "sudo systemctl daemon-reload"
+        assert len(actions) == 3
+        host.log_info_msg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_removes_only_the_unit_that_is_left(self):
+        host, commands = self._host({"/etc/systemd/system/conductress-status.service"})
+        await retire_status_timer(host)
+        rm = next(c for c in commands if c.startswith("sudo rm -f "))
+        assert rm == "sudo rm -f /etc/systemd/system/conductress-status.service"
+
+    @pytest.mark.asyncio
+    async def test_no_systemd_commands_when_already_retired(self):
+        host, commands = self._host(set())
+        await retire_status_timer(host)
+        assert all(c.startswith("test -e") for c in commands), commands
+        host.log_info_msg.assert_not_called()
+
+    def test_bootstrap_no_longer_installs_the_timer(self):
+        import conductress.bootstrap as bootstrap_module  # pylint: disable=import-outside-toplevel
+
+        source = Path(bootstrap_module.__file__).read_text(encoding="utf-8")
+        assert "install_status_timer" not in source
+        assert "OnUnitActiveSec" not in source
+        assert "enable --now conductress-status.timer" not in source
+        assert "await retire_status_timer(host)" in source
