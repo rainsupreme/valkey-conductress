@@ -67,7 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stall",
         default="none",
-        help="Server stall injector: none or debug-sleep:<seconds> (default: none)",
+        help="Server stall injector: none, debug-sleep:<seconds> (a hard stall that blocks the main "
+        "thread for the whole duration), or slow-loop:<kind>:<block_ms>:<period_ms>:<duration_s> (a "
+        "repeating partial stall -- block block_ms out of every period_ms for duration_s; kind is "
+        "'debug-sleep' or 'lua') (default: none)",
     )
     parser.add_argument(
         "--burst-first",
@@ -205,6 +208,10 @@ def build_document(result: StormResult) -> dict:
             "started": result.stall.started,
             "ended": result.stall.ended,
             "stall_end_relative": result.stall_end_relative(),
+            "blocks_issued": result.stall.blocks_issued,
+            "achieved_block_ms_p50": result.stall.achieved_block_ms_p50,
+            "achieved_block_ms_max": result.stall.achieved_block_ms_max,
+            "effective_duty": result.stall.effective_duty,
         },
         "listen_overflow_delta": result.listen_delta,
         "prewarm_listen_overflow_delta": result.prewarm_listen_delta,

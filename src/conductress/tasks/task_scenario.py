@@ -31,7 +31,7 @@ from conductress.server import Server
 from conductress.stormgen import netstat
 from conductress.stormgen.policy import parse_policy
 from conductress.stormgen.resp import ReplyParser, encode_command
-from conductress.stormgen.stall import parse_stall
+from conductress.stormgen.stall import SlowLoopStall, parse_stall
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.tasks.task_mixed import (
     MIXED_CLIENTS,
@@ -370,6 +370,14 @@ STORM_SPEC_DEFAULTS: Dict[str, Any] = {
 # The single key the connection-storm overlay's default first command reads.
 STORM_KEY = "storm:key"
 
+# Valkey's default maxclients. A storm larger than this (minus headroom for the
+# background memtier load and the sampler) would be rejected with "max number of
+# clients reached", silently turning a storm test into a maxclients test.
+DEFAULT_MAXCLIENTS = 10000
+# Headroom reserved above the storm client count for the background memtier
+# load (400 connections) and the one sampler connection, with margin.
+STORM_MAXCLIENTS_HEADROOM = 4096
+
 
 def parse_storm_spec(spec: str) -> Dict[str, Any]:
     """Parse and validate a connection-storm ``overlay_spec`` JSON string.
@@ -425,8 +433,16 @@ def parse_storm_spec(spec: str) -> Dict[str, Any]:
 
 
 def storm_uses_debug_sleep(spec: Dict[str, Any]) -> bool:
-    """True when the storm spec's stall injector is a debug-sleep (needs enable-debug-command)."""
-    return parse_stall(str(spec.get("stall", "none"))).kind == "debug-sleep"
+    """True when the storm's stall issues ``DEBUG SLEEP`` (needs enable-debug-command).
+
+    Both a hard ``debug-sleep`` stall and a ``slow-loop`` whose block kind is
+    ``debug-sleep`` run ``DEBUG SLEEP`` on the server, so both require the
+    ``--enable-debug-command`` flag; a ``slow-loop:lua`` stall does not.
+    """
+    injector = parse_stall(str(spec.get("stall", "none")))
+    if injector.kind == "debug-sleep":
+        return True
+    return isinstance(injector, SlowLoopStall) and injector.block_kind == "debug-sleep"
 
 
 # --------------------------------------------------------------------------- server-side sampler
@@ -716,7 +732,28 @@ class StormOverlay(Overlay):
     def extra_server_args(self) -> str:
         # DEBUG SLEEP is rejected unless the server enables it. Append the flag
         # only for a debug-sleep stall; never for any other overlay.
-        return "--enable-debug-command local" if storm_uses_debug_sleep(self.spec) else ""
+        args: List[str] = []
+        if storm_uses_debug_sleep(self.spec):
+            args.append("--enable-debug-command local")
+        # Storm size guard: a large storm's clients, plus the background memtier
+        # load and the sampler, can exceed the server's default maxclients
+        # (10000) and be rejected with "max number of clients reached" -- which
+        # would silently turn a storm test into a maxclients test. When the
+        # storm alone plus headroom would cross that default, raise maxclients
+        # to fit. Recorded in server_args_effective; logged at INFO.
+        clients = int(self.spec["clients"])
+        if clients + STORM_MAXCLIENTS_HEADROOM > DEFAULT_MAXCLIENTS:
+            new_maxclients = clients + STORM_MAXCLIENTS_HEADROOM
+            args.append(f"--maxclients {new_maxclients}")
+            logger.info(
+                "connection-storm: %d storm clients + %d headroom exceeds the default maxclients %d; "
+                "raising maxclients to %d",
+                clients,
+                STORM_MAXCLIENTS_HEADROOM,
+                DEFAULT_MAXCLIENTS,
+                new_maxclients,
+            )
+        return " ".join(args)
 
     def _command(self, server: "Server", json_path: str) -> str:
         spec = self.spec

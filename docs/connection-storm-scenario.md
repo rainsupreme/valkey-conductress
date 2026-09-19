@@ -46,9 +46,16 @@ optional; each falls back to a default.
   connecting. Default a single `HELLO 3`.
 - `--storm-first-command` -- the command each client issues after the
   handshake. Default `GET storm:key`.
-- `--storm-stall` -- `none` (a baseline/control run) or `debug-sleep:<seconds>`
-  (`DEBUG SLEEP`, which blocks the main thread and is portable across Redis and
-  Valkey). See "Auto-added `--enable-debug-command local`" below.
+- `--storm-stall` -- `none` (a baseline/control run), `debug-sleep:<seconds>`
+  (`DEBUG SLEEP`, which blocks the main thread for the whole window -- a hard
+  stall -- and is portable across Redis and Valkey), or
+  `slow-loop:<kind>:<block_ms>:<period_ms>:<duration_s>` (a repeating partial
+  stall: the main thread keeps progressing but is blocked `block_ms` out of
+  every `period_ms` for `duration_s`, a duty cycle of `block_ms / period_ms`).
+  `kind` is `debug-sleep` (exact, dataset-independent) or `lua` (a
+  self-calibrated busy `EVAL` loop; `block_ms` capped at 1000 to stay under the
+  server's `busy-reply-threshold`). See "Two stall regimes" and "Auto-added
+  `--enable-debug-command local`" below.
 - **Ordering** -- by default the storm is *stall-first*: the stall command is
   issued, then the burst starts `--storm-burst-after-stall-ms` (default 200)
   later. This is the realistic case: a stall already in progress when
@@ -75,6 +82,47 @@ optional; each falls back to a default.
 - `--server-sample-ms` -- poll the server's INFO counters every N ms during the
   measurement (`0` = off, else `>= 20`). connection-storm defaults to 100 when
   the flag is absent (see "The server-side sampler").
+
+## Two stall regimes
+
+The stall injector comes in two regimes, which stress different server limits:
+
+- **Hard stall** (`debug-sleep:<seconds>`) -- the main thread is blocked for the
+  entire window and does nothing else: no `accept()`, no command processing. The
+  accept queue fills and overflows, and the amplification is driven by every
+  fresh connection waiting on a main thread that never runs.
+- **Slow loop** (`slow-loop:<kind>:<block_ms>:<period_ms>:<duration_s>`) -- the
+  main thread keeps progressing but with long event-loop iterations: it is
+  blocked `block_ms`, then free for the rest of `period_ms`, repeating for
+  `duration_s`. The duty cycle is `block_ms / period_ms`. This is the realistic
+  "expensive command" or "busy Lua" regime: the server is degraded, not frozen,
+  so between blocks it does drain some of the accept queue and answer some first
+  commands. A prediction this regime lets you test on the fleet: under a partial
+  (e.g. 50%) duty slow loop the server's accept throttle
+  (`max-new-connections-per-cycle`, default 10 accepted per event-loop
+  iteration) governs how many connect timeouts occur, whereas under a hard stall
+  the throttle is irrelevant because the loop never iterates during the stall.
+
+The `lua` slow-loop block is a pure busy `EVAL` (no keys, so it is
+dataset-independent), self-calibrated at loop start (two rounds at a fixed
+iteration count, then scaled to `block_ms`) and gently re-scaled from each
+measured round trip. It is kept below 1 s per block so it never trips the
+server's `busy-reply-threshold` (5 s). The `debug-sleep` block is exact.
+
+A slow loop records, in `storm.stall`, how the repeated blocking actually
+behaved:
+
+- `blocks_issued` -- how many blocking commands ran.
+- `achieved_block_ms_p50` / `achieved_block_ms_max` -- measured block durations.
+- `effective_duty` -- summed measured block time over the loop's wall time (the
+  realized `block / period`).
+
+For a slow loop, `storm.stall.started` is the first block and `storm.stall.ended`
+is the loop end, so the whole degraded window is the shaded band on the plot. A
+slow loop whose `duration_s` (plus the burst offset) would outlast the storm's
+own duration is clamped to the storm window minus one second, with a warning;
+`StormOverlay._duration_s()` already sizes the storm to the measurement window,
+so a very long loop is bounded by it.
 
 ## The three storm mechanisms
 
@@ -139,7 +187,11 @@ Under the per-rep scenario metrics (and aggregated in results):
   phase alone (see below).
 - `storm.burst_actual_ms` -- the span the burst actually took (last
   first-attempt start minus first); compare against `--storm-burst-ms`.
-- `storm.stall` -- the stall record (kind, wall-clock start/end).
+- `storm.stall` -- the stall record: `kind`, wall-clock `started`/`ended`, and
+  (for a `slow-loop` stall) `blocks_issued`, `achieved_block_ms_p50`,
+  `achieved_block_ms_max`, and `effective_duty`. The achieved-block fields are
+  `0`/`null` for a hard stall or no stall. Present from generator
+  `schema_version` 3 onward.
 - `storm.timeline` -- per-bucket `started`/`connected`/`timeouts` counts.
 - `storm.origin_wall` -- the generator's monotonic origin in wall-clock
   (`time.time()`) seconds, so the storm timeline can be placed on the shared
@@ -244,11 +296,46 @@ the run, produced by the `conductress plot` command above.)
 ## Auto-added `--enable-debug-command local`
 
 `DEBUG SLEEP` is rejected unless the server was started with
-`enable-debug-command`. For `connection-storm` with a `debug-sleep` stall the
-scenario appends `--enable-debug-command local` to the server arguments
-automatically, logs it at INFO, and records the effective arguments in results
-as `server_args_effective`. This happens for **no other scenario** and for no
-other stall kind.
+`enable-debug-command`. For `connection-storm` with any stall that issues
+`DEBUG SLEEP` -- a `debug-sleep` hard stall **or** a `slow-loop:debug-sleep:...`
+partial stall -- the scenario appends `--enable-debug-command local` to the
+server arguments automatically, logs it at INFO, and records the effective
+arguments in results as `server_args_effective`. This happens for **no other
+scenario**; a `slow-loop:lua` stall does not need it (its block is an ordinary
+`EVAL`).
+
+## Storm size
+
+A large storm runs up against several ceilings that are not the server code
+under test. Know them so a storm result is not silently a limit test:
+
+- **maxclients.** Valkey's default `maxclients` is 10,000. A storm of, say,
+  10,000 clients plus the background memtier load (400 connections) plus the
+  sampler would be rejected with "max number of clients reached", turning a
+  storm test into a maxclients test. The scenario guards against this: when the
+  storm client count plus headroom (4096, covering the background load and the
+  sampler) would exceed 10,000, `StormOverlay.extra_server_args()` also appends
+  `--maxclients <clients + 4096>` (logged at INFO, recorded in
+  `server_args_effective`). This happens for **no other scenario**.
+- **Ephemeral ports.** Every client connection consumes an ephemeral port in the
+  `(source_ip, dest_ip:port)` tuple space. On the runners `ip_local_port_range`
+  is 32768-60999, about 28K ports per source address; a storm larger than that
+  from one source address exhausts the client's own ports before it stresses the
+  server. `tcp_tw_reuse=2` lets the kernel reuse ports still in `TIME_WAIT` on
+  loopback, which softens but does not remove the cap. Spread the load across
+  loopback source aliases with `--storm-bind-addrs 127.0.0.2,127.0.0.3,...` to
+  multiply the available port space, and watch the `error`/`reset` outcome
+  counts for exhaustion.
+- **File descriptors.** Each connection is a file descriptor on the server. The
+  runner shell's `ulimit -n 65536` is the server's fd ceiling; a storm plus the
+  background load must fit under it (raise `maxclients` and the storm stays
+  bounded by this hard limit).
+- **Generator delivery rate.** Even fanned across workers (8 workers at roughly
+  5-10K connects/s each), the generator opens a finite number of connections per
+  second. `storm.burst_actual_ms` shows the span the burst actually took; when
+  it exceeds the nominal `--storm-burst-ms` the generator could not deliver the
+  requested burst at that size, so read the achieved span rather than the
+  nominal one.
 
 ## Cold-server first-contact cost
 

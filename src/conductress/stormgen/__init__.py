@@ -26,4 +26,7 @@ others:
 
 # v2 adds ``origin_wall`` (wall-clock time.time() at the shared monotonic
 # origin) to the result document, so every series can be placed on one axis.
-SCHEMA_VERSION = 2
+# v3 adds the slow-loop stall's achieved-block fields to the ``stall`` record
+# (``blocks_issued``, ``achieved_block_ms_p50``, ``achieved_block_ms_max``,
+# ``effective_duty``); they are ``0``/``null`` for a hard stall or no stall.
+SCHEMA_VERSION = 3
