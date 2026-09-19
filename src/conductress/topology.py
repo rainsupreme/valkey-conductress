@@ -535,7 +535,9 @@ class TopologyGroup:
 
     # ------------------------------------------------------------------ sampling
 
-    async def sample(self, extra_fields: Optional[list] = None, cpu: bool = True, pin_cpus: str = "") -> dict:
+    async def sample(
+        self, extra_fields: Optional[list] = None, cpu: bool = True, pin_cpus: str = "", host_threads: bool = False
+    ) -> dict:
         """One ``INFO replication stats`` snapshot per instance.
 
         All instances are queried from ONE remote shell invocation, back to
@@ -559,6 +561,10 @@ class TopologyGroup:
         ``pin_cpus`` (a cpulist) runs the remote shell under ``taskset`` so the
         sampling work itself lands on known cores rather than wherever sshd
         schedules it.
+
+        ``host_threads`` adds a scan of every thread on the host (``"host_threads"``:
+        ``{tid: {pid, ticks, cpu, comm}}``) so a busy core nobody allocated can be
+        attributed to the thread responsible (``cpu_sampling.attribute_foreign_cores``).
         """
         if self.primary is None:
             raise RuntimeError("topology not started")
@@ -573,19 +579,24 @@ class TopologyGroup:
             for s in self.servers
         ]
         if cpu:
-            parts.append(cpu_sampling.cpu_sample_command({s.port: s.valkey_pid for s in self.servers}))
+            parts.append(
+                cpu_sampling.cpu_sample_command({s.port: s.valkey_pid for s in self.servers}, host_threads=host_threads)
+            )
         command = "; ".join(parts)
         t = time.monotonic()
         out, _ = await self.primary.run_host_command(command, check=False, pin_cpus=pin_cpus)
         if not cpu:
             return {"t": t, "instances": parse_multi_info(out, extra_fields)}
-        info_lines, procstat_lines, thread_lines = cpu_sampling.split_sections(out, _SAMPLE_SEPARATOR)
-        return {
+        info_lines, procstat_lines, thread_lines, host_lines = cpu_sampling.split_sections(out, _SAMPLE_SEPARATOR)
+        sample = {
             "t": t,
             "instances": parse_multi_info("\n".join(info_lines), extra_fields),
             "cores": cpu_sampling.parse_proc_stat(procstat_lines),
             "threads": {port: cpu_sampling.parse_thread_stats(lines) for port, lines in thread_lines.items()},
         }
+        if host_threads:
+            sample["host_threads"] = cpu_sampling.parse_host_threads(host_lines)
+        return sample
 
     def pids(self) -> dict:
         """Main pid per instance port (``-1`` for an instance that is not running)."""

@@ -172,9 +172,13 @@ class FakeGroup:
         FakeGroup.events.append("stop-all")
 
     pins: list = []  # pin_cpus seen by sample(), per call
+    host_scans: list = []  # host_threads flag seen by sample(), per call
 
-    async def sample(self, extra_fields=None, cpu=True, pin_cpus=""):  # pylint: disable=unused-argument
+    async def sample(
+        self, extra_fields=None, cpu=True, pin_cpus="", host_threads=False
+    ):  # pylint: disable=unused-argument
         FakeGroup.pins.append(pin_cpus)
+        FakeGroup.host_scans.append(host_threads)
         """Cumulative counters advancing one second per call; replica main spins, cores idle."""
         if self._t0 is None:
             self._t0 = time.monotonic()
@@ -297,6 +301,7 @@ def faked(monkeypatch, tmp_path):
     FakeCommand.commands = []
     FakeCommand.launch_cpus = []
     FakeGroup.pins = []
+    FakeGroup.host_scans = []
     FakeCommand.results = {
         "preload": _cc_result(50_000),
         "writer": _cc_result(19_800, hit_pct=0.0, command="set"),
@@ -345,6 +350,8 @@ async def test_run_executes_phases_in_order_and_records_once(faked):
     assert len(FakeLocalServer.allocator.released) == 2
     # The sampler shell is pinned to the management cores the task runner loop handed us.
     assert set(FakeGroup.pins) == {"190,191"}
+    # Every sample carries the host-wide thread scan the foreign-core attribution needs.
+    assert FakeGroup.host_scans and all(FakeGroup.host_scans)
     # Each generator is launched under its own allocation (not the runner's whole
     # mask): cachecannon pins only its workers, so its main/admin threads must
     # inherit claimed cores or the verdict sees them as foreign work.
@@ -536,11 +543,11 @@ async def test_sample_loop_survives_a_failed_sample(faked, monkeypatch):
     calls = {"n": 0}
     good_sample = group.sample
 
-    async def flaky(extra_fields=None, cpu=True, pin_cpus=""):  # pylint: disable=unused-argument
+    async def flaky(extra_fields=None, cpu=True, pin_cpus="", host_threads=False):  # pylint: disable=unused-argument
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("ssh hiccup")
-        return await good_sample(extra_fields, cpu)
+        return await good_sample(extra_fields, cpu, pin_cpus, host_threads)
 
     monkeypatch.setattr(group, "sample", flaky)
     reader = FakeCommand("/x/reader_rep1.toml")
