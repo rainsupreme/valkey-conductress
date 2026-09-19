@@ -59,14 +59,25 @@ def test_alignment_maps_series_to_shared_zero():
     assert wall_to_axis(1002.5, t0) == pytest.approx(2.5)
 
 
-def test_alignment_falls_back_to_measure_start_without_stall():
-    from conductress.plots.connection_storm import series_t0
+def test_alignment_uses_storm_origin_without_stall():
+    """Without a stall, t=0 is the storm event itself: the generator's origin."""
+    from conductress.plots.connection_storm import measurement_start_axis, series_t0
 
     scenario_metrics = {
         "measure_start_wall": 500.0,
         "background_start_wall": 501.0,
-        "storm": {"origin_wall": 500.1, "stall": {"kind": "none", "started": None, "ended": None}},
+        "storm": {"origin_wall": 506.4, "stall": {"kind": "none", "started": None, "ended": None}},
     }
+    t0 = series_t0(scenario_metrics)
+    assert t0 == pytest.approx(506.4)
+    # The measurement started 5.4 s before the storm: that is the window's left edge.
+    assert measurement_start_axis(scenario_metrics, t0) == pytest.approx(-5.4)
+
+
+def test_alignment_falls_back_to_measure_start_without_storm_origin():
+    from conductress.plots.connection_storm import series_t0
+
+    scenario_metrics = {"measure_start_wall": 500.0, "background_start_wall": 501.0, "storm": {}}
     assert series_t0(scenario_metrics) == pytest.approx(500.0)
 
 
@@ -296,7 +307,7 @@ def test_x_label_names_the_time_origin(views):
     labels = [ax.get_xlabel() for ax in fig.axes if ax.get_xlabel()]
     assert labels, "bottom row carries x labels"
     for view, label in zip(views, labels):
-        expected = "stall start" if view.stall_seconds is not None else "measurement start"
+        expected = "stall start" if view.stall_seconds is not None else "storm start"
         assert expected in label
 
 
@@ -305,7 +316,8 @@ def test_default_window_covers_the_storm(views):
     from conductress.plots.connection_storm import _default_xrange, _storm_bucket_xy, build_storm_figure, series_t0
 
     lo, hi = _default_xrange(views)
-    assert lo == -3.0
+    # Left edge is the measurement start (before the storm), never later than -3 s.
+    assert lo <= -3.0
     last_bucket = max(
         max(_storm_bucket_xy(rep, series_t0(rep), "timeouts")[0] or [0.0]) for view in views for rep in view.reps
     )

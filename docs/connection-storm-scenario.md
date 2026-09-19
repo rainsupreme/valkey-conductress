@@ -252,8 +252,11 @@ repetition, `measure_start_wall` (just before the overlay starts),
 origin in wall-clock). The stall record's `started`/`ended` are already
 wall-clock.
 
-Plot convention: **`t = 0` is `storm.stall.started` when a stall exists,
-otherwise `measure_start_wall`.** Each series then maps by subtracting `t0`:
+Plot convention: **`t = 0` is the storm event: `storm.stall.started` when a
+stall exists, otherwise `storm.origin_wall` (the generator's burst origin,
+after prewarm).** The default window opens at the background measurement's
+start (`background_start_wall`, a negative axis position) and closes 3 s after
+the last storm bucket or the stall end. Each series maps by subtracting `t0`:
 the background buckets from `background_start_wall + second`, the sampler rows
 from their own `t_reply`, and the storm timeline from `storm.origin_wall +
 t_ms/1000`. This replaces the older ~1 s inference via `overlay_start_offset_s`.
