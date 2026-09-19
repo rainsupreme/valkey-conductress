@@ -59,14 +59,25 @@ def test_alignment_maps_series_to_shared_zero():
     assert wall_to_axis(1002.5, t0) == pytest.approx(2.5)
 
 
-def test_alignment_falls_back_to_measure_start_without_stall():
-    from conductress.plots.connection_storm import series_t0
+def test_alignment_uses_storm_origin_without_stall():
+    """Without a stall, t=0 is the storm event itself: the generator's origin."""
+    from conductress.plots.connection_storm import measurement_start_axis, series_t0
 
     scenario_metrics = {
         "measure_start_wall": 500.0,
         "background_start_wall": 501.0,
-        "storm": {"origin_wall": 500.1, "stall": {"kind": "none", "started": None, "ended": None}},
+        "storm": {"origin_wall": 506.4, "stall": {"kind": "none", "started": None, "ended": None}},
     }
+    t0 = series_t0(scenario_metrics)
+    assert t0 == pytest.approx(506.4)
+    # The measurement started 5.4 s before the storm: that is the window's left edge.
+    assert measurement_start_axis(scenario_metrics, t0) == pytest.approx(-5.4)
+
+
+def test_alignment_falls_back_to_measure_start_without_storm_origin():
+    from conductress.plots.connection_storm import series_t0
+
+    scenario_metrics = {"measure_start_wall": 500.0, "background_start_wall": 501.0, "storm": {}}
     assert series_t0(scenario_metrics) == pytest.approx(500.0)
 
 
@@ -238,3 +249,78 @@ def test_cli_plot_matplotlib_missing_message(monkeypatch, capsys):
     rc = handle_plot(args, parser)
     assert rc == 2
     assert "matplotlib" in capsys.readouterr().err.lower()
+
+
+# --------------------------------------------------------------------------- comparability across columns
+
+
+def test_rows_share_y_axis_across_columns(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure(views)
+    axes = fig.axes
+    ncols = len(views)
+    for row in range(4):
+        left, right = axes[row * ncols], axes[row * ncols + 1]
+        assert left.get_shared_y_axes().joined(left, right), f"row {row} columns do not share y"
+        assert left.get_ylim() == right.get_ylim()
+
+
+def test_column_titles_tell_arms_apart(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure(views)
+    titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+    assert len(titles) == len(views)
+    for view, title in zip(views, titles):
+        assert view.task_id in title
+        assert "stall=" in title
+        assert ("server defaults" in title) or (view.server_args and view.server_args in title)
+    assert len(set(titles)) == len(titles)  # no two columns carry the same title
+
+
+def test_column_title_names_server_args_and_stall():
+    from conductress.plots.connection_storm import ScenarioRunView
+
+    view = ScenarioRunView(
+        task_id="t1",
+        short_description="scenario:connection-storm v=512B io=9 30s",
+        source="valkey",
+        commit_hash="abc",
+        runner_id="r",
+        server_args="--tcp-backlog 4096",
+        stall_spec="none",
+    )
+    title = view.column_title()
+    assert "--tcp-backlog 4096" in title and "stall=none" in title and "t1" in title
+    bare = ScenarioRunView(task_id="t2", short_description="d", source="v", commit_hash="c", runner_id="r")
+    assert "server defaults" in bare.column_title()
+
+
+def test_x_label_names_the_time_origin(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure(views)
+    labels = [ax.get_xlabel() for ax in fig.axes if ax.get_xlabel()]
+    assert labels, "bottom row carries x labels"
+    for view, label in zip(views, labels):
+        expected = "stall start" if view.stall_seconds is not None else "storm start"
+        assert expected in label
+
+
+def test_default_window_covers_the_storm(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import _default_xrange, _storm_bucket_xy, build_storm_figure, series_t0
+
+    lo, hi = _default_xrange(views)
+    # Left edge is the measurement start (before the storm), never later than -3 s.
+    assert lo <= -3.0
+    last_bucket = max(
+        max(_storm_bucket_xy(rep, series_t0(rep), "timeouts")[0] or [0.0]) for view in views for rep in view.reps
+    )
+    assert hi >= last_bucket + 3.0
+    fig = build_storm_figure(views)  # no xrange given -> the default applies
+    assert fig.axes[0].get_xlim()[1] >= last_bucket + 3.0

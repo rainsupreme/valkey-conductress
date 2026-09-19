@@ -60,17 +60,31 @@ def _require_matplotlib():
 def series_t0(scenario_metrics: Dict[str, Any]) -> float:
     """The wall-clock time that maps to axis ``t = 0`` for one repetition.
 
-    Convention: the stall start when a stall exists, else ``measure_start_wall``.
+    Convention: ``t = 0`` is the storm event. That is the stall start when a
+    stall exists, otherwise the storm generator's origin (``storm.origin_wall``,
+    the instant its burst clock starts, after prewarm). Runs with neither fall
+    back to ``measure_start_wall``.
     """
     storm = scenario_metrics.get("storm") or {}
     stall = storm.get("stall") or {}
     started = stall.get("started")
     if started is not None:
         return float(started)
+    origin = storm.get("origin_wall")
+    if origin is not None:
+        return float(origin)
     measure_start = scenario_metrics.get("measure_start_wall")
     if measure_start is not None:
         return float(measure_start)
     return float(scenario_metrics.get("background_start_wall", 0.0))
+
+
+def measurement_start_axis(scenario_metrics: Dict[str, Any], t0: float) -> Optional[float]:
+    """Axis position of the background measurement's start, or None if unknown."""
+    start = scenario_metrics.get("background_start_wall")
+    if start is None:
+        start = scenario_metrics.get("measure_start_wall")
+    return None if start is None else wall_to_axis(float(start), t0)
 
 
 def wall_to_axis(wall: float, t0: float) -> float:
@@ -96,6 +110,18 @@ class ScenarioRunView:
     commit_hash: str
     runner_id: str
     reps: List[Dict[str, Any]] = field(default_factory=list)
+    server_args: str = ""
+    stall_spec: str = "none"
+
+    def column_title(self) -> str:
+        """Title that tells this column apart from its neighbours.
+
+        The scenario's short description is identical for arms that differ only
+        in server arguments or stall, so the title also names the stall spec, the
+        effective server arguments (or "server defaults") and the task id.
+        """
+        args = self.server_args.strip() or "server defaults"
+        return f"{self.short_description}\nstall={self.stall_spec}  {args}\n{self.task_id}"
 
     @property
     def stall_seconds(self) -> Optional[float]:
@@ -117,6 +143,53 @@ class ScenarioRunView:
             means.append((sum(rps) / len(rps) if rps else 0.0, i))
         means.sort()
         return means[len(means) // 2][1]
+
+
+def _server_args_for(record: Dict[str, Any], agg: Dict[str, Any]) -> str:
+    """Effective server arguments, from the aggregate metrics or the task data."""
+    for candidate in (agg.get("server_args_effective"), record.get("data", {}).get("server_args")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _stall_spec_for(reps: Sequence[Dict[str, Any]]) -> str:
+    """The storm's stall spec (e.g. ``debug-sleep:2``) from the first rep that recorded one."""
+    for rep in reps:
+        storm = rep.get("storm") or {}
+        config = storm.get("generator_config") or {}
+        spec = config.get("stall")
+        if isinstance(spec, str) and spec:
+            return spec
+        kind = (storm.get("stall") or {}).get("kind")
+        if isinstance(kind, str) and kind:
+            return kind
+    return "none"
+
+
+def _default_xrange(views: Sequence["ScenarioRunView"]) -> Tuple[float, float]:
+    """A window from the measurement start to the storm's tail.
+
+    The left edge is the earliest background-measurement start across the runs
+    (negative, since ``t = 0`` is the storm event); the right edge covers the
+    last storm bucket and the stall end plus 3 s.
+    """
+    lo = -3.0
+    hi = 6.0
+    for view in views:
+        for data in view.reps:
+            t0 = series_t0(data)
+            start = measurement_start_axis(data, t0)
+            if start is not None:
+                lo = min(lo, start)
+            tx, _ = _storm_bucket_xy(data, t0, "timeouts")
+            if tx:
+                hi = max(hi, max(tx) + 3.0)
+            stall = (data.get("storm") or {}).get("stall") or {}
+            ended = stall.get("ended")
+            if ended is not None:
+                hi = max(hi, float(ended) - t0 + 3.0)
+    return (lo, hi)
 
 
 def _short_description_for(record: Dict[str, Any]) -> str:
@@ -166,6 +239,8 @@ def load_run_views(
                 commit_hash=found.get("commit_hash", "?"),
                 runner_id=found.get("runner_id", "?"),
                 reps=list(reps),
+                server_args=_server_args_for(found, agg),
+                stall_spec=_stall_spec_for(reps),
             )
         )
     if missing:
@@ -290,7 +365,10 @@ def build_storm_figure(
         raise ValueError("build_storm_figure needs at least one run view")
     ncols = len(views)
 
-    fig, axes = plt.subplots(4, ncols, figsize=(15, 11), dpi=100, sharex=True, squeeze=False)
+    # Rows share their y axis across columns so arms compare at a glance.
+    fig, axes = plt.subplots(4, ncols, figsize=(15, 11), dpi=100, sharex=True, sharey="row", squeeze=False)
+    if xrange is None:
+        xrange = _default_xrange(views)
 
     for col, view in enumerate(views):
         hue = COLUMN_HUES[col % len(COLUMN_HUES)]
@@ -329,10 +407,11 @@ def build_storm_figure(
 
             if col == 0:
                 axis.set_ylabel(ROW_LABELS[ax_row])
-        axes[0][col].set_title(view.short_description, fontsize=10, color=hue)
+        axes[0][col].set_title(view.column_title(), fontsize=9, color=hue)
 
-    for col in range(ncols):
-        axes[3][col].set_xlabel("seconds from stall start")
+    for col, view in enumerate(views):
+        origin = "stall start" if view.stall_seconds is not None else "storm start"
+        axes[3][col].set_xlabel(f"seconds from {origin}")
         if xrange is not None:
             axes[0][col].set_xlim(*xrange)
 
