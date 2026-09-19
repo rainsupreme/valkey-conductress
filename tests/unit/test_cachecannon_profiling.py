@@ -240,3 +240,56 @@ def test_cli_rejects_bad_info_section(capsys):
         assert cli.main(["queue", "add-cachecannon", "--runner", "armbench", "--info-sections", "a b"]) == 1
     assert "--info-sections" in capsys.readouterr().err
     assert not client.submitted
+
+
+# --------------------------------------------------------------------------- result record
+
+
+def _run_record_result(runner, perf_counters):
+    """Drive _record_result with a fake server and file protocol; return the results row."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    server = MagicMock()
+    server.run_host_command = AsyncMock(return_value=("lscpu-output", ""))
+    server.server_cpus = "2-5"
+    written = {}
+    runner.file_protocol = MagicMock()
+    runner.file_protocol.write_results = lambda results: written.setdefault("results", results)
+    asyncio.run(
+        runner._record_result(
+            server,
+            per_run_rps=[1_990_000.0, 2_000_000.0],
+            all_results=[{"throughput_rps": 1_990_000.0, "error_pct": 0.0}] * 2,
+            toml_content="",
+            perf_counters=perf_counters,
+        )
+    )
+    return written["results"]
+
+
+def test_result_row_carries_perf_normalisation_fields():
+    """The sweep exporter divides summed counters by perf_duration_seconds * perf_rep_count."""
+    runner = _task(perf_stat_enabled=True).prepare_task_runner([])
+    runner._perf_stat_scope = "user+kernel"
+    runner._perf_rep_count = 2
+    runner._perf_windows_seconds = [29.0, 29.4]
+    row = _run_record_result(runner, {"all": {"cycles": 20}, "main": {"cycles": 12}, "io": {"cycles": 8}})
+    assert row.data["perf_counters"] == {"all": {"cycles": 20}, "main": {"cycles": 12}, "io": {"cycles": 8}}
+    assert row.data["perf_counters_scope"] == "user+kernel"
+    assert row.data["perf_duration_seconds"] == pytest.approx(29.2)
+    assert row.data["perf_rep_count"] == 2
+
+
+def test_result_row_falls_back_to_nominal_duration_without_measured_windows():
+    runner = _task(perf_stat_enabled=True).prepare_task_runner([])
+    row = _run_record_result(runner, {"all": {"cycles": 20}})
+    assert row.data["perf_duration_seconds"] == 30.0
+    assert row.data["perf_rep_count"] == 1
+    assert "perf_counters_scope" not in row.data
+
+
+def test_result_row_has_no_perf_fields_when_unprofiled():
+    runner = _task().prepare_task_runner([])
+    row = _run_record_result(runner, None)
+    assert not any(k.startswith("perf_") for k in row.data)

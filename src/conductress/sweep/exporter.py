@@ -104,6 +104,26 @@ PERF_METRICS: dict[str, dict[str, Any]] = {
             c["topdown-bad-spec"] / c["slots"] * 100 if c.get("slots") and c.get("topdown-bad-spec") else None
         ),
     },
+    # Kernel interaction. Both events are software/tracepoint counters that only
+    # count under a privileged perf stat (PR #196); rows counted user-only carry
+    # 0 for them and are skipped by the falsy guard rather than plotted as zero.
+    "syscalls-per-req": {
+        "label": "Syscalls per Request",
+        "unit": "syscalls/request",
+        # Same summed-across-reps correction as instructions-per-req.
+        "compute": lambda c, rps=0, duration=0, reps=1, **_: (
+            c["raw_syscalls:sys_enter"] / (rps * duration * (reps or 1))
+            if rps and duration and c.get("raw_syscalls:sys_enter")
+            else None
+        ),
+    },
+    "context-switches-per-sec": {
+        "label": "Context Switches per Second",
+        "unit": "switches/s",
+        "compute": lambda c, duration=0, reps=1, **_: (
+            c["context-switches"] / (duration * (reps or 1)) if duration and c.get("context-switches") else None
+        ),
+    },
 }
 
 PERF_GROUPS: list[dict[str, Any]] = [
@@ -149,6 +169,15 @@ PERF_GROUPS: list[dict[str, Any]] = [
         "y_axes": [{"id": "left", "label": "misses per 1K instructions", "series": ["branch-mpki"]}],
     },
     {
+        "id": "kernel",
+        "title": "Kernel Interaction",
+        "series": ["syscalls-per-req", "context-switches-per-sec"],
+        "y_axes": [
+            {"id": "left", "label": "syscalls/request", "series": ["syscalls-per-req"]},
+            {"id": "right", "label": "context switches/s", "series": ["context-switches-per-sec"]},
+        ],
+    },
+    {
         "id": "cpu-main",
         "title": "CPU Profile — Main Thread",
         "series": ["cpu-main"],
@@ -166,7 +195,7 @@ PERF_GROUPS: list[dict[str, Any]] = [
 
 # Counter-based groups that can be split by thread (everything except the
 # cpu-main/cpu-io flamegraph groups, which are already thread-specific).
-_PER_THREAD_BASE_GROUP_IDS = ("efficiency", "cache", "pipeline", "tma", "branching")
+_PER_THREAD_BASE_GROUP_IDS = ("efficiency", "cache", "pipeline", "tma", "branching", "kernel")
 _PER_THREAD_SUFFIXES = (("-main", "Main Thread"), ("-io", "IO Threads"))
 
 
@@ -457,6 +486,16 @@ def _compute_metric(point: BenchmarkPoint, metric_id: str) -> Any:
     )
 
 
+# Scope assigned to perf points recorded before the scope field existed. perf
+# stat ran unprivileged until PR #196, so every such point is user-space only.
+LEGACY_PERF_SCOPE = "user"
+
+
+def perf_scope(point: BenchmarkPoint) -> str:
+    """Privilege scope a point's perf counters were counted under."""
+    return point.perf_counters_scope or LEGACY_PERF_SCOPE
+
+
 def export_perf_metrics(
     state: SweepState,
     output_dir: Path,
@@ -530,6 +569,12 @@ def export_perf_metrics(
                     "commit_index": commit_index.get(point.commit, 0),
                     "date": point.date,
                     "value": round(value, 6),
+                    # Counts from different privilege scopes are not comparable
+                    # (kernel work was ~20% of IO-thread cycles at P16 with four
+                    # I/O threads, more at depth 1), so every point says which it
+                    # is. The dashboard draws scopes as separate runs instead of
+                    # one line with a false step at the deploy date.
+                    "scope": perf_scope(point),
                 }
                 pr = state.commit_prs.get(point.commit) or point.pr
                 pr_title = state.commit_titles.get(point.commit)
@@ -553,6 +598,8 @@ def export_perf_metrics(
                     "unit": metric_def["unit"],
                     "generated": datetime.now(timezone.utc).isoformat(),
                     "total_commits": len(state.merge_commits),
+                    # Scopes present in this series, in first-seen (commit) order.
+                    "scopes": list(dict.fromkeys(p["scope"] for p in points)),
                 },
                 "points": points,
                 "landmarks": landmarks,

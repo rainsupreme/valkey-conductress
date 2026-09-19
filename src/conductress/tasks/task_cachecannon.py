@@ -317,8 +317,13 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # engines that opt out (same gate as the memtier mixed task).
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
         self._cpu_stacks_main: list[list] = []
-        self._perf_stat_scope: Optional[str] = None
         self._cpu_stacks_io: list[list] = []
+        self._perf_stat_scope: Optional[str] = None
+        # Reps whose counters were summed into perf_counters, and the measured
+        # length of each counting window. Both are needed to normalise absolute
+        # counters per request (the exporter divides by rps * duration * reps).
+        self._perf_rep_count = 0
+        self._perf_windows_seconds: list[float] = []
         self._info_deltas_per_rep: list[dict] = []
 
         self.commit_hash = ""
@@ -498,6 +503,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 is_last_rep = rep == effective_reps - 1
                 perf_armed = False
                 perf_stopped = False
+                perf_t0: Optional[float] = None
                 cpu_profile_armed = False
                 window_started = False
                 info_t0: Optional[dict[str, dict[str, str]]] = None
@@ -534,6 +540,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                             if self.perf_stat_enabled:
                                 await server.perf_stat_start()
                                 perf_armed = True
+                                perf_t0 = time.monotonic()
                             if is_last_rep and self.perf_stat_enabled and self._profile_internals:
                                 # Leave a margin so the record ends before the load does.
                                 server.cpu_profile_start(max(1, self.duration - 2))
@@ -554,6 +561,8 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     if perf_armed:
                         await server.perf_stat_stop()
                         perf_stopped = True
+                        if perf_t0 is not None:
+                            self._perf_windows_seconds.append(time.monotonic() - perf_t0)
 
                     # Drain remaining output
                     line, _ = command.poll_output()
@@ -567,6 +576,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                         rep_counters = await server.perf_stat_report(self.file_protocol.get_result_dir())
                         self._perf_stat_scope = server.perf_stat_scope or self._perf_stat_scope
                         if rep_counters:
+                            self._perf_rep_count += 1
                             if perf_counters is None:
                                 perf_counters = rep_counters
                             else:
@@ -769,6 +779,16 @@ class CachecannonTaskRunner(BaseTaskRunner):
             detailed_data["perf_counters"] = perf_counters
             if self._perf_stat_scope:
                 detailed_data["perf_counters_scope"] = self._perf_stat_scope
+            # Counters cover the measured counting window (armed on the first
+            # scored sample line, stopped at process exit), not the nominal
+            # duration; the sweep exporter divides by this value and by the
+            # number of reps summed. Same keys as the memtier tasks.
+            detailed_data["perf_duration_seconds"] = (
+                sum(self._perf_windows_seconds) / len(self._perf_windows_seconds)
+                if self._perf_windows_seconds
+                else float(self.duration)
+            )
+            detailed_data["perf_rep_count"] = self._perf_rep_count or 1
         if self._cpu_stacks_main:
             detailed_data["cpu_stacks_main"] = self._cpu_stacks_main
             detailed_data["cpu_stacks_io"] = self._cpu_stacks_io

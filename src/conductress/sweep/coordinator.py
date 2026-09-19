@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import stdev
 from typing import Optional
@@ -42,6 +43,62 @@ from conductress.topology import TopologySpec
 logger = logging.getLogger(__name__)
 
 # Git configuration (shared across all sweep types)
+
+
+@dataclass
+class PerfCounterRecord:
+    """Perf stat counters lifted from one completed task's result row.
+
+    ``counters`` is process-wide; ``counters_main`` / ``counters_io`` are the
+    optional per-thread buckets. ``duration`` is the counting window of one rep
+    and ``rep_count`` the number of reps whose raw counters were summed, both
+    needed to normalise absolute counters per request. ``scope`` is the
+    privilege scope perf counted under (``None`` for rows that predate it, which
+    were user-only).
+    """
+
+    counters: dict[str, int]
+    duration: float
+    rps: float
+    counters_main: Optional[dict[str, int]] = None
+    counters_io: Optional[dict[str, int]] = None
+    rep_count: Optional[int] = None
+    scope: Optional[str] = None
+
+
+def perf_counters_from_entry(entry: dict) -> Optional[PerfCounterRecord]:
+    """Lift perf stat counters from an ``output.jsonl`` row, whatever its shape.
+
+    Two result shapes exist. The valkey-benchmark task flattens the buckets into
+    sibling keys (``perf_counters`` process-wide, ``perf_counters_main``,
+    ``perf_counters_io``); the memtier mixed and cachecannon tasks store the
+    bucketed dict as written by the profiling manager
+    (``perf_counters = {"all": ..., "main": ..., "io": ...}``). Both are
+    normalised here so every coordinator records the same point fields.
+    """
+    data = entry.get("data", {})
+    raw = data.get("perf_counters")
+    if not raw:
+        return None
+    if any(k in raw for k in ("all", "main", "io")):
+        counters = raw.get("all") or {}
+        counters_main = raw.get("main") or None
+        counters_io = raw.get("io") or None
+    else:
+        counters = raw
+        counters_main = data.get("perf_counters_main")
+        counters_io = data.get("perf_counters_io")
+    if not counters:
+        return None
+    return PerfCounterRecord(
+        counters=counters,
+        duration=data.get("perf_duration_seconds", 0.0),
+        rps=entry.get("score", 0.0),
+        counters_main=counters_main,
+        counters_io=counters_io,
+        rep_count=data.get("perf_rep_count"),
+        scope=data.get("perf_counters_scope"),
+    )
 
 
 class BaseSweepCoordinator(ABC):
@@ -99,6 +156,7 @@ class BaseSweepCoordinator(ABC):
         counters_main: Optional[dict[str, int]] = None,
         counters_io: Optional[dict[str, int]] = None,
         rep_count: Optional[int] = None,
+        scope: Optional[str] = None,
     ) -> None:
         """Record perf stat counters for a commit and persist state.
 
@@ -106,6 +164,8 @@ class BaseSweepCoordinator(ABC):
         are the optional per-thread (main vs IO) breakdowns. ``rep_count`` is the
         number of reps whose raw counters were summed (needed to normalize absolute
         per-request metrics, which would otherwise scale with the rep count).
+        ``scope`` is the privilege scope perf counted under; ``None`` keeps the
+        point's existing value so re-recording legacy data cannot erase it.
         """
         point = self.state.points.get(commit)
         if point is None:
@@ -117,6 +177,8 @@ class BaseSweepCoordinator(ABC):
         point.perf_duration_seconds = duration
         point.perf_rps = rps
         point.perf_rep_count = rep_count
+        if scope is not None:
+            point.perf_counters_scope = scope
         self.state.save(self.state_file)
         logger.info("Perf counters recorded: %s (%d events)", commit[:8], len(counters))
 
@@ -141,11 +203,18 @@ class BaseSweepCoordinator(ABC):
             value, cv, reps = result
             self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
             # Extract perf counters if available
-            perf_data = self._extract_perf_counters(task)  # pylint: disable=assignment-from-none
-            if perf_data:
-                counters, duration, rps, counters_main, counters_io, rep_count = perf_data
-                commit = task.sweep_commit  # type: ignore[attr-defined]
-                self.record_perf_counters(commit, counters, duration, rps, counters_main, counters_io, rep_count)
+            perf = self._extract_perf_counters(task)  # pylint: disable=assignment-from-none
+            if perf:
+                self.record_perf_counters(
+                    task.sweep_commit,  # type: ignore[attr-defined]
+                    perf.counters,
+                    perf.duration,
+                    perf.rps,
+                    perf.counters_main,
+                    perf.counters_io,
+                    perf.rep_count,
+                    scope=perf.scope,
+                )
             # Extract CPU profile stacks if available
             self._extract_cpu_stacks(task)
         else:
@@ -289,23 +358,29 @@ class BaseSweepCoordinator(ABC):
         """Extract (value, cv, reps) from a completed task. Returns None on failure."""
         ...
 
-    def _extract_perf_counters(
-        self, task: BaseTaskData
-    ) -> Optional[
-        tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]], Optional[int]]
-    ]:
+    def _extract_perf_counters(self, task: BaseTaskData) -> Optional[PerfCounterRecord]:
         """Extract perf counters from a completed task.
 
-        Returns ``(counters, duration_seconds, rps, counters_main, counters_io,
-        rep_count)`` or ``None`` if perf stat data is not available. The
-        ``_main``/``_io`` items may be ``None`` when per-thread data was not
-        collected; ``rep_count`` may be ``None`` for legacy data. Subclasses
-        override to provide extraction logic.
+        Returns ``None`` if perf stat data is not available. Subclasses whose
+        tasks can carry counters override to locate the result row and hand it
+        to :func:`perf_counters_from_entry`.
         """
         return None
 
     def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
         """Extract CPU profile stacks from task and store on point. Subclasses override."""
+
+    def _store_cpu_stacks_from_entry(self, task: BaseTaskData, entry: dict) -> None:
+        """Copy ``cpu_stacks_main`` / ``cpu_stacks_io`` from a result row onto the task's point."""
+        data = entry.get("data", {})
+        cpu_main = data.get("cpu_stacks_main")
+        if not cpu_main:
+            return
+        commit = getattr(task, "sweep_commit", "")
+        if commit and commit in self.state.points:
+            self.state.points[commit].cpu_stacks_main = cpu_main
+            self.state.points[commit].cpu_stacks_io = data.get("cpu_stacks_io", [])
+            self.state.save(self.state_file)
 
     @abstractmethod
     def _is_my_task(self, task: BaseTaskData) -> bool:
@@ -493,40 +568,16 @@ class SweepCoordinator(BaseSweepCoordinator):
         reps = len(per_run) if per_run else 3
         return (rps, cv, reps) if rps else None
 
-    def _extract_perf_counters(
-        self, task: BaseTaskData
-    ) -> Optional[
-        tuple[dict[str, int], float, float, Optional[dict[str, int]], Optional[dict[str, int]], Optional[int]]
-    ]:
+    def _extract_perf_counters(self, task: BaseTaskData) -> Optional[PerfCounterRecord]:
         """Extract perf stat counters (process-wide + per-thread) from task output."""
         entry = self._find_task_entry(task)
-        if not entry:
-            return None
-        data = entry.get("data", {})
-        counters = data.get("perf_counters")
-        if not counters:
-            return None
-        duration = data.get("perf_duration_seconds", 0.0)
-        rps = entry.get("score", 0.0)
-        counters_main = data.get("perf_counters_main")
-        counters_io = data.get("perf_counters_io")
-        rep_count = data.get("perf_rep_count")
-        return (counters, duration, rps, counters_main, counters_io, rep_count)
+        return perf_counters_from_entry(entry) if entry else None
 
     def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
         """Extract CPU profile stacks from task output and store on the point."""
         entry = self._find_task_entry(task)
-        if not entry:
-            return
-        data = entry.get("data", {})
-        cpu_main = data.get("cpu_stacks_main")
-        if not cpu_main:
-            return
-        commit = getattr(task, "sweep_commit", "")
-        if commit and commit in self.state.points:
-            self.state.points[commit].cpu_stacks_main = cpu_main
-            self.state.points[commit].cpu_stacks_io = data.get("cpu_stacks_io", [])
-            self.state.save(self.state_file)
+        if entry:
+            self._store_cpu_stacks_from_entry(task, entry)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
         return (
