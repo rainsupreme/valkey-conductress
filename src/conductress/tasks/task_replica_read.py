@@ -271,8 +271,18 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             f.write(content)
         return str(path)
 
-    def _launch(self, toml_path: str) -> RealtimeCommand:
-        command = RealtimeCommand(f"{self.task.cachecannon_binary} {toml_path}")
+    def _launch(self, toml_path: str, cpus: str) -> RealtimeCommand:
+        """Start cachecannon confined to ``cpus``, the cores allocated for that generator.
+
+        cachecannon pins only its ringline workers to the TOML's ``cpu_list``;
+        its main and admin (metrics) threads stay on the launch mask. Launching
+        under the allocation keeps those threads on claimed cores, so the
+        bottleneck verdict does not see them as foreign work (smoke cell take
+        3 read 0.16 of a core on an unallocated node-1 core for exactly this).
+        Empty ``cpus`` (no allocation, e.g. a bare ``--client-cpus``) defers to
+        the runner-wide launch mask.
+        """
+        command = RealtimeCommand(f"{self.task.cachecannon_binary} {toml_path}", launch_cpus=cpus or None)
         command.start()
         return command
 
@@ -398,7 +408,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 prefill=True,
             ),
         )
-        await self._wait_and_parse(self._launch(preload_toml), "preload")
+        await self._wait_and_parse(self._launch(preload_toml, placement.writer_cpus), "preload")
         await group.wait_for_offsets_caught_up()
         keys_primary = (await primary.count_items_expires())[0]
         keys_replica = (await replica.count_items_expires())[0]
@@ -461,9 +471,9 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         )
 
         samples: list = []
-        writer_cmd = self._launch(writer_path)
+        writer_cmd = self._launch(writer_path, placement.writer_cpus)
         await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
-        reader_cmd = self._launch(reader_path)
+        reader_cmd = self._launch(reader_path, placement.reader_cpus)
         reader_started = time.monotonic()
         sampler = asyncio.create_task(
             self._sample_loop(group, samples, reader_cmd, writer_cmd, pin_cpus=placement.runner_cpus)

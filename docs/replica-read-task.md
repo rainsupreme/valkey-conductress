@@ -97,6 +97,19 @@ change on a single build.
    the same cores via `run_host_command(pin_cpus=...)`, and lists them as
    `runner` in the verdict's claimed CPU map.
 
+   The generators have unpinned threads of their own. cachecannon pins only
+   its ringline workers to the TOML's `cpu_list`; its main thread and the
+   admin thread that emits the per-second metrics stay on the launch mask,
+   and with the runner pinned that mask is the whole host. With the runner
+   confined, the next smoke cell still read `host` (`{107: 0.159}`, 18 reader
+   threads for 8 workers): the admin thread summarising 1.4M ops/s on a random
+   node-1 core. This task therefore launches each cachecannon process under
+   its own allocation (`taskset -c <reader cpus>` / `<writer cpus>`;
+   `RealtimeCommand(launch_cpus=...)`), so every thread of a generator sits on
+   cores the verdict counts as claimed. The admin thread then shares the
+   worker cores instead of a free core elsewhere, which is the honest
+   accounting for what the generator costs.
+
 ## Result row
 
 `method = "replica-read"`, `score` = mean reader rps over reps, `cv`/`reps`

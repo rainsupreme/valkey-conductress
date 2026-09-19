@@ -232,10 +232,26 @@ class RealtimeCommand:
     # the pin. Empty means launch with whatever mask this process has.
     launch_cpus: str = ""
 
-    def __init__(self, command: str, remote: Optional[str] = None):
+    def __init__(self, command: str, remote: Optional[str] = None, launch_cpus: Optional[str] = None):
+        """``launch_cpus`` pins the whole child to a cpulist (its unpinned
+        threads included); None defers to the runner-wide ``launch_cpus``.
+
+        A generator that pins only its worker threads (cachecannon pins its
+        ringline workers, memtier its threads) leaves its main and metrics
+        threads on the launch mask, so a task that allocated cores for the
+        generator should launch it under that allocation rather than the
+        runner's whole mask, or those threads land on cores nobody claimed.
+        """
         self.command = command
         self.remote = remote
+        self._launch_cpus = launch_cpus
         self.p = None
+
+    def effective_launch_cpus(self) -> str:
+        """The cpulist this command's local launch is confined to ("" = none)."""
+        if self._launch_cpus is not None:
+            return self._launch_cpus
+        return RealtimeCommand.launch_cpus
 
     def __del__(self):
         """Destructor - kill the process if it's still running."""
@@ -248,8 +264,10 @@ class RealtimeCommand:
         command_list = shlex.split(self.command)
         if self.remote is not None:
             command_list = ["ssh", "-q", "-i", SSH_KEYFILE, self.remote] + command_list
-        elif RealtimeCommand.launch_cpus:
-            command_list = ["taskset", "-c", RealtimeCommand.launch_cpus] + command_list
+        else:
+            cpus = self.effective_launch_cpus()
+            if cpus:
+                command_list = ["taskset", "-c", cpus] + command_list
         output_dest = subprocess.DEVNULL if ignore_output else subprocess.PIPE
         self.p = subprocess.Popen(command_list, stdout=output_dest, stderr=output_dest)
         if not ignore_output:
