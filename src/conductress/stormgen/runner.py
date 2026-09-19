@@ -312,6 +312,10 @@ async def _drive_stall(config: StormConfig, *, delay_from: Optional[float] = Non
     injector = config.stall()
     if not injector.injects:
         return StallRecord(kind=injector.kind)
+    # A time-bounded stall (a slow loop) must end inside the storm window;
+    # clamp it against the storm duration and the burst offset. One-shot stalls
+    # ignore this (their duration is sized by the caller).
+    injector.clamp_to_storm(config.duration_s, config.burst_after_stall_ms / 1000.0)
     if delay_from is not None:
         wait = delay_from + config.stall_after_s - time.monotonic()
         if wait > 0:
