@@ -96,6 +96,18 @@ class ScenarioRunView:
     commit_hash: str
     runner_id: str
     reps: List[Dict[str, Any]] = field(default_factory=list)
+    server_args: str = ""
+    stall_spec: str = "none"
+
+    def column_title(self) -> str:
+        """Title that tells this column apart from its neighbours.
+
+        The scenario's short description is identical for arms that differ only
+        in server arguments or stall, so the title also names the stall spec, the
+        effective server arguments (or "server defaults") and the task id.
+        """
+        args = self.server_args.strip() or "server defaults"
+        return f"{self.short_description}\nstall={self.stall_spec}  {args}\n{self.task_id}"
 
     @property
     def stall_seconds(self) -> Optional[float]:
@@ -117,6 +129,48 @@ class ScenarioRunView:
             means.append((sum(rps) / len(rps) if rps else 0.0, i))
         means.sort()
         return means[len(means) // 2][1]
+
+
+def _server_args_for(record: Dict[str, Any], agg: Dict[str, Any]) -> str:
+    """Effective server arguments, from the aggregate metrics or the task data."""
+    for candidate in (agg.get("server_args_effective"), record.get("data", {}).get("server_args")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _stall_spec_for(reps: Sequence[Dict[str, Any]]) -> str:
+    """The storm's stall spec (e.g. ``debug-sleep:2``) from the first rep that recorded one."""
+    for rep in reps:
+        storm = rep.get("storm") or {}
+        config = storm.get("generator_config") or {}
+        spec = config.get("stall")
+        if isinstance(spec, str) and spec:
+            return spec
+        kind = (storm.get("stall") or {}).get("kind")
+        if isinstance(kind, str) and kind:
+            return kind
+    return "none"
+
+
+def _default_xrange(views: Sequence["ScenarioRunView"]) -> Tuple[float, float]:
+    """A window that covers the baseline before t=0 and the storm's tail.
+
+    The storm launches after a start delay, so a fixed window anchored at t=0
+    can miss it entirely; this reads the storm buckets and the stall end.
+    """
+    hi = 6.0
+    for view in views:
+        for data in view.reps:
+            t0 = series_t0(data)
+            tx, _ = _storm_bucket_xy(data, t0, "timeouts")
+            if tx:
+                hi = max(hi, max(tx) + 3.0)
+            stall = (data.get("storm") or {}).get("stall") or {}
+            ended = stall.get("ended")
+            if ended is not None:
+                hi = max(hi, float(ended) - t0 + 3.0)
+    return (-3.0, hi)
 
 
 def _short_description_for(record: Dict[str, Any]) -> str:
@@ -166,6 +220,8 @@ def load_run_views(
                 commit_hash=found.get("commit_hash", "?"),
                 runner_id=found.get("runner_id", "?"),
                 reps=list(reps),
+                server_args=_server_args_for(found, agg),
+                stall_spec=_stall_spec_for(reps),
             )
         )
     if missing:
@@ -290,7 +346,10 @@ def build_storm_figure(
         raise ValueError("build_storm_figure needs at least one run view")
     ncols = len(views)
 
-    fig, axes = plt.subplots(4, ncols, figsize=(15, 11), dpi=100, sharex=True, squeeze=False)
+    # Rows share their y axis across columns so arms compare at a glance.
+    fig, axes = plt.subplots(4, ncols, figsize=(15, 11), dpi=100, sharex=True, sharey="row", squeeze=False)
+    if xrange is None:
+        xrange = _default_xrange(views)
 
     for col, view in enumerate(views):
         hue = COLUMN_HUES[col % len(COLUMN_HUES)]
@@ -329,10 +388,11 @@ def build_storm_figure(
 
             if col == 0:
                 axis.set_ylabel(ROW_LABELS[ax_row])
-        axes[0][col].set_title(view.short_description, fontsize=10, color=hue)
+        axes[0][col].set_title(view.column_title(), fontsize=9, color=hue)
 
-    for col in range(ncols):
-        axes[3][col].set_xlabel("seconds from stall start")
+    for col, view in enumerate(views):
+        origin = "stall start" if view.stall_seconds is not None else "measurement start"
+        axes[3][col].set_xlabel(f"seconds from {origin}")
         if xrange is not None:
             axes[0][col].set_xlim(*xrange)
 
