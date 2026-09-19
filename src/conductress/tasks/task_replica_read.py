@@ -579,7 +579,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         writer_pid = self._pid(writer_cmd)
         while reader_cmd.is_running():
             try:
-                sample = await group.sample(fields, pin_cpus=pin_cpus)
+                sample = await group.sample(fields, pin_cpus=pin_cpus, host_threads=True)
                 sample["t_local"] = time.monotonic()
                 sample["generators"] = {
                     "reader": cpu_sampling.read_local_thread_stats(reader_pid),
@@ -595,10 +595,14 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         """Drop the cumulative counters from stored samples; the verdict already summarises them.
 
         Per-core and per-thread jiffies for a 96-core host at 1 Hz over a
-        60 s rep would add ~1 MB to the result row; the INFO series (offsets,
-        ops/sec, any extra INFO fields) is what later analysis reads back.
+        60 s rep would add ~1 MB to the result row, and the host-wide thread
+        scan another ~3 MB; the INFO series (offsets, ops/sec, any extra INFO
+        fields) is what later analysis reads back. The verdict's
+        ``foreign_attribution`` keeps the part of the scan worth keeping.
         """
-        return [{k: v for k, v in s.items() if k not in ("cores", "threads", "generators")} for s in samples]
+        return [
+            {k: v for k, v in s.items() if k not in ("cores", "threads", "generators", "host_threads")} for s in samples
+        ]
 
     # ------------------------------------------------------------------ results
 

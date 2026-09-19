@@ -56,6 +56,10 @@ VERDICT_UNKNOWN = "unknown"
 
 PROCSTAT_HEADER = "=== conductress-procstat"
 THREADS_HEADER = "=== conductress-threads "
+HOST_THREADS_HEADER = "=== conductress-host-threads"
+
+# How many threads to name per busy foreign core in the verdict.
+ATTRIBUTION_TOP_N = 3
 
 # /proc/stat per-cpu fields after the "cpuN" label.
 _STAT_FIELDS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
@@ -64,20 +68,43 @@ _STAT_FIELDS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "s
 # --------------------------------------------------------------------------- shell
 
 
-def cpu_sample_command(pids_by_port: dict) -> str:
+def cpu_sample_command(pids_by_port: dict, host_threads: bool = False) -> str:
     """Shell snippet emitting per-core /proc/stat lines and per-thread stats.
 
     ``pids_by_port`` maps a server port to its main pid; servers whose pid is
     unknown (``<= 0``) are skipped. Output sections are introduced by
     ``PROCSTAT_HEADER`` and ``THREADS_HEADER<port>`` so they can share one
     remote shell with the INFO sections.
+
+    ``host_threads`` appends a ``HOST_THREADS_HEADER`` section listing EVERY
+    thread on the host as ``tid pid ticks processor comm``, which is what lets
+    a busy core nobody allocated be attributed to the thread that made it busy
+    (see ``attribute_foreign_cores``). Measured on a 192-CPU runner with ~1,800
+    threads: ~35 ms of CPU and ~65 KB per sample, on the sampler's own cores.
     """
     parts = [f"echo '{PROCSTAT_HEADER}'; grep '^cpu[0-9]' /proc/stat"]
     for port, pid in sorted(pids_by_port.items()):
         if pid is None or pid <= 0:
             continue
         parts.append(f"echo '{THREADS_HEADER}{port}'; cat /proc/{pid}/task/*/stat 2>/dev/null")
+    if host_threads:
+        parts.append(f"echo '{HOST_THREADS_HEADER}'; {HOST_THREADS_SCAN}")
     return "; ".join(parts)
+
+
+# grep -H prefixes each /proc/<pid>/task/<tid>/stat line with its path and, unlike
+# gawk given the files as arguments (fatal on the first one that vanished), keeps
+# going when a thread exits between the glob and the read. In awk the path ends
+# at the first ':' (a path has none; the comm may), the pid is its third
+# component, the comm is the only parenthesised span (it may contain spaces),
+# and after ')' utime/stime are the 12th/13th fields and processor the 37th.
+HOST_THREADS_SCAN = (
+    "grep -H '' /proc/[0-9]*/task/[0-9]*/stat 2>/dev/null | "
+    'awk \'{ i = index($0, ":"); split(substr($0, 1, i - 1), p, "/"); s = substr($0, i + 1); '
+    "if (match(s, /\\(.*\\)/)) { comm = substr(s, RSTART + 1, RLENGTH - 2); "
+    'n = split(substr(s, RSTART + RLENGTH), f, " "); '
+    "print substr(s, 1, RSTART - 2), p[3], f[12] + f[13], f[37], comm } }'"
+)
 
 
 # --------------------------------------------------------------------------- parsing
@@ -128,21 +155,45 @@ def parse_thread_stats(lines: list) -> dict:
     return threads
 
 
-def split_sections(output: str, instance_header: str) -> tuple:
-    """Split the combined remote output into INFO, procstat and thread sections.
+def parse_host_threads(lines: list) -> dict:
+    """Parse ``HOST_THREADS_SCAN`` output into ``{tid: {"pid", "ticks", "cpu", "comm"}}``.
 
-    Returns ``(info_lines, procstat_lines, {port: thread_lines})`` where
-    ``info_lines`` keeps the instance headers so the INFO parser is unchanged.
+    Each line is ``tid pid ticks processor comm`` with ``comm`` possibly
+    containing spaces, so the split is bounded at four.
+    """
+    threads: dict = {}
+    for raw in lines:
+        parts = raw.strip().split(" ", 4)
+        if len(parts) < 5:
+            continue
+        try:
+            tid, pid, ticks, cpu = (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+        except ValueError:
+            continue
+        threads[tid] = {"pid": pid, "ticks": ticks, "cpu": cpu, "comm": parts[4]}
+    return threads
+
+
+def split_sections(output: str, instance_header: str) -> tuple:
+    """Split the combined remote output into INFO, procstat, thread and host-thread sections.
+
+    Returns ``(info_lines, procstat_lines, {port: thread_lines}, host_thread_lines)``
+    where ``info_lines`` keeps the instance headers so the INFO parser is
+    unchanged and ``host_thread_lines`` is empty when the shell did not scan.
     """
     info_lines: list = []
     procstat: list = []
     threads: dict = {}
+    host_threads: list = []
     target: Optional[list] = info_lines
     for raw in output.splitlines():
         line = raw.rstrip()
         stripped = line.strip()
         if stripped == PROCSTAT_HEADER:
             target = procstat
+            continue
+        if stripped == HOST_THREADS_HEADER:
+            target = host_threads
             continue
         if stripped.startswith(THREADS_HEADER):
             port_str = stripped[len(THREADS_HEADER) :].strip()
@@ -152,7 +203,7 @@ def split_sections(output: str, instance_header: str) -> tuple:
             target = info_lines
         if target is not None:
             target.append(line)
-    return info_lines, procstat, threads
+    return info_lines, procstat, threads, host_threads
 
 
 def read_local_thread_stats(pid: Optional[int]) -> dict:
@@ -237,6 +288,63 @@ def core_utilization(samples: list) -> dict:
     }
 
 
+def attribute_foreign_cores(samples: list, foreign_cpus, top_n: int = ATTRIBUTION_TOP_N) -> dict:
+    """Name the threads that made each foreign core busy: ``{cpu: [{tid, pid, comm, util}]}``.
+
+    Works from the ``host_threads`` snapshots (``parse_host_threads``) in
+    consecutive samples. A thread's CPU over an interval is charged to the core
+    it was on at the END of the interval, which is right for a thread that sits
+    still and a fair approximation for one that wanders. Two kinds of thread
+    are charged:
+
+    * present in both samples: ``ticks`` delta, the normal case;
+    * first seen in the later sample: its whole lifetime ``ticks``, since it was
+      born inside the interval. This is what catches short-lived work such as
+      the sshd session that runs the sampler itself (~60 ms per second): it is
+      never in two consecutive snapshots, but it is always in one.
+
+    ``util`` is the mean fraction of one core over the whole series, so it is
+    directly comparable with ``core_utilization``'s ``busy_mean`` for the same
+    core; the two agree when the listed threads explain the core's load and
+    disagree when the load is kernel work no thread owns (softirq, RCU
+    callbacks on the core itself), which the caller reports as unexplained.
+    Returns ``{}`` when no sample carries ``host_threads``.
+    """
+    foreign = set(foreign_cpus)
+    if not foreign:
+        return {}
+    charged: dict = {}  # cpu -> tid -> {"pid", "comm", "ticks"}
+    elapsed = 0.0
+    for prev, cur in zip(samples, samples[1:]):
+        a, b = prev.get("host_threads"), cur.get("host_threads")
+        if not a or not b:
+            continue
+        dt = cur.get("t", 0.0) - prev.get("t", 0.0)
+        if dt <= 0:
+            continue
+        elapsed += dt
+        for tid, now in b.items():
+            cpu = now["cpu"]
+            if cpu not in foreign:
+                continue
+            then = a.get(tid)
+            delta = now["ticks"] - then["ticks"] if then is not None else now["ticks"]
+            if delta <= 0:
+                continue
+            entry = charged.setdefault(cpu, {}).setdefault(tid, {"pid": now["pid"], "comm": now["comm"], "ticks": 0})
+            entry["ticks"] += delta
+    if elapsed <= 0:
+        return {}
+    result: dict = {}
+    for cpu in sorted(charged):
+        ranked = sorted(charged[cpu].items(), key=lambda kv: kv[1]["ticks"], reverse=True)[:top_n]
+        result[cpu] = [
+            {"tid": tid, "pid": e["pid"], "comm": e["comm"], "util": round(e["ticks"] / USER_HZ / elapsed, 4)}
+            for tid, e in ranked
+        ]
+    return result
+
+
 def eventloop_duty(samples: list, port: int) -> dict:
     """Main-thread duty from INFO eventloop counters over consecutive sample pairs.
 
@@ -304,6 +412,42 @@ def _generator_summary(threads: dict) -> dict:
 def _mean_over(cores: dict, cpus: list, key: str) -> Optional[float]:
     vals = [cores[c][key] for c in cpus if c in cores]
     return sum(vals) / len(vals) if vals else None
+
+
+def _foreign_attribution_summary(foreign_busy: dict, attribution: dict, window: list) -> dict:
+    """Per busy foreign core: the named threads and how much of the core's load they explain.
+
+    ``unexplained`` is ``busy_mean`` minus the named threads' utilisation
+    (floored at 0): load on the core that no thread owns, i.e. kernel work
+    charged to the core itself (softirq, RCU callbacks, IRQ handling).
+    ``available`` is False when no sample carried a host-wide thread scan, so
+    the caller can tell "nothing found" from "did not look".
+    """
+    available = any(s.get("host_threads") for s in window)
+    cores = {}
+    for cpu, busy in sorted(foreign_busy.items()):
+        threads = attribution.get(cpu, [])
+        explained = sum(t["util"] for t in threads)
+        cores[str(cpu)] = {
+            "busy": round(busy, 4),
+            "threads": threads,
+            "unexplained": round(max(0.0, busy - explained), 4),
+        }
+    return {"available": available, "cores": cores}
+
+
+def _foreign_attribution_text(summary: dict) -> str:
+    """The reason-string tail naming the top thread per busy foreign core."""
+    if not summary["available"]:
+        return " (no thread attribution: host scan absent)"
+    parts = []
+    for cpu, entry in summary["cores"].items():
+        if entry["threads"]:
+            top = entry["threads"][0]
+            parts.append(f"{cpu}: {top['comm']}[{top['pid']}/{top['tid']}] {top['util']:.2f}")
+        else:
+            parts.append(f"{cpu}: no thread found (kernel work {entry['unexplained']:.2f})")
+    return "; attribution: " + ", ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -396,12 +540,15 @@ def bottleneck_verdict(samples: list, parties: Parties, *, window_start: float =
     reader_cpus = parties.reader_cpus
     foreign_cpus = sorted(c for c in cores if c not in parties.claimed_cpus) if reader_cpus else []
     foreign_busy = {c: cores[c]["busy_mean"] for c in foreign_cpus if cores[c]["busy_mean"] > FOREIGN_BUSY_MAX}
+    attribution = attribute_foreign_cores(window, foreign_busy) if foreign_busy else {}
+    attribution_summary = _foreign_attribution_summary(foreign_busy, attribution, window)
     core_summary = {
         "sampled": len(cores),
         "foreign_checked": bool(reader_cpus),
         "foreign_cores": len(foreign_cpus),
         "foreign_busy_max": max(foreign_busy.values(), default=(0.0 if foreign_cpus else None)),
         "foreign_busy_cores": {str(c): round(v, 4) for c, v in sorted(foreign_busy.items())},
+        "foreign_attribution": attribution_summary,
         "replica_softirq_share": _mean_over(cores, parties.replica_cpus, "softirq_mean"),
         "reader_softirq_share": _mean_over(cores, reader_cpus, "softirq_mean"),
         "replica_busy_mean": _mean_over(cores, parties.replica_cpus, "busy_mean"),
@@ -414,7 +561,8 @@ def bottleneck_verdict(samples: list, parties: Parties, *, window_start: float =
     if foreign_busy:
         verdict, reason = (
             VERDICT_HOST,
-            f"{len(foreign_busy)} unallocated core(s) busy: {core_summary['foreign_busy_cores']}",
+            f"{len(foreign_busy)} unallocated core(s) busy: {core_summary['foreign_busy_cores']}"
+            + _foreign_attribution_text(attribution_summary),
         )
     elif reader_peak >= GENERATOR_SATURATED_UTIL:
         verdict, reason = VERDICT_GENERATOR, f"reader thread at {reader_peak:.2f} of a core; add reader threads"

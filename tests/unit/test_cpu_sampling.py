@@ -1,5 +1,7 @@
 """Unit tests for cpu_sampling: /proc parsing, utilisation math, bottleneck verdicts."""
 
+import pytest
+
 from conductress import cpu_sampling as cs
 from conductress.topology import _SAMPLE_SEPARATOR
 
@@ -64,11 +66,72 @@ def test_split_sections_separates_info_procstat_and_threads():
             _thread_line(3, "io_thd_1", 3, 3),
         ]
     )
-    info, procstat, threads = cs.split_sections(out, _SAMPLE_SEPARATOR)
+    info, procstat, threads, host = cs.split_sections(out, _SAMPLE_SEPARATOR)
     assert info[0].startswith(_SAMPLE_SEPARATOR) and "role:slave" in info
     assert procstat == [_stat_line(0, 1, 1, 1)]
     assert set(threads) == {6379, 6380}
     assert len(threads[6380]) == 2
+    assert host == []  # no host scan requested
+
+
+def test_cpu_sample_command_adds_host_scan_only_on_request():
+    assert cs.HOST_THREADS_HEADER not in cs.cpu_sample_command({6379: 4242})
+    cmd = cs.cpu_sample_command({6379: 4242}, host_threads=True)
+    assert cmd.endswith(cs.HOST_THREADS_SCAN)
+    assert "/proc/[0-9]*/task/[0-9]*/stat" in cmd
+    # The whole snippet still joins into one shell command line (no stray newlines).
+    assert "\n" not in cmd
+
+
+def test_split_sections_collects_host_thread_lines():
+    out = "\n".join(
+        [
+            f"{_SAMPLE_SEPARATOR}6379",
+            "role:master",
+            cs.PROCSTAT_HEADER,
+            _stat_line(0, 1, 1, 1),
+            cs.HOST_THREADS_HEADER,
+            "1 1 250820 105 systemd",
+            "13578 13578 2054 147 sshd",
+        ]
+    )
+    _, _, _, host = cs.split_sections(out, _SAMPLE_SEPARATOR)
+    assert host == ["1 1 250820 105 systemd", "13578 13578 2054 147 sshd"]
+
+
+def test_parse_host_threads_keeps_pid_cpu_and_spaced_comm():
+    parsed = cs.parse_host_threads(
+        [
+            "1 1 250820 105 systemd",
+            "603188 603100 483 15 ringline-worker",
+            "42 42 7 3 kworker/3:1H-events highpri",  # comm with a space
+            "garbage line",
+            "x y z w comm",
+        ]
+    )
+    assert parsed == {
+        1: {"pid": 1, "ticks": 250820, "cpu": 105, "comm": "systemd"},
+        603188: {"pid": 603100, "ticks": 483, "cpu": 15, "comm": "ringline-worker"},
+        42: {"pid": 42, "ticks": 7, "cpu": 3, "comm": "kworker/3:1H-events highpri"},
+    }
+
+
+def test_host_threads_scan_runs_against_real_proc():
+    """The awk snippet must produce parseable lines on this host (skipped where /proc is absent)."""
+    import os  # pylint: disable=import-outside-toplevel
+    import subprocess  # pylint: disable=import-outside-toplevel
+
+    if not os.path.isdir("/proc/self/task"):
+        pytest.skip("no procfs")
+    out = subprocess.run(["sh", "-c", cs.HOST_THREADS_SCAN], capture_output=True, text=True, check=False).stdout
+    parsed = cs.parse_host_threads(out.splitlines())
+    me = os.getpid()
+    assert me in parsed, "this test process must appear in the scan"
+    assert parsed[me]["pid"] == me and parsed[me]["ticks"] >= 0 and parsed[me]["cpu"] >= 0
+    assert parsed[me]["comm"]
+    # Every thread of every listed process carries its process's pid.
+    tids_of_me = {tid for tid, t in parsed.items() if t["pid"] == me}
+    assert tids_of_me >= {me}
 
 
 # --- utilisation ---
@@ -281,3 +344,89 @@ def test_verdict_window_start_excludes_warmup_samples():
     assert abs(whole["reader"]["max_thread_util"] - (0.99 * 2 + 0.5 * 3) / 5) < 1e-9
     assert abs(measured["reader"]["max_thread_util"] - 0.5) < 1e-9
     assert measured["verdict"] == cs.VERDICT_SERVER
+
+
+# --- foreign-core attribution ---
+
+
+def _host_series(per_sample: list, dt=1.0):
+    """Samples whose ``host_threads`` snapshots are given per sample as {tid: (pid, ticks, cpu, comm)}."""
+    samples = []
+    for i, snap in enumerate(per_sample):
+        s = _sample(i * dt)
+        s["host_threads"] = {tid: {"pid": p, "ticks": k, "cpu": c, "comm": m} for tid, (p, k, c, m) in snap.items()}
+        samples.append(s)
+    return samples
+
+
+def test_attribution_charges_tick_deltas_to_the_end_of_interval_core():
+    # Thread 10 burns 15 ticks/s on core 6; thread 11 burns 15/s on core 7; thread 12 idles on 6.
+    snaps = [
+        {10: (10, 100, 6, "sshd"), 11: (11, 0, 7, "kworker/7:1"), 12: (12, 50, 6, "sleeper")},
+        {10: (10, 115, 6, "sshd"), 11: (11, 15, 7, "kworker/7:1"), 12: (12, 50, 6, "sleeper")},
+        {10: (10, 130, 6, "sshd"), 11: (11, 30, 7, "kworker/7:1"), 12: (12, 50, 6, "sleeper")},
+    ]
+    out = cs.attribute_foreign_cores(_host_series(snaps), foreign_cpus=[6, 7])
+    assert out == {
+        6: [{"tid": 10, "pid": 10, "comm": "sshd", "util": 0.15}],
+        7: [{"tid": 11, "pid": 11, "comm": "kworker/7:1", "util": 0.15}],
+    }
+
+
+def test_attribution_charges_a_short_lived_thread_its_lifetime_ticks():
+    # A fresh sshd session per sample (the sampler's own), never in two consecutive snapshots.
+    snaps = [
+        {500: (500, 8, 6, "sshd")},
+        {501: (501, 8, 6, "sshd")},
+        {502: (502, 8, 6, "sshd")},
+    ]
+    out = cs.attribute_foreign_cores(_host_series(snaps), foreign_cpus=[6])
+    # Two intervals; each new sshd is charged its 8 lifetime ticks over the 2 s series: 0.04 of a core per tid.
+    assert [t["comm"] for t in out[6]] == ["sshd", "sshd"]
+    assert all(t["util"] == 0.04 for t in out[6])
+
+
+def test_attribution_ignores_claimed_cores_and_ranks_top_n():
+    snaps = [
+        {1: (1, 0, 6, "a"), 2: (2, 0, 6, "b"), 3: (3, 0, 6, "c"), 4: (4, 0, 6, "d"), 9: (9, 0, 1, "replica")},
+        {1: (1, 40, 6, "a"), 2: (2, 30, 6, "b"), 3: (3, 20, 6, "c"), 4: (4, 10, 6, "d"), 9: (9, 100, 1, "replica")},
+    ]
+    out = cs.attribute_foreign_cores(_host_series(snaps), foreign_cpus=[6], top_n=2)
+    assert [t["tid"] for t in out[6]] == [1, 2]
+    assert 1 not in out  # claimed core never attributed
+
+
+def test_attribution_is_empty_without_host_scans_or_foreign_cores():
+    assert cs.attribute_foreign_cores(_series(reader_util=0.5, foreign_busy=0.5), foreign_cpus=[6, 7]) == {}
+    assert cs.attribute_foreign_cores(_host_series([{1: (1, 0, 6, "a")}, {1: (1, 9, 6, "a")}]), foreign_cpus=[]) == {}
+
+
+def test_verdict_host_names_the_offending_thread_and_the_unexplained_share():
+    samples = _series(reader_util=0.5, foreign_busy=0.5)
+    # Core 6's load is one thread; core 7's load is nobody's (kernel work on the core itself).
+    for i, s in enumerate(samples):
+        ticks = int(i * cs.USER_HZ * 0.5)
+        s["host_threads"] = {
+            777: {"pid": 700, "ticks": ticks, "cpu": 6, "comm": "sshd"},
+            9: {"pid": 9, "ticks": ticks * 4, "cpu": 1, "comm": "valkey-server"},  # claimed core, ignored
+        }
+    v = _verdict(samples)
+    assert v["verdict"] == cs.VERDICT_HOST
+    attr = v["cores"]["foreign_attribution"]
+    assert attr["available"] is True
+    assert attr["cores"]["6"]["threads"][0]["comm"] == "sshd" and attr["cores"]["6"]["threads"][0]["pid"] == 700
+    assert attr["cores"]["6"]["unexplained"] == 0.0
+    assert attr["cores"]["7"]["threads"] == [] and attr["cores"]["7"]["unexplained"] == 0.5
+    assert "attribution: 6: sshd[700/777] 0.50, 7: no thread found (kernel work 0.50)" in v["reason"]
+
+
+def test_verdict_host_says_when_attribution_was_not_available():
+    v = _verdict(_series(reader_util=0.5, foreign_busy=0.5))
+    assert v["verdict"] == cs.VERDICT_HOST
+    assert v["cores"]["foreign_attribution"]["available"] is False
+    assert v["reason"].endswith("(no thread attribution: host scan absent)")
+
+
+def test_verdict_server_has_no_attribution_work_to_report():
+    v = _verdict(_series(reader_util=0.5))
+    assert v["cores"]["foreign_attribution"] == {"available": False, "cores": {}}

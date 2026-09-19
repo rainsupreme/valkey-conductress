@@ -65,6 +65,20 @@ change on a single build.
    | `server` | none of the above | the server's number |
    | `unknown` | fewer than 2 samples in the window | untrusted |
 
+   A `host` verdict names its offender. Every sample also scans every thread
+   on the host (`tid pid ticks processor comm`, ~35 ms and ~65 KB on a
+   192-CPU runner, on the sampler's own cores), and the verdict charges each
+   thread's CPU over an interval to the core it was on at the interval's end;
+   a thread first seen in a sample is charged its lifetime ticks, which is
+   what catches short-lived work such as the sampler's own sshd session.
+   `bottleneck.cores.foreign_attribution` lists, per busy foreign core, the
+   top threads (`comm`, `pid`, `tid`, mean fraction of the core) and an
+   `unexplained` remainder: load no thread owns, i.e. kernel work charged to
+   the core itself (softirq, RCU callbacks, IRQ handling). The reason string
+   carries the top thread per core, e.g. `attribution: 150: sshd[13578/13578]
+   0.14`, or `no thread found (kernel work 0.15)` when the load is the
+   kernel's. The raw scan is not stored in the row; the attribution is.
+
    `server` means "nothing else is implicated", **not** "the server was proven
    saturated". Valkey's I/O threads busy-wait for work and the main thread
    polls without sleeping while I/O jobs are in flight, so server CPU time
