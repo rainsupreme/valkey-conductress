@@ -253,17 +253,21 @@ class FakeCommand:
     running_polls = {"preload": 1, "writer": 1, "reader": 8}
     launched: list = []
     commands: list = []  # full command strings, in launch order
+    launch_cpus: list = []  # (role, launch_cpus kwarg) in launch order
 
-    def __init__(self, command: str):
+    def __init__(self, command: str, remote=None, launch_cpus=None):
         self.command = command
+        self.remote = remote
         self.role = next(r for r in ("preload", "writer", "reader") if f"/{r}_rep" in command)
         self.p = FakeProcess()
         self._polls = 0
         self._emitted = False
+        self._launch_cpus = launch_cpus
 
     def start(self):
         FakeCommand.launched.append(self.role)
         FakeCommand.commands.append(self.command)
+        FakeCommand.launch_cpus.append((self.role, self._launch_cpus))
 
     def is_running(self):
         self._polls += 1
@@ -291,6 +295,7 @@ def faked(monkeypatch, tmp_path):
     FakeLocalServer.commands = []
     FakeCommand.launched = []
     FakeCommand.commands = []
+    FakeCommand.launch_cpus = []
     FakeGroup.pins = []
     FakeCommand.results = {
         "preload": _cc_result(50_000),
@@ -340,7 +345,15 @@ async def test_run_executes_phases_in_order_and_records_once(faked):
     assert len(FakeLocalServer.allocator.released) == 2
     # The sampler shell is pinned to the management cores the task runner loop handed us.
     assert set(FakeGroup.pins) == {"190,191"}
-    # Generators are launched plain; RealtimeCommand owns the launch-mask prefix.
+    # Each generator is launched under its own allocation (not the runner's whole
+    # mask): cachecannon pins only its workers, so its main/admin threads must
+    # inherit claimed cores or the verdict sees them as foreign work.
+    allocated = FakeLocalServer.allocator.allocated
+    reader_cpus = ",".join(map(str, allocated[f"{runner.task_name}_reader"]))
+    writer_cpus = ",".join(map(str, allocated[f"{runner.task_name}_writer"]))
+    assert reader_cpus and writer_cpus and reader_cpus != writer_cpus
+    assert FakeCommand.launch_cpus == [("preload", writer_cpus), ("writer", writer_cpus), ("reader", reader_cpus)] * 2
+    # The command string itself stays plain; the prefix is RealtimeCommand's job.
     assert all(not cmd.startswith("taskset") for cmd in FakeCommand.commands)
     # Recorded exactly once, with both reps and the reader's exact throughput as the score.
     runner.file_protocol.write_results.assert_called_once()
@@ -378,6 +391,8 @@ async def test_run_with_client_cpu_override_skips_the_allocator(faked):
     assert FakeLocalServer.allocator.released == []
     results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
     assert 'cpu_list = "40,41"' in results.data["reader_toml"]
+    # The override is the allocation: every generator launches confined to it.
+    assert {cpus for _, cpus in FakeCommand.launch_cpus} == {"40,41"}
     # An override is still a pinning: the CPU map is complete, so the foreign check runs.
     rep = results.data["per_rep_results"][0]["bottleneck"]
     assert rep["cores"]["foreign_checked"] is True

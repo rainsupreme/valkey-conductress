@@ -191,6 +191,29 @@ def test_realtime_command_leaves_remote_launches_alone():
     assert argv[0] == "ssh" and "taskset" not in argv
 
 
+def test_realtime_command_per_instance_cpus_override_the_published_mask():
+    RealtimeCommand.launch_cpus = "0-15"
+    argv = _popen_argv(RealtimeCommand("cachecannon run.toml", launch_cpus="13-20"))
+    assert argv == ["taskset", "-c", "13-20", "cachecannon", "run.toml"]
+
+
+def test_realtime_command_per_instance_cpus_apply_without_a_published_mask():
+    argv = _popen_argv(RealtimeCommand("cachecannon run.toml", launch_cpus="13-20"))
+    assert argv == ["taskset", "-c", "13-20", "cachecannon", "run.toml"]
+
+
+def test_realtime_command_per_instance_empty_string_means_unconfined():
+    # "" is an explicit "no pin", distinct from None (defer to the runner-wide mask).
+    RealtimeCommand.launch_cpus = "0-15"
+    assert _popen_argv(RealtimeCommand("cachecannon run.toml", launch_cpus="")) == ["cachecannon", "run.toml"]
+    assert RealtimeCommand("x", launch_cpus=None).effective_launch_cpus() == "0-15"
+
+
+def test_realtime_command_per_instance_cpus_do_not_touch_remote_launches():
+    argv = _popen_argv(RealtimeCommand("memtier --x", remote="10.0.0.9", launch_cpus="13-20"))
+    assert argv[0] == "ssh" and "taskset" not in argv
+
+
 # --------------------------------------------------------------------------- Server.run_host_command pin
 
 
