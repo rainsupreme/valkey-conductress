@@ -90,6 +90,11 @@ QUEUE_POLL_INTERVAL = 4
 # the final boundary contact before starting benchmark work.
 FLEET_IDLE_POLL_INTERVAL = 30
 MANAGEMENT_SETTLE_SECONDS = 2.0
+
+# CPUs the runner process confines itself to while a task runs, reserved through
+# the allocator from the tail of a non-network NUMA node (see runner_affinity).
+# 0 disables pinning. One core covers the runner's ~0.35-core steady load.
+RUNNER_MANAGEMENT_CPUS = 1
 DELIVERY_JOURNAL_PATH = PROJECT_ROOT / "fleet_delivery.json"
 
 # How often sweep fetches new commits from origin (seconds).

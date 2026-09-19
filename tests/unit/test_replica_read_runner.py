@@ -292,9 +292,6 @@ def faked(monkeypatch, tmp_path):
     FakeCommand.launched = []
     FakeCommand.commands = []
     FakeGroup.pins = []
-    pinned: list = []
-    monkeypatch.setattr(module, "current_affinity_cpulist", lambda: "0-191")
-    monkeypatch.setattr(module, "pin_current_process", pinned.append)
     FakeCommand.results = {
         "preload": _cc_result(50_000),
         "writer": _cc_result(19_800, hit_pct=0.0, command="set"),
@@ -314,9 +311,9 @@ def faked(monkeypatch, tmp_path):
         runner = ReplicaReadTaskRunner(_task(**overrides), [HOST])
         runner.file_protocol = FileProtocol(runner.task_name, role_id="client", base_dir=tmp_path)
         runner.file_protocol.write_results = MagicMock()
+        runner.management_cpus = "190,191"  # what the task runner loop hands every task
         return runner
 
-    make_runner.pinned = pinned  # every pin_current_process() call, in order
     return make_runner
 
 
@@ -338,15 +335,13 @@ async def test_run_executes_phases_in_order_and_records_once(faked):
     # One TOML per generator per rep, numbered from 1.
     names = sorted(p.name for p in runner.file_protocol.work_dir.glob("*.toml"))
     assert names == sorted(f"{r}_rep{n}.toml" for r in ("preload", "writer", "reader") for n in (1, 2))
-    # Generator and management CPUs allocated once, all released at the end.
+    # Generator CPUs allocated once, both released at the end.
     assert sorted(FakeLocalServer.allocator.released) == sorted(FakeLocalServer.allocator.allocated)
-    assert len(FakeLocalServer.allocator.released) == 3
-    # The runner pinned itself to the management cores for the whole task and restored its mask at the end;
-    # the generators were launched under the ORIGINAL mask so they did not inherit the pin.
-    runner_cpus = ",".join(map(str, FakeLocalServer.allocator.allocated[f"{runner.task_name}_runner"]))
-    assert faked.pinned == [runner_cpus, "0-191"]
-    assert all(cmd.startswith("taskset -c 0-191 ") for cmd in FakeCommand.commands)
-    assert set(FakeGroup.pins) == {runner_cpus}
+    assert len(FakeLocalServer.allocator.released) == 2
+    # The sampler shell is pinned to the management cores the task runner loop handed us.
+    assert set(FakeGroup.pins) == {"190,191"}
+    # Generators are launched plain; RealtimeCommand owns the launch-mask prefix.
+    assert all(not cmd.startswith("taskset") for cmd in FakeCommand.commands)
     # Recorded exactly once, with both reps and the reader's exact throughput as the score.
     runner.file_protocol.write_results.assert_called_once()
     results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
@@ -367,8 +362,7 @@ async def test_run_stops_servers_and_releases_generators_when_a_rep_fails(faked)
         await runner.run()
 
     assert FakeGroup.events[-1] == "stop-all"
-    assert len(FakeLocalServer.allocator.released) == 3
-    assert faked.pinned[-1] == "0-191"  # mask restored even on failure
+    assert len(FakeLocalServer.allocator.released) == 2
     assert FakeCommand.launched == ["preload"]  # never reached the measure phase
     runner.file_protocol.write_results.assert_not_called()
 
@@ -379,9 +373,9 @@ async def test_run_with_client_cpu_override_skips_the_allocator(faked):
 
     await runner.run()
 
-    # Generators take the override; the runner still gets (and pins to) management cores.
-    assert list(FakeLocalServer.allocator.allocated) == [f"{runner.task_name}_runner"]
-    assert FakeLocalServer.allocator.released == [f"{runner.task_name}_runner"]
+    # Generators take the override; management cores are the task runner loop's business, not this task's.
+    assert FakeLocalServer.allocator.allocated == {}
+    assert FakeLocalServer.allocator.released == []
     results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
     assert 'cpu_list = "40,41"' in results.data["reader_toml"]
     # An override is still a pinning: the CPU map is complete, so the foreign check runs.
@@ -596,6 +590,7 @@ async def test_record_result_row_shape(faked):
     data = results.data
     assert data["per_run_rps"] == [100.0, 110.0, 90.0]
     assert data["topology"]["instances"][1]["role"] == "replica"
+    assert data["management_cpus"] == "190,191"  # what the runner loop handed this task, recorded on the row
     assert data["server_cpus"] == {6379: [0], 6380: [1, 2]}
     assert data["io-threads"] == 8 and data["write_rate_target"] == 20_000
     assert data["write_rate_achieved_mean"] == 19_900.0

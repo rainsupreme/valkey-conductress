@@ -227,6 +227,11 @@ def calc_percentile_averages(data: list, percentages, lowest_vals=False) -> list
 class RealtimeCommand:
     """Run a local command in real-time and read its output."""
 
+    # Set by the runner while it is pinned to management cores: local launches
+    # start under this (the runner's original) mask so a child does not inherit
+    # the pin. Empty means launch with whatever mask this process has.
+    launch_cpus: str = ""
+
     def __init__(self, command: str, remote: Optional[str] = None):
         self.command = command
         self.remote = remote
@@ -243,6 +248,8 @@ class RealtimeCommand:
         command_list = shlex.split(self.command)
         if self.remote is not None:
             command_list = ["ssh", "-q", "-i", SSH_KEYFILE, self.remote] + command_list
+        elif RealtimeCommand.launch_cpus:
+            command_list = ["taskset", "-c", RealtimeCommand.launch_cpus] + command_list
         output_dest = subprocess.DEVNULL if ignore_output else subprocess.PIPE
         self.p = subprocess.Popen(command_list, stdout=output_dest, stderr=output_dest)
         if not ignore_output:

@@ -327,12 +327,12 @@ def test_spec_round_trips_through_dict_with_hosts_and_slots():
 
 
 @pytest.mark.asyncio
-async def test_sample_runs_the_remote_shell_under_taskset_when_pinned(fake_server):
-    """The sampler shell runs under sshd, so its pin has to be explicit in the command."""
+async def test_sample_forwards_pin_cpus_to_the_host_command(fake_server):
+    """The sampler shell runs under sshd; sample() hands the pin to run_host_command, which owns the taskset wrap."""
     captured = {}
 
-    async def run_host_command(command, check=True):  # pylint: disable=unused-argument
-        captured["command"] = command
+    async def run_host_command(command, check=True, pin_cpus=""):  # pylint: disable=unused-argument
+        captured["command"], captured["pin"] = command, pin_cpus
         return ("", "")
 
     group = TopologyGroup(HOST, TopologySpec.standalone(1), "valkey", "unstable")
@@ -341,11 +341,7 @@ async def test_sample_runs_the_remote_shell_under_taskset_when_pinned(fake_serve
     group.primary.run_host_command = run_host_command
 
     await group.sample(cpu=False)
-    assert not captured["command"].startswith("taskset")
+    assert captured["pin"] == ""
     await group.sample(cpu=False, pin_cpus="190,191")
-    assert captured["command"].startswith("taskset -c 190,191 sh -c ")
-    # The inner command survives quoting intact (single quotes from the separator echo included).
-    import shlex
-
-    inner = shlex.split(captured["command"])[-1]
-    assert "info replication stats" in inner and "=== conductress-instance 6379" in inner
+    assert captured["pin"] == "190,191"
+    assert "info replication stats" in captured["command"] and "=== conductress-instance 6379" in captured["command"]

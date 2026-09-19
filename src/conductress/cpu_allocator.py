@@ -62,6 +62,7 @@ class CpuAllocator:
         avoid_tags: Optional[list[AllocationTag]] = None,
         prefer_different_cache: bool = False,
         minimize_cache_groups: bool = False,
+        from_end: bool = False,
     ) -> list[int]:
         """Allocate CPU cores with cache awareness.
 
@@ -85,6 +86,9 @@ class CpuAllocator:
                                   groups possible (ideally one). Prevents non-deterministic
                                   thread placement across chiplets on AMD EPYC.
                                   Purpose: benchmark client threads stay on one CCD.
+            from_end: Take the highest-numbered free CPUs instead of the lowest (what
+                      IRQ allocations always do). Purpose: housekeeping allocations that
+                      must not shift where servers and generators land.
 
         Returns:
             List of allocated CPU IDs
@@ -129,8 +133,8 @@ class CpuAllocator:
                 raise RuntimeError(
                     f"Insufficient CPUs on {host_ip}{numa_msg}: need {count}, available {len(available)}"
                 )
-            # IRQs get last CPUs, others get first CPUs
-            if tag.purpose == "irq":
+            # IRQs (and explicit from_end callers) get last CPUs, others get first CPUs
+            if tag.purpose == "irq" or from_end:
                 allocated = sorted(available, reverse=True)[:count]
             else:
                 allocated = sorted(available)[:count]
@@ -314,6 +318,10 @@ class CpuAllocator:
             if set(cpus) & set(node_cpus):
                 nodes.append(numa_node)
         return sorted(nodes)
+
+    def get_numa_nodes(self, host_ip: str) -> list[int]:
+        """NUMA node ids known for ``host_ip`` (``[0]`` when the host reported none)."""
+        return sorted(self._numa_nodes.get(host_ip, {0: []}).keys())
 
     def get_net_interface_numa(self, host_ip: str) -> Optional[int]:
         """Get the NUMA node for the network interface, or None if not set."""

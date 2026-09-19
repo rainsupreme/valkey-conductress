@@ -710,6 +710,7 @@ class TestEndToEndRunnerMock:
             await runner.run()
 
         assert results[0].data["topology"] == TopologySpec.standalone().to_dict()  # every row records its layout
+        assert results[0].data["management_cpus"] == ""  # unpinned in this test; the runner loop sets it
         cc = results[0].data["client_cpu"]
         assert cc["capacity_cores"] == 16  # min(24, cpulist 0-15)
         assert cc["utilization"] == pytest.approx(0.75, abs=0.01)

@@ -255,6 +255,7 @@ class MemTaskRunner(BaseTaskRunner):
         # Write results to file protocol (replaces record_task_result)
         detailed_results = {
             "results": results,
+            "management_cpus": self.management_cpus,
         }
         completion_time = datetime.datetime.now()
         results_data = BenchmarkResults(

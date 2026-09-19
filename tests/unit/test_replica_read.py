@@ -336,7 +336,7 @@ def test_cli_add_replica_read_submits_a_single_host_task(mock_queue_cls):
 
 
 def test_format_cpulist_collapses_runs():
-    from conductress.tasks.task_replica_read import format_cpulist
+    from conductress.runner_affinity import format_cpulist
 
     assert format_cpulist([]) == ""
     assert format_cpulist([3]) == "3"

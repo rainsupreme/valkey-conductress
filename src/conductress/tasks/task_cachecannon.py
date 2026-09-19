@@ -713,6 +713,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         # Build detailed data
         detailed_data = {
             "topology": self.topology.to_dict(),
+            "management_cpus": self.management_cpus,
             "warmup": self.warmup,
             "duration": self.duration,
             "io-threads": self.io_threads,

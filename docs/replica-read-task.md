@@ -86,14 +86,16 @@ change on a single build.
    and status writes plus the per-second sampler measured about 0.35 of a core
    on a 192-CPU runner, and unpinned it lands on an arbitrary core, where the
    check correctly reported it as foreign (`1 unallocated core(s) busy: {129:
-   0.155}`). For the task's duration the runner therefore allocates two
-   management cores through the same allocator, pins every thread of itself to
-   them, and runs the sampler shell (which executes under sshd, not under the
-   runner) under `taskset -c` on the same cores; the verdict lists them as
-   `runner` in the claimed CPU map. Generators are launched under the mask the
-   runner had before pinning, since a child inherits its parent's mask at fork
-   and would otherwise be dragged onto the management cores. The mask is
-   restored when the run ends, including on failure.
+   0.155}`). The task runner loop therefore confines itself to management
+   cores for every task (`runner_affinity`, `RUNNER_MANAGEMENT_CPUS` in
+   `config.py`): cores reserved through the allocator from the tail of a
+   non-network NUMA node so no server or generator placement moves, every
+   thread pinned there, the mask restored afterwards including on failure.
+   Local generator launches start under the runner's original mask (a child
+   inherits its parent's mask at fork). This task additionally runs the
+   sampler shell, which executes under sshd rather than under the runner, on
+   the same cores via `run_host_command(pin_cpus=...)`, and lists them as
+   `runner` in the verdict's claimed CPU map.
 
 ## Result row
 

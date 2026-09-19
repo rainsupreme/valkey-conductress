@@ -555,6 +555,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
             detailed_data = {
                 "topology": self.topology.to_dict(),
+                "management_cpus": self.management_cpus,
                 "warmup": self.warmup,
                 "duration": self.duration,
                 "io-threads": self.io_threads,
@@ -606,6 +607,7 @@ class PerfTaskRunner(BaseTaskRunner):
 
             detailed_data = {
                 "topology": self.topology.to_dict(),
+                "management_cpus": self.management_cpus,
                 "warmup": self.warmup,
                 "duration": self.duration,
                 "io-threads": self.io_threads,
@@ -1350,6 +1352,7 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             self._perf_duration_seconds = mean_elapsed
             data: dict[str, Any] = {
                 "topology": self.topology.to_dict(),
+                "management_cpus": self.management_cpus,
                 "insertions_per_rep": self.insertions,
                 "key_size": self.key_size,
                 "size": self.valsize,

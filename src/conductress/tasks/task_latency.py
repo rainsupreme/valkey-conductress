@@ -285,6 +285,7 @@ class LatencyTaskRunner(BaseTaskRunner):
         ratio_note = f", SET={self.set_ratio}%" if self.set_ratio > 0 else ""
         detailed_data: dict = {
             "topology": self.topology.to_dict(),
+            "management_cpus": self.management_cpus,
             "actual_rps": result["actual_rps"],
             "target_rps": self.target_rps,
             "p50_us": result["p50_us"],
