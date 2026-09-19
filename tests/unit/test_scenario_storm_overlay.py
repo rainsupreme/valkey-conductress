@@ -16,7 +16,9 @@ from conductress import config
 from conductress.task_queue import BaseTaskData
 from conductress.tasks import task_scenario as module
 from conductress.tasks.task_scenario import (
+    DEFAULT_MAXCLIENTS,
     SCENARIO_CHOICES,
+    STORM_MAXCLIENTS_HEADROOM,
     CommandOverlay,
     OverlayResult,
     ScenarioTaskData,
@@ -127,6 +129,15 @@ def test_parse_storm_spec_rejects_bad(bad):
 def test_storm_uses_debug_sleep():
     assert storm_uses_debug_sleep(parse_storm_spec(json.dumps({"stall": "debug-sleep:2"}))) is True
     assert storm_uses_debug_sleep(parse_storm_spec(json.dumps({"stall": "none"}))) is False
+
+
+def test_storm_uses_debug_sleep_for_slow_loop_kinds():
+    # A slow-loop whose block is DEBUG SLEEP needs enable-debug-command; a lua
+    # slow-loop does not.
+    ds = parse_storm_spec(json.dumps({"stall": "slow-loop:debug-sleep:50:100:6"}))
+    lua = parse_storm_spec(json.dumps({"stall": "slow-loop:lua:50:100:6"}))
+    assert storm_uses_debug_sleep(ds) is True
+    assert storm_uses_debug_sleep(lua) is False
 
 
 # --------------------------------------------------------------------------- ScenarioTaskData gating
@@ -299,6 +310,66 @@ def test_storm_overlay_extra_server_args():
     spec2 = parse_storm_spec(json.dumps({"stall": "none"}))
     spec2["_duration_s"] = 5.0
     assert StormOverlay(spec2, "/tmp").extra_server_args() == ""
+
+
+# --------------------------------------------------------------------------- storm size guard
+
+
+def test_storm_below_maxclients_threshold_adds_no_maxclients():
+    # clients + headroom <= default: no --maxclients.
+    clients = DEFAULT_MAXCLIENTS - STORM_MAXCLIENTS_HEADROOM  # exactly at the boundary
+    spec = parse_storm_spec(json.dumps({"clients": clients, "stall": "none"}))
+    spec["_duration_s"] = 30.0
+    assert "--maxclients" not in StormOverlay(spec, "/tmp").extra_server_args()
+
+
+def test_storm_above_maxclients_threshold_appends_maxclients():
+    clients = DEFAULT_MAXCLIENTS  # 10000 + 4096 > 10000
+    spec = parse_storm_spec(json.dumps({"clients": clients, "stall": "none"}))
+    spec["_duration_s"] = 30.0
+    args = StormOverlay(spec, "/tmp").extra_server_args()
+    assert f"--maxclients {clients + STORM_MAXCLIENTS_HEADROOM}" in args
+
+
+def test_storm_size_guard_combines_with_debug_command():
+    clients = 12000
+    spec = parse_storm_spec(json.dumps({"clients": clients, "stall": "debug-sleep:2"}))
+    spec["_duration_s"] = 30.0
+    args = StormOverlay(spec, "/tmp").extra_server_args()
+    assert "--enable-debug-command local" in args
+    assert f"--maxclients {clients + STORM_MAXCLIENTS_HEADROOM}" in args
+
+
+def test_storm_size_guard_flows_into_server_args_effective():
+    runner = _scenario_task(
+        scenario="connection-storm",
+        overlay_spec=json.dumps({"clients": 12000, "stall": "none"}),
+        server_args="--maxmemory 1gb",
+    ).prepare_task_runner([HOST])
+    assert f"--maxclients {12000 + STORM_MAXCLIENTS_HEADROOM}" in runner.server_args_effective
+    assert "--maxmemory 1gb" in runner.server_args_effective
+
+
+def test_non_storm_scenario_never_appends_maxclients():
+    # The guard is StormOverlay-only; a command scenario has no extra args.
+    runner = _scenario_task(scenario="eval-storm").prepare_task_runner([HOST])
+    assert "--maxclients" not in runner.server_args_effective
+
+
+def test_slow_loop_debug_sleep_storm_appends_enable_debug_command():
+    runner = _scenario_task(
+        scenario="connection-storm",
+        overlay_spec=json.dumps({"stall": "slow-loop:debug-sleep:50:100:6"}),
+    ).prepare_task_runner([HOST])
+    assert "--enable-debug-command local" in runner.server_args_effective
+
+
+def test_slow_loop_lua_storm_does_not_append_debug_command():
+    runner = _scenario_task(
+        scenario="connection-storm",
+        overlay_spec=json.dumps({"stall": "slow-loop:lua:50:100:6"}),
+    ).prepare_task_runner([HOST])
+    assert "--enable-debug-command" not in runner.server_args_effective
 
 
 # --------------------------------------------------------------------------- CLI flags -> overlay_spec
