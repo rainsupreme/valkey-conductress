@@ -70,7 +70,7 @@ def main() -> None:
     subparsers.add_parser("fleet", help="Discover and inspect benchmark runners", add_help=False)
     subparsers.add_parser("remote", help="Inspect and cancel remote tasks", add_help=False)
     subparsers.add_parser("canary", help="Canary drift monitoring", add_help=False)
-    subparsers.add_parser("compare", help="Run analysis/comparison")
+    subparsers.add_parser("compare", help="Run analysis/comparison", add_help=False)
     runner_info_parser = subparsers.add_parser("runner-info", help="Show stable runner identity and environment")
     runner_info_parser.add_argument("--json", action="store_true", help="Emit versioned machine-readable JSON")
     subparsers.add_parser("status", help="Show runner and task status (non-blocking)")
