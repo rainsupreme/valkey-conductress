@@ -426,3 +426,69 @@ async def test_burst_first_ordering_starts_burst_at_origin(monkeypatch):
         assert min(first_starts) < 0.3
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_stall_first_ordering_waits_stall_after_s_before_the_stall(monkeypatch):
+    """Stall-first honors stall_after_s: the stall is issued that long after the origin.
+
+    This is what gives a probe (and, with burst_first, a pre-connected herd) a
+    baseline before the event instead of the stall firing at the origin.
+    """
+    import time as _time
+
+    from conductress.stormgen import runner as runner_mod
+    from conductress.stormgen import stall as stall_mod
+
+    issued_at = {}
+
+    class RecordingStall(stall_mod.StallInjector):
+        kind = "debug-sleep"
+
+        async def run(self, host, port, connect_timeout, on_issued=None):
+            rec = stall_mod.StallRecord(kind=self.kind)
+            rec.started = _time.time()
+            issued_at["mono"] = _time.monotonic()
+            if on_issued is not None:
+                on_issued()
+            await asyncio.sleep(0.05)
+            rec.ended = _time.time()
+            return rec
+
+        def describe(self):
+            return "debug-sleep:1"
+
+    monkeypatch.setattr(runner_mod, "parse_stall", lambda spec: RecordingStall())
+
+    async def _no_capacity(config, connects=200):
+        return 0.0
+
+    monkeypatch.setattr(runner_mod, "measure_connect_capacity", _no_capacity)
+
+    server = FakeServer()
+    await server.start()
+    try:
+        config = StormConfig(
+            host=server.host,
+            port=server.port,
+            clients=5,
+            burst_ms=20,
+            duration_s=1.0,
+            connect_timeout_ms=300.0,
+            reply_timeout_ms=300.0,
+            policy_spec="fixed:20",
+            stall_spec="debug-sleep:1",
+            workers=1,
+            prewarm_connections=0,
+            burst_after_stall_ms=50,
+            stall_after_s=0.4,
+        )
+        run_origin = _time.monotonic()
+        result = await run_storm(config)
+        assert "mono" in issued_at
+        stall_issue_rel = issued_at["mono"] - run_origin
+        assert 0.4 - 0.03 <= stall_issue_rel <= 0.4 + 0.3  # waited, with scheduling slack
+        first_starts = [e["t_start"] for e in result.events if e["attempt"] == 0]
+        assert first_starts and min(first_starts) >= stall_issue_rel + 0.05 - 0.03
+    finally:
+        await server.stop()

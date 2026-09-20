@@ -184,7 +184,38 @@ def test_build_figure_probe_row_adds_a_twin_axis():
     # 4 rows x 1 column = 4, plus one twin axis for the probe p99.
     assert len(fig.get_axes()) == 5
     twin_labels = {ax.get_ylabel() for ax in fig.get_axes()}
-    assert "probe p99 (ms)" in twin_labels
+    assert "probe p99 (ms, dotted)" in twin_labels
+
+
+def test_probe_row_has_one_twin_axis_for_all_reps():
+    """Three reps share ONE right-hand p99 axis per column, not one per rep."""
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    view = _probe_view()
+    view.reps = [dict(view.reps[0]) for _ in range(3)]
+    fig = build_storm_figure([view])  # all reps drawn
+    assert len(fig.get_axes()) == 5  # 4 rows + exactly one twin
+    twin = [ax for ax in fig.get_axes() if ax.get_ylabel() == "probe p99 (ms, dotted)"]
+    assert len(twin) == 1 and len(twin[0].get_lines()) == 3  # one dotted line per rep on the shared twin
+
+
+def test_each_row_has_its_own_legend(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure(views)
+    assert not fig.legends, "legends belong to rows, not the figure"
+    ncols = len(views)
+    legends = [fig.axes[row * ncols].get_legend() for row in range(4)]  # first column of each row
+    assert all(lg is not None for lg in legends), "every row's first column carries a legend"
+    texts = ["\n".join(t.get_text() for t in lg.get_texts()) for lg in legends]
+    assert "goodput" in texts[0] or "GET" in texts[0]
+    assert "stall" in texts[0] and "median" not in texts[0]  # the rep convention lives in the subtitle
+    assert "median repetition" in fig._suptitle.get_text()  # pylint: disable=protected-access
+    assert "connected_clients" in texts[1]
+    assert "overflows" in texts[2]
+    assert "timeouts" in texts[3] and "cumulative" in texts[3]
 
 
 def test_gap_breaks_the_connected_line_with_nan(views):

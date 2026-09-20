@@ -89,7 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--stall-after-s",
         type=float,
         default=1.0,
-        help="Burst-first ordering only: seconds into the run at which the stall is injected (default: 1.0)",
+        help="Seconds into the run at which the stall is injected, in both orderings (default: 1.0). "
+        "Stall-first: the burst follows the stall by --burst-after-stall-ms; a larger value gives the probe "
+        "a baseline. Burst-first: the herd connects at the origin and the stall lands this long after it.",
     )
     parser.add_argument(
         "--workers",
