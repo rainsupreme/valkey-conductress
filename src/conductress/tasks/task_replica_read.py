@@ -42,6 +42,7 @@ follow-up (see topology.py).
 import asyncio
 import datetime
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from statistics import mean, stdev
@@ -113,6 +114,11 @@ class ReplicaReadTaskData(BaseTaskData):
     info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. counters a build under test exposes)
     cachecannon_binary: str = DEFAULT_CACHECANNON_BINARY
     benchmark_cpu_override: str = ""
+    # perf-record the measured replica (main + io threads, frame-pointer call
+    # graph) over the scored window of the LAST rep; collapsed stacks land on
+    # the row as cpu_stacks_main / cpu_stacks_io. Sampling interrupts cost the
+    # replica a little, so the profiled rep is named on the row.
+    cpu_profile: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -169,6 +175,7 @@ class ReplicaReadTaskData(BaseTaskData):
             f"replica-read {self.replica_count}r io{self.io_threads}, writes {self.write_rate}/s, "
             f"{HumanByte.to_human(self.val_size)} values, P{self.pipelining}, {self.connections}c, "
             f"{self.threads}t, {HumanTime.to_human(self.duration)} x{self.repetitions}"
+            f"{', cpu-profile' if self.cpu_profile else ''}"
         )
 
     def prepare_task_runner(self, server_infos: list[ServerInfo]) -> "ReplicaReadTaskRunner":
@@ -229,11 +236,15 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self._client: Optional[Server] = None
         self._reader_tag: Optional[AllocationTag] = None
         self._writer_tag: Optional[AllocationTag] = None
+        # CPU profile of the measured replica, collected on the last rep when enabled.
+        self._cpu_stacks_main: list = []
+        self._cpu_stacks_io: list = []
         self.title = (
             f"replica-read, {task.source}:{task.specifier}, {task.replica_count} replica(s), "
             f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
             f"P{task.pipelining}, {task.connections}c, {task.threads}t, "
             f"{HumanTime.to_human(task.duration)} x{task.repetitions}"
+            f"{', cpu-profile' if task.cpu_profile else ''}"
         )
         self.status = BenchmarkStatus(
             steps_total=(task.warmup + task.duration + WRITER_SLACK_SECONDS) * task.repetitions,
@@ -475,6 +486,11 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         await asyncio.sleep(1.0)  # let the write stream reach steady state before reads start
         reader_cmd = self._launch(reader_path, placement.reader_cpus)
         reader_started = time.monotonic()
+        profiling = self._profile_this_rep(rep)
+        if profiling:
+            # perf record on the replica for the scored window only: it sleeps
+            # through the reader's warmup, then records ``duration`` seconds.
+            replica.cpu_profile_start(task.duration, delay_seconds=task.warmup)
         sampler = asyncio.create_task(
             self._sample_loop(group, samples, reader_cmd, writer_cmd, pin_cpus=placement.runner_cpus)
         )
@@ -486,6 +502,8 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 await sampler
             except asyncio.CancelledError:
                 pass
+            if profiling:
+                await self._collect_cpu_profile(replica)
         writer = await self._wait_and_parse(writer_cmd, "writer")
         return _Measurement(
             reader=reader,
@@ -495,6 +513,32 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             reader_toml=reader_toml,
             writer_toml=writer_toml,
         )
+
+    def _profile_this_rep(self, rep: int) -> bool:
+        """Profile the last rep only: one perf.data per task, like the perf task."""
+        return bool(self.task.cpu_profile) and rep == self.task.repetitions
+
+    async def _collect_cpu_profile(self, replica: Server) -> None:
+        """Best effort: a failed profile never fails the cell, it just leaves the row without stacks.
+
+        Called from the measure phase's ``finally``; when the reader itself
+        failed, perf is cancelled rather than waited for, so the failure
+        surfaces promptly and no half-window profile is recorded.
+        """
+        if sys.exc_info()[1] is not None:
+            replica.cpu_profile_cancel()
+            return
+        try:
+            main_stacks, io_stacks = await replica.cpu_profile_collect()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.warning("CPU profile collection failed: %s", e)
+            return
+        if not main_stacks:
+            self.logger.warning("CPU profile produced no main-thread stacks")
+            return
+        self._cpu_stacks_main = main_stacks
+        self._cpu_stacks_io = io_stacks
+        self.logger.info("CPU profile: %d main-thread stacks, %d io-thread stacks", len(main_stacks), len(io_stacks))
 
     def _check_guards(self, reader: dict, writer: dict) -> None:
         """Phase 4: conditions under which the rep is not the experiment it claims to be."""
@@ -676,7 +720,16 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "reader_toml": reader_toml,
             "writer_toml": writer_toml,
             "lscpu": lscpu_output,
+            "cpu_profile": task.cpu_profile,
         }
+        if self._cpu_stacks_main:
+            # Same keys the perf task uses, so file_protocol also writes them to
+            # cpu_stacks_main.json / cpu_stacks_io.json and the flamegraph
+            # tooling reads them unchanged. Profiled rep named so a reader can
+            # discount its throughput (perf sampling interrupts the replica).
+            detailed["cpu_profile_rep"] = task.repetitions
+            detailed["cpu_stacks_main"] = self._cpu_stacks_main
+            detailed["cpu_stacks_io"] = self._cpu_stacks_io
 
         results = BenchmarkResults(
             method=METHOD,

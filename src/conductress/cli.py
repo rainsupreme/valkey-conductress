@@ -856,6 +856,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_cachecannon_binary_arg(rr_parser)
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
+    rr_parser.add_argument(
+        "--cpu-profile",
+        action="store_true",
+        help="perf record the measured replica (main + io threads) over the scored window of the last rep; "
+        "collapsed stacks land on the row as cpu_stacks_main/cpu_stacks_io",
+    )
     _add_note_and_build_args(rr_parser)
 
     for task_parser in (
@@ -1608,6 +1614,7 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
             info_fields=args.info_fields,
             cachecannon_binary=args.cachecannon_binary,
             benchmark_cpu_override=args.client_cpus,
+            cpu_profile=args.cpu_profile,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1638,6 +1645,8 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
             print(f"  {label}: {value}")
     if args.info_fields:
         print(f"  info-fields: {args.info_fields}")
+    if args.cpu_profile:
+        print(f"  cpu-profile: replica main + io threads, last rep (rep {args.repetitions}), scored window only")
     if args.note:
         print(f"  note: {args.note}")
     return 0

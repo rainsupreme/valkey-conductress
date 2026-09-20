@@ -22,6 +22,7 @@ release in ``finally``, and the shape of the row that lands in ``output.jsonl``.
 import asyncio
 import json
 import time
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -121,6 +122,10 @@ def _cc_result(throughput: float, hit_pct: float = 100.0, err_pct: float = 0.0, 
 class FakeInstance:
     """Stands in for a started ``Server`` inside the topology."""
 
+    profile_calls: list = []  # ("start", port, duration, delay) / ("collect", port) / ("cancel", port)
+    profile_stacks = ([["main;a;b", 10]], [["io;c", 4]])  # what cpu_profile_collect returns
+    profile_error: Optional[Exception] = None  # raise from cpu_profile_collect instead
+
     def __init__(self, port: int, pid: int, cpus: list, keys: int):
         self.ip = "127.0.0.1"
         self.port = port
@@ -136,6 +141,18 @@ class FakeInstance:
 
     async def run_host_command(self, command, check=True):  # pylint: disable=unused-argument
         return f"ran: {command}", ""
+
+    def cpu_profile_start(self, duration, delay_seconds=0):
+        FakeInstance.profile_calls.append(("start", self.port, duration, delay_seconds))
+
+    async def cpu_profile_collect(self):
+        FakeInstance.profile_calls.append(("collect", self.port))
+        if FakeInstance.profile_error is not None:
+            raise FakeInstance.profile_error
+        return FakeInstance.profile_stacks
+
+    def cpu_profile_cancel(self):
+        FakeInstance.profile_calls.append(("cancel", self.port))
 
 
 class FakeGroup:
@@ -302,6 +319,8 @@ def faked(monkeypatch, tmp_path):
     FakeCommand.launch_cpus = []
     FakeGroup.pins = []
     FakeGroup.host_scans = []
+    FakeInstance.profile_calls = []
+    FakeInstance.profile_error = None
     FakeCommand.results = {
         "preload": _cc_result(50_000),
         "writer": _cc_result(19_800, hit_pct=0.0, command="set"),
@@ -403,6 +422,87 @@ async def test_run_with_client_cpu_override_skips_the_allocator(faked):
     # An override is still a pinning: the CPU map is complete, so the foreign check runs.
     rep = results.data["per_rep_results"][0]["bottleneck"]
     assert rep["cores"]["foreign_checked"] is True
+
+
+# --------------------------------------------------------------------------- cpu profile
+
+
+@pytest.mark.asyncio
+async def test_run_profiles_the_replica_on_the_last_rep_only(faked):
+    runner = faked(repetitions=3, warmup=5, duration=30, cpu_profile=True)
+
+    await runner.run()
+
+    # One perf record, on the measured replica, started after the reader launch
+    # and delayed by the warmup so only the scored window is sampled.
+    assert FakeInstance.profile_calls == [("start", 6380, 30, 5), ("collect", 6380)]
+    reader_launches = [i for i, role in enumerate(FakeCommand.launched) if role == "reader"]
+    assert len(reader_launches) == 3
+    results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
+    assert results.data["cpu_profile"] is True
+    assert results.data["cpu_profile_rep"] == 3
+    assert results.data["cpu_stacks_main"] == [["main;a;b", 10]]
+    assert results.data["cpu_stacks_io"] == [["io;c", 4]]
+    assert results.reps == 3 and results.score == 265_000.0
+
+
+@pytest.mark.asyncio
+async def test_run_without_cpu_profile_never_touches_perf(faked):
+    runner = faked(repetitions=2)
+
+    await runner.run()
+
+    assert FakeInstance.profile_calls == []
+    results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
+    assert results.data["cpu_profile"] is False
+    assert "cpu_stacks_main" not in results.data and "cpu_profile_rep" not in results.data
+
+
+@pytest.mark.asyncio
+async def test_failed_profile_collection_leaves_the_row_without_stacks(faked):
+    FakeInstance.profile_error = RuntimeError("perf script exploded")
+    runner = faked(repetitions=1, cpu_profile=True)
+
+    await runner.run()  # a diagnostic must never fail the cell
+
+    assert FakeInstance.profile_calls == [("start", 6380, runner.task.duration, runner.task.warmup), ("collect", 6380)]
+    results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
+    assert results.data["cpu_profile"] is True
+    assert "cpu_stacks_main" not in results.data
+    assert runner.status.state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_reader_failure_cancels_the_profile_instead_of_waiting_for_it(faked):
+    # A reader that reports errors fails inside the measure phase, while perf
+    # may still be recording: cancel it rather than wait out the window.
+    FakeCommand.results["reader"] = _cc_result(1000, err_pct=2.0)
+    runner = faked(repetitions=1, cpu_profile=True)
+
+    with pytest.raises(RuntimeError, match="reader cachecannon reported"):
+        await runner.run()
+
+    assert FakeInstance.profile_calls == [("start", 6380, runner.task.duration, runner.task.warmup), ("cancel", 6380)]
+
+
+@pytest.mark.asyncio
+async def test_guard_failure_after_the_window_still_collects_the_profile(faked):
+    # The hit-rate guard runs in _judge, after the reader finished cleanly, so
+    # the completed profile is collected before the cell is failed.
+    FakeCommand.results["reader"] = _cc_result(1000, hit_pct=50.0)
+    runner = faked(repetitions=1, cpu_profile=True)
+
+    with pytest.raises(RuntimeError, match="hit rate"):
+        await runner.run()
+
+    assert FakeInstance.profile_calls == [("start", 6380, runner.task.duration, runner.task.warmup), ("collect", 6380)]
+
+
+def test_cpu_profile_appears_in_descriptions():
+    on, off = _task(cpu_profile=True), _task()
+    assert on.short_description().endswith(", cpu-profile")
+    assert "cpu-profile" not in off.short_description()
+    assert ReplicaReadTaskRunner(on, [HOST]).title.endswith(", cpu-profile")
 
 
 # --------------------------------------------------------------------------- guards
