@@ -33,6 +33,24 @@ rate, replication-lag statistics (primary minus replica offset, bytes), the
 per-instance INFO series, the verdict with its evidence and both TOML
 configs, so a run can be audited without repeating it.
 
+Read-rate search (``--read-rate-search``): instead of one closed-loop reader
+at saturation, each repetition runs a series of open-loop reader probes at
+fixed rates and finds the highest rate the replica serves while still
+keeping up with its primary. A closed-loop reader at saturation measures
+what happens when the client offers unlimited load; a stock replica then
+starves its replication link and the cell fails a guard instead of producing
+a number. The search measures the operating envelope instead: how many reads
+this replica can serve, at this write rate, without falling behind. Probes
+follow a climb (x``read_rate_step`` per pass) then a bisection between the
+last pass and the first fail (see rate_search.py). A probe passes when the
+reader delivered its target rate, the replica's mean lag stayed under
+``--max-lag-seconds`` and its lag was not growing (``--max-lag-slope``,
+seconds of stream per second). The rep's score is the reader throughput
+measured at the highest passing probe; the row records every probe and the
+bracket the knee was found in. The writer restarts with every probe and the
+replica is caught up before the next one starts, so each probe begins from
+zero lag and its lag trend is its own.
+
 Independent variables the task is designed around: replica io-threads, write
 rate, and replica-only server arguments. An A/B is two queued tasks that
 differ in --specifier (two builds) or --replica-args (one build, two configs).
@@ -62,6 +80,7 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.rate_search import Done, Probe, RateSearch
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import DEFAULT_BASE_PORT, TopologyGroup, TopologySpec, replication_lag_stats
@@ -86,6 +105,23 @@ READER_MIN_HIT_RATE_PCT = 99.0
 # milliseconds, so one second is far above it at any write rate while still
 # catching a replica whose main thread is starving the replication link.
 DEFAULT_MAX_LAG_SECONDS = 1.0
+# Read-rate search: a probe also fails when the replica's lag TREND over the
+# scored window exceeds this, in seconds of stream per second (the fraction of
+# the write stream the replica is not applying). Offset-sampling skew is a few
+# milliseconds per sample, so two percent over a window of ten or more
+# samples is well above the noise while catching a replica that is slowly
+# but steadily losing ground.
+DEFAULT_MAX_LAG_SLOPE = 0.02
+# Read-rate search: a probe whose reader delivered less than this fraction of
+# its target rate did not offer that rate at all (an open-loop generator with
+# a finite connection count turns closed-loop when the server's latency fills
+# its in-flight budget). Such a probe fails as a read-path ceiling.
+READ_RATE_MIN_DELIVERY = 0.97
+DEFAULT_READ_RATE_START = 500_000
+DEFAULT_READ_RATE_MAX = 20_000_000
+DEFAULT_READ_RATE_STEP = 1.5
+DEFAULT_READ_RATE_TOLERANCE = 0.05
+DEFAULT_READ_RATE_MAX_BISECT_STEPS = 8
 
 
 def _io_threads_of(inst) -> int:
@@ -128,6 +164,17 @@ class ReplicaReadTaskData(BaseTaskData):
     # falls behind serves the reader stale data at a full hit rate, so the run
     # would silently measure a different experiment (see _check_guards).
     max_lag_seconds: float = DEFAULT_MAX_LAG_SECONDS
+    # Read-rate search (see module docstring). Off: one closed-loop reader per
+    # rep. On: open-loop reader probes at fixed rates, climb x``read_rate_step``
+    # from ``read_rate_start`` then bisect, never above ``read_rate_max``;
+    # ``warmup`` and ``duration`` are per probe.
+    read_rate_search: bool = False
+    read_rate_start: int = DEFAULT_READ_RATE_START
+    read_rate_max: int = DEFAULT_READ_RATE_MAX
+    read_rate_step: float = DEFAULT_READ_RATE_STEP
+    read_rate_tolerance: float = DEFAULT_READ_RATE_TOLERANCE
+    read_rate_max_bisect_steps: int = DEFAULT_READ_RATE_MAX_BISECT_STEPS
+    max_lag_slope: float = DEFAULT_MAX_LAG_SLOPE
     cachecannon_binary: str = DEFAULT_CACHECANNON_BINARY
     benchmark_cpu_override: str = ""
     # perf-record the measured replica (main + io threads, frame-pointer call
@@ -162,6 +209,38 @@ class ReplicaReadTaskData(BaseTaskData):
         for name in ("connections", "threads", "write_connections", "write_threads", "pipelining", "write_pipelining"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1, got {getattr(self, name)}")
+        self.read_rate_search = bool(self.read_rate_search)
+        self.max_lag_slope = float(self.max_lag_slope)
+        if not self.max_lag_slope > 0:
+            raise ValueError(f"max_lag_slope must be > 0, got {self.max_lag_slope}")
+        if self.read_rate_search:
+            # RateSearch validates the search parameters; build one so a bad
+            # combination is refused at queue time rather than on the runner.
+            self.rate_search()
+            if self.cpu_profile:
+                # The profile is one perf.data per task, taken on the last
+                # measurement; a search does not know which probe is the knee
+                # until it is over, so there is no single window to profile.
+                raise ValueError("cpu_profile cannot be combined with read_rate_search")
+
+    def rate_search(self) -> RateSearch:
+        """A fresh search state machine from the task's parameters."""
+        return RateSearch(
+            start_rate=int(self.read_rate_start),
+            step_multiplier=float(self.read_rate_step),
+            max_rate=int(self.read_rate_max),
+            tolerance=float(self.read_rate_tolerance),
+            max_bisect_steps=int(self.read_rate_max_bisect_steps),
+        )
+
+    def max_probes_per_rep(self) -> int:
+        """Probes a rep can take: the search's bound, or one closed-loop reader."""
+        return self.rate_search().max_probes if self.read_rate_search else 1
+
+    def reader_mode_description(self) -> str:
+        if self.read_rate_search:
+            return f"read-rate search from {self.read_rate_start}/s x{self.read_rate_step:g}"
+        return "closed-loop reader"
 
     @property
     def replica_count(self) -> int:
@@ -194,6 +273,7 @@ class ReplicaReadTaskData(BaseTaskData):
             f"replica-read {self.replica_count}r io{self.io_threads}, writes {self.write_rate}/s, "
             f"{HumanByte.to_human(self.val_size)} values, P{self.pipelining}, {self.connections}c, "
             f"{self.threads}t, {HumanTime.to_human(self.duration)} x{self.repetitions}"
+            f"{', read-rate search' if self.read_rate_search else ''}"
             f"{', cpu-profile' if self.cpu_profile else ''}"
         )
 
@@ -263,10 +343,13 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             f"replica io-threads={task.io_threads}, writes {task.write_rate}/s, "
             f"P{task.pipelining}, {task.connections}c, {task.threads}t, "
             f"{HumanTime.to_human(task.duration)} x{task.repetitions}"
+            f"{', read-rate search' if task.read_rate_search else ''}"
             f"{', cpu-profile' if task.cpu_profile else ''}"
         )
         self.status = BenchmarkStatus(
-            steps_total=(task.warmup + task.duration + WRITER_SLACK_SECONDS) * task.repetitions,
+            steps_total=(task.warmup + task.duration + WRITER_SLACK_SECONDS)
+            * task.max_probes_per_rep()
+            * task.repetitions,
             task_type=METHOD,
         )
 
@@ -362,8 +445,12 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 await self._bring_up(group, first=rep == 1)
                 placement = await self._place_generators()
                 await self._preload(group, rep, placement)
-                last = await self._measure(group, rep, placement)
-                reps.append(self._judge(group, rep, placement, last))
+                if task.read_rate_search:
+                    entry, last = await self._search(group, rep, placement)
+                else:
+                    last = await self._measure(group, rep, placement)
+                    entry = self._judge(group, rep, placement, last)
+                reps.append(entry)
             assert last is not None
             await self._record_result(group, reps, last.reader_toml, last.writer_toml)
             self.status.state = "completed"
@@ -448,11 +535,15 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 f"expected >= {task.keyspace_count}"
             )
 
-    def _generator_configs(self, placement: "_Placement", primary: Server, replica: Server) -> tuple:
+    def _generator_configs(
+        self, placement: "_Placement", primary: Server, replica: Server, read_rate: int = 0
+    ) -> tuple:
         """(writer_toml, reader_toml) for the measure phase.
 
         The writer outlives the reader by ``WRITER_SLACK_SECONDS`` so the whole
         reader window sees the write stream, and still exits on its own.
+        ``read_rate`` > 0 makes the reader open-loop at that rate (a search
+        probe); 0 is the closed-loop reader.
         """
         task = self.task
         writer_toml = generate_toml_config(
@@ -480,23 +571,34 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             keyspace_count=task.keyspace_count,
             val_size=task.val_size,
             test="get",
+            rate_limit=read_rate,
             prefill=False,
         )
         return writer_toml, reader_toml
 
-    async def _measure(self, group: TopologyGroup, rep: int, placement: "_Placement") -> "_Measurement":
-        """Phase 3: fixed-rate writer at the primary, closed-loop reader at the replica, sampled throughout."""
+    async def _measure(
+        self, group: TopologyGroup, rep: int, placement: "_Placement", probe: int = 0, read_rate: int = 0
+    ) -> "_Measurement":
+        """Phase 3: fixed-rate writer at the primary, reader at the replica, sampled throughout.
+
+        ``probe`` and ``read_rate`` are set by the read-rate search: the reader
+        is then open-loop at ``read_rate`` and the TOML files carry the probe
+        index so every probe of a rep is auditable.
+        """
         task = self.task
         primary, replica = _primary_and_replica(group)
-        writer_toml, reader_toml = self._generator_configs(placement, primary, replica)
-        writer_path = self._toml(f"writer_rep{rep}.toml", writer_toml)
-        reader_path = self._toml(f"reader_rep{rep}.toml", reader_toml)
+        writer_toml, reader_toml = self._generator_configs(placement, primary, replica, read_rate=read_rate)
+        suffix = f"_rep{rep}" + (f"_p{probe}" if probe else "")
+        writer_path = self._toml(f"writer{suffix}.toml", writer_toml)
+        reader_path = self._toml(f"reader{suffix}.toml", reader_toml)
         self.logger.info(
-            "rep %d/%d: writer %d/s at %s, reader at %s",
+            "rep %d/%d%s: writer %d/s at %s, reader %s at %s",
             rep,
             task.repetitions,
+            f" probe {probe}" if probe else "",
             task.write_rate,
             _endpoint(primary),
+            f"{read_rate}/s" if read_rate else "closed-loop",
             _endpoint(replica),
         )
 
@@ -566,6 +668,11 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         warmup is the reader ramping, the scored window is what the score is
         made of.
         """
+        self._check_cell_guards(reader, writer)
+        self._check_lag_guard(lag)
+
+    def _check_cell_guards(self, reader: dict, writer: dict) -> None:
+        """Guards that fail the cell whatever the reader mode: the dataset or the write stream was not as configured."""
         hit_rate = reader["hit_rate"] or {}
         hit = hit_rate.get("percent", 0.0)
         if hit < READER_MIN_HIT_RATE_PCT:
@@ -580,7 +687,43 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 f"writer achieved {achieved:.0f}/s, below {1 - WRITE_RATE_TOLERANCE:.0%} of target "
                 f"{target}/s: primary or writer could not sustain the rate"
             )
-        self._check_lag_guard(lag)
+
+    def _probe_verdict(self, read_rate: int, reader: dict, lag: dict) -> tuple:
+        """(passed, reason) for one search probe at ``read_rate``.
+
+        A probe passes when the reader actually offered its rate, the replica's
+        mean lag over the scored window is within ``max_lag_seconds`` and its
+        lag trend is within ``max_lag_slope``. The reason names the limit that
+        was hit so the knee's bracket says what bounded it: ``reader`` (the
+        read path, or the generator, could not deliver the rate) or ``lag``
+        (the replica could not keep up while serving it). Cell-level guards
+        (hit rate, writer) are not probe outcomes and are checked separately.
+        """
+        achieved = reader["throughput_rps"]
+        if achieved < read_rate * READ_RATE_MIN_DELIVERY:
+            return False, (
+                f"reader: delivered {achieved:,.0f}/s of {read_rate:,}/s target "
+                f"({achieved / read_rate:.1%} < {READ_RATE_MIN_DELIVERY:.0%})"
+            )
+        if lag.get("samples", 0) >= 2 and lag.get("mean_bytes", 0) > 0:
+            stream = lag.get("stream_bytes_per_second") or 0
+            mean_seconds = lag.get("mean_seconds")
+            slope = lag.get("slope_seconds_per_second")
+            evidence = (
+                f"mean {lag['mean_bytes']:,.0f} bytes, max {lag['max_bytes']:,} bytes, stream {stream:,.0f} bytes/s"
+            )
+            if mean_seconds is None:
+                return False, f"lag: replica behind a stream that did not advance ({evidence})"
+            if mean_seconds > self.task.max_lag_seconds:
+                return False, (
+                    f"lag: mean {mean_seconds:.2f} s of stream > max_lag_seconds {self.task.max_lag_seconds} ({evidence})"
+                )
+            if slope is not None and slope > self.task.max_lag_slope:
+                return False, (
+                    f"lag: growing {slope:.3f} s of stream per second > max_lag_slope {self.task.max_lag_slope} "
+                    f"(replica not applying {slope:.1%} of the writes; {evidence})"
+                )
+        return True, ""
 
     def _check_lag_guard(self, lag: dict) -> None:
         """Fail the rep when the replica sat behind its primary during the scored window.
@@ -612,20 +755,10 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
 
     def _judge(self, group: TopologyGroup, rep: int, placement: "_Placement", m: "_Measurement") -> dict:
         """Phases 4-5: apply the guards, then reduce the rep to its result row entry with a verdict."""
-        primary, replica = _primary_and_replica(group)
-        window_start = m.reader_started + self.task.warmup
-        lag = replication_lag_stats(m.samples, primary.port, replica.port)
-        lag["scored"] = replication_lag_stats(
-            [s for s in m.samples if s.get("t", 0.0) >= window_start], primary.port, replica.port
-        )
+        lag, window_start = self._lag(group, m)
         self._check_guards(m.reader, m.writer, lag["scored"])
-        parties = cpu_sampling.Parties(
-            replica=cpu_sampling.ServerIdentity(replica.port, replica.valkey_pid),
-            primary=cpu_sampling.ServerIdentity(primary.port, primary.valkey_pid),
-            allocated_cpus=self._allocated_cpus(group, placement),
-        )
-        bottleneck = cpu_sampling.bottleneck_verdict(m.samples, parties, window_start=window_start)
-        log = self.logger.info if bottleneck["valid"] else self.logger.warning
+        entry = self._entry(group, placement, m, lag, window_start)
+        log = self.logger.info if entry["bottleneck"]["valid"] else self.logger.warning
         log(
             "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes (scored mean %s s), "
             "bottleneck=%s (%s)",
@@ -636,9 +769,32 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             self.task.write_rate,
             lag.get("max_bytes"),
             _fmt_seconds(lag["scored"].get("mean_seconds")),
-            bottleneck["verdict"],
-            bottleneck["reason"],
+            entry["bottleneck"]["verdict"],
+            entry["bottleneck"]["reason"],
         )
+        return entry
+
+    def _lag(self, group: TopologyGroup, m: "_Measurement") -> tuple:
+        """(lag statistics with their scored-window subset, scored window start) for a measurement."""
+        primary, replica = _primary_and_replica(group)
+        window_start = m.reader_started + self.task.warmup
+        lag = replication_lag_stats(m.samples, primary.port, replica.port)
+        lag["scored"] = replication_lag_stats(
+            [s for s in m.samples if s.get("t", 0.0) >= window_start], primary.port, replica.port
+        )
+        return lag, window_start
+
+    def _entry(
+        self, group: TopologyGroup, placement: "_Placement", m: "_Measurement", lag: dict, window_start: float
+    ) -> dict:
+        """One measurement reduced to its result-row entry, with the bottleneck verdict."""
+        primary, replica = _primary_and_replica(group)
+        parties = cpu_sampling.Parties(
+            replica=cpu_sampling.ServerIdentity(replica.port, replica.valkey_pid),
+            primary=cpu_sampling.ServerIdentity(primary.port, primary.valkey_pid),
+            allocated_cpus=self._allocated_cpus(group, placement),
+        )
+        bottleneck = cpu_sampling.bottleneck_verdict(m.samples, parties, window_start=window_start)
         return {
             "reader_rps": m.reader["throughput_rps"],
             "reader_latency": m.reader["latency"],
@@ -649,6 +805,86 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "bottleneck": bottleneck,
             "samples": self._slim_samples(m.samples),
         }
+
+    async def _search(self, group: TopologyGroup, rep: int, placement: "_Placement") -> tuple:
+        """Phases 3-5 in read-rate-search mode: probe reader rates until the knee is bracketed.
+
+        Every probe is a full measure phase (fresh writer, open-loop reader at
+        the probe's rate, sampled throughout), judged by ``_probe_verdict``.
+        The replica is caught up with its primary before each probe after the
+        first, so a probe's lag trend is its own and not the previous probe's
+        backlog draining. Returns the rep's entry (the knee probe's entry plus
+        a ``search`` record of every probe and the bracket) and the last
+        measurement.
+        """
+        task = self.task
+        search = task.rate_search()
+        step = search.first()
+        probes: list = []
+        last: Optional[_Measurement] = None
+        while isinstance(step, Probe):
+            number = len(probes) + 1
+            if number > 1:
+                await group.wait_for_offsets_caught_up()
+            last = await self._measure(group, rep, placement, probe=number, read_rate=step.rate)
+            lag, window_start = self._lag(group, last)
+            self._check_cell_guards(last.reader, last.writer)
+            passed, reason = self._probe_verdict(step.rate, last.reader, lag["scored"])
+            entry = self._entry(group, placement, last, lag, window_start)
+            entry.update({"probe": number, "target_rps": step.rate, "passed": passed, "reason": reason})
+            self.logger.info(
+                "rep %d/%d probe %d: %d/s -> %s (reader %.0f rps, lag scored mean %s s, slope %s/s, bottleneck=%s)%s",
+                rep,
+                task.repetitions,
+                number,
+                step.rate,
+                "pass" if passed else "FAIL",
+                last.reader["throughput_rps"],
+                _fmt_seconds(lag["scored"].get("mean_seconds")),
+                _fmt_seconds(lag["scored"].get("slope_seconds_per_second")),
+                entry["bottleneck"]["verdict"],
+                f": {reason}" if reason else "",
+            )
+            probes.append(entry)
+            step = search.advance(passed)
+        assert isinstance(step, Done) and last is not None
+        if step.knee is None:
+            lowest = min(probes, key=lambda p: p["target_rps"])
+            raise RuntimeError(
+                f"no read rate passed: {lowest['target_rps']}/s failed ({lowest['reason']}); "
+                f"lower --read-rate-start or raise the lag limits"
+            )
+        knee = next(p for p in probes if p["target_rps"] == step.knee and p["passed"])
+        hi = next((p for p in probes if p["target_rps"] == step.hi), None)
+        if hi is None:
+            bounded_by = "ceiling"
+        else:
+            bounded_by = hi["reason"].split(":", 1)[0]
+        record = {
+            "knee_target_rps": step.knee,
+            "knee_rps": knee["reader_rps"],
+            "hi_target_rps": step.hi,
+            "hi_reason": hi["reason"] if hi else "",
+            "bounded_by": bounded_by,
+            "ceiling_reached": step.ceiling_reached,
+            "probes": probes,
+        }
+        log = self.logger.warning if step.ceiling_reached else self.logger.info
+        log(
+            "rep %d/%d: knee %d/s (reader %.0f rps), bracket (%s, %s], bounded by %s, %d probes%s",
+            rep,
+            task.repetitions,
+            step.knee,
+            knee["reader_rps"],
+            step.knee,
+            step.hi,
+            bounded_by,
+            len(probes),
+            "; read_rate_max passed, the true knee is higher" if step.ceiling_reached else "",
+        )
+        entry = {k: v for k, v in knee.items() if k not in ("probe", "target_rps", "passed", "reason")}
+        entry["search"] = record
+        return entry, last
 
     @staticmethod
     def _allocated_cpus(group: TopologyGroup, placement: "_Placement") -> dict:
@@ -787,6 +1023,23 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "lscpu": lscpu_output,
             "cpu_profile": task.cpu_profile,
         }
+        if task.read_rate_search:
+            # The score is the reader throughput at each rep's knee; this block
+            # says how the knee was found and how sharp the bracket is.
+            detailed["read_rate_search"] = {
+                "start_rps": task.read_rate_start,
+                "max_rps": task.read_rate_max,
+                "step": task.read_rate_step,
+                "tolerance": task.read_rate_tolerance,
+                "max_bisect_steps": task.read_rate_max_bisect_steps,
+                "max_lag_slope": task.max_lag_slope,
+                "min_delivery": READ_RATE_MIN_DELIVERY,
+                "per_rep_knee_target_rps": [r["search"]["knee_target_rps"] for r in reps],
+                "per_rep_hi_target_rps": [r["search"]["hi_target_rps"] for r in reps],
+                "per_rep_bounded_by": [r["search"]["bounded_by"] for r in reps],
+                "per_rep_probes": [len(r["search"]["probes"]) for r in reps],
+                "ceiling_reached": any(r["search"]["ceiling_reached"] for r in reps),
+            }
         if self._cpu_stacks_main:
             # Same keys the perf task uses, so file_protocol also writes them to
             # cpu_stacks_main.json / cpu_stacks_io.json and the flamegraph

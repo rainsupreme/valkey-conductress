@@ -22,8 +22,10 @@ release in ``finally``, and the shape of the row that lands in ``output.jsonl``.
 import asyncio
 import json
 import logging
+import re
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -281,6 +283,9 @@ class FakeCommand:
     launched: list = []
     commands: list = []  # full command strings, in launch order
     launch_cpus: list = []  # (role, launch_cpus kwarg) in launch order
+    # Read-rate search tests: rate_limit (int) -> NDJSON line for the reader; None uses results["reader"].
+    reader_by_rate: Optional[Callable] = None
+    reader_rates: list = []  # rate_limit of every reader launched (0 = closed loop), in order
 
     def __init__(self, command: str, remote=None, launch_cpus=None):
         self.command = command
@@ -290,11 +295,18 @@ class FakeCommand:
         self._polls = 0
         self._emitted = False
         self._launch_cpus = launch_cpus
+        self.rate = 0
+        toml_path = Path(command.split()[-1])
+        if self.role == "reader" and toml_path.is_file():
+            found = re.search(r"^rate_limit = (\d+)$", toml_path.read_text(encoding="utf-8"), re.MULTILINE)
+            self.rate = int(found.group(1)) if found else 0
 
     def start(self):
         FakeCommand.launched.append(self.role)
         FakeCommand.commands.append(self.command)
         FakeCommand.launch_cpus.append((self.role, self._launch_cpus))
+        if self.role == "reader":
+            FakeCommand.reader_rates.append(self.rate)
 
     def is_running(self):
         self._polls += 1
@@ -307,6 +319,8 @@ class FakeCommand:
         if self._emitted:
             return None, None
         self._emitted = True
+        if self.role == "reader" and FakeCommand.reader_by_rate is not None:
+            return FakeCommand.reader_by_rate(self.rate), ""
         return FakeCommand.results[self.role], ""
 
 
@@ -323,6 +337,8 @@ def faked(monkeypatch, tmp_path):
     FakeCommand.launched = []
     FakeCommand.commands = []
     FakeCommand.launch_cpus = []
+    FakeCommand.reader_by_rate = None
+    FakeCommand.reader_rates = []
     FakeGroup.pins = []
     FakeGroup.host_scans = []
     FakeGroup.lag_bytes = 50
@@ -814,3 +830,160 @@ async def test_record_result_row_shape(faked):
     assert data["reader_toml"] == "reader-toml" and data["writer_toml"] == "writer-toml"
     assert data["lscpu"].startswith("ran: lscpu")
     assert len(data["per_rep_results"]) == 3
+
+
+# --------------------------------------------------------------------------- read-rate search
+
+
+def _search_task(**overrides):
+    fields = dict(
+        read_rate_search=True,
+        read_rate_start=100_000,
+        read_rate_step=2.0,
+        read_rate_max=10_000_000,
+        read_rate_tolerance=0.05,
+        read_rate_max_bisect_steps=8,
+    )
+    fields.update(overrides)
+    return fields
+
+
+def _delivers_up_to(knee: int) -> Callable:
+    """Reader oracle: the replica's read path serves every rate up to ``knee``, then delivers half."""
+    return lambda rate: _cc_result(float(rate) if rate <= knee else rate / 2.0)
+
+
+@pytest.mark.asyncio
+async def test_search_run_climbs_bisects_and_scores_the_knee(faked):
+    FakeCommand.reader_by_rate = _delivers_up_to(300_000)
+    runner = faked(**_search_task())
+
+    await runner.run()
+
+    # Every probe is a fresh writer + reader launch; the preload happens once per rep.
+    rates = FakeCommand.reader_rates
+    assert rates[:3] == [100_000, 200_000, 400_000]  # climb x2 until the first failure
+    assert all(200_000 < r < 400_000 for r in rates[3:])  # then bisect inside the bracket
+    assert FakeCommand.launched == ["preload"] + ["writer", "reader"] * len(rates)
+    # The replica is caught up before every probe after the first (plus once after the preload).
+    assert FakeGroup.events.count("wait-offsets") == len(rates)
+    # TOMLs carry the probe index so each probe is auditable.
+    names = {p.name for p in runner.file_protocol.work_dir.glob("reader_rep1_p*.toml")}
+    assert names == {f"reader_rep1_p{n}.toml" for n in range(1, len(rates) + 1)}
+
+    runner.file_protocol.write_results.assert_called_once()
+    results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
+    knee = results.data["per_rep_results"][0]["search"]
+    assert knee["knee_target_rps"] <= 300_000 < knee["hi_target_rps"]
+    assert (knee["hi_target_rps"] - knee["knee_target_rps"]) / knee["hi_target_rps"] <= 0.05
+    assert results.score == float(knee["knee_target_rps"])  # the reader delivered exactly its target at the knee
+    assert knee["bounded_by"] == "reader" and knee["hi_reason"].startswith("reader: delivered")
+    assert not knee["ceiling_reached"]
+    probes = knee["probes"]
+    assert [p["target_rps"] for p in probes] == rates
+    assert [p["passed"] for p in probes][:3] == [True, True, False]
+    assert all(p["reason"] == "" for p in probes if p["passed"])
+    assert all("samples" in p and "bottleneck" in p and "lag" in p for p in probes)
+    summary = results.data["read_rate_search"]
+    assert summary["per_rep_knee_target_rps"] == [knee["knee_target_rps"]]
+    assert summary["per_rep_bounded_by"] == ["reader"] and summary["per_rep_probes"] == [len(rates)]
+    assert summary["start_rps"] == 100_000 and summary["step"] == 2.0 and summary["ceiling_reached"] is False
+    # The rep entry is the knee probe's entry: same lag/bottleneck shape as a closed-loop rep.
+    entry = results.data["per_rep_results"][0]
+    assert entry["reader_rps"] == results.score and "probe" not in entry and "passed" not in entry
+    assert results.data["bottleneck"]["verdict"] == cs.VERDICT_SERVER
+    assert runner.status.state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_search_run_reports_the_ceiling_when_max_rate_passes(faked):
+    FakeCommand.reader_by_rate = _delivers_up_to(10_000_000)
+    runner = faked(**_search_task(read_rate_max=400_000))
+
+    await runner.run()
+
+    assert FakeCommand.reader_rates == [100_000, 200_000, 400_000]
+    results: BenchmarkResults = runner.file_protocol.write_results.call_args.args[0]
+    search = results.data["per_rep_results"][0]["search"]
+    assert search["knee_target_rps"] == 400_000 and search["hi_target_rps"] is None
+    assert search["bounded_by"] == "ceiling" and search["ceiling_reached"] is True
+    assert results.data["read_rate_search"]["ceiling_reached"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_run_fails_the_cell_when_no_rate_passes(faked):
+    FakeCommand.reader_by_rate = _delivers_up_to(0)  # every rate under-delivers
+    runner = faked(**_search_task(read_rate_max_bisect_steps=2))
+    with pytest.raises(RuntimeError, match="no read rate passed"):
+        await runner.run()
+    assert FakeCommand.reader_rates[0] == 100_000 and all(r < 100_000 for r in FakeCommand.reader_rates[1:])
+    assert "stop-all" in FakeGroup.events
+
+
+@pytest.mark.asyncio
+async def test_search_run_still_applies_the_cell_guards(faked):
+    # A lagging replica is a probe FAIL in search mode, but a broken dataset is still a cell error.
+    FakeCommand.reader_by_rate = lambda rate: _cc_result(float(rate), hit_pct=90.0)
+    runner = faked(**_search_task())
+    with pytest.raises(RuntimeError, match="replica dataset incomplete"):
+        await runner.run()
+
+
+@pytest.mark.asyncio
+async def test_search_run_treats_a_lagging_replica_as_a_failed_probe_not_an_error(faked):
+    # The fake stream advances 1000 B/s and the replica sits a fixed 5000 B (5 s) behind at every rate:
+    # every probe fails on lag, the search bisects below the start rate and finds nothing.
+    FakeGroup.lag_bytes = 5000
+    FakeCommand.reader_by_rate = _delivers_up_to(10_000_000)
+    runner = faked(**_search_task(read_rate_max_bisect_steps=1))
+    with pytest.raises(RuntimeError, match=r"no read rate passed.*lag: mean 5\.00 s"):
+        await runner.run()
+
+
+# --------------------------------------------------------------------------- probe verdict
+
+
+def _lag_trend(mean_seconds, slope, *, rate=100_000.0, samples=15):
+    lag = _lag(mean_seconds, rate=rate, samples=samples)
+    lag["slope_seconds_per_second"] = slope
+    return lag
+
+
+def test_probe_passes_when_delivered_and_lag_is_flat(faked):
+    runner = faked(**_search_task())
+    reader = {"throughput_rps": 990_000.0, "hit_rate": {"percent": 100.0}}
+    assert runner._probe_verdict(1_000_000, reader, _lag_trend(0.2, 0.001)) == (True, "")
+    assert runner._probe_verdict(1_000_000, reader, {"samples": 0}) == (True, "")  # no lag samples: nothing to judge
+
+
+def test_probe_fails_on_reader_delivery_before_looking_at_lag(faked):
+    runner = faked(**_search_task())
+    reader = {"throughput_rps": 900_000.0, "hit_rate": {"percent": 100.0}}
+    passed, reason = runner._probe_verdict(1_000_000, reader, _lag_trend(5.0, 0.5))
+    assert not passed and reason.startswith("reader: delivered 900,000/s of 1,000,000/s target (90.0% < 97%)")
+
+
+def test_probe_fails_on_lag_level(faked):
+    runner = faked(**_search_task(max_lag_seconds=1.0))
+    reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
+    passed, reason = runner._probe_verdict(1_000_000, reader, _lag_trend(1.5, 0.0))
+    assert not passed and reason.startswith("lag: mean 1.50 s of stream > max_lag_seconds 1.0")
+
+
+def test_probe_fails_on_lag_slope_even_when_the_level_is_small(faked):
+    runner = faked(**_search_task(max_lag_slope=0.02))
+    reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
+    passed, reason = runner._probe_verdict(1_000_000, reader, _lag_trend(0.3, 0.05))
+    assert not passed
+    assert reason.startswith("lag: growing 0.050 s of stream per second > max_lag_slope 0.02")
+    assert "not applying 5.0% of the writes" in reason
+    # At the threshold it passes; the slope is a strict comparison like the level guard.
+    assert runner._probe_verdict(1_000_000, reader, _lag_trend(0.3, 0.02))[0]
+
+
+def test_probe_fails_when_lag_exists_but_the_stream_did_not_advance(faked):
+    runner = faked(**_search_task())
+    reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
+    lag = {"samples": 5, "mean_bytes": 500.0, "max_bytes": 900, "stream_bytes_per_second": 0.0, "mean_seconds": None}
+    passed, reason = runner._probe_verdict(1_000_000, reader, lag)
+    assert not passed and reason.startswith("lag: replica behind a stream that did not advance")

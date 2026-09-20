@@ -148,6 +148,44 @@ def test_replication_lag_stats_seconds_need_an_advancing_stream_and_two_samples(
     unclocked = [{"instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}] * 3
     stats = replication_lag_stats(unclocked, 6379, 6380)
     assert stats["samples"] == 3 and stats["mean_seconds"] is None
+    assert stats["slope_seconds_per_second"] is None
+
+
+def _lag_series(lags: list, rate: int = 100_000) -> list:
+    """Samples one second apart: primary advancing ``rate`` bytes/s, replica ``lags[i]`` bytes behind."""
+    return [
+        {
+            "t": float(i),
+            "instances": {
+                6379: {"master_repl_offset": rate * (i + 1)},
+                6380: {"master_repl_offset": rate * (i + 1) - lag},
+            },
+        }
+        for i, lag in enumerate(lags)
+    ]
+
+
+def test_replication_lag_slope_is_the_fraction_of_the_stream_not_applied():
+    # Lag grows 5,000 bytes every second against a 100,000 bytes/s stream: 5% of the writes pile up.
+    stats = replication_lag_stats(_lag_series([0, 5_000, 10_000, 15_000, 20_000]), 6379, 6380)
+    assert stats["slope_seconds_per_second"] == pytest.approx(0.05)
+    # A steady lag, however large, has no trend: the replica is keeping up at a fixed distance.
+    stats = replication_lag_stats(_lag_series([40_000, 40_000, 40_000, 40_000]), 6379, 6380)
+    assert stats["slope_seconds_per_second"] == pytest.approx(0.0)
+    assert stats["mean_seconds"] == pytest.approx(0.4)
+    # Jitter around a flat level fits to (near) zero rather than to the last-minus-first delta.
+    stats = replication_lag_stats(_lag_series([1_000, 3_000, 1_000, 3_000, 1_000, 3_000]), 6379, 6380)
+    assert abs(stats["slope_seconds_per_second"]) < 0.005
+
+
+def test_replication_lag_slope_needs_a_rate_and_two_clocked_samples():
+    one = [{"t": 0.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}]
+    assert replication_lag_stats(one, 6379, 6380)["slope_seconds_per_second"] is None
+    stalled = [
+        {"t": 0.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}},
+        {"t": 1.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}},
+    ]
+    assert replication_lag_stats(stalled, 6379, 6380)["slope_seconds_per_second"] is None
 
 
 def test_info_sections_widen_to_everything_only_for_extra_fields():
@@ -309,6 +347,93 @@ def test_runner_title_and_status():
     assert runner.status.steps_total > 0
     assert "io-threads=16" in runner.title
     assert runner.spec.replicas[0].port == task.base_port + 1
+
+
+# --- read-rate search ---
+
+
+def test_search_is_off_by_default_and_named_when_on():
+    assert not _task().read_rate_search
+    assert _task().max_probes_per_rep() == 1
+    task = _task(read_rate_search=True, read_rate_start=250_000, read_rate_step=1.5, read_rate_max=20_000_000)
+    assert task.rate_search().first().rate == 250_000
+    assert task.max_probes_per_rep() == task.rate_search().max_probes > 1
+    assert "read-rate search" in task.short_description()
+    assert "read-rate search" in task.reader_mode_description()
+
+
+def test_search_parameters_are_validated_at_queue_time():
+    with pytest.raises(ValueError, match="max_rate"):
+        _task(read_rate_search=True, read_rate_start=1_000_000, read_rate_max=500_000)
+    with pytest.raises(ValueError, match="step_multiplier"):
+        _task(read_rate_search=True, read_rate_step=1.0)
+    with pytest.raises(ValueError, match="max_lag_slope"):
+        _task(max_lag_slope=0)
+    with pytest.raises(ValueError, match="cpu_profile"):
+        _task(read_rate_search=True, cpu_profile=True)
+    # The same parameters are not checked when the search is off: they are inert.
+    assert not _task(read_rate_start=1_000_000, read_rate_max=500_000).read_rate_search
+
+
+def test_search_task_round_trips_through_queue_document(tmp_path):
+    task = _task(read_rate_search=True, read_rate_start=300_000, read_rate_tolerance=0.1, max_lag_slope=0.05)
+    path = tmp_path / "task.json"
+    task.save_to_file(path)
+    loaded = BaseTaskData.from_file(path)
+    assert isinstance(loaded, ReplicaReadTaskData)
+    assert loaded.read_rate_search is True
+    assert loaded.read_rate_start == 300_000
+    assert loaded.read_rate_tolerance == 0.1
+    assert loaded.max_lag_slope == 0.05
+
+
+def test_runner_status_bound_covers_every_probe_of_every_rep():
+    plain = ReplicaReadTaskRunner(_task(repetitions=2), [config.ServerInfo(ip="127.0.0.1", username="ec2-user")])
+    search = ReplicaReadTaskRunner(
+        _task(repetitions=2, read_rate_search=True), [config.ServerInfo(ip="127.0.0.1", username="ec2-user")]
+    )
+    assert search.status.steps_total == plain.status.steps_total * search.task.max_probes_per_rep()
+    assert "read-rate search" in search.title
+
+
+@patch("conductress.cli.TaskQueue")
+def test_cli_add_replica_read_wires_the_search_flags(mock_queue_cls):
+    mock_queue = MagicMock()
+    mock_queue_cls.return_value = mock_queue
+    exit_code = main(
+        [
+            "queue",
+            "add-replica-read",
+            "--source",
+            _valid_source(),
+            "--specifier",
+            "abc123",
+            "--read-rate-search",
+            "--read-rate-start",
+            "250000",
+            "--read-rate-max",
+            "12000000",
+            "--read-rate-step",
+            "1.4",
+            "--read-rate-tolerance",
+            "0.03",
+            "--max-lag-slope",
+            "0.01",
+        ]
+    )
+    assert exit_code == 0
+    task = mock_queue.submit_task.call_args.args[0]
+    assert task.read_rate_search is True
+    assert (task.read_rate_start, task.read_rate_max, task.read_rate_step) == (250_000, 12_000_000, 1.4)
+    assert (task.read_rate_tolerance, task.max_lag_slope) == (0.03, 0.01)
+
+
+@patch("conductress.cli.TaskQueue")
+def test_cli_add_replica_read_defaults_to_the_closed_loop_reader(mock_queue_cls):
+    mock_queue = MagicMock()
+    mock_queue_cls.return_value = mock_queue
+    assert main(["queue", "add-replica-read", "--source", _valid_source(), "--specifier", "abc123"]) == 0
+    assert mock_queue.submit_task.call_args.args[0].read_rate_search is False
 
 
 # --- CLI ---
