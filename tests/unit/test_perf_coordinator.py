@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from conductress.sweep.coordinator import SweepCoordinator
+from conductress.sweep.coordinator import SweepCoordinator, perf_counters_from_entry
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
 from conductress.tasks.task_perf_benchmark import PerfTaskData
 from conductress.topology import TopologySpec
@@ -147,14 +147,14 @@ class TestExtractPerfCounters:
 
         result = coordinator._extract_perf_counters(task)
         assert result is not None
-        counters, duration, rps, counters_main, counters_io, rep_count = result
-        assert counters["instructions"] == 900000000000
-        assert duration == 30.0
-        assert rps == 2000000
-        assert rep_count == 3
-        # No per-thread data in this fixture
-        assert counters_main is None
-        assert counters_io is None
+        assert result.counters["instructions"] == 900000000000
+        assert result.duration == 30.0
+        assert result.rps == 2000000
+        assert result.rep_count == 3
+        # No per-thread data or scope in this fixture
+        assert result.counters_main is None
+        assert result.counters_io is None
+        assert result.scope is None
 
     def test_returns_none_when_no_counters(self, coordinator, output_jsonl):
         task = _make_task()
@@ -162,6 +162,104 @@ class TestExtractPerfCounters:
         output_jsonl.write_text(json.dumps(entry) + "\n")
 
         assert coordinator._extract_perf_counters(task) is None
+
+
+class TestPerfCountersFromEntry:
+    """Both result-row shapes normalise to the same record."""
+
+    def test_flat_shape_with_per_thread_siblings_and_scope(self):
+        entry = {
+            "score": 2_000_000,
+            "data": {
+                "perf_counters": {"instructions": 900, "cycles": 300},
+                "perf_counters_main": {"instructions": 500, "cycles": 200},
+                "perf_counters_io": {"instructions": 400, "cycles": 100},
+                "perf_duration_seconds": 30.0,
+                "perf_rep_count": 5,
+                "perf_counters_scope": "user+kernel",
+            },
+        }
+        rec = perf_counters_from_entry(entry)
+        assert rec is not None
+        assert rec.counters == {"instructions": 900, "cycles": 300}
+        assert rec.counters_main == {"instructions": 500, "cycles": 200}
+        assert rec.counters_io == {"instructions": 400, "cycles": 100}
+        assert (rec.duration, rec.rps, rec.rep_count, rec.scope) == (30.0, 2_000_000, 5, "user+kernel")
+
+    def test_nested_shape_as_written_by_cachecannon_and_mixed_tasks(self):
+        entry = {
+            "score": 1_990_000,
+            "data": {
+                "perf_counters": {
+                    "all": {"instructions": 900, "cycles": 300, "raw_syscalls:sys_enter": 12},
+                    "main": {"instructions": 500, "cycles": 200, "raw_syscalls:sys_enter": 6},
+                    "io": {"instructions": 400, "cycles": 100, "raw_syscalls:sys_enter": 6},
+                },
+                "perf_counters_scope": "user+kernel",
+                "perf_duration_seconds": 29.2,
+                "perf_rep_count": 2,
+            },
+        }
+        rec = perf_counters_from_entry(entry)
+        assert rec is not None
+        assert rec.counters["raw_syscalls:sys_enter"] == 12
+        assert rec.counters_main["instructions"] == 500  # type: ignore[index]
+        assert rec.counters_io["cycles"] == 100  # type: ignore[index]
+        assert (rec.duration, rec.rep_count, rec.scope) == (29.2, 2, "user+kernel")
+
+    def test_nested_shape_without_per_thread_buckets(self):
+        entry = {"score": 1, "data": {"perf_counters": {"all": {"instructions": 9, "cycles": 3}}}}
+        rec = perf_counters_from_entry(entry)
+        assert rec is not None
+        assert rec.counters == {"instructions": 9, "cycles": 3}
+        assert rec.counters_main is None and rec.counters_io is None
+
+    def test_empty_all_bucket_is_no_data(self):
+        assert perf_counters_from_entry({"score": 1, "data": {"perf_counters": {"all": {}, "main": {}}}}) is None
+        assert perf_counters_from_entry({"score": 1, "data": {}}) is None
+
+
+class TestPerfScopeRecording:
+    def test_scope_is_stored_and_persisted(self, coordinator):
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2024-01-01", value=1.0, status=PointStatus.COMPLETED
+        )
+        coordinator.record_perf_counters("aaa", {"instructions": 1}, 30.0, 1.0, scope="user+kernel")
+        assert coordinator.state.points["aaa"].perf_counters_scope == "user+kernel"
+        assert SweepState.load(coordinator.state_file).points["aaa"].perf_counters_scope == "user+kernel"
+
+    def test_none_scope_keeps_existing_value(self, coordinator):
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2024-01-01", value=1.0, status=PointStatus.COMPLETED, perf_counters_scope="user"
+        )
+        coordinator.record_perf_counters("aaa", {"instructions": 1}, 30.0, 1.0)
+        assert coordinator.state.points["aaa"].perf_counters_scope == "user"
+
+    def test_on_task_completed_carries_scope_to_point(self, coordinator, output_jsonl):
+        task = _make_task()
+        task.sweep_commit = "aaa"
+        coordinator.state.points["aaa"] = BenchmarkPoint(commit="aaa", date="2024-01-01")
+        entry = {
+            "task_id": task.task_id,
+            "score": 2_000_000,
+            "data": {
+                "per_run_rps": [2_000_000, 2_010_000],
+                "perf_counters": {"instructions": 9, "cycles": 3},
+                "perf_counters_scope": "user+kernel",
+                "perf_duration_seconds": 30.0,
+                "perf_rep_count": 2,
+            },
+        }
+        output_jsonl.write_text(json.dumps(entry) + "\n")
+        with (
+            patch.object(coordinator, "_is_my_task", return_value=True),
+            patch("conductress.sweep.coordinator.get_head", return_value="zzz"),
+        ):
+            coordinator.on_task_completed(task)
+        point = coordinator.state.points["aaa"]
+        assert point.perf_counters == {"instructions": 9, "cycles": 3}
+        assert point.perf_counters_scope == "user+kernel"
+        assert point.perf_rep_count == 2
 
 
 class TestStateRoundTrip:
@@ -178,6 +276,7 @@ class TestStateRoundTrip:
             perf_duration_seconds=30.0,
             perf_rps=2000000.0,
             perf_rep_count=5,
+            perf_counters_scope="user+kernel",
         )
 
         path = tmp_path / "state.json"
@@ -192,6 +291,7 @@ class TestStateRoundTrip:
         assert loaded.points["aaa"].perf_duration_seconds == 30.0
         assert loaded.points["aaa"].perf_rps == 2000000.0
         assert loaded.points["aaa"].perf_rep_count == 5
+        assert loaded.points["aaa"].perf_counters_scope == "user+kernel"
 
     def test_none_counters_survive_round_trip(self, tmp_path):
         state = SweepState(merge_commits=["aaa"], commit_dates={"aaa": "2024-01-01"})
@@ -207,3 +307,4 @@ class TestStateRoundTrip:
         assert loaded.points["aaa"].perf_duration_seconds is None
         assert loaded.points["aaa"].perf_rps is None
         assert loaded.points["aaa"].perf_rep_count is None
+        assert loaded.points["aaa"].perf_counters_scope is None

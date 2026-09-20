@@ -115,6 +115,16 @@ class TestComputeMetric:
         # 900B / (2M * 30 * 5) = 3000
         assert result == pytest.approx(3000.0, rel=1e-6)
 
+    def test_cycles_per_req(self, sample_state):
+        point = sample_state.points["aaa"]
+        result = _compute_metric(point, "cycles-per-req")
+        # Same rep correction as instructions-per-req: 300B / (2M * 30 * 5) = 1000
+        assert result == pytest.approx(1000.0, rel=1e-6)
+        # and the two agree with IPC: 3000 insn / 1000 cyc = 3.0
+        assert _compute_metric(point, "instructions-per-req") / result == pytest.approx(
+            _compute_metric(point, "ipc"), rel=1e-6
+        )
+
     def test_no_counters_returns_none(self):
         point = BenchmarkPoint(commit="x", date="2024-01-01", status=PointStatus.COMPLETED)
         assert _compute_metric(point, "ipc") is None
@@ -285,3 +295,79 @@ class TestExportManifest:
         assert "cache" in group_ids
         assert "pipeline" in group_ids
         assert "branching" in group_ids
+
+
+class TestKernelMetrics:
+    """syscalls-per-req and context-switches-per-sec, fed by the privileged perf stat of PR #196/#202."""
+
+    def _point(self, **counters):
+        return BenchmarkPoint(
+            commit="aaa",
+            date="2024-01-01",
+            value=2_000_000.0,
+            reps=5,
+            status=PointStatus.COMPLETED,
+            perf_counters={"instructions": 100, "cycles": 50, **counters},
+            perf_duration_seconds=30.0,
+            perf_rps=2_000_000.0,
+            perf_rep_count=5,
+        )
+
+    def test_syscalls_per_req_divides_by_summed_reps(self):
+        # 0.12 syscalls/request over 5 reps x 30 s x 2M rps = 36M syscalls summed.
+        point = self._point(**{"raw_syscalls:sys_enter": 36_000_000})
+        assert _compute_metric(point, "syscalls-per-req") == pytest.approx(0.12)
+
+    def test_context_switches_per_sec_divides_by_summed_window(self):
+        point = self._point(**{"context-switches": 5 * 30 * 40})
+        assert _compute_metric(point, "context-switches-per-sec") == pytest.approx(40.0)
+
+    def test_zero_count_is_skipped_not_plotted(self):
+        # A user-only row (pre-#196) records 0 for both kernel events; the guard
+        # must return None so the series omits the point instead of drawing 0.
+        point = self._point(**{"raw_syscalls:sys_enter": 0, "context-switches": 0})
+        assert _compute_metric(point, "syscalls-per-req") is None
+        assert _compute_metric(point, "context-switches-per-sec") is None
+
+    def test_missing_events_return_none(self):
+        point = self._point()
+        assert _compute_metric(point, "syscalls-per-req") is None
+        assert _compute_metric(point, "context-switches-per-sec") is None
+
+    def test_kernel_group_in_manifest_with_per_thread_variants(self, tmp_path):
+        from unittest.mock import patch
+
+        with patch("conductress.publisher.detect_platform", return_value=("amd64", "amd64/test")):
+            export_manifest(tmp_path, platforms=["amd64"], workloads=[("get16b-t7-p10", "throughput")])
+        data = json.loads((tmp_path / "manifest-amd64.json").read_text())
+        groups = {g["id"]: g for g in data["groups"]}
+        assert groups["kernel"]["series"] == ["syscalls-per-req", "context-switches-per-sec"]
+        assert groups["kernel-main"]["series"] == ["syscalls-per-req-main", "context-switches-per-sec-main"]
+        assert groups["kernel-io"]["per_thread"] == "io"
+        for metric_id in ("syscalls-per-req", "context-switches-per-sec"):
+            assert metric_id in PERF_METRICS
+
+
+class TestScopeTagging:
+    """Every exported perf point names the privilege scope its counters were taken under."""
+
+    def test_legacy_points_are_user_scope(self, sample_state, tmp_path):
+        export_perf_metrics(sample_state, tmp_path, platform="amd64", workload="get16b-t7-p10")
+        data = json.loads((tmp_path / "series-amd64-get16b-t7-p10-ipc.json").read_text())
+        assert all(p["scope"] == "user" for p in data["points"])
+        assert data["metadata"]["scopes"] == ["user"]
+
+    def test_mixed_scopes_tagged_per_point_and_listed_in_order(self, sample_state, tmp_path):
+        sample_state.points["bbb"].perf_counters_scope = "user+kernel"
+        export_perf_metrics(sample_state, tmp_path, platform="amd64", workload="get16b-t7-p10")
+        data = json.loads((tmp_path / "series-amd64-get16b-t7-p10-ipc.json").read_text())
+        by_commit = {p["commit"]: p["scope"] for p in data["points"]}
+        assert by_commit == {"aaa": "user", "bbb": "user+kernel"}
+        assert data["metadata"]["scopes"] == ["user", "user+kernel"]
+
+    def test_per_thread_variants_carry_scope_too(self, sample_state, tmp_path):
+        sample_state.points["aaa"].perf_counters_main = {"instructions": 10, "cycles": 5}
+        sample_state.points["aaa"].perf_counters_scope = "user+kernel"
+        export_perf_metrics(sample_state, tmp_path, platform="amd64", workload="get16b-t7-p10")
+        data = json.loads((tmp_path / "series-amd64-get16b-t7-p10-ipc-main.json").read_text())
+        assert [p["scope"] for p in data["points"]] == ["user+kernel"]

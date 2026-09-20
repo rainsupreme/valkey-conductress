@@ -50,7 +50,7 @@ from conductress.config import (
     SWEEP_V3_VAL_SIZE,
     SWEEP_V3_WARMUP,
 )
-from conductress.sweep.coordinator import BaseSweepCoordinator
+from conductress.sweep.coordinator import BaseSweepCoordinator, PerfCounterRecord, perf_counters_from_entry
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
 from conductress.tasks.task_cachecannon import CachecannonTaskData
@@ -137,6 +137,11 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             repetitions=SWEEP_V3_REPETITIONS,
             max_reps=SWEEP_V3_MAX_REPS,
             target_cv=SWEEP_V3_TARGET_CV,
+            # Per-thread hardware counters every rep and a CPU flamegraph on the
+            # last rep, as the v1 sweep has always collected. Counting-mode perf
+            # stat costs well under 1% and is what feeds the dashboard's IPC,
+            # cache, stall and syscall series for this epoch.
+            perf_stat_enabled=True,
         )
 
     def _find_task_entry(self, task: BaseTaskData) -> Optional[dict]:
@@ -163,6 +168,15 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         # must come from the recorded run list.
         reps = len(per_run) if per_run else SWEEP_V3_REPETITIONS
         return (rps, cv, reps) if rps else None
+
+    def _extract_perf_counters(self, task: BaseTaskData) -> Optional[PerfCounterRecord]:
+        entry = self._find_task_entry(task)
+        return perf_counters_from_entry(entry) if entry else None
+
+    def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
+        entry = self._find_task_entry(task)
+        if entry:
+            self._store_cpu_stacks_from_entry(task, entry)
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
         return (

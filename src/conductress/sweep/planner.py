@@ -51,6 +51,11 @@ class BenchmarkPoint:
     perf_duration_seconds: Optional[float] = None  # perf stat measurement window (one rep)
     perf_rps: Optional[float] = None  # throughput during perf stat collection
     perf_rep_count: Optional[int] = None  # reps whose raw counters were summed into perf_counters*
+    # Privilege scope of the perf stat counters ("user+kernel", "user", ...).
+    # None means the point predates scope recording and was counted user-only
+    # (perf stat ran unprivileged before PR #196); absolute counts and IPC are
+    # not comparable across scopes, so the exporter tags every point with it.
+    perf_counters_scope: Optional[str] = None
     breakdown: Optional[dict[str, float]] = None  # per-category memory breakdown (bytes/key)
     raw_stacks: Optional[list[list]] = None  # retained resolved stacks for re-categorization
     latency_data: Optional[dict] = None  # full latency results (p50, p99.9, histogram, rps)
@@ -200,6 +205,7 @@ class SweepState:
                     "perf_duration_seconds": p.perf_duration_seconds,
                     "perf_rps": p.perf_rps,
                     "perf_rep_count": p.perf_rep_count,
+                    "perf_counters_scope": p.perf_counters_scope,
                     "breakdown": p.breakdown,
                     "raw_stacks": p.raw_stacks,
                     "latency_data": p.latency_data,
@@ -255,6 +261,7 @@ class SweepState:
                 perf_duration_seconds=p_data.get("perf_duration_seconds"),
                 perf_rps=p_data.get("perf_rps"),
                 perf_rep_count=p_data.get("perf_rep_count"),
+                perf_counters_scope=p_data.get("perf_counters_scope"),
                 breakdown=p_data.get("breakdown"),
                 raw_stacks=p_data.get("raw_stacks"),
                 latency_data=p_data.get("latency_data"),

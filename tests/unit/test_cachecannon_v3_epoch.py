@@ -515,3 +515,101 @@ class TestV3Roster:
         monkeypatch.setenv("CONDUCTRESS_SWEEP_V3_ENABLED", "maybe")
         with pytest.raises(ValueError):
             _env_bool("CONDUCTRESS_SWEEP_V3_ENABLED", False)
+
+
+class TestV3Profiling:
+    """The v3 sweep collects the same profiling data the v1 sweep always has."""
+
+    def test_created_task_enables_perf_stat(self, tmp_path: Path):
+        assert _v3_get(tmp_path)._create_task(_sweep_task()).perf_stat_enabled is True
+        assert _v3_mixed(tmp_path)._create_task(_sweep_task()).perf_stat_enabled is True
+
+    def test_perf_stat_flag_does_not_affect_ownership(self, tmp_path: Path):
+        # Cells queued before this change (perf_stat_enabled=False) are still the
+        # coordinator's own; ownership is by workload shape, not by profiling.
+        coord = _v3_get(tmp_path)
+        task = coord._create_task(_sweep_task())
+        task.sweep_commit = "a" * 40
+        task.perf_stat_enabled = False
+        assert coord._is_my_task(task)
+
+    def test_completion_records_nested_counters_stacks_and_scope(self, tmp_path: Path, monkeypatch):
+        """A cachecannon result row (bucketed perf_counters) lands on the v3 point."""
+        import json
+
+        from conductress.sweep import coordinator_v3
+        from conductress.sweep.planner import BenchmarkPoint
+
+        results = tmp_path / "results"
+        results.mkdir()
+        monkeypatch.setattr(coordinator_v3, "CONDUCTRESS_RESULTS", results)
+
+        coord = _v3_get(tmp_path)
+        commit = "a" * 40
+        coord.state.merge_commits = [commit]
+        coord.state.commit_dates = {commit: "2026-01-01"}
+        coord.state.points[commit] = BenchmarkPoint(commit=commit, date="2026-01-01")
+        task = coord._create_task(_sweep_task(commit))
+        task.sweep_commit = commit
+
+        row = {
+            "task_id": task.task_id,
+            "score": 1_990_363.0,
+            "data": {
+                "per_run_rps": [1_985_000.0, 1_995_726.0],
+                "perf_counters": {
+                    "all": {"instructions": 900, "cycles": 350, "raw_syscalls:sys_enter": 12},
+                    "main": {"instructions": 500, "cycles": 200, "raw_syscalls:sys_enter": 6},
+                    "io": {"instructions": 400, "cycles": 150, "raw_syscalls:sys_enter": 6},
+                },
+                "perf_counters_scope": "user+kernel",
+                "perf_duration_seconds": 29.2,
+                "perf_rep_count": 2,
+                "cpu_stacks_main": [["main;processCommand", 10]],
+                "cpu_stacks_io": [["io_thread;read", 7]],
+            },
+        }
+        (results / "output.jsonl").write_text(json.dumps(row) + "\n")
+
+        with patch("conductress.sweep.coordinator.get_head", return_value="z" * 40):
+            coord.on_task_completed(task)
+
+        point = coord.state.points[commit]
+        assert point.value == pytest.approx(1_990_363.0)
+        assert point.perf_counters == {"instructions": 900, "cycles": 350, "raw_syscalls:sys_enter": 12}
+        assert point.perf_counters_main == {"instructions": 500, "cycles": 200, "raw_syscalls:sys_enter": 6}
+        assert point.perf_counters_io == {"instructions": 400, "cycles": 150, "raw_syscalls:sys_enter": 6}
+        assert point.perf_counters_scope == "user+kernel"
+        assert point.perf_duration_seconds == 29.2
+        assert point.perf_rep_count == 2
+        assert point.perf_rps == pytest.approx(1_990_363.0)
+        assert point.cpu_stacks_main == [["main;processCommand", 10]]
+        assert point.cpu_stacks_io == [["io_thread;read", 7]]
+
+    def test_completion_without_profiling_leaves_point_unprofiled(self, tmp_path: Path, monkeypatch):
+        import json
+
+        from conductress.sweep import coordinator_v3
+        from conductress.sweep.planner import BenchmarkPoint
+
+        results = tmp_path / "results"
+        results.mkdir()
+        monkeypatch.setattr(coordinator_v3, "CONDUCTRESS_RESULTS", results)
+
+        coord = _v3_get(tmp_path)
+        commit = "b" * 40
+        coord.state.merge_commits = [commit]
+        coord.state.commit_dates = {commit: "2026-01-01"}
+        coord.state.points[commit] = BenchmarkPoint(commit=commit, date="2026-01-01")
+        task = coord._create_task(_sweep_task(commit))
+        task.sweep_commit = commit
+        row = {"task_id": task.task_id, "score": 2_000_000.0, "data": {"per_run_rps": [2_000_000.0] * 5}}
+        (results / "output.jsonl").write_text(json.dumps(row) + "\n")
+
+        with patch("conductress.sweep.coordinator.get_head", return_value="z" * 40):
+            coord.on_task_completed(task)
+
+        point = coord.state.points[commit]
+        assert point.value == pytest.approx(2_000_000.0)
+        assert point.perf_counters is None
+        assert point.cpu_stacks_main is None
