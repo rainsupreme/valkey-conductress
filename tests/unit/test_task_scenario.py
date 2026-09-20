@@ -8,8 +8,8 @@ import pytest
 
 from conductress import config
 from conductress.cli import main
+from conductress.memtier import set_ratio_to_memtier_ratio
 from conductress.task_queue import TaskQueue
-from conductress.tasks.task_mixed import set_ratio_to_memtier_ratio
 from conductress.tasks.task_scenario import (
     LARGE_VALUE_READER_DEFAULT_SIZE,
     LARGE_VALUE_READER_KEYSPACE,

@@ -36,8 +36,10 @@ are resolved on that host, not on the machine running the CLI.
 | `MEMTIER_BENCHMARK` | `PROJECT_ROOT/memtier_benchmark` | — | Local-path form for code that resolves the binary under this checkout. |
 | `CACHECANNON_BINARY` | `/home/ec2-user/cachecannon/target/release/cachecannon` | `CONDUCTRESS_CACHECANNON_BINARY` | Absolute path the cachecannon generator builds to on the benchmark host. |
 
-The memtier and cachecannon binaries are installed on each host by the
-bootstrap step; you rarely need to override these.
+Both binaries are installed on each host by the bootstrap step; you rarely
+need to override these. cachecannon drives the throughput, mixed and latency
+tasks and the sweeps; memtier_benchmark drives the scenario tasks, which need
+its finite request-count mode and per-second timeseries output.
 
 ## Benchmark defaults
 
@@ -81,7 +83,6 @@ silently selecting the wrong epoch.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `CONDUCTRESS_SWEEP_V2_ENABLED` | `false` | Enable the additive v2 sweep coordinators. |
 | `CONDUCTRESS_SWEEP_V3_ENABLED` | `false` | Enable the v3 (cachecannon) sweep coordinators. |
 | `CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE` | `v3,v1` | Comma-separated scheduling precedence, highest priority first. The first-listed epoch measures each new commit first. `v1,v3` restores v1-first. |
 

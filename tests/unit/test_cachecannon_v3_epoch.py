@@ -180,7 +180,7 @@ class TestV3ProtocolValues:
 
 
 class TestV3EpochIsolation:
-    """v3 must be disjoint from legacy v1 and the retired v2 namespace."""
+    """v3 must be disjoint from the epoch-1 namespace."""
 
     def test_state_dir_is_isolated(self):
         from conductress.sweep.coordinator_v3 import V3_STATE_DIR
@@ -205,18 +205,7 @@ class TestV3EpochIsolation:
             v1 = SweepCoordinator(tmp_path)
         assert not v1._is_my_task(task)
 
-    def test_retired_v2_coordinators_do_not_claim_a_v3_task(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2, ThroughputSweepCoordinatorV2
-
-        task = _v3_get(tmp_path)._create_task(_sweep_task())
-        task.sweep_commit = "a" * 40
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                assert not ThroughputSweepCoordinatorV2(tmp_path)._is_my_task(task)
-                assert not MixedSweepCoordinatorV2(tmp_path)._is_my_task(task)
-
-    def test_v3_does_not_claim_v1_or_v2_tasks(self, tmp_path: Path):
-        from conductress.tasks.task_mixed import MixedTaskData
+    def test_v3_does_not_claim_v1_tasks(self, tmp_path: Path):
         from conductress.tasks.task_perf_benchmark import PerfTaskData
 
         perf = PerfTaskData(
@@ -237,25 +226,9 @@ class TestV3EpochIsolation:
             preload_keys=True,
         )
         perf.sweep_commit = "abc123"
-        mixed = MixedTaskData(
-            source="valkey",
-            specifier="abc123",
-            topology=TopologySpec.standalone(),
-            note="v2 mixed task",
-            requirements={},
-            make_args="",
-            set_ratio=20,
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            duration=30,
-            warmup=5,
-        )
-        mixed.sweep_commit = "abc123"
 
         coord = _v3_get(tmp_path)
         assert not coord._is_my_task(perf)
-        assert not coord._is_my_task(mixed)
 
     def test_get_and_mixed_v3_coordinators_do_not_claim_each_other(self, tmp_path: Path):
         get_coord, mixed_coord = _v3_get(tmp_path), _v3_mixed(tmp_path)

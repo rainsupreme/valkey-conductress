@@ -170,9 +170,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     raise ValueError(f"{name} must be one of: {allowed}; got {raw!r}")
 
 
-SWEEP_V2_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V2_ENABLED", False)
-SWEEP_V2_EPOCH_ID = "v2"
-
 SWEEP_V3_ENABLED = _env_bool("CONDUCTRESS_SWEEP_V3_ENABLED", False)
 SWEEP_V3_EPOCH_ID = "v3"
 
@@ -378,20 +375,12 @@ def should_profile_internals(engine: Optional["SweepEngine"]) -> bool:
 
 
 # =============================================================================
-# Sweep configuration: latency
+# Retired epoch-1 latency series (memtier_benchmark GET p99 at a fixed rate).
+# Only what publishing its recorded history needs; the series never queues.
 # =============================================================================
 LATENCY_STATE_FILE = SWEEP_STATE_DIR / "latency_state.json"
-LATENCY_TARGET_RPS = 100_000  # flat rate, same across all platforms/commits
-LATENCY_MAKE_ARGS = ""
-LATENCY_DETECTION_THRESHOLD = 0.10  # 10% p99 change triggers bisection
-LATENCY_THREADS = 4
-LATENCY_CLIENTS = 16  # 64 total connections
-LATENCY_PIPELINE = 1  # no pipelining — measures true per-request latency
-LATENCY_DURATION = 60
-LATENCY_KEYSPACE = 1_000_000
-LATENCY_VAL_SIZE = 16
-LATENCY_REPS = 3
-MEMTIER_COMMIT = "d52544b1"  # pinned version for reproducible latency measurements
+LATENCY_TARGET_RPS = 100_000  # the fixed rate every point in that history was measured at
+MEMTIER_COMMIT = "d52544b1"  # pinned memtier_benchmark build used by scenario tasks
 VALKEY_BENCHMARK_COMMIT = "d2eee78a151884518441572c53fc378bf6689e81"  # pinned valkey commit for benchmark client binary
 
 # =============================================================================

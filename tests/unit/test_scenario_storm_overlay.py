@@ -73,7 +73,7 @@ def test_command_overlay_yields_identical_command(scenario):
         server_ip=server.ip,
         port=server.port,
         duration=runner.duration,
-        keyspace=module.MIXED_KEYSPACE,
+        keyspace=module.MEMTIER_KEYSPACE,
         val_size=runner.val_size,
         overlay_value_size=runner.overlay_value_size,
     )

@@ -64,7 +64,7 @@ class TestMemtierFixtureParsing:
             assert isinstance(entry["Count"], (int, float)), f"Count in [{key}] is not numeric"
 
     def test_totals_has_ops_sec(self, fixture_data: dict):
-        """Totals Ops/sec used by parse_memtier_total_rps (task_mixed.py) for aggregate RPS."""
+        """Totals Ops/sec used by parse_memtier_total_rps (memtier.py) for aggregate RPS."""
         totals = fixture_data["ALL STATS"]["Totals"]
         assert "Ops/sec" in totals, "Missing 'Ops/sec' in Totals"
         assert totals["Ops/sec"] > 0, "Totals Ops/sec must be positive"

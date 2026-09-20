@@ -15,9 +15,7 @@ EXPECTED_TASK_TYPES = {
     "BoundedInsertionTaskData",
     "PerfTaskData",
     "MemTaskData",
-    "MixedTaskData",
     "ScenarioTaskData",
-    "LatencyTaskData",
     "CachecannonTaskData",
 }
 

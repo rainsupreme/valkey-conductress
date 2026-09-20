@@ -292,6 +292,16 @@ class TaskQueue:
                 logger.error("unable to read - skipping %s", task_file)
                 task_file.unlink()
             return None
+        except ValueError as exc:
+            # The file is well-formed but this code cannot run it: a task type
+            # that no longer exists, or a source this runner does not know.
+            # Left in place it would head the queue forever, so set it aside
+            # under a name the queue does not scan and let the queue proceed.
+            if task_file.exists():
+                parked = task_file.with_name(task_file.name + ".unsupported")
+                logger.error("cannot load %s (%s) - setting aside as %s", task_file.name, exc, parked.name)
+                task_file.rename(parked)
+            return None
 
     def finish_task(self, task: BaseTaskData) -> None:
         """Delete a task from the queue, indicating it has been completed"""

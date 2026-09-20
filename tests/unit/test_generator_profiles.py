@@ -240,7 +240,7 @@ class TestResolveProfile:
 
 
 class TestCrossContamination:
-    """v2 coordinators must not match v1 tasks and vice versa."""
+    """The epoch-1 coordinator owns only tasks driven by the stock generator profile."""
 
     @pytest.fixture(autouse=True)
     def _ensure_valid_source(self, monkeypatch):
@@ -248,11 +248,6 @@ class TestCrossContamination:
 
         if "valkey" not in cfg.REPO_NAMES:
             monkeypatch.setattr(cfg, "REPO_NAMES", cfg.REPO_NAMES + ["valkey"])
-
-    def test_v2_state_dir_isolated(self):
-        from conductress.sweep.coordinator_v2 import V2_STATE_DIR
-
-        assert "v2" in str(V2_STATE_DIR)
 
     @staticmethod
     def _make_perf_task(generator_profile: str):
@@ -296,7 +291,7 @@ class TestCrossContamination:
         coord = self._make_v1_coordinator(tmp_path)
         assert not coord._is_my_task(self._make_perf_task(generator_profile))
 
-    def test_v2_completion_does_not_reach_v1_result_extraction(self, tmp_path: Path):
+    def test_other_profile_completion_does_not_reach_v1_result_extraction(self, tmp_path: Path):
         coord = self._make_v1_coordinator(tmp_path)
         task = self._make_perf_task("scalable-v2")
 
@@ -305,7 +300,7 @@ class TestCrossContamination:
 
         extract.assert_not_called()
 
-    def test_v2_failure_does_not_mark_v1_build_failure(self, tmp_path: Path):
+    def test_other_profile_failure_does_not_mark_v1_build_failure(self, tmp_path: Path):
         coord = self._make_v1_coordinator(tmp_path)
         task = self._make_perf_task("scalable-v2")
 
@@ -313,217 +308,6 @@ class TestCrossContamination:
             coord.on_task_failed(task)
 
         record_failure.assert_not_called()
-
-    def test_v2_workload_id_is_canonical_and_epoch_is_v2(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                coord = ThroughputSweepCoordinatorV2(tmp_path)
-        assert coord.workload_id == "get-k16-v16-t7-p10"
-        assert coord.epoch_id == "v2"
-        assert "v2" in coord.state_file.name
-
-    def test_v2_does_not_match_v1_task(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
-        from conductress.tasks.task_perf_benchmark import PerfTaskData
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                state_file = tmp_path / "state_v2-get-k16-v16-t7-p10.json"
-                state_file.write_text("{}")
-                coord = ThroughputSweepCoordinatorV2(tmp_path)
-
-        # v1 task: no generator_profile
-        v1_task = PerfTaskData(
-            source="valkey",
-            specifier="abc123",
-            topology=TopologySpec.standalone(),
-            note="v1 task",
-            requirements={},
-            make_args="",
-            test="get",
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            warmup=5,
-            duration=30,
-            perf_stat_enabled=False,
-            has_expire=False,
-            preload_keys=True,
-        )
-        v1_task.sweep_commit = "abc123"  # type: ignore[attr-defined]
-        assert not coord._is_my_task(v1_task)
-
-    def test_v2_matches_own_task(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import ThroughputSweepCoordinatorV2
-        from conductress.tasks.task_perf_benchmark import PerfTaskData
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                state_file = tmp_path / "state_v2-get-k16-v16-t7-p10.json"
-                state_file.write_text("{}")
-                coord = ThroughputSweepCoordinatorV2(tmp_path)
-
-        # v2 task: has generator_profile matching
-        v2_task = PerfTaskData(
-            source="valkey",
-            specifier="abc123",
-            topology=TopologySpec.standalone(),
-            note="v2 task",
-            requirements={},
-            make_args="",
-            test="get",
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            warmup=5,
-            duration=30,
-            perf_stat_enabled=False,
-            has_expire=False,
-            preload_keys=True,
-            generator_profile="scalable-v2",
-        )
-        v2_task.sweep_commit = "abc123"  # type: ignore[attr-defined]
-        assert coord._is_my_task(v2_task)
-
-
-# ---------------------------------------------------------------------------
-# Mixed sweep coordinator v2 discrimination
-# ---------------------------------------------------------------------------
-
-
-class TestMixedSweepV2:
-    """MixedSweepCoordinatorV2 task discrimination."""
-
-    @pytest.fixture(autouse=True)
-    def _ensure_valid_source(self, monkeypatch):
-        import conductress.config as cfg
-
-        if "valkey" not in cfg.REPO_NAMES:
-            monkeypatch.setattr(cfg, "REPO_NAMES", cfg.REPO_NAMES + ["valkey"])
-
-    def test_mixed_v2_workload_id_and_epoch(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                coord = MixedSweepCoordinatorV2(tmp_path)
-        assert coord.workload_id == "mixed-s20-k16-v16-t7-p10"
-        assert coord.epoch_id == "v2"
-        assert "v2" in coord.state_file.name
-
-    def test_mixed_v2_does_not_match_perf_task(self, tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
-        from conductress.tasks.task_perf_benchmark import PerfTaskData
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                label = f"s20-v2-mixed-s20-k16-v16-t{7}-p10"
-                state_file = tmp_path / f"state_{label}.json"
-                state_file.write_text("{}")
-                coord = MixedSweepCoordinatorV2(tmp_path)
-
-        perf_task = PerfTaskData(
-            source="valkey",
-            specifier="abc",
-            topology=TopologySpec.standalone(),
-            note="",
-            requirements={},
-            make_args="",
-            test="get",
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            warmup=5,
-            duration=30,
-            perf_stat_enabled=False,
-            has_expire=False,
-            preload_keys=True,
-            generator_profile="scalable-v2",
-        )
-        perf_task.sweep_commit = "abc"  # type: ignore[attr-defined]
-        assert not coord._is_my_task(perf_task)
-
-    @staticmethod
-    def _make_mixed_task(sweep_commit: str = "abc"):
-        from conductress.tasks.task_mixed import MixedTaskData
-
-        return MixedTaskData(
-            source="valkey",
-            specifier="abc",
-            topology=TopologySpec.standalone(),
-            note="",
-            requirements={},
-            make_args="",
-            set_ratio=20,
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            duration=30,
-            sweep_commit=sweep_commit,
-        )
-
-    @staticmethod
-    def _make_coordinator(tmp_path: Path):
-        from conductress.sweep.coordinator_v2 import MixedSweepCoordinatorV2
-
-        with patch("conductress.sweep.coordinator_v2._ensure_v2_state_dir"):
-            with patch("conductress.sweep.coordinator_v2.V2_STATE_DIR", tmp_path):
-                return MixedSweepCoordinatorV2(tmp_path)
-
-    def test_mixed_v2_matches_mixed_task(self, tmp_path: Path):
-        coord = self._make_coordinator(tmp_path)
-        assert coord._is_my_task(self._make_mixed_task())
-
-    def test_mixed_v2_sweep_commit_survives_queue_round_trip(self, tmp_path: Path):
-        from conductress.task_queue import TaskQueue
-        from conductress.tasks.task_mixed import MixedTaskData
-
-        queue = TaskQueue(tmp_path / "queue")
-        task = self._make_mixed_task()
-        queue.submit_task(task)
-
-        restored = queue.get_next_task()
-        assert isinstance(restored, MixedTaskData)
-        assert restored.sweep_commit == "abc"
-        assert self._make_coordinator(tmp_path)._is_my_task(restored)
-
-    def test_reloaded_mixed_v2_completion_records_result(self, tmp_path: Path):
-        from conductress.task_queue import TaskQueue
-
-        queue = TaskQueue(tmp_path / "queue")
-        queue.submit_task(self._make_mixed_task())
-        restored = queue.get_next_task()
-        assert restored is not None
-
-        coord = self._make_coordinator(tmp_path)
-        with patch.object(coord, "_extract_result", return_value=(123.0, 1.5, 5)):
-            with patch.object(coord, "record_result") as record_result:
-                with patch.object(coord, "_extract_perf_counters", return_value=None):
-                    with patch.object(coord, "_extract_cpu_stacks") as extract_stacks:
-                        coord.on_task_completed(restored)
-
-        record_result.assert_called_once_with("abc", 123.0, 1.5, 5)
-        extract_stacks.assert_called_once_with(restored)
-
-    def test_legacy_mixed_task_without_sweep_commit_defaults_empty(self):
-        from conductress.tasks.task_mixed import MixedTaskData
-
-        task = MixedTaskData(
-            source="valkey",
-            specifier="abc",
-            topology=TopologySpec.standalone(),
-            note="",
-            requirements={},
-            make_args="",
-            set_ratio=20,
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            duration=30,
-        )
-        assert task.sweep_commit == ""
 
 
 # ---------------------------------------------------------------------------

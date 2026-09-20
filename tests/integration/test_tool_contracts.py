@@ -188,7 +188,7 @@ class TestMemtierJsonContract:
     def test_totals_entry_in_json(self, local_server):
         """'Totals' entry must exist with 'Ops/sec'.
 
-        Consumer: parse_memtier_total_rps() from task_mixed.py (reads stdout Totals line,
+        Consumer: parse_memtier_total_rps() from memtier.py (reads stdout Totals line,
         but JSON also has it for cross-validation).
         """
         memtier = _find_binary("memtier_benchmark")
@@ -375,7 +375,7 @@ class TestValkeyBenchmarkContract:
 class TestMemtierStdoutContract:
     """Contract: memtier_benchmark stdout Totals line.
 
-    Parser: task_mixed.py:parse_memtier_total_rps
+    Parser: memtier.py:parse_memtier_total_rps
     Depends on: a line where split()[0] == 'Totals' and split()[1] is a float (ops/sec).
     """
 
