@@ -460,11 +460,17 @@ def build_storm_figure(
     )
 
     meta = views[0]
+    reps_per_column = sorted({len(v.reps) for v in views})
+    reps_text = "/".join(str(n) for n in reps_per_column)
+    if rep is not None:
+        convention = f"showing repetition {rep} only"
+    else:
+        convention = f"{reps_text} repetitions per column: bold line = median repetition, thin lines = the others"
     fig.suptitle(
-        f"connection-storm: {meta.source} @ {meta.commit_hash[:12]} on {meta.runner_id}",
+        f"connection-storm: {meta.source} @ {meta.commit_hash[:12]} on {meta.runner_id}\n{convention}",
         fontsize=12,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     return fig
 
 
@@ -489,8 +495,6 @@ def _add_row_legends(axes, *, has_probe: bool, has_background: bool) -> None:
     else:
         row0.append(Line2D([], [], color=grey, lw=1.8, label="background GET/s"))
     row0 += [
-        Line2D([], [], color=grey, lw=1.8, label="bold: median repetition"),
-        Line2D([], [], color=grey, lw=0.9, alpha=0.5, label="thin: other repetitions"),
         band,
         quiescence,
     ]

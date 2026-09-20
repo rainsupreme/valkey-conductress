@@ -210,7 +210,9 @@ def test_each_row_has_its_own_legend(views):
     legends = [fig.axes[row * ncols].get_legend() for row in range(4)]  # first column of each row
     assert all(lg is not None for lg in legends), "every row's first column carries a legend"
     texts = ["\n".join(t.get_text() for t in lg.get_texts()) for lg in legends]
-    assert "median" in texts[0] and "stall" in texts[0]
+    assert "goodput" in texts[0] or "GET" in texts[0]
+    assert "stall" in texts[0] and "median" not in texts[0]  # the rep convention lives in the subtitle
+    assert "median repetition" in fig._suptitle.get_text()  # pylint: disable=protected-access
     assert "connected_clients" in texts[1]
     assert "overflows" in texts[2]
     assert "timeouts" in texts[3] and "cumulative" in texts[3]
