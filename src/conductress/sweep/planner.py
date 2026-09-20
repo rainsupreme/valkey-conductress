@@ -49,6 +49,12 @@ class BenchmarkPoint:
     value: Optional[float] = None  # metric value (rps, bytes_per_key, etc.)
     cv: Optional[float] = None
     reps: int = 3
+    # Min/max of the per-rep score series behind ``value``.  Populated for
+    # cachecannon v3 points so the dashboard can show the between-restart
+    # spread the score was drawn from; None on every other series and on
+    # points recorded before the fields existed.
+    score_min: Optional[float] = None
+    score_max: Optional[float] = None
     pr: Optional[int] = None
     pr_title: Optional[str] = None
     perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters (process-wide)
@@ -210,6 +216,8 @@ class SweepState:
                     "value": p.value,
                     "cv": p.cv,
                     "reps": p.reps,
+                    "score_min": p.score_min,
+                    "score_max": p.score_max,
                     "pr": p.pr,
                     "pr_title": p.pr_title,
                     "perf_counters": p.perf_counters,
@@ -268,6 +276,8 @@ class SweepState:
                 value=p_data.get("value", p_data.get("rps")),
                 cv=p_data.get("cv"),
                 reps=p_data.get("reps", 3),
+                score_min=p_data.get("score_min"),
+                score_max=p_data.get("score_max"),
                 pr=p_data.get("pr"),
                 pr_title=p_data.get("pr_title"),
                 perf_counters=p_data.get("perf_counters"),

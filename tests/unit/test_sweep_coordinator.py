@@ -95,6 +95,99 @@ class TestSweepCoordinatorInit:
             mock_git.assert_not_called()
 
 
+class TestSeriesFloor:
+    """A series floor bounds one series' commit range; it outranks the engine floor.
+
+    Resolution order in ``_populate_commits``: series ``floor_tag``, else the
+    engine's ``floor_tag``, else the repository fork point.
+    """
+
+    @staticmethod
+    def _populate(tmp_dir, engine, floor_tag):
+        from conductress.sweep.coordinator import BaseSweepCoordinator
+
+        class Coordinator(BaseSweepCoordinator):
+            metric_id = "throughput"
+            metric_unit = "ops/sec"
+            workload_id = "floor-test"
+
+            def _create_task(self, sweep_task):  # pragma: no cover - not exercised
+                raise NotImplementedError
+
+            def _extract_result(self, task):  # pragma: no cover - not exercised
+                return None
+
+            def _is_my_task(self, task):  # pragma: no cover - not exercised
+                return False
+
+        coord = Coordinator(tmp_dir / "repo", tmp_dir / "state.json", engine=engine, floor_tag=floor_tag)
+        with (
+            patch("conductress.sweep.git_ops.resolve_floor_commit", return_value="floor-sha") as resolve,
+            patch("conductress.sweep.git_ops.find_fork_point", return_value="fork-sha") as fork,
+            patch("conductress.sweep.coordinator.get_merge_commits", return_value=[]) as merges,
+        ):
+            coord._populate_commits()
+        return resolve, fork, merges
+
+    def test_series_floor_overrides_the_engine_floor(self, tmp_dir):
+        from conductress.config import get_sweep_engine
+
+        resolve, fork, merges = self._populate(tmp_dir, get_sweep_engine("redis"), "9.0.0")
+        resolve.assert_called_once_with(tmp_dir / "repo", "9.0.0", "origin/unstable")
+        fork.assert_not_called()
+        assert merges.call_args.kwargs["since_commit"] == "floor-sha"
+
+    def test_engine_floor_applies_when_the_series_has_none(self, tmp_dir):
+        from conductress.config import get_sweep_engine
+
+        resolve, fork, _ = self._populate(tmp_dir, get_sweep_engine("redis"), None)
+        resolve.assert_called_once_with(tmp_dir / "repo", "8.0.0", "origin/unstable")
+        fork.assert_not_called()
+
+    def test_series_floor_applies_without_an_engine(self, tmp_dir):
+        resolve, fork, merges = self._populate(tmp_dir, None, "9.0.0")
+        resolve.assert_called_once()
+        assert resolve.call_args.args[1] == "9.0.0"
+        fork.assert_not_called()
+        assert merges.call_args.kwargs["since_commit"] == "floor-sha"
+
+    def test_no_floor_falls_back_to_the_fork_point(self, tmp_dir):
+        resolve, fork, merges = self._populate(tmp_dir, None, None)
+        resolve.assert_not_called()
+        fork.assert_called_once()
+        assert merges.call_args.kwargs["since_commit"] == "fork-sha"
+
+    def test_unresolvable_floor_tag_warns_and_sweeps_everything(self, tmp_dir, caplog):
+        """A floor tag missing from the repo must be loud, not a silent full backfill."""
+        import logging
+
+        from conductress.sweep.coordinator import BaseSweepCoordinator
+
+        class Coordinator(BaseSweepCoordinator):
+            metric_id = "throughput"
+            metric_unit = "ops/sec"
+            workload_id = "floor-test"
+
+            def _create_task(self, sweep_task):  # pragma: no cover
+                raise NotImplementedError
+
+            def _extract_result(self, task):  # pragma: no cover
+                return None
+
+            def _is_my_task(self, task):  # pragma: no cover
+                return False
+
+        coord = Coordinator(tmp_dir / "repo", tmp_dir / "state.json", floor_tag="no-such-tag")
+        with (
+            patch("conductress.sweep.git_ops.resolve_floor_commit", return_value=None),
+            patch("conductress.sweep.coordinator.get_merge_commits", return_value=[]) as merges,
+            caplog.at_level(logging.WARNING, logger="conductress.sweep.coordinator"),
+        ):
+            coord._populate_commits()
+        assert merges.call_args.kwargs["since_commit"] is None
+        assert "no-such-tag" in caplog.text and "does not resolve" in caplog.text
+
+
 class TestSweepCoordinatorTaskGeneration:
     """Tests for sweep task generation."""
 

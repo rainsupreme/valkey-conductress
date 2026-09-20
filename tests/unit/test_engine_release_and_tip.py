@@ -143,9 +143,12 @@ class TestRedisMirrorRetired:
             assert SweepCoordinator(tmp_path, engine=REDIS).retired is True
             assert SweepCoordinator(tmp_path, val_size=128, test="set", pipelining=1, engine=REDIS).retired is True
 
-    def test_valkey_v1_workloads_other_than_the_default_still_run(self, tmp_path):
+    def test_valkey_v1_throughput_workloads_are_all_retired(self, tmp_path):
+        # The v3 roster now covers every v1 Valkey throughput workload, so the
+        # non-default series are retired too (see test_epoch3 for the full set).
         with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_path):
-            assert SweepCoordinator(tmp_path, val_size=64).retired is False
+            assert SweepCoordinator(tmp_path, val_size=64).retired is True
+            assert SweepCoordinator(tmp_path, val_size=16, test="set").retired is True
 
     def test_redis_v3_series_are_not_retired(self, tmp_path):
         from conductress.sweep.coordinator_v3 import create_v3_coordinators
@@ -177,13 +180,21 @@ class TestRedisV3Roster:
             with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
                 return create_v3_coordinators(tmp_path, engine=REDIS)
 
-    def test_same_three_series_under_the_engine_prefix(self, roster):
+    def test_same_six_series_under_the_engine_prefix(self, roster):
         assert [c.workload_id for c in roster] == [
             "redis-get-k16-v16-t7-p10",
             "redis-mixed-s20-k16-v16-t7-p10",
+            "redis-set-k16-v16-t7-p10",
+            "redis-get-k16-v16-t7-p1",
+            "redis-get-k16-v1024-t7-p10",
             "redis-get-k16-v16-t7-p1-r100k",
         ]
         assert all(c.epoch_id == "v3" for c in roster)
+
+    def test_valkey_large_value_floor_is_not_applied_to_a_release_and_tip_engine(self, roster):
+        """A Valkey tag means nothing in the Redis repo; the engine floor stands."""
+        assert all(c.floor_tag is None for c in roster)
+        assert {c._floor_tag for c in roster} == {REDIS.floor_tag}
 
     def test_cells_are_sourced_from_redis(self, roster):
         from conductress.sweep.planner import SweepTask
@@ -208,6 +219,9 @@ class TestRedisV3Roster:
         assert [c.workload_id for c in coords] == [
             "get-k16-v16-t7-p10",
             "mixed-s20-k16-v16-t7-p10",
+            "set-k16-v16-t7-p10",
+            "get-k16-v16-t7-p1",
+            "get-k16-v1024-t7-p10",
             "get-k16-v16-t7-p1-r100k",
         ]
         assert all(c.planner.tracks_history for c in coords)
