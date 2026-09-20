@@ -21,6 +21,7 @@ from conductress.config import (
     LATENCY_TARGET_RPS,
     LATENCY_THREADS,
     LATENCY_VAL_SIZE,
+    REMOTE_MEMTIER_BENCHMARK,
     ServerInfo,
 )
 from conductress.file_protocol import BenchmarkStatus
@@ -156,7 +157,7 @@ class LatencyTaskRunner(BaseTaskRunner):
 
                 # Populate keys using memtier (also serves as warmup)
                 populate_cmd = (
-                    f"~/conductress/memtier_benchmark "
+                    f"{REMOTE_MEMTIER_BENCHMARK} "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio 1:0 --key-pattern P:P "
@@ -173,7 +174,7 @@ class LatencyTaskRunner(BaseTaskRunner):
                 hdr_prefix = "/tmp/latency-hdr"
                 ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
                 measure_cmd = (
-                    f"~/conductress/memtier_benchmark "
+                    f"{REMOTE_MEMTIER_BENCHMARK} "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {LATENCY_THREADS} --clients {LATENCY_CLIENTS} "
                     f"--ratio {ratio_str} --key-pattern R:R "

@@ -1,0 +1,9 @@
+{
+    "replace": true,
+    "repositories": [
+        {
+            "url": "https://github.com/valkey-io/valkey.git",
+            "name": "valkey"
+        }
+    ]
+}

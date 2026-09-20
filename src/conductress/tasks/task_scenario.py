@@ -26,7 +26,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from scipy.stats import t as t_dist
 
 from conductress import cpu_sampling
-from conductress.config import PERF_BENCH_KEYSPACE, TLS_CERT_DIR, ServerInfo, get_sweep_engine, should_profile_internals
+from conductress.config import (
+    PERF_BENCH_KEYSPACE,
+    REMOTE_MEMTIER_BENCHMARK,
+    TLS_CERT_DIR,
+    ServerInfo,
+    get_sweep_engine,
+    should_profile_internals,
+)
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 from conductress.server import Server
@@ -292,7 +299,7 @@ def build_overlay_command(
         # We'll schedule FLUSHALL at ~40% through duration, then re-prefill.
         flush_delay = max(2, duration * 2 // 5)
         prefill_n = keyspace // (MIXED_THREADS * MIXED_CLIENTS)
-        memtier = "~/conductress/memtier_benchmark"
+        memtier = REMOTE_MEMTIER_BENCHMARK
         return (
             f"bash -c '"
             f"sleep {flush_delay}; "
@@ -333,7 +340,7 @@ def build_overlay_command(
         # (lvr:000000000042) while memtier writes lvr:42 — mixing the two tools
         # makes every overlay GET a miss and the neighbor weighs nothing.
         return (
-            f"~/conductress/memtier_benchmark "
+            f"{REMOTE_MEMTIER_BENCHMARK} "
             f"--server {server_ip} --port {port} --protocol redis "
             f"--threads {OVERLAY_THREADS} --clients {OVERLAY_CLIENTS} "
             f"--ratio 0:1 --key-pattern R:R "
@@ -1479,7 +1486,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                 # Prefill keyspace
                 total_conns = MIXED_THREADS * MIXED_CLIENTS
                 prefill_cmd = (
-                    f"~/conductress/memtier_benchmark "
+                    f"{REMOTE_MEMTIER_BENCHMARK} "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
                     f"--ratio 1:0 --key-pattern P:P "
@@ -1496,7 +1503,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         self.overlay_value_size if self.overlay_value_size > 0 else LARGE_VALUE_READER_DEFAULT_SIZE
                     )
                     lvr_prefill_cmd = (
-                        f"~/conductress/memtier_benchmark "
+                        f"{REMOTE_MEMTIER_BENCHMARK} "
                         f"--server {server.ip} --port {server.port} --protocol redis "
                         f"--threads {OVERLAY_THREADS} --clients {OVERLAY_CLIENTS} "
                         f"--ratio 1:0 --key-pattern P:P "
@@ -1557,7 +1564,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     else:
                         bg_ratio = set_ratio_to_memtier_ratio(self.background_set_ratio)
                         measure_cmd = (
-                            f"~/conductress/memtier_benchmark "
+                            f"{REMOTE_MEMTIER_BENCHMARK} "
                             f"--server {server.ip} --port {server.port} --protocol redis "
                             f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
                             f"--ratio {bg_ratio} --key-pattern R:R "

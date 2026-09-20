@@ -8,8 +8,12 @@ moment a second task needs it.
 
 import json
 
-# Default path to cachecannon binary on bench hosts
-DEFAULT_CACHECANNON_BINARY = "/home/ec2-user/cachecannon/target/release/cachecannon"
+from conductress.config import CACHECANNON_BINARY
+
+# Default path to cachecannon binary on bench hosts. Sourced from config so a
+# single CONDUCTRESS_CACHECANNON_BINARY env override reaches every task; kept as
+# a module-level name here because tasks and the CLI import it from this module.
+DEFAULT_CACHECANNON_BINARY = CACHECANNON_BINARY
 
 
 def _latency_from_json(command: str, block: dict) -> dict:

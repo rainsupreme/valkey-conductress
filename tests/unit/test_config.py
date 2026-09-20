@@ -159,3 +159,151 @@ class TestSweepV2EnvironmentToggle:
 
     def test_production_default_remains_disabled(self):
         assert config_module.SWEEP_V2_ENABLED is False
+
+
+class TestHoistedDefaults:
+    """Hoisted path/endpoint defaults keep their literal values when the env
+    override is unset. A drift here silently repoints the generators or the
+    publish target on every runner that relies on the defaults."""
+
+    def test_remote_memtier_benchmark_default(self):
+        assert config_module.REMOTE_MEMTIER_BENCHMARK == "~/conductress/memtier_benchmark"
+
+    def test_local_memtier_benchmark_under_project_root(self):
+        assert config_module.MEMTIER_BENCHMARK == config_module.PROJECT_ROOT / "memtier_benchmark"
+
+    def test_cachecannon_binary_default(self, monkeypatch):
+        monkeypatch.delenv("CONDUCTRESS_CACHECANNON_BINARY", raising=False)
+        # Re-read the same expression the module evaluates at import time.
+        import os
+
+        value = os.environ.get(
+            "CONDUCTRESS_CACHECANNON_BINARY", "/home/ec2-user/cachecannon/target/release/cachecannon"
+        )
+        assert value == "/home/ec2-user/cachecannon/target/release/cachecannon"
+        # And the module-level constant matches when the env var is unset in CI.
+        assert config_module.CACHECANNON_BINARY == "/home/ec2-user/cachecannon/target/release/cachecannon"
+
+    def test_cachecannon_binary_reexported_from_cachecannon_module(self):
+        from conductress.cachecannon import DEFAULT_CACHECANNON_BINARY
+
+        assert DEFAULT_CACHECANNON_BINARY == config_module.CACHECANNON_BINARY
+
+    def test_publish_target_default(self, monkeypatch):
+        monkeypatch.delenv("CONDUCTRESS_PUBLISH_TARGET", raising=False)
+        import os
+
+        value = os.environ.get("CONDUCTRESS_PUBLISH_TARGET", "ec2-user@data.conductress.rainsupreme.net:/var/www/data")
+        assert value == "ec2-user@data.conductress.rainsupreme.net:/var/www/data"
+        assert config_module.PUBLISH_TARGET == "ec2-user@data.conductress.rainsupreme.net:/var/www/data"
+
+
+class TestLoadRepositories:
+    """The repositories.json loader must default to the built-in list and
+    apply extend/replace semantics, keeping REPOSITORIES/REPO_NAMES working."""
+
+    def test_missing_file_returns_builtin_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        repos = config_module.load_repositories()
+        assert repos == config_module._BUILTIN_REPOSITORIES
+        # A fresh call returns an independent list (not the module's own object).
+        assert repos is not config_module._BUILTIN_REPOSITORIES
+
+    def test_extend_appends_new_entries(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(
+            json.dumps(
+                {
+                    "repositories": [
+                        {"url": "https://example.com/extra.git", "name": "extra"},
+                    ]
+                }
+            )
+        )
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        repos = config_module.load_repositories()
+        assert repos[: len(config_module._BUILTIN_REPOSITORIES)] == config_module._BUILTIN_REPOSITORIES
+        assert ("https://example.com/extra.git", "extra") in repos
+        assert len(repos) == len(config_module._BUILTIN_REPOSITORIES) + 1
+
+    def test_extend_skips_duplicate_directory_names(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(
+            json.dumps(
+                {
+                    "repositories": [
+                        {"url": "https://example.com/other-valkey.git", "name": "valkey"},
+                    ]
+                }
+            )
+        )
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        repos = config_module.load_repositories()
+        # The built-in 'valkey' entry is preserved; the duplicate name is skipped.
+        assert repos == config_module._BUILTIN_REPOSITORIES
+
+    def test_replace_uses_only_file_entries(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(
+            json.dumps(
+                {
+                    "replace": True,
+                    "repositories": [
+                        {"url": "https://github.com/valkey-io/valkey.git", "name": "valkey"},
+                    ],
+                }
+            )
+        )
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        repos = config_module.load_repositories()
+        assert repos == [("https://github.com/valkey-io/valkey.git", "valkey")]
+
+    def test_replace_with_empty_list_is_error(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(json.dumps({"replace": True, "repositories": []}))
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        with pytest.raises(ValueError, match="lists no repositories"):
+            config_module.load_repositories()
+
+    def test_malformed_json_is_error(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text("{ not valid json")
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        with pytest.raises(ValueError, match="not valid JSON"):
+            config_module.load_repositories()
+
+    def test_non_object_root_is_error(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(json.dumps(["valkey"]))
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            config_module.load_repositories()
+
+    def test_entry_missing_name_is_error(self, tmp_path, monkeypatch):
+        (tmp_path / "repositories.json").write_text(
+            json.dumps({"repositories": [{"url": "https://example.com/x.git"}]})
+        )
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        with pytest.raises(ValueError, match="missing string 'name'"):
+            config_module.load_repositories()
+
+    def test_repositories_default_json_present_and_valkey_io_only(self, tmp_path, monkeypatch):
+        """repositories.default.json ships the upstream-only replacement set."""
+        default = json.loads((config_module.PROJECT_ROOT / "repositories.default.json").read_text())
+        assert default["replace"] is True
+        assert default["repositories"] == [{"url": "https://github.com/valkey-io/valkey.git", "name": "valkey"}]
+
+    def test_builtin_repositories_unchanged(self):
+        """The shipped default keeps every built-in source. Guards against an
+        accidental trim: runners that queue with a fork source break if its
+        entry disappears."""
+        assert config_module._BUILTIN_REPOSITORIES == [
+            ("https://github.com/valkey-io/valkey.git", "valkey"),
+            ("https://github.com/rainsupreme/valkey.git", "rainsupreme"),
+            ("https://github.com/valkey-io/valkey.git", "zuiderkwast"),
+            ("https://github.com/JimB123/valkey.git", "JimB123"),
+            ("https://github.com/valkey-rainfall/valkey.git", "valkey-rainfall"),
+            ("https://github.com/redis/redis.git", "redis"),
+        ]
+
+    def test_repo_names_derived_from_loaded_repositories(self, tmp_path, monkeypatch):
+        """REPO_NAMES is the directory-name projection of the resolved list.
+        (Asserted against a freshly resolved list, since other test modules
+        mutate the module-level config.REPO_NAMES at import time.)"""
+        monkeypatch.setattr("conductress.config.PROJECT_ROOT", tmp_path)
+        repos = config_module.load_repositories()
+        assert [name for _, name in repos] == [name for _, name in config_module._BUILTIN_REPOSITORIES]

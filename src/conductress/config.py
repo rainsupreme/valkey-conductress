@@ -37,8 +37,27 @@ SWEEP_MIN_REPS = 5
 DEFAULT_VAL_SIZE = 512  # bytes
 DEFAULT_KEY_SIZE = 0  # 0 = standard keys
 
-# Dashboard data server (rsync target for --publish)
-PUBLISH_TARGET = "ec2-user@data.conductress.rainsupreme.net:/var/www/data"
+# Dashboard data server (rsync target for --publish). Override without a deploy
+# via CONDUCTRESS_PUBLISH_TARGET; the default is the live dashboard endpoint.
+PUBLISH_TARGET = os.environ.get("CONDUCTRESS_PUBLISH_TARGET", "ec2-user@data.conductress.rainsupreme.net:/var/www/data")
+
+# memtier_benchmark load generator. Benchmark command strings run on the REMOTE
+# benchmark host over SSH, where "~" expands to that host's home directory, so
+# the remote form must stay a literal "~/..." string (never a local absolute
+# path). REMOTE_MEMTIER_BENCHMARK is the single source of truth for those
+# command strings; MEMTIER_BENCHMARK is the local-path form for code that
+# resolves the binary under this checkout's PROJECT_ROOT. bootstrap.ensure_memtier
+# installs it at ~/conductress/memtier_benchmark on each host.
+REMOTE_MEMTIER_BENCHMARK = "~/conductress/memtier_benchmark"
+MEMTIER_BENCHMARK = PROJECT_ROOT / "memtier_benchmark"
+
+# cachecannon load generator binary on benchmark hosts. Like memtier, the task
+# command strings run on the remote host, so this default is the absolute path
+# cachecannon builds to there (~/cachecannon/target/release/cachecannon as
+# ec2-user). Override without a deploy via CONDUCTRESS_CACHECANNON_BINARY.
+CACHECANNON_BINARY = os.environ.get(
+    "CONDUCTRESS_CACHECANNON_BINARY", "/home/ec2-user/cachecannon/target/release/cachecannon"
+)
 
 # Stable identity for this Conductress runner. runner.json is local deployment
 # configuration and is intentionally not committed.
@@ -397,7 +416,13 @@ SSH_KEYFILE = PROJECT_ROOT / "server-keyfile.pem"
 # format: (git_url, directory_name)
 # Each will be cloned into ~/directory_name on each server
 # The directory name is used to refer to the repo in the task queue and in results
-REPOSITORIES = [
+#
+# _BUILTIN_REPOSITORIES is the shipped default. An optional gitignored
+# repositories.json in PROJECT_ROOT (same local-config pattern as servers.json /
+# runner.json) can EXTEND this list, or REPLACE it entirely when the file sets
+# "replace": true. This lets a fleet host trim the defaults without editing
+# source; the built-in list stays authoritative when no file is present.
+_BUILTIN_REPOSITORIES = [
     ("https://github.com/valkey-io/valkey.git", "valkey"),
     ("https://github.com/rainsupreme/valkey.git", "rainsupreme"),
     ("https://github.com/valkey-io/valkey.git", "zuiderkwast"),
@@ -405,6 +430,65 @@ REPOSITORIES = [
     ("https://github.com/valkey-rainfall/valkey.git", "valkey-rainfall"),
     ("https://github.com/redis/redis.git", "redis"),
 ]
+
+
+def load_repositories() -> list[tuple[str, str]]:
+    """Resolve the repository list, applying an optional repositories.json.
+
+    Returns the built-in defaults unchanged when no repositories.json exists.
+    When the file is present it either EXTENDS the defaults (appending its
+    entries, skipping directory names already present) or REPLACES them when it
+    carries ``"replace": true``. Each entry is ``{"url": ..., "name": ...}``.
+
+    A malformed file (bad JSON, missing keys, wrong types, empty replace list)
+    raises ValueError with a clear message rather than silently degrading the
+    fleet's repository set.
+    """
+    config_path = PROJECT_ROOT / "repositories.json"
+    if not config_path.exists():
+        return list(_BUILTIN_REPOSITORIES)
+
+    try:
+        raw = json.loads(config_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"repositories.json is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"repositories.json must be a JSON object, got {type(raw).__name__}")
+
+    replace = raw.get("replace", False)
+    if not isinstance(replace, bool):
+        raise ValueError(f"repositories.json 'replace' must be a boolean, got {replace!r}")
+    entries = raw.get("repositories", [])
+    if not isinstance(entries, list):
+        raise ValueError(f"repositories.json 'repositories' must be a list, got {type(entries).__name__}")
+
+    parsed: list[tuple[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"repositories.json entry must be an object, got {entry!r}")
+        url = entry.get("url")
+        name = entry.get("name")
+        if not isinstance(url, str) or not url:
+            raise ValueError(f"repositories.json entry missing string 'url': {entry!r}")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"repositories.json entry missing string 'name': {entry!r}")
+        parsed.append((url, name))
+
+    if replace:
+        if not parsed:
+            raise ValueError("repositories.json sets 'replace': true but lists no repositories")
+        return parsed
+
+    result = list(_BUILTIN_REPOSITORIES)
+    existing_names = {name for _, name in result}
+    for url, name in parsed:
+        if name not in existing_names:
+            result.append((url, name))
+            existing_names.add(name)
+    return result
+
+
+REPOSITORIES = load_repositories()
 REPO_NAMES = [repo[1] for repo in REPOSITORIES]
 
 # unique name indicating the binary was uploaded manually
