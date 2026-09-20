@@ -12,15 +12,62 @@ from .file_protocol import FileProtocol
 from .task_queue import TaskQueue
 
 
+def _cmdline_is_runner(argv: list[str]) -> bool:
+    """Return True only for a real ``conductress run`` task-runner process.
+
+    Production launches the runner as ``python3 -m conductress run ...`` (see
+    ``bootstrap.py`` and ``deploy/runner-mailbox/``); the console-script form
+    ``conductress run`` is used for manual starts. Accept exactly those two
+    shapes and reject everything else -- ``conductress status``/``queue``,
+    pytest, mypy, and any process whose only ``conductress`` hit is inside a
+    path argument.
+    """
+    if not argv:
+        return False
+
+    def first_positional(args: list[str]) -> Optional[str]:
+        """First argument that is not an option flag."""
+        for arg in args:
+            if arg.startswith("-"):
+                continue
+            return arg
+        return None
+
+    exe = os.path.basename(argv[0])
+
+    # Console-script form: `conductress run ...`
+    if exe == "conductress":
+        return first_positional(argv[1:]) == "run"
+
+    # Module form: `python[3] -m conductress run ...` (or the legacy `-m src`).
+    if exe.startswith("python"):
+        rest = argv[1:]
+        if "-m" not in rest:
+            return False
+        module_index = rest.index("-m") + 1
+        if module_index >= len(rest):
+            return False
+        if rest[module_index] not in ("conductress", "src"):
+            return False
+        return first_positional(rest[module_index + 1 :]) == "run"
+
+    return False
+
+
 def _find_runner_pid() -> Optional[int]:
-    """Find the PID of a running task runner process."""
+    """Find the PID of a running task runner process, excluding this process."""
+    own_pid = os.getpid()
     for proc_dir in Path("/proc").iterdir():
         if not proc_dir.name.isdigit():
             continue
+        pid = int(proc_dir.name)
+        if pid == own_pid:
+            continue
         try:
-            cmdline = (proc_dir / "cmdline").read_bytes().decode(errors="ignore")
-            if "conductress" in cmdline and "run" in cmdline and "python" in cmdline:
-                return int(proc_dir.name)
+            raw = (proc_dir / "cmdline").read_bytes()
+            argv = [part.decode(errors="ignore") for part in raw.split(b"\x00") if part]
+            if _cmdline_is_runner(argv):
+                return pid
         except (PermissionError, FileNotFoundError, ProcessLookupError):
             continue
     return None
