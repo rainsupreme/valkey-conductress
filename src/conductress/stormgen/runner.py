@@ -38,6 +38,7 @@ import asyncio
 import json
 import multiprocessing as mp
 import os
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -45,6 +46,7 @@ from typing import List, Optional
 from . import netstat
 from .client import ClientConfig, run_clients
 from .policy import ReconnectPolicy, parse_policy
+from .probe import ProbeConfig, measure_connect_capacity, run_probe
 from .stall import StallInjector, StallRecord, parse_stall
 
 DEFAULT_MAX_WORKERS = 8
@@ -84,6 +86,27 @@ class StormConfig:
     # Prewarm: None -> default to `clients`; 0 -> disabled.
     prewarm_connections: Optional[int] = None
     bucket_ms: int = 100
+    # TLS: wrap the herd's connections in TLS verified against this CA cert.
+    # None keeps plain TCP. The plaintext port is still used by the probe (and
+    # by Conductress's own management traffic) unless probe_tls is set.
+    tls: bool = False
+    tls_ca_cert: Optional[str] = None
+    # The server's TLS port. When tls is set the herd connects here (the whole
+    # herd runs over TLS); config.port stays the PLAINTEXT port used by the
+    # stall injector (DEBUG SLEEP is plaintext management traffic), the connect
+    # capacity baseline, and the probe's default target. None with tls set is a
+    # configuration error caught in config_from_args.
+    tls_port: Optional[int] = None
+    # Active herd: a connected client sends first_command every N ms (0 = idle).
+    herd_command_interval_ms: float = 0.0
+    # Fixed-rate goodput probe (0 clients disables it).
+    probe_clients: int = 0
+    probe_rate: int = 0
+    probe_tls: bool = False  # probe uses the plaintext port unless set
+    # Probe target port; None -> the herd's own --port. When the herd is TLS on
+    # a dedicated TLS port, the probe still measures the main thread's goodput
+    # on the PLAINTEXT port, so the runner passes that port here.
+    probe_port: Optional[int] = None
 
     def resolved_workers(self) -> int:
         return self.workers if self.workers and self.workers > 0 else default_workers()
@@ -91,15 +114,48 @@ class StormConfig:
     def resolved_prewarm(self) -> int:
         return self.clients if self.prewarm_connections is None else self.prewarm_connections
 
+    def _tls_context(self) -> Optional["ssl.SSLContext"]:
+        """Build the herd's SSLContext from the CA cert, or None for plain TCP.
+
+        ``check_hostname`` is off because the herd targets loopback aliases
+        (127.0.0.2, ...) that the server cert does not name; the CA is still
+        verified, so a wrong cert is rejected.
+        """
+        if not self.tls:
+            return None
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.tls_ca_cert)
+        ctx.check_hostname = False
+        return ctx
+
     def client_config(self) -> ClientConfig:
+        # The herd connects to the TLS port when TLS is on; otherwise the
+        # plaintext port. Everything else (stall, capacity, probe) uses port.
+        herd_port = self.tls_port if (self.tls and self.tls_port is not None) else self.port
         return ClientConfig(
             host=self.host,
-            port=self.port,
+            port=herd_port,
             connect_timeout=self.connect_timeout_ms / 1000.0,
             reply_timeout=self.reply_timeout_ms / 1000.0,
             handshake=list(self.handshake),
             first_command=self.first_command,
             bind_addrs=list(self.bind_addrs) if self.bind_addrs else None,
+            ssl_context=self._tls_context(),
+            herd_command_interval_ms=self.herd_command_interval_ms,
+        )
+
+    def probe_config(self) -> "ProbeConfig":
+        """The fixed-rate probe's config, on the plaintext port unless probe_tls."""
+        ctx = self._tls_context() if self.probe_tls else None
+        return ProbeConfig(
+            host=self.host,
+            port=self.probe_port if self.probe_port is not None else self.port,
+            clients=self.probe_clients,
+            rate=self.probe_rate,
+            reply_timeout=self.reply_timeout_ms / 1000.0,
+            connect_timeout=self.connect_timeout_ms / 1000.0,
+            handshake=list(self.handshake),
+            first_command=self.first_command,
+            ssl_context=ctx,
         )
 
     def policy(self) -> ReconnectPolicy:
@@ -136,12 +192,13 @@ def _start_offsets(client_ids: range, burst_ms: int, burst_origin: float) -> Lis
 
 async def _run_slice_async(
     config: StormConfig, ids: range, origin: float, burst_origin: float, deadline: float
-) -> List[dict]:
+) -> "tuple[List[dict], int]":
     """Run one contiguous slice of clients in this process's event loop.
 
     ``origin`` is the shared monotonic clock origin (events are stamped
     relative to it); ``burst_origin`` is the monotonic time the slice's first
     attempts spread out from (>= origin, later than origin in stall-first mode).
+    Returns ``(events, herd_commands_ok)``.
     """
 
     def clock() -> float:
@@ -161,11 +218,18 @@ async def _run_slice_async(
 def _worker_main(
     config: StormConfig, start: int, stop: int, origin: float, burst_origin: float, deadline: float, conn
 ) -> None:
-    """Child-process entry point: run a slice and stream its events as JSON lines."""
+    """Child-process entry point: run a slice and stream its events as JSON lines.
+
+    A final ``{"__summary__": {...}}`` line carries the slice's aggregate
+    counters (herd_commands_ok) so the parent can total them across workers.
+    """
     try:
-        events = asyncio.run(_run_slice_async(config, range(start, stop), origin, burst_origin, deadline))
+        events, herd_commands_ok = asyncio.run(
+            _run_slice_async(config, range(start, stop), origin, burst_origin, deadline)
+        )
         for event in events:
             conn.send_bytes((json.dumps(event) + "\n").encode())
+        conn.send_bytes((json.dumps({"__summary__": {"herd_commands_ok": herd_commands_ok}}) + "\n").encode())
     finally:
         conn.close()
 
@@ -182,6 +246,10 @@ class StormResult:
     prewarm_listen_delta: dict
     prewarm_connections: int
     config: StormConfig
+    probe_timeline: List[dict] = field(default_factory=list)
+    herd_commands_ok: int = 0
+    herd_connects_per_s_capacity: Optional[float] = None
+    openssl_version: Optional[str] = None
 
     def stall_end_relative(self) -> Optional[float]:
         """Stall end as seconds from the storm start, or None if no stall fired."""
@@ -252,8 +320,32 @@ async def run_storm(config: StormConfig) -> StormResult:
 
     Order: prewarm (optional) -> netstat baseline -> stall/burst (stall-first by
     default) -> netstat delta. In-process for one worker; otherwise one child
-    process per slice with events streamed over a pipe.
+    process per slice with events streamed over a pipe. When a probe is
+    configured it runs on the shared clock for the whole run (it captures the
+    pre-storm baseline). When TLS is on, a startup connect-capacity check is
+    measured so a generator-bound herd is flagged.
     """
+    openssl_version = ssl.OPENSSL_VERSION
+
+    # Capacity check (before the measured run): sequential connect+close cycles
+    # at the herd's own transport (the TLS port + TLS context when TLS is on),
+    # so a herd whose target rate exceeds what the generator can drive is
+    # flagged rather than misread as a server ceiling.
+    herd_port = config.tls_port if (config.tls and config.tls_port is not None) else config.port
+    capacity = await measure_connect_capacity(
+        ProbeConfig(
+            host=config.host,
+            port=herd_port,
+            clients=1,
+            rate=1,
+            reply_timeout=config.reply_timeout_ms / 1000.0,
+            connect_timeout=config.connect_timeout_ms / 1000.0,
+            handshake=list(config.handshake),
+            first_command=config.first_command,
+            ssl_context=config._tls_context(),
+        )
+    )
+
     prewarm_delta = await _prewarm(config)
 
     origin = time.monotonic()
@@ -279,9 +371,21 @@ async def run_storm(config: StormConfig) -> StormResult:
         # burst_first (or no stall): burst at origin, stall (if any) at stall_after_s.
         stall_task = asyncio.ensure_future(_drive_stall(config, delay_from=origin))
 
-    events = await _run_clients(config, origin, burst_origin, deadline)
+    # The probe runs on the shared clock for the whole run (origin..deadline),
+    # so it carries the pre-storm baseline the recovery metric compares against.
+    def clock() -> float:
+        return time.monotonic() - origin
+
+    probe_task: Optional[asyncio.Future] = None
+    if config.probe_clients > 0 and config.probe_rate > 0:
+        probe_task = asyncio.ensure_future(run_probe(config.probe_config(), clock, deadline - origin))
+
+    events, herd_commands_ok = await _run_clients(config, origin, burst_origin, deadline)
 
     stall_record = await stall_task
+    probe_timeline: List[dict] = []
+    if probe_task is not None:
+        probe_timeline = await probe_task
     after = netstat.read_counters()
     return StormResult(
         events=events,
@@ -292,10 +396,16 @@ async def run_storm(config: StormConfig) -> StormResult:
         prewarm_listen_delta=prewarm_delta,
         prewarm_connections=config.resolved_prewarm(),
         config=config,
+        probe_timeline=probe_timeline,
+        herd_commands_ok=herd_commands_ok,
+        herd_connects_per_s_capacity=capacity,
+        openssl_version=openssl_version,
     )
 
 
-async def _run_clients(config: StormConfig, origin: float, burst_origin: float, deadline: float) -> List[dict]:
+async def _run_clients(
+    config: StormConfig, origin: float, burst_origin: float, deadline: float
+) -> "tuple[List[dict], int]":
     """Run the client population in-process or across worker processes."""
     if config.resolved_workers() <= 1:
         return await _run_slice_async(config, range(config.clients), origin, burst_origin, deadline)
@@ -323,7 +433,9 @@ async def _drive_stall(config: StormConfig, *, delay_from: Optional[float] = Non
     return await injector.run(config.host, config.port, config.connect_timeout_ms / 1000.0, on_issued=on_issued)
 
 
-async def _run_multiprocess(config: StormConfig, origin: float, burst_origin: float, deadline: float) -> List[dict]:
+async def _run_multiprocess(
+    config: StormConfig, origin: float, burst_origin: float, deadline: float
+) -> "tuple[List[dict], int]":
     """Spawn one child per client slice; collect streamed JSON-line events."""
     ctx = mp.get_context("spawn")
     procs = []
@@ -342,13 +454,20 @@ async def _run_multiprocess(config: StormConfig, origin: float, burst_origin: fl
         parent_conns.append(parent_conn)
 
     # Collect events off the pipes without blocking the event loop.
-    events = await asyncio.get_event_loop().run_in_executor(None, _collect_events, parent_conns, procs)
-    return events
+    events, herd_commands_ok = await asyncio.get_event_loop().run_in_executor(
+        None, _collect_events, parent_conns, procs
+    )
+    return events, herd_commands_ok
 
 
-def _collect_events(parent_conns, procs) -> List[dict]:
-    """Read newline-framed JSON events from every child until all pipes close."""
+def _collect_events(parent_conns, procs) -> "tuple[List[dict], int]":
+    """Read newline-framed JSON events from every child until all pipes close.
+
+    A ``{"__summary__": {...}}`` line is the slice's aggregate counters, not an
+    attempt event: it is summed into ``herd_commands_ok`` rather than appended.
+    """
     events: List[dict] = []
+    herd_commands_ok = 0
     for conn in parent_conns:
         buffer = b""
         try:
@@ -360,10 +479,16 @@ def _collect_events(parent_conns, procs) -> List[dict]:
                 buffer += chunk
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
-                    if line.strip():
-                        events.append(json.loads(line))
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    summary = record.get("__summary__") if isinstance(record, dict) else None
+                    if summary is not None:
+                        herd_commands_ok += int(summary.get("herd_commands_ok", 0))
+                    else:
+                        events.append(record)
         finally:
             conn.close()
     for proc in procs:
         proc.join()
-    return events
+    return events, herd_commands_ok

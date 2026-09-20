@@ -378,6 +378,12 @@ VALKEY_BENCHMARK = "valkey-benchmark"
 CONDUCTRESS_RESULTS = PROJECT_ROOT / "results"
 CONDUCTRESS_OUTPUT = CONDUCTRESS_RESULTS / "output.jsonl"
 
+# Directory holding the per-runner self-signed test certificates used by the
+# connection-storm scenario's TLS herd (a CA plus a server cert for
+# 127.0.0.1/localhost). Generated once, idempotently, by
+# bootstrap.ensure_tls_test_certs; never used for anything but local testing.
+TLS_CERT_DIR = PROJECT_ROOT / "tls"
+
 CONDUCTRESS_QUEUE = PROJECT_ROOT / "benchmark_queue"
 CONDUCTRESS_TMP = PROJECT_ROOT / "tmp"
 CONDUCTRESS_FAILED_LOG = PROJECT_ROOT / "failed_tasks.jsonl"

@@ -16,6 +16,7 @@ import pytest
 from conductress.stormgen import SCHEMA_VERSION
 from conductress.stormgen.resp import ReplyParser
 from conductress.stormgen.stall import SlowLoopStall, StallRecord, parse_stall
+from tests.unit.asyncio_server_support import close_server
 
 # --------------------------------------------------------------------------- parse / validate
 
@@ -89,9 +90,7 @@ class SlowLoopFakeServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server)
 
     async def _handle(self, reader, writer):
         parser = ReplyParser()
@@ -262,13 +261,19 @@ async def test_slow_loop_fields_serialize_in_document():
         assert stall["achieved_block_ms_p50"] is not None
         assert stall["achieved_block_ms_max"] is not None
         assert stall["effective_duty"] is not None
-        assert doc["schema_version"] == SCHEMA_VERSION == 3
+        # The slow-loop stall fields are present from schema v3 onward; v4 adds
+        # TLS/herd/probe fields but does not remove them, so assert >= 3 and
+        # that the document reports the current schema version.
+        assert doc["schema_version"] == SCHEMA_VERSION
+        assert SCHEMA_VERSION >= 3
     finally:
         await server.stop()
 
 
-def test_document_schema_version_is_three():
-    assert SCHEMA_VERSION == 3
+def test_document_schema_version_includes_slow_loop():
+    # The slow-loop achieved-block fields landed at schema v3; the schema only
+    # grows (v4 added TLS/herd/probe), so the version is at least 3.
+    assert SCHEMA_VERSION >= 3
 
 
 def test_stall_record_defaults_are_hard_stall_shaped():

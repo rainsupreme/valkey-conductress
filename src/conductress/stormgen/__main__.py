@@ -113,6 +113,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Source address a client may bind (repeatable) to spread ephemeral ports across loopback aliases",
     )
     parser.add_argument(
+        "--tls",
+        action="store_true",
+        help="Wrap the herd's connections in TLS, verified against --tls-ca-cert (loopback: hostname check off). "
+        "The connect timeout then covers the TCP connect and the TLS handshake together.",
+    )
+    parser.add_argument(
+        "--tls-ca-cert",
+        default=None,
+        help="Path to the CA certificate the herd verifies the server against (required with --tls)",
+    )
+    parser.add_argument(
+        "--tls-port",
+        type=int,
+        default=None,
+        help="The server's TLS port the herd connects to (required with --tls). --port stays the "
+        "plaintext port used by the stall injector, the capacity baseline, and the probe by default.",
+    )
+    parser.add_argument(
+        "--herd-command-interval-ms",
+        type=float,
+        default=0.0,
+        help="Active herd: a connected client re-sends --first-command every N ms and applies the reply "
+        "timeout; a timeout closes the connection and reconnects (outcome reply_timeout_steady). "
+        "0 (default) is the idle hold.",
+    )
+    parser.add_argument(
+        "--probe-clients",
+        type=int,
+        default=0,
+        help="Fixed-rate goodput probe: this many open-loop clients (0 disables the probe)",
+    )
+    parser.add_argument(
+        "--probe-rate",
+        type=int,
+        default=0,
+        help="Aggregate commands/s the probe sends across its clients (open-loop; a slot is skipped if the "
+        "previous request is still outstanding)",
+    )
+    parser.add_argument(
+        "--probe-tls",
+        action="store_true",
+        help="Run the probe over TLS too (default: the probe uses the plaintext port, measuring the main "
+        "thread's goodput rather than the handshake path)",
+    )
+    parser.add_argument(
+        "--probe-port",
+        type=int,
+        default=None,
+        help="Port the probe targets (default: the herd's --port). When the herd runs TLS on a "
+        "dedicated port, point the probe at the PLAINTEXT port to measure main-thread goodput.",
+    )
+    parser.add_argument(
         "--bucket-ms", type=int, default=metrics.DEFAULT_BUCKET_MS, help="Timeline bucket width in ms (default: 100)"
     )
     parser.add_argument("--json", default=None, help="Write the result document to this path (also printed to stdout)")
@@ -148,6 +200,18 @@ def config_from_args(args: argparse.Namespace) -> StormConfig:
         raise ValueError(f"--prewarm-connections must be >= 0, got {args.prewarm_connections}")
     if args.burst_after_stall_ms < 0:
         raise ValueError(f"--burst-after-stall-ms must be >= 0, got {args.burst_after_stall_ms}")
+    if args.tls and not args.tls_ca_cert:
+        raise ValueError("--tls requires --tls-ca-cert <path>")
+    if args.tls and args.tls_port is None:
+        raise ValueError("--tls requires --tls-port <port> (the server's TLS port; --port stays plaintext)")
+    if args.herd_command_interval_ms < 0:
+        raise ValueError(f"--herd-command-interval-ms must be >= 0, got {args.herd_command_interval_ms}")
+    if args.probe_clients < 0:
+        raise ValueError(f"--probe-clients must be >= 0, got {args.probe_clients}")
+    if args.probe_rate < 0:
+        raise ValueError(f"--probe-rate must be >= 0, got {args.probe_rate}")
+    if (args.probe_clients > 0) != (args.probe_rate > 0):
+        raise ValueError("--probe-clients and --probe-rate must both be set (or both unset) to run the probe")
     return StormConfig(
         host=args.host,
         port=args.port,
@@ -167,6 +231,14 @@ def config_from_args(args: argparse.Namespace) -> StormConfig:
         stall_after_s=args.stall_after_s,
         prewarm_connections=args.prewarm_connections,
         bucket_ms=args.bucket_ms,
+        tls=args.tls,
+        tls_ca_cert=args.tls_ca_cert,
+        tls_port=args.tls_port,
+        herd_command_interval_ms=args.herd_command_interval_ms,
+        probe_clients=args.probe_clients,
+        probe_rate=args.probe_rate,
+        probe_tls=args.probe_tls,
+        probe_port=args.probe_port,
     )
 
 
@@ -180,9 +252,17 @@ def build_document(result: StormResult) -> dict:
         stall_end=result.stall_end_relative(),
         bucket_ms=config.bucket_ms,
     )
+    probe_recovery = metrics.probe_recovery_s(
+        result.probe_timeline,
+        stall_end=result.stall_end_relative(),
+        storm_origin=0.0,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "origin_wall": result.origin_wall,
+        "tls": config.tls,
+        "openssl_version": result.openssl_version,
+        "tls_port": config.tls_port if config.tls else None,
         "config": {
             "host": config.host,
             "port": config.port,
@@ -202,6 +282,12 @@ def build_document(result: StormResult) -> dict:
             "prewarm_connections": result.prewarm_connections,
             "bucket_ms": config.bucket_ms,
             "bind_addrs": list(config.bind_addrs) if config.bind_addrs else [],
+            "tls": config.tls,
+            "herd_command_interval_ms": config.herd_command_interval_ms,
+            "probe_clients": config.probe_clients,
+            "probe_rate": config.probe_rate,
+            "probe_tls": config.probe_tls,
+            "probe_port": config.probe_port if config.probe_port is not None else config.port,
         },
         "stall": {
             "kind": result.stall.kind,
@@ -215,6 +301,10 @@ def build_document(result: StormResult) -> dict:
         },
         "listen_overflow_delta": result.listen_delta,
         "prewarm_listen_overflow_delta": result.prewarm_listen_delta,
+        "herd_commands_ok": result.herd_commands_ok,
+        "herd_connects_per_s_capacity": result.herd_connects_per_s_capacity,
+        "probe_timeline": result.probe_timeline,
+        "probe_recovery_s": probe_recovery,
         "metrics": reduced,
     }
 

@@ -30,6 +30,7 @@ OUTCOMES = (
     OUTCOME_CONNECTED,
     "connect_timeout",
     "reply_timeout",
+    "reply_timeout_steady",
     "refused",
     "reset",
     "error",
@@ -163,7 +164,7 @@ def timeline(
         entry = buckets.setdefault(end_idx, {"started": 0, "connected": 0, "timeouts": 0})
         if event.get("outcome") == OUTCOME_CONNECTED:
             entry["connected"] += 1
-        elif event.get("outcome") in ("connect_timeout", "reply_timeout"):
+        elif event.get("outcome") in ("connect_timeout", "reply_timeout", "reply_timeout_steady"):
             entry["timeouts"] += 1
 
     return [
@@ -194,3 +195,61 @@ def summarize(
         "time_to_quiescence": time_to_quiescence(events, client_count, storm_start=storm_start, stall_end=stall_end),
         "timeline": timeline(events, bucket_ms=bucket_ms, storm_start=storm_start),
     }
+
+
+def probe_recovery_s(
+    probe_timeline: List[dict],
+    *,
+    stall_end: Optional[float] = None,
+    storm_origin: float = 0.0,
+    pre_window_end: Optional[float] = None,
+    within_frac: float = 0.10,
+    consecutive: int = 3,
+) -> Optional[float]:
+    """Seconds until the probe's served/s recovers after the storm.
+
+    The probe records one ``{t_ms, served, ...}`` bucket per second on the
+    storm's wall-clock origin (``t_ms`` is ms from the storm origin). The
+    "pre-storm mean" is the mean ``served`` of every bucket that started before
+    the storm's disturbance began (``pre_window_end`` in axis seconds from the
+    storm origin, defaulting to the stall start relative to the origin, else
+    the storm origin itself). Recovery is the first bucket, at or after the
+    stall end (or the storm origin when there was no stall), from which
+    ``served`` stays within ``within_frac`` of that pre-storm mean for
+    ``consecutive`` buckets in a row; the returned value is seconds from the
+    stall end (or origin). ``None`` when it never recovers, so a caller never
+    reads "never recovered" as "instant".
+
+    Pure function over the timeline; no clock of its own.
+    """
+    buckets = sorted(probe_timeline, key=lambda b: b.get("t_ms", 0))
+    if not buckets:
+        return None
+    origin_axis = 0.0  # buckets' t_ms is already relative to the storm origin
+    disturb_axis = pre_window_end
+    if disturb_axis is None:
+        disturb_axis = (stall_end - storm_origin) if stall_end is not None else origin_axis
+    # Pre-storm reference: buckets that started strictly before the disturbance.
+    pre = [float(b.get("served", 0)) for b in buckets if b.get("t_ms", 0) / 1000.0 < disturb_axis]
+    if not pre:
+        return None
+    pre_mean = sum(pre) / len(pre)
+    if pre_mean <= 0:
+        return None
+    threshold = pre_mean * (1.0 - within_frac)
+    recover_from = (stall_end - storm_origin) if stall_end is not None else origin_axis
+    streak = 0
+    streak_start = recover_from
+    for bucket in buckets:
+        t_axis = bucket.get("t_ms", 0) / 1000.0
+        if t_axis < recover_from:
+            continue
+        if float(bucket.get("served", 0)) >= threshold:
+            if streak == 0:
+                streak_start = t_axis
+            streak += 1
+            if streak >= consecutive:
+                return max(0.0, streak_start - recover_from)
+        else:
+            streak = 0
+    return None

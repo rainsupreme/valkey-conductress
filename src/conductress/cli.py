@@ -604,6 +604,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Poll the server's INFO counters every N ms during the measurement (0 = off, else >= 20). "
         "connection-storm defaults to 100 when this flag is absent; other scenarios default to off.",
     )
+    scenario_parser.add_argument(
+        "--tls",
+        action="store_true",
+        help="connection-storm only: run the herd over TLS on a dedicated TLS port (plaintext port + 1). "
+        "The plaintext port still carries prefill/INFO/memtier/probe; builds with BUILD_TLS=yes.",
+    )
+    scenario_parser.add_argument(
+        "--background",
+        choices=["memtier", "none"],
+        default="memtier",
+        help="connection-storm only: background load. 'memtier' (default) runs the steady GET load; "
+        "'none' skips memtier so the fixed-rate probe is the goodput measure and dip metrics are empty.",
+    )
+    scenario_parser.add_argument(
+        "--server-sample-fields",
+        default="",
+        help="Comma-separated extra INFO fields the sampler records per tick (any section); an unknown "
+        "field records null, so a patched build's counter appears without a code change.",
+    )
     # connection-storm overlay parameters -- serialized into overlay_spec (JSON).
     # Only valid with --scenario connection-storm; rejected otherwise.
     storm_group = scenario_parser.add_argument_group(
@@ -672,6 +691,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--storm-bind-addrs",
         default=None,
         help="','-separated loopback source addresses to spread ephemeral ports across",
+    )
+    storm_group.add_argument(
+        "--storm-herd-command-interval-ms",
+        type=float,
+        default=None,
+        help="Active herd: a connected client re-sends --storm-first-command every N ms and applies the "
+        "reply timeout; a timeout reconnects (outcome reply_timeout_steady). 0 (default) is the idle hold.",
+    )
+    storm_group.add_argument(
+        "--storm-probe-clients",
+        type=int,
+        default=None,
+        help="Fixed-rate goodput probe: this many open-loop clients (0 disables). Requires --storm-probe-rate.",
+    )
+    storm_group.add_argument(
+        "--storm-probe-rate",
+        type=int,
+        default=None,
+        help="Aggregate commands/s the probe sends across its clients (open-loop). Requires --storm-probe-clients.",
+    )
+    storm_group.add_argument(
+        "--storm-probe-tls",
+        action="store_true",
+        help="Run the probe over TLS too (default: the probe uses the plaintext port, measuring main-thread goodput)",
     )
 
     # queue add-latency
@@ -1324,10 +1367,15 @@ def build_scenario_overlay_spec(args: argparse.Namespace) -> str:
         "prewarm_connections": args.storm_prewarm_connections,
         "workers": args.storm_workers,
         "first_command": args.storm_first_command,
+        "herd_command_interval_ms": args.storm_herd_command_interval_ms,
+        "probe_clients": args.storm_probe_clients,
+        "probe_rate": args.storm_probe_rate,
     }
     spec: dict = {k: v for k, v in storm_map.items() if v is not None}
     if args.storm_burst_first:
         spec["burst_first"] = True
+    if args.storm_probe_tls:
+        spec["probe_tls"] = True
     if args.storm_handshake is not None:
         spec["handshake"] = [h for h in args.storm_handshake if h.strip()]
     if args.storm_bind_addrs is not None:
@@ -1438,6 +1486,9 @@ def handle_queue_add_scenario(args: argparse.Namespace) -> int:
             overlay_value_size=args.overlay_value_size,
             overlay_spec=overlay_spec,
             server_sample_ms=server_sample_ms,
+            tls=args.tls,
+            background=args.background,
+            server_sample_fields=args.server_sample_fields,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)

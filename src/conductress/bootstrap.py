@@ -469,6 +469,79 @@ async def ensure_cachecannon(host: Host) -> None:
     host.log_info_msg("cachecannon build complete")
 
 
+# openssl config for the server cert's SANs: the herd targets loopback aliases
+# (127.0.0.1, 127.0.0.2, ...) and the two names Valkey's own gen-test-certs.sh
+# uses. check_hostname is off on the client side (see runner._tls_context), so
+# these names only need to exist, not to match every alias the herd binds to.
+_TLS_SERVER_EXT = (
+    "[v3_req]\n"
+    "basicConstraints = CA:FALSE\n"
+    "keyUsage = digitalSignature, keyEncipherment\n"
+    "extendedKeyUsage = serverAuth\n"
+    "subjectAltName = @alt_names\n"
+    "[alt_names]\n"
+    "DNS.1 = localhost\n"
+    "IP.1 = 127.0.0.1\n"
+)
+
+
+async def ensure_tls_test_certs(host: Host) -> None:
+    """Generate the connection-storm TLS test certificates once per runner.
+
+    Creates ``~/conductress/tls/{ca.crt, ca.key, server.crt, server.key}`` --
+    a self-signed CA plus a server certificate for ``127.0.0.1``/``localhost``
+    signed by it, 10-year validity, RSA 2048 -- mirroring what Valkey's own
+    ``utils/gen-test-certs.sh`` produces, but without depending on the Valkey
+    source tree (the binary cache has no checkout). These are throwaway test
+    certificates for a loopback benchmark; they never leave the runner and
+    authenticate nothing real.
+
+    Idempotent: if all four files already exist the function returns without
+    running openssl, so a re-bootstrap does not rotate the certs (which would
+    invalidate a herd already pinned to the old CA on an in-flight cell).
+    """
+    tls_dir = host.get_home_path() / "conductress" / "tls"
+    ca_crt = tls_dir / "ca.crt"
+    ca_key = tls_dir / "ca.key"
+    server_crt = tls_dir / "server.crt"
+    server_key = tls_dir / "server.key"
+
+    if all(
+        await asyncio.gather(
+            path_exists(host, ca_crt, "file"),
+            path_exists(host, ca_key, "file"),
+            path_exists(host, server_crt, "file"),
+            path_exists(host, server_key, "file"),
+        )
+    ):
+        host.log_info_msg("TLS test certificates already present, skipping generation")
+        return
+
+    host.log_info_msg(f"Generating connection-storm TLS test certificates in {tls_dir}")
+    await host.run(f"mkdir -p {tls_dir}")
+
+    # 1. CA key + self-signed CA cert (10-year).
+    await host.run(f"openssl genrsa -out {ca_key} 2048")
+    await host.run(
+        f"openssl req -x509 -new -nodes -key {ca_key} -sha256 -days 3650 "
+        f'-subj "/CN=Conductress Test CA" -out {ca_crt}'
+    )
+    # 2. Server key + CSR.
+    await host.run(f"openssl genrsa -out {server_key} 2048")
+    csr = tls_dir / "server.csr"
+    await host.run(f'openssl req -new -key {server_key} -subj "/CN=127.0.0.1" -out {csr}')
+    # 3. Sign the server cert with the CA, carrying the SANs from an ext file.
+    ext_file = tls_dir / "server.ext"
+    escaped_ext = _TLS_SERVER_EXT.replace("'", "'\\''")
+    await host.run(f"printf '%s' '{escaped_ext}' > {ext_file}")
+    await host.run(
+        f"openssl x509 -req -in {csr} -CA {ca_crt} -CAkey {ca_key} -CAcreateserial "
+        f"-out {server_crt} -days 3650 -sha256 -extensions v3_req -extfile {ext_file}"
+    )
+    await host.run(f"rm -f {csr} {ext_file} {tls_dir / 'ca.srl'}", check=False)
+    host.log_info_msg("TLS test certificates generated")
+
+
 async def install_systemd_service(host: Host) -> None:
     """Install and enable the conductress systemd service.
 
@@ -554,6 +627,7 @@ async def update_host(server_info: config.ServerInfo):
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
     await ensure_memtier(host)
     await ensure_cachecannon(host)
+    await ensure_tls_test_certs(host)
 
     # Clean up deprecated/legacy files from older versions
     await cleanup_legacy_build_cache(host)

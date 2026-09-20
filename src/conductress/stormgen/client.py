@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
@@ -47,6 +48,14 @@ class ClientConfig:
     handshake: List[str] = field(default_factory=lambda: ["HELLO 3"])
     first_command: str = "GET stormkey"
     bind_addrs: Optional[List[str]] = None
+    # TLS: an SSLContext wraps the connection when set (verify against the test
+    # CA, check_hostname off for loopback aliases). None keeps plain TCP.
+    ssl_context: Optional[ssl.SSLContext] = None
+    # Active herd: when > 0 a connected client sends first_command every
+    # herd_command_interval_ms and applies reply_timeout; a timeout closes the
+    # connection and re-enters the reconnect policy (outcome
+    # reply_timeout_steady). 0 (the default) is today's idle hold.
+    herd_command_interval_ms: float = 0.0
 
 
 @dataclass
@@ -95,6 +104,9 @@ class StormClient:
         self.policy = policy
         self._clock = clock
         self._deadline = deadline
+        # Count of successful steady (active-herd) command replies on this
+        # client; 0 for the idle hold. Aggregated by run_clients.
+        self.herd_commands_ok = 0
 
     def _bind_local_addr(self):
         """Pick this client's source address (round-robin across ``bind_addrs``)."""
@@ -138,7 +150,21 @@ class StormClient:
         writer: Optional[asyncio.StreamWriter] = None
         try:
             local_addr = self._bind_local_addr()
-            connect = asyncio.open_connection(self.config.host, self.config.port, local_addr=local_addr)
+            # A TLS handshake is part of open_connection, so the single
+            # connect_timeout below covers TCP connect AND the TLS handshake
+            # together -- which is what a client library's connect timeout
+            # covers. check_hostname is off on the context (loopback aliases),
+            # so a server_hostname is only needed to drive SNI; pass the host.
+            if self.config.ssl_context is not None:
+                connect = asyncio.open_connection(
+                    self.config.host,
+                    self.config.port,
+                    local_addr=local_addr,
+                    ssl=self.config.ssl_context,
+                    server_hostname=self.config.host,
+                )
+            else:
+                connect = asyncio.open_connection(self.config.host, self.config.port, local_addr=local_addr)
             reader, opened_writer = await asyncio.wait_for(connect, timeout=self.config.connect_timeout)
             writer = opened_writer
             try:
@@ -163,23 +189,44 @@ class StormClient:
                 except (OSError, asyncio.TimeoutError):
                     pass
 
-    async def _hold_open(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Keep an established connection idle until the deadline, then close it.
+    async def _hold_open(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[float]:
+        """Hold an established connection until the deadline.
 
-        A real long-lived client neither sends nor expects traffic while idle;
-        a server-initiated close (EOF) simply ends the hold early. This runs
-        AFTER the attempt's ``connected`` event is recorded, so its duration
-        never enters the attempt latency.
+        Idle by default: wait for the deadline (or a server-initiated close),
+        then close. When ``herd_command_interval_ms > 0`` this instead sends
+        ``first_command`` every interval and reads each reply under
+        ``reply_timeout``: each reply increments ``self.herd_commands_ok``; a
+        reply timeout (or a closed connection) ends the hold and returns the
+        clock time it happened so the caller records a ``reply_timeout_steady``
+        event and reconnects. Returns ``None`` when the hold ended normally
+        (deadline reached or a clean server close), a float when a steady
+        command timed out (the connection was kicked out).
         """
+        interval = self.config.herd_command_interval_ms / 1000.0
         try:
-            remaining = self._deadline - self._clock()
-            if remaining > 0:
+            if interval <= 0:
+                remaining = self._deadline - self._clock()
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(reader.read(1), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        pass
+                    except (ConnectionError, OSError):
+                        pass
+                return None
+            # Active herd: keep issuing the first command on a fixed cadence.
+            while self._clock() < self._deadline:
+                await asyncio.sleep(min(interval, max(0.0, self._deadline - self._clock())))
+                if self._clock() >= self._deadline:
+                    break
                 try:
-                    await asyncio.wait_for(reader.read(1), timeout=remaining)
+                    await self._send_and_read(reader, writer, self.config.first_command)
+                    self.herd_commands_ok += 1
                 except asyncio.TimeoutError:
-                    pass
+                    return self._clock()  # kicked out: a steady command timed out
                 except (ConnectionError, OSError):
-                    pass
+                    return self._clock()
+            return None
         finally:
             writer.close()
             try:
@@ -191,7 +238,11 @@ class StormClient:
         """Attempt until connected or the deadline passes; append one event per attempt.
 
         A connected attempt's event is recorded at reply receipt, then the
-        connection is held open until the deadline as a separate phase.
+        connection is held open until the deadline as a separate phase. With an
+        active herd the hold can be kicked out (a steady command times out): a
+        ``reply_timeout_steady`` event is recorded and the client re-enters the
+        reconnect policy, so a stall at t=T can make an already-connected fleet
+        reconnect (post-trigger hysteresis).
         """
         attempt = 0
         while self._clock() < self._deadline:
@@ -206,12 +257,26 @@ class StormClient:
                     "outcome": result.outcome,
                 }
             )
+            attempt += 1
             if result.outcome == "connected":
                 assert result.reader is not None and result.writer is not None
-                await self._hold_open(result.reader, result.writer)
-                return
-            delay = self.policy.next_delay(attempt)
-            attempt += 1
+                hold_start = self._clock()
+                kicked_at = await self._hold_open(result.reader, result.writer)
+                if kicked_at is None:
+                    return  # held to the deadline (or a clean close); done
+                # Kicked out: record the steady timeout as its own attempt, then
+                # back off and reconnect like any other failure.
+                events.append(
+                    {
+                        "client_id": self.client_id,
+                        "attempt": attempt,
+                        "t_start": hold_start,
+                        "t_end": kicked_at,
+                        "outcome": "reply_timeout_steady",
+                    }
+                )
+                attempt += 1
+            delay = self.policy.next_delay(attempt - 1)
             # Do not sleep past the deadline; a partial sleep is fine.
             remaining = self._deadline - self._clock()
             if remaining <= 0:
@@ -227,20 +292,26 @@ async def run_clients(
     clock: Callable[[], float],
     start_offsets: List[float],
     deadline: float,
-) -> List[dict]:
-    """Run a slice of clients concurrently; return their combined events.
+) -> "tuple[List[dict], int]":
+    """Run a slice of clients concurrently; return (events, herd_commands_ok).
 
     ``start_offsets[i]`` is the clock time at which ``client_ids[i]`` should
     begin its first attempt, so the caller can spread connects over a burst
-    window instead of firing them all at once.
+    window instead of firing them all at once. ``herd_commands_ok`` sums each
+    client's successful steady (active-herd) command replies; it is 0 for the
+    idle hold.
     """
     events: List[dict] = []
+    clients: List["StormClient"] = []
 
     async def _staggered(client_id: int, start_at: float) -> None:
         wait = start_at - clock()
         if wait > 0:
             await asyncio.sleep(wait)
-        await StormClient(client_id, config, policy, clock, deadline).run(events)
+        client = StormClient(client_id, config, policy, clock, deadline)
+        clients.append(client)
+        await client.run(events)
 
     await asyncio.gather(*(_staggered(cid, off) for cid, off in zip(client_ids, start_offsets)))
-    return events
+    herd_commands_ok = sum(c.herd_commands_ok for c in clients)
+    return events, herd_commands_ok

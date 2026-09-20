@@ -149,6 +149,44 @@ def _rgba_close(a, b, tol=0.02):
     return all(abs(x - y) < tol for x, y in zip(a, b))
 
 
+def _probe_view():
+    """A one-column view whose single rep carries a probe_timeline."""
+    from conductress.plots.connection_storm import ScenarioRunView
+
+    rep = {
+        "background_start_wall": 1000.0,
+        "storm": {
+            "origin_wall": 1000.0,
+            "timeline": [{"t_ms": 0, "started": 4, "connected": 4, "timeouts": 0}],
+            "probe_timeline": [
+                {"t_ms": 0, "sent": 1000, "served": 1000, "skipped": 0, "p50_ms": 0.3, "p99_ms": 0.5, "max_ms": 1.0},
+                {"t_ms": 1000, "sent": 1000, "served": 950, "skipped": 50, "p50_ms": 0.4, "p99_ms": 2.0, "max_ms": 5.0},
+            ],
+            "stall": {"kind": "none"},
+        },
+    }
+    return ScenarioRunView(
+        task_id="probe-task",
+        short_description="scenario:connection-storm",
+        source="valkey",
+        commit_hash="deadbeef0000",
+        runner_id="testrunner",
+        reps=[rep],
+    )
+
+
+def test_build_figure_probe_row_adds_a_twin_axis():
+    """A probe series makes row 1 draw a p99 twin axis (extra axis beyond the 4 rows)."""
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure([_probe_view()], rep=0)
+    # 4 rows x 1 column = 4, plus one twin axis for the probe p99.
+    assert len(fig.get_axes()) == 5
+    twin_labels = {ax.get_ylabel() for ax in fig.get_axes()}
+    assert "probe p99 (ms)" in twin_labels
+
+
 def test_gap_breaks_the_connected_line_with_nan(views):
     pytest.importorskip("matplotlib")
     from conductress.plots.connection_storm import build_storm_figure

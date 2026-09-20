@@ -15,6 +15,7 @@ from conductress.stormgen import metrics
 from conductress.stormgen.__main__ import build_document, build_parser, config_from_args
 from conductress.stormgen.resp import ReplyParser, encode_command
 from conductress.stormgen.runner import StormConfig, run_storm
+from tests.unit.asyncio_server_support import close_server
 
 
 class FakeServer:
@@ -37,9 +38,7 @@ class FakeServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server, self._reply_gate)
 
     def pause_replies(self):
         self._reply_gate.clear()
@@ -338,6 +337,15 @@ async def test_stall_first_ordering_starts_burst_after_stall_is_issued(monkeypat
             return "debug-sleep:1"
 
     monkeypatch.setattr(runner_mod, "parse_stall", lambda spec: RecordingStall())
+
+    # The startup connect-capacity check (200 sequential connects, ~100 ms on
+    # loopback) runs before the storm's origin is set, which would inflate the
+    # test's external run_origin reference relative to the events' origin. It is
+    # orthogonal to ordering, so stub it out to keep the timing invariant clean.
+    async def _no_capacity(config, connects=200):
+        return 0.0
+
+    monkeypatch.setattr(runner_mod, "measure_connect_capacity", _no_capacity)
 
     server = FakeServer()
     await server.start()

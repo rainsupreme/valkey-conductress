@@ -24,9 +24,12 @@ from conductress.tasks.task_scenario import (
     GAP_TICK_MULTIPLE,
     ScenarioTaskData,
     ServerSampler,
+    count_accept_errors,
+    parse_extra_info_fields,
     parse_info_fields,
     sampler_gaps,
     storm_metrics_namespace,
+    thread_cpu_percent,
 )
 from conductress.topology import TopologySpec
 
@@ -309,6 +312,9 @@ class _FakeServer:
         self.port = 6379
         self.server_cpus = [0, 1]
         self.valkey_commands = []
+        self.valkey_pid = 4242
+        self.server_logfile = "/tmp/fake-valkey.log"
+        self.host_commands = []
 
     def get_build_hash(self):
         return "deadbeef"
@@ -318,6 +324,7 @@ class _FakeServer:
         return "OK"
 
     async def run_host_command(self, command, check=True):  # pylint: disable=unused-argument
+        self.host_commands.append(command)
         # memtier measure command: return a parseable Totals line + a tiny JSON timeseries.
         if "memtier_benchmark" in command and "--test-time" in command:
             return "Type Ops/sec\nTotals 50000.0 ... \n", ""
@@ -358,7 +365,7 @@ class _FakeSampler:
 
     order: list = []
 
-    def __init__(self, host, port, tick_ms, connect_timeout=5.0):  # pylint: disable=unused-argument
+    def __init__(self, host, port, tick_ms, connect_timeout=5.0, **kwargs):  # pylint: disable=unused-argument
         self.tick_ms = tick_ms
         self.rows = [{"t_sent": 1.0, "t_reply": 1.01, "connected_clients": 33, "listen_overflows": 0}]
         self._stopped = False
@@ -451,6 +458,45 @@ async def test_runner_starts_sampler_before_overlay_and_records_rows(monkeypatch
     assert per_rep["storm"]["origin_wall"] == 1000.0
 
 
+@pytest.mark.asyncio
+async def test_runner_background_none_skips_memtier_and_leaves_dip_empty(monkeypatch, tmp_path):
+    """--background none runs no memtier measure command; dip metrics stay empty."""
+    _FakeTopologyGroup.events = []
+    server = _FakeServer()
+    _FakeTopologyGroup.server = server
+    _FakeSampler.order = []
+
+    real_sleep = module.asyncio.sleep
+
+    async def yielding_sleep(_s):
+        await real_sleep(0)
+
+    monkeypatch.setattr(module, "TopologyGroup", _FakeTopologyGroup)
+    monkeypatch.setattr(module, "ServerSampler", _FakeSampler)
+    monkeypatch.setattr(module, "StormOverlay", lambda spec, wd: _FakeStormOverlay(spec, wd))
+    monkeypatch.setattr(module.asyncio, "sleep", yielding_sleep)
+
+    task = _scenario_task(scenario="connection-storm", background="none", server_sample_ms=100, repetitions=1)
+    runner = task.prepare_task_runner([HOST])
+    runner.file_protocol = FileProtocol(runner.task_name, role_id="client", base_dir=tmp_path)
+    written = {}
+    runner.file_protocol.write_results = MagicMock(side_effect=lambda r: written.setdefault("r", r))
+
+    await runner.run()
+
+    # No memtier --test-time measure command was issued (prefill is separate).
+    measure_cmds = [c for c in server.host_commands if "memtier_benchmark" in c and "--test-time" in c]
+    assert measure_cmds == []
+
+    results: BenchmarkResults = written["r"]
+    per_rep = results.data["scenario_metrics"]["per_rep"][0]
+    # With no background load the dip metrics are absent (not a crash) and rps is 0.
+    assert "interval_rps" not in per_rep
+    assert "dip_depth_pct" not in per_rep
+    assert results.data["per_run_rps"] == [0.0]
+    assert results.data["background"] == "none"
+
+
 # --------------------------------------------------------------------------- coalesced replies
 # Regression for the first fleet cell (bench, 2026-09-18, task 2026.09.18_22.21.13.806551):
 # both INFO replies of a tick arrived in ONE TCP read; a per-reply parser returned
@@ -514,3 +560,90 @@ async def test_one_tick_parses_both_replies_from_one_read():
     assert row["total_connections_received"] == 11
     assert row["rejected_connections"] == 1
     assert row["total_commands_processed"] == 99
+
+
+# --------------------------------------------------------------------------- sampler additions (Part 4)
+
+
+def test_parse_extra_info_fields_int_string_and_unknown():
+    blob = "dead_at_accept:17\nsome_ratio:0.42\nother:hello\n"
+    out = parse_extra_info_fields(blob, ["dead_at_accept", "some_ratio", "missing"])
+    assert out["dead_at_accept"] == 17  # parsed as int
+    assert out["some_ratio"] == "0.42"  # non-int kept as string
+    assert out["missing"] is None  # a field the server did not report is null
+
+
+def test_parse_extra_info_fields_empty_names():
+    assert parse_extra_info_fields("connected_clients:3\n", []) == {}
+
+
+def test_count_accept_errors_counts_marker_lines():
+    log = (
+        "12:M 01 Jan 2026 warning\n"
+        "12:M 01 Jan 2026 Error accepting a client connection: foo\n"
+        "12:M 01 Jan 2026 Error accepting a client connection: bar\n"
+        "12:M 01 Jan 2026 info\n"
+    )
+    assert count_accept_errors(log) == 2
+    assert count_accept_errors("no errors here") == 0
+
+
+def test_thread_cpu_percent_from_fixture_stat_pair():
+    """A main thread that burned one core-second over one wall-second reads ~100%."""
+    # USER_HZ is 100, so 100 jiffies = 1.0 core-second.
+    prev = {10: {"comm": "valkey-server", "ticks": 0}, 11: {"comm": "io_thd_1", "ticks": 0}}
+    cur = {10: {"comm": "valkey-server", "ticks": 100}, 11: {"comm": "io_thd_1", "ticks": 50}}
+    main_pct, io_pct = thread_cpu_percent(prev, cur, pid=10, dt=1.0)
+    assert main_pct == pytest.approx(100.0, abs=0.1)
+    assert io_pct == pytest.approx(50.0, abs=0.1)  # one io thread at half a core
+
+
+def test_thread_cpu_percent_none_without_pid_or_dt():
+    prev = {10: {"comm": "x", "ticks": 0}}
+    cur = {10: {"comm": "x", "ticks": 100}}
+    assert thread_cpu_percent(prev, cur, pid=None, dt=1.0) == (None, None)
+    assert thread_cpu_percent(prev, cur, pid=10, dt=0.0) == (None, None)
+
+
+def test_thread_cpu_percent_io_none_when_no_io_threads():
+    prev = {10: {"comm": "valkey-server", "ticks": 0}}
+    cur = {10: {"comm": "valkey-server", "ticks": 100}}
+    main_pct, io_pct = thread_cpu_percent(prev, cur, pid=10, dt=1.0)
+    assert main_pct == pytest.approx(100.0, abs=0.1)
+    assert io_pct is None
+
+
+def test_sampler_accept_error_delta_from_a_growing_logfile(tmp_path):
+    """The sampler counts only NEW accept-error lines per tick, from a byte offset."""
+    logfile = tmp_path / "valkey.log"
+    logfile.write_text("startup line\n", encoding="utf-8")
+    sampler = ServerSampler("127.0.0.1", 6379, 100, logfile=str(logfile))
+    # First read establishes the baseline offset -> 0 new errors.
+    assert sampler._accept_error_delta() == 0
+    # Append two error lines; the next read sees exactly two.
+    with open(logfile, "a", encoding="utf-8") as handle:
+        handle.write("Error accepting a client connection: a\n")
+        handle.write("Error accepting a client connection: b\n")
+    assert sampler._accept_error_delta() == 2
+    # No further growth -> 0.
+    assert sampler._accept_error_delta() == 0
+
+
+def test_sampler_accept_error_delta_none_when_no_logfile():
+    sampler = ServerSampler("127.0.0.1", 6379, 100, logfile=None)
+    assert sampler._accept_error_delta() is None
+
+
+def test_sampler_records_extra_fields_and_cpu_columns_in_rows():
+    """A row carries the extra INFO fields; CPU/accept keys are present (null off-host)."""
+    # Remote host -> CPU and accept-errors are null, but the row still has the keys.
+    sampler = ServerSampler("10.0.0.5", 6379, 100, extra_fields=["dead_at_accept"])
+    # Drive one synthetic tick's row assembly via the pure helpers the tick uses.
+    blob = "connected_clients:5\ndead_at_accept:9\n"
+    row = {"t_sent": 1.0, "t_reply": 1.01}
+    fields = parse_info_fields(blob)
+    for name in ("connected_clients",):
+        row[name] = fields.get(name)
+    row.update(parse_extra_info_fields(blob, sampler.extra_fields))
+    assert row["dead_at_accept"] == 9
+    assert row["connected_clients"] == 5
