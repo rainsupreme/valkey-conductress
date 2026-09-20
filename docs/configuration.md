@@ -57,7 +57,22 @@ epoch carries an identifier (`v1`, `v3`, ...). Results are comparable only
 within an epoch, so the `v1`/`v3` shorthand used here and elsewhere names which
 generator-and-parameter identity produced a point. `v1` identifies the sweep
 driven by `valkey-benchmark`, Valkey's stock load generator; `v3` identifies the
-cachecannon-driven sweep.
+cachecannon-driven sweep, whose roster is GET throughput, mixed GET/SET
+throughput, and GET latency at a fixed request rate (`SWEEP_V3_LATENCY_*`).
+
+Two series rules follow from that definition:
+
+- A series that needs no load generator belongs to every epoch. Memory
+  overhead is read from the server's own `INFO` after Conductress fills it
+  through its populator, so one memory series is published under each epoch in
+  `SWEEP_GENERATOR_INDEPENDENT_EPOCHS` from one state file; the first entry is
+  the epoch it schedules and pauses under.
+- An epoch-1 series that a newer epoch has replaced is *retired*
+  (`SWEEP_V1_RETIRED_SERIES`, keyed `metric:workload`): it keeps its state and
+  keeps publishing the history it holds, but never queues another task, so the
+  replacement is the only series still measuring that workload. The
+  `conductress sweep pause` selectors are the runtime lever for everything
+  else; retirement is the permanent one.
 
 These variables control which epochs run. Each toggle enables or disables one
 epoch's coordinators, and the precedence variable sets which epoch measures a

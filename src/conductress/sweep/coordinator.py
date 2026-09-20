@@ -229,7 +229,13 @@ class BaseSweepCoordinator(ABC):
         self.record_build_failure(commit)
 
     def queue_next_if_needed(self) -> bool:
-        """Queue the next sweep task if none is already pending."""
+        """Queue the next sweep task if none is already pending.
+
+        A retired series never queues: its history stays published, but the
+        series that replaced it is the only one still measuring.
+        """
+        if self.retired:
+            return False
         queue = TaskQueue()
         for queued in queue.get_all_tasks():
             if self._is_my_task(queued):
@@ -321,6 +327,31 @@ class BaseSweepCoordinator(ABC):
     def epoch_id(self) -> str:
         """Measurement epoch used for export namespacing (legacy by default)."""
         return "v1"
+
+    @property
+    def epoch_ids(self) -> tuple[str, ...]:
+        """Every epoch this series is published under.
+
+        A series measured by a load generator belongs to exactly one epoch, the
+        one that fixes that generator.  A generator-independent series (memory
+        overhead) is valid in every epoch and overrides this to list them all;
+        ``epoch_id`` stays the first entry, which is the epoch the series
+        schedules and pauses under.
+        """
+        return (self.epoch_id,)
+
+    @property
+    def retired(self) -> bool:
+        """True when a series in another epoch has replaced this one.
+
+        A retired series keeps its state file and keeps exporting, so its
+        history stays on the dashboard, but the scheduler never asks it for
+        another task.  Only epoch-1 series can be retired; the registry of
+        which ones is ``config.SWEEP_V1_RETIRED_SERIES``.
+        """
+        if self.epoch_id != "v1":
+            return False
+        return f"{self.metric_id}:{self.workload_id}" in config.SWEEP_V1_RETIRED_SERIES
 
     @property
     def lower_is_better(self) -> bool:

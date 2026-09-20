@@ -632,11 +632,14 @@ def export_latency(
     tool_version: str = "d52544b1",
     repo: str = "valkey-io/valkey",
     branch: str = "unstable",
+    tool: str = "memtier_benchmark",
 ) -> int:
     """Export latency sweep data to a dashboard-ready series file.
 
-    Reads extended latency data (all percentiles + histogram) from output.jsonl
-    since the state only stores p99 as the primary value.
+    Reads extended latency data (all percentiles, and a histogram when the
+    generator produced one) stored on each point, since the state only stores
+    p99 as the primary value.  ``tool`` names the load generator so a reader of
+    the series knows which generator's latency it is looking at.
 
     Returns the number of exported points.
     """
@@ -664,7 +667,8 @@ def export_latency(
             entry["p100_us"] = point.latency_data.get("p100_us")
             entry["target_rps"] = point.latency_data.get("target_rps")
             entry["actual_rps"] = point.latency_data.get("actual_rps")
-            entry["histogram"] = point.latency_data.get("histogram")
+            if point.latency_data.get("histogram") is not None:
+                entry["histogram"] = point.latency_data["histogram"]
         pr = state.commit_prs.get(point.commit) or point.pr
         pr_title = state.commit_titles.get(point.commit) or point.pr_title
         if pr is not None:
@@ -699,7 +703,7 @@ def export_latency(
             "load_fraction": None,
             "target_rps": target_rps,
             "pipeline": 1,
-            "tool": "memtier_benchmark",
+            "tool": tool,
             "tool_version": tool_version,
             "generated": datetime.now(timezone.utc).isoformat(),
             "total_commits": len(state.merge_commits),

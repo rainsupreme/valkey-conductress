@@ -42,5 +42,6 @@
   "sweep_commit": "",
   "rate_limit": 0,
   "perf_stat_enabled": false,
-  "info_sections": ""
+  "info_sections": "",
+  "score_metric": "throughput"
 }

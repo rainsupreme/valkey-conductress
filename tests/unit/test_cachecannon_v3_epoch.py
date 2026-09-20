@@ -478,17 +478,32 @@ class TestEpochRegistry:
 
 
 class TestV3Roster:
-    def test_roster_opens_with_two_workloads(self, tmp_path: Path):
+    def test_roster_is_get_mixed_and_latency(self, tmp_path: Path):
         from conductress.sweep.coordinator_v3 import create_v3_coordinators
 
         with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
             with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
                 coords = create_v3_coordinators(tmp_path)
-        assert [c.workload_id for c in coords] == [
-            "get-k16-v16-t7-p10",
-            "mixed-s20-k16-v16-t7-p10",
+        assert [(c.workload_id, c.metric_id) for c in coords] == [
+            ("get-k16-v16-t7-p10", "throughput"),
+            ("mixed-s20-k16-v16-t7-p10", "throughput"),
+            ("get-k16-v16-t7-p1-r100k", "latency"),
         ]
         assert all(c.epoch_id == "v3" for c in coords)
+        assert all(c.epoch_ids == ("v3",) for c in coords)
+
+    def test_no_two_roster_series_own_the_same_cell(self, tmp_path: Path):
+        """Every workload-defining field is in the ownership predicate."""
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = create_v3_coordinators(tmp_path)
+        for owner in coords:
+            task = owner._create_task(_sweep_task())
+            task.sweep_commit = "a" * 40
+            claimants = [c.workload_id for c in coords if c._is_my_task(task)]
+            assert claimants == [owner.workload_id]
 
     def test_v3_is_disabled_by_default(self, monkeypatch):
         """The toggle must default off so deploys land inert.

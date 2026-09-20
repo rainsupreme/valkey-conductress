@@ -252,6 +252,39 @@ SWEEP_V3_MAX_REPS = 10  # adaptive ceiling
 # numbers suggest.
 SWEEP_V3_TARGET_CV = 0.5
 
+# v3 latency workload.  The same generator, connection count, client threads,
+# key space, value size and scored window as the v3 throughput workloads, but
+# driven at a fixed request rate with no pipelining, so the measurement is the
+# per-request latency the server delivers under a load it can comfortably serve
+# rather than its capacity.  The rate is the same on every platform so the
+# series compare across hardware.  cachecannon reports latency in exact integer
+# microseconds and, in rate-limited mode, whether it held the requested rate.
+SWEEP_V3_LATENCY_RATE = 100_000  # requests/s, shared across all connections
+SWEEP_V3_LATENCY_PIPELINING = 1
+SWEEP_V3_LATENCY_REPETITIONS = SWEEP_MIN_REPS
+SWEEP_V3_LATENCY_MAX_REPS = 10
+# Precision target for adaptive stopping on p99 (95% CI half-width as a percent
+# of the mean, see SWEEP_V3_TARGET_CV).  Tail latency varies more between
+# server restarts than throughput does, so the bound is wider.
+SWEEP_V3_LATENCY_TARGET_CV = 2.0
+
+# Epochs a generator-independent series belongs to.  Memory overhead is read
+# from the server's own INFO after Conductress fills it through its populator;
+# no load generator is involved, so one memory series is valid in every epoch
+# and is published under each of these.  The first entry is the epoch the
+# series schedules and pauses under.
+SWEEP_GENERATOR_INDEPENDENT_EPOCHS: tuple[str, ...] = ("v3", "v1")
+
+# Epoch-1 series that a v3 series has replaced.  A retired series keeps
+# publishing the history it already holds but never queues another task, so
+# the replacement is the only one still measuring.  Keyed "metric:workload".
+SWEEP_V1_RETIRED_SERIES: frozenset[str] = frozenset(
+    {
+        "throughput:get-k16-v16-t7-p10",  # replaced by the v3 GET sweep
+        "latency:get-k16-v16",  # replaced by the v3 latency sweep
+    }
+)
+
 # Epoch registry: id -> dashboard metadata.  The publisher advertises these in
 # every manifest so old URLs keep working while new dashboards can discover
 # additional epochs.  Unknown ids fall back to a generic label rather than

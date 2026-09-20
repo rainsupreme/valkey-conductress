@@ -1,7 +1,9 @@
 """Cachecannon sweep coordinators (v3 epoch).
 
-The v3 epoch replaces the retired ``scalable-v2`` sweep epoch. Two things forced
-the replacement:
+The v3 epoch fixes cachecannon as the load generator for every series that
+needs one: pure-GET throughput, mixed GET/SET throughput, and GET latency at a
+fixed request rate.  It replaced the retired ``scalable-v2`` epoch for two
+reasons:
 
 * The v2 mixed workload could not run at all -- it emitted a ``--warmup-period``
   flag that memtier has never implemented, and memtier has no warmup feature to
@@ -15,8 +17,10 @@ the replacement:
 State files, published filenames, and ownership predicates are disjoint from
 both legacy v1 and the retired v2 namespace. Ownership is additionally disjoint
 by construction: cachecannon tasks are ``CachecannonTaskData``, a sibling of
-``PerfTaskData``/``MixedTaskData`` under ``BaseTaskData``, so the v1 and v2
-``isinstance`` predicates cannot match a v3 task even accidentally.
+``PerfTaskData`` under ``BaseTaskData``, so the v1 ``isinstance`` predicates
+cannot match a v3 task even accidentally.  Within v3, the ownership predicate
+covers every workload-defining field, rate limit and score metric included, so
+the three series cannot absorb one another's cells.
 
 Protocol values live in ``config`` and were confirmed by measurement -- see
 ``SWEEP_V3_*`` and ``conductress-cachecannon-v3/epoch-specification.md``.
@@ -35,6 +39,7 @@ from conductress.config import (
     CONDUCTRESS_RESULTS,
     SWEEP_KEY_SIZE,
     SWEEP_STATE_DIR,
+    SWEEP_V3_CACHECANNON_COMMIT,
     SWEEP_V3_CLIENT_THREADS,
     SWEEP_V3_CONNECTIONS,
     SWEEP_V3_DISTRIBUTION,
@@ -42,6 +47,11 @@ from conductress.config import (
     SWEEP_V3_EPOCH_ID,
     SWEEP_V3_IO_THREADS,
     SWEEP_V3_KEYSPACE,
+    SWEEP_V3_LATENCY_MAX_REPS,
+    SWEEP_V3_LATENCY_PIPELINING,
+    SWEEP_V3_LATENCY_RATE,
+    SWEEP_V3_LATENCY_REPETITIONS,
+    SWEEP_V3_LATENCY_TARGET_CV,
     SWEEP_V3_MAX_REPS,
     SWEEP_V3_PIPELINING,
     SWEEP_V3_REPETITIONS,
@@ -70,8 +80,11 @@ def _ensure_v3_state_dir() -> Path:
 class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
     """Shared behaviour for cachecannon-driven v3 sweeps.
 
-    Subclasses differ only in their workload label and the ``set_ratio`` /
-    ``test`` pair that defines the workload.
+    Subclasses differ in their workload label and in the ``set_ratio`` /
+    ``test`` / ``rate_limit`` / ``score_metric`` values that define the
+    workload.  Every one of those is part of the ownership predicate, so a
+    latency cell (rate-limited, scored on p99) can never be absorbed into a
+    throughput series of the same shape, or the reverse.
     """
 
     metric_id = "throughput"
@@ -89,6 +102,11 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         connections: int = SWEEP_V3_CONNECTIONS,
         threads: int = SWEEP_V3_CLIENT_THREADS,
         distribution: str = SWEEP_V3_DISTRIBUTION,
+        rate_limit: int = 0,
+        score_metric: str = "throughput",
+        repetitions: int = SWEEP_V3_REPETITIONS,
+        max_reps: int = SWEEP_V3_MAX_REPS,
+        target_cv: float = SWEEP_V3_TARGET_CV,
         engine: Optional[config.SweepEngine] = None,
     ):
         self._test = test
@@ -99,6 +117,11 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         self._connections = connections
         self._threads = threads
         self._distribution = distribution
+        self._rate_limit = rate_limit
+        self._score_metric = score_metric
+        self._repetitions = repetitions
+        self._max_reps = max_reps
+        self._target_cv = target_cv
 
         engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
         self._label = f"{engine_prefix}{label}"
@@ -134,9 +157,11 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             duration=SWEEP_V3_DURATION,
             keyspace_count=SWEEP_V3_KEYSPACE,
             distribution=self._distribution,
-            repetitions=SWEEP_V3_REPETITIONS,
-            max_reps=SWEEP_V3_MAX_REPS,
-            target_cv=SWEEP_V3_TARGET_CV,
+            repetitions=self._repetitions,
+            max_reps=self._max_reps,
+            target_cv=self._target_cv,
+            rate_limit=self._rate_limit,
+            score_metric=self._score_metric,
             # Per-thread hardware counters every rep and a CPU flamegraph on the
             # last rep, as the v1 sweep has always collected. Counting-mode perf
             # stat costs well under 1% and is what feeds the dashboard's IPC,
@@ -157,17 +182,24 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
                 continue
         return None
 
+    def _per_run_scores(self, entry: dict) -> list:
+        """The recorded per-rep series of this coordinator's score metric."""
+        data = entry.get("data", {})
+        if self._score_metric == "throughput":
+            return data.get("per_run_rps", [])
+        return data.get(f"per_run_{self._score_metric}_us", [])
+
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:
         entry = self._find_task_entry(task)
         if not entry:
             return None
-        rps = entry.get("score")
-        per_run = entry.get("data", {}).get("per_run_rps", [])
-        cv = (stdev(per_run) / rps) * 100 if len(per_run) >= 2 and rps else 0.0
+        score = entry.get("score")
+        per_run = self._per_run_scores(entry)
+        cv = (stdev(per_run) / score) * 100 if len(per_run) >= 2 and score else 0.0
         # Adaptive reps mean the count is not knowable from configuration; it
         # must come from the recorded run list.
-        reps = len(per_run) if per_run else SWEEP_V3_REPETITIONS
-        return (rps, cv, reps) if rps else None
+        reps = len(per_run) if per_run else self._repetitions
+        return (score, cv, reps) if score else None
 
     def _extract_perf_counters(self, task: BaseTaskData) -> Optional[PerfCounterRecord]:
         entry = self._find_task_entry(task)
@@ -193,6 +225,8 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             and task.connections == self._connections
             and task.threads == self._threads
             and task.distribution == self._distribution
+            and task.rate_limit == self._rate_limit
+            and task.score_metric == self._score_metric
         )
 
 
@@ -262,13 +296,127 @@ class CachecannonMixedSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
         )
 
 
+class CachecannonLatencySweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
+    """Canonical v3 latency sweep: p99 of GET at a fixed request rate.
+
+    Same generator, connections, client threads, key space and scored window as
+    the v3 throughput workloads, driven at ``SWEEP_V3_LATENCY_RATE`` with no
+    pipelining.  Bisects on p99 (lower is better).  The exported series carries
+    p50/p99/p99.9/p100 and the achieved rate for every point, so a reader can
+    tell a slow server from a generator that failed to hold the rate.
+    """
+
+    metric_id = "latency"
+    metric_unit = "µs"
+    lower_is_better = True
+
+    def __init__(
+        self,
+        repo_path: Path,
+        rate_limit: int = SWEEP_V3_LATENCY_RATE,
+        val_size: int = SWEEP_V3_VAL_SIZE,
+        io_threads: int = SWEEP_V3_IO_THREADS,
+        pipelining: int = SWEEP_V3_LATENCY_PIPELINING,
+        connections: int = SWEEP_V3_CONNECTIONS,
+        threads: int = SWEEP_V3_CLIENT_THREADS,
+        distribution: str = SWEEP_V3_DISTRIBUTION,
+        engine: Optional[config.SweepEngine] = None,
+    ):
+        if rate_limit <= 0:
+            raise ValueError(f"a latency sweep needs a fixed request rate, got rate_limit={rate_limit}")
+        label = f"get-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}-r{rate_limit // 1000}k"
+        if distribution != SWEEP_V3_DISTRIBUTION:
+            label += f"-{distribution}"
+        super().__init__(
+            repo_path,
+            label=label,
+            test="get",
+            set_ratio=0,
+            val_size=val_size,
+            io_threads=io_threads,
+            pipelining=pipelining,
+            connections=connections,
+            threads=threads,
+            distribution=distribution,
+            rate_limit=rate_limit,
+            score_metric="p99",
+            repetitions=SWEEP_V3_LATENCY_REPETITIONS,
+            max_reps=SWEEP_V3_LATENCY_MAX_REPS,
+            target_cv=SWEEP_V3_LATENCY_TARGET_CV,
+            engine=engine,
+        )
+
+    def get_urgency_score(self) -> float:
+        """Priority score, dampened by 0.5x relative to throughput.
+
+        Latency fills in behind the throughput series once both exist, the same
+        weighting the latency series has always had.
+        """
+        completed = sum(1 for p in self.state.points.values() if p.value is not None)
+        if completed < 2:
+            return float("inf")
+        return super().get_urgency_score() * 0.5
+
+    @staticmethod
+    def latency_data_from_entry(entry: dict) -> Optional[dict]:
+        """The per-point latency detail the exporter publishes, from one result record.
+
+        cachecannon reports p50/p90/p99/p99.9/p99.99/max as exact microseconds;
+        the export keeps the four the latency series has always carried and the
+        achieved rate.  There is no histogram: cachecannon does not emit one.
+        """
+        data = entry.get("data", {})
+        latency = data.get("latency")
+        if not latency:
+            return None
+        return {
+            "p50_us": latency["p50_ms"] * 1000.0,
+            "p99_us": latency["p99_ms"] * 1000.0,
+            "p99_9_us": latency["p999_ms"] * 1000.0,
+            "p100_us": latency["max_ms"] * 1000.0,
+            "target_rps": data.get("rate_limit"),
+            "actual_rps": data.get("mean_rps"),
+        }
+
+    def on_task_completed(self, task: BaseTaskData) -> None:
+        """Record p99 for bisection and keep the full percentile set for export."""
+        if not self._is_my_task(task):
+            return
+        entry = self._find_task_entry(task)
+        result = self._extract_result(task)
+        if result and entry:
+            value, cv, reps = result
+            self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
+            latency_data = self.latency_data_from_entry(entry)
+            if latency_data and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
+                self.state.points[task.sweep_commit].latency_data = latency_data  # type: ignore[attr-defined]
+                self.state.save(self.state_file)
+        else:
+            commit = getattr(task, "sweep_commit", "?")
+            logger.warning("Could not extract latency result for %s", commit[:8])
+
+    def export(self, output_path: Path, platform: str) -> int:
+        from conductress.sweep.exporter import export_latency
+
+        return export_latency(
+            self.state,
+            output_path,
+            platform=platform,
+            workload=self.workload_id,
+            target_rps=self._rate_limit,
+            tool="cachecannon",
+            tool_version=SWEEP_V3_CACHECANNON_COMMIT[:8],
+        )
+
+
 def create_v3_coordinators(repo_path: Path) -> list[BaseCachecannonSweepCoordinatorV3]:
     """Build the v3 coordinator roster.
 
-    The roster opens deliberately small: it multiplies directly against a
-    full-history backfill across four platforms.
+    The roster is deliberately small: it multiplies directly against a
+    full-history backfill across every platform.
     """
     return [
         CachecannonThroughputSweepCoordinatorV3(repo_path),
         CachecannonMixedSweepCoordinatorV3(repo_path),
+        CachecannonLatencySweepCoordinatorV3(repo_path),
     ]

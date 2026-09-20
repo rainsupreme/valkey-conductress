@@ -134,6 +134,18 @@ class AnalysisModule:
             mixed_variant = (
                 f"w{data.get('warmup', 0)}-wa{warmup_applied}-t{data.get('threads', 0)}-c{data.get('clients', 0)}"
             )
+        elif method.startswith("cachecannon-"):
+            # A rate-limited cell measures latency at a fixed load and a scored
+            # p99 is a different quantity from a scored throughput; neither may
+            # merge with an unlimited throughput cell of the same shape.
+            parts = []
+            rate_limit = int(data.get("rate_limit", 0) or 0)
+            if rate_limit > 0:
+                parts.append(f"r{rate_limit}")
+            score_metric = data.get("score_metric", "throughput")
+            if score_metric != "throughput":
+                parts.append(str(score_metric))
+            mixed_variant = "-".join(parts)
         return (
             method,
             data.get("size", 0),

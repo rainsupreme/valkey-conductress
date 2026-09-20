@@ -136,21 +136,27 @@ def _add_run_length_args(
     warmup: Optional[str] = WARMUP_HELP,
     duration: Optional[str] = DURATION_HELP,
     repetitions: str = REPETITIONS_HELP,
+    warmup_default: int = config.DEFAULT_WARMUP,
+    duration_default: int = config.DEFAULT_DURATION,
+    repetitions_default: int = config.DEFAULT_REPETITIONS,
 ) -> None:
-    """--warmup / --duration / --repetitions. Pass ``None`` to omit a flag the task has no use for."""
+    """--warmup / --duration / --repetitions. Pass ``None`` to omit a flag the task has no use for.
+
+    The ``*_default`` overrides exist for a command whose cells should match a
+    sweep's shape out of the box; the flag names, types and help format stay
+    shared either way.
+    """
     if warmup is not None:
-        parser.add_argument(
-            "--warmup", default=f"{config.DEFAULT_WARMUP}s", help=f"{warmup}. Default: {config.DEFAULT_WARMUP}s"
-        )
+        parser.add_argument("--warmup", default=f"{warmup_default}s", help=f"{warmup}. Default: {warmup_default}s")
     if duration is not None:
         parser.add_argument(
-            "--duration", default=f"{config.DEFAULT_DURATION}s", help=f"{duration}. Default: {config.DEFAULT_DURATION}s"
+            "--duration", default=f"{duration_default}s", help=f"{duration}. Default: {duration_default}s"
         )
     parser.add_argument(
         "--repetitions",
         type=int,
-        default=config.DEFAULT_REPETITIONS,
-        help=f"{repetitions}. Default: {config.DEFAULT_REPETITIONS}",
+        default=repetitions_default,
+        help=f"{repetitions}. Default: {repetitions_default}",
     )
 
 
@@ -465,7 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # queue add-mixed
-    mixed_parser = queue_sub.add_parser("add-mixed", help="Add a mixed GET/SET throughput task (memtier)")
+    mixed_parser = queue_sub.add_parser(
+        "add-mixed",
+        help="Add a mixed GET/SET throughput task (cachecannon, the epoch-3 sweep shape by default)",
+    )
     _add_source_args(mixed_parser)
     mixed_parser.add_argument(
         "--set-ratio",
@@ -475,25 +484,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mixed_parser.add_argument(
         "--sizes",
-        default=str(config.DEFAULT_VAL_SIZE),
-        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.DEFAULT_VAL_SIZE}",
-    )
-    mixed_parser.add_argument(
-        "--key-sizes",
-        default=str(config.DEFAULT_KEY_SIZE),
-        help="Compatibility field; mixed memtier tasks currently support only 0 (standard memtier keys)",
+        default=str(config.SWEEP_V3_VAL_SIZE),
+        help=f"Comma-separated value sizes (e.g., 16,512,1KB). Default: {config.SWEEP_V3_VAL_SIZE}",
     )
     mixed_parser.add_argument(
         "--io-threads",
-        default=str(config.DEFAULT_IO_THREADS),
-        help=f"Comma-separated IO thread counts. Default: {config.DEFAULT_IO_THREADS}",
+        default=str(config.SWEEP_V3_IO_THREADS),
+        help=f"Comma-separated IO thread counts. Default: {config.SWEEP_V3_IO_THREADS}",
     )
     mixed_parser.add_argument(
         "--pipelining",
-        default=str(config.DEFAULT_PIPELINING),
-        help=f"Comma-separated pipelining values. Default: {config.DEFAULT_PIPELINING}",
+        default=str(config.SWEEP_V3_PIPELINING),
+        help=f"Comma-separated pipelining values. Default: {config.SWEEP_V3_PIPELINING}",
     )
-    _add_run_length_args(mixed_parser, warmup="Warmup duration passed to memtier (0s disables)")
+    _add_run_length_args(
+        mixed_parser,
+        warmup="Warmup before the scored window (0s disables)",
+        duration="Scored window per repetition",
+        warmup_default=config.SWEEP_V3_WARMUP,
+        duration_default=config.SWEEP_V3_DURATION,
+        repetitions_default=config.SWEEP_V3_REPETITIONS,
+    )
     _add_note_and_build_args(mixed_parser, plural=True)
     _add_topology_args(mixed_parser)
     mixed_parser.add_argument("--perf-stat", action="store_true", help="Enable perf stat hardware counter collection")
@@ -513,18 +524,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra raw server arguments appended to the valkey-server command line (e.g. '--io-threads-ownership yes'). Appended last, overriding generated defaults",
     )
     mixed_parser.add_argument(
-        "--memtier-threads",
+        "--connections",
         type=int,
-        default=0,
-        help="memtier_benchmark --threads override (0 = default 8). "
-        "Scale with --memtier-clients to control total connections.",
+        default=config.SWEEP_V3_CONNECTIONS,
+        help=f"Total client connections. Default: {config.SWEEP_V3_CONNECTIONS}",
     )
     mixed_parser.add_argument(
-        "--memtier-clients",
+        "--threads",
         type=int,
-        default=0,
-        help="memtier_benchmark --clients (per-thread) override (0 = default 50). "
-        "Total connections = threads * clients.",
+        default=config.SWEEP_V3_CLIENT_THREADS,
+        help=f"Client worker threads. Default: {config.SWEEP_V3_CLIENT_THREADS}",
+    )
+    mixed_parser.add_argument(
+        "--keyspace",
+        type=int,
+        default=config.SWEEP_V3_KEYSPACE,
+        help=f"Number of keys. Default: {config.SWEEP_V3_KEYSPACE}",
     )
 
     # queue add-scenario
@@ -727,10 +742,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # queue add-latency
-    lat_parser = queue_sub.add_parser("add-latency", help="Add a latency measurement task")
+    lat_parser = queue_sub.add_parser(
+        "add-latency",
+        help="Add a latency measurement task (cachecannon at a fixed request rate, scored on p99)",
+    )
     lat_parser.add_argument("source", help="Source repo name (e.g. 'valkey')")
     lat_parser.add_argument("specifier", help="Commit hash or branch to test")
-    lat_parser.add_argument("target_rps", type=int, help="Target requests/sec (use 70%% of max throughput)")
+    lat_parser.add_argument(
+        "target_rps",
+        type=int,
+        help=f"Fixed request rate shared across all connections (the epoch-3 sweep uses {config.SWEEP_V3_LATENCY_RATE})",
+    )
     lat_parser.add_argument("--note", default="", help="Optional note for the task")
     lat_parser.add_argument(
         "--server-args",
@@ -742,14 +764,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--set-ratio",
         type=int,
         default=0,
-        help="Percentage of SET commands (0-100, default 0 = GET-only). "
-        "When >0, measurement uses --ratio SET:GET accordingly (e.g. 20 -> 1:4).",
+        help="Percentage of SET commands (0-100, default 0 = GET-only). The recorded p99 is the dominant command's.",
     )
     lat_parser.add_argument(
         "--value-size",
         type=int,
-        default=config.LATENCY_VAL_SIZE,
-        help=f"Value size in bytes for populate and measure (default: {config.LATENCY_VAL_SIZE})",
+        default=config.SWEEP_V3_VAL_SIZE,
+        help=f"Value size in bytes (default: {config.SWEEP_V3_VAL_SIZE})",
+    )
+    lat_parser.add_argument(
+        "--io-threads",
+        type=int,
+        default=config.SWEEP_V3_IO_THREADS,
+        help=f"Server io-threads (default: {config.SWEEP_V3_IO_THREADS})",
+    )
+    lat_parser.add_argument(
+        "--connections",
+        type=int,
+        default=config.SWEEP_V3_CONNECTIONS,
+        help=f"Total client connections (default: {config.SWEEP_V3_CONNECTIONS})",
+    )
+    lat_parser.add_argument(
+        "--threads",
+        type=int,
+        default=config.SWEEP_V3_CLIENT_THREADS,
+        help=f"Client worker threads (default: {config.SWEEP_V3_CLIENT_THREADS})",
+    )
+    lat_parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=config.SWEEP_V3_LATENCY_REPETITIONS,
+        help=f"Repetitions, each with a fresh server (default: {config.SWEEP_V3_LATENCY_REPETITIONS})",
     )
 
     _add_topology_args(lat_parser)
@@ -1178,9 +1223,14 @@ def handle_queue_add(args: argparse.Namespace) -> int:
 
 
 def handle_queue_add_latency(args: argparse.Namespace) -> int:
-    """Handle 'queue add-latency': submit a latency measurement task."""
-    from conductress.config import LATENCY_MAKE_ARGS, SWEEP_IO_THREADS
-    from conductress.tasks.task_latency import LatencyTaskData
+    """Handle 'queue add-latency': submit a fixed-rate latency task.
+
+    A cachecannon cell driven at ``target_rps`` with no pipelining, scored on
+    the dominant command's p99 in microseconds. The defaults are the epoch-3
+    latency sweep's, so a cell queued without overrides has the same shape as
+    the sweep's points.
+    """
+    from conductress.tasks.task_cachecannon import CachecannonTaskData
 
     if not _source_is_valid(args.source):
         return 1
@@ -1188,29 +1238,43 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
     if topology is None:
         return 1
 
+    if args.target_rps <= 0:
+        print(f"Error: target_rps must be > 0, got {args.target_rps}", file=sys.stderr)
+        return 1
     if not (0 <= args.set_ratio <= 100):
         print(f"Error: --set-ratio must be 0-100, got {args.set_ratio}", file=sys.stderr)
         return 1
-
     if args.value_size < 1:
         print(f"Error: --value-size must be >= 1, got {args.value_size}", file=sys.stderr)
+        return 1
+    if args.repetitions < 1:
+        print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
     ratio_note = f", SET={args.set_ratio}%" if args.set_ratio > 0 else ""
     default_note = f"manual latency @ {args.target_rps} rps{ratio_note}"
 
-    task = LatencyTaskData(
+    task = CachecannonTaskData(
         source=args.source,
         specifier=args.specifier,
-        make_args=LATENCY_MAKE_ARGS,
+        make_args=config.DEFAULT_MAKE_ARGS,
         topology=topology,
         note=args.note or default_note,
         requirements={},
-        target_rps=args.target_rps,
-        io_threads=SWEEP_IO_THREADS,
-        server_args=args.server_args,
+        test="get",
         set_ratio=args.set_ratio,
-        value_size=args.value_size,
+        val_size=args.value_size,
+        pipelining=config.SWEEP_V3_LATENCY_PIPELINING,
+        connections=args.connections,
+        threads=args.threads,
+        io_threads=args.io_threads,
+        warmup=config.SWEEP_V3_WARMUP,
+        duration=config.SWEEP_V3_DURATION,
+        repetitions=args.repetitions,
+        keyspace_count=config.SWEEP_V3_KEYSPACE,
+        server_args=args.server_args,
+        rate_limit=args.target_rps,
+        score_metric="p99",
     )
 
     queue = _TaskSubmitter(args)
@@ -1220,18 +1284,26 @@ def handle_queue_add_latency(args: argparse.Namespace) -> int:
         return 0
     print(f"Queued latency task: {args.specifier[:8]} @ {args.target_rps} rps (id: {task.task_id})")
     print(f"  topology: {_describe_topology(topology)}")
+    print(f"  score: p99 (us)  pipeline=1  connections={args.connections} threads={args.threads}")
+    print(
+        f"  io-threads={args.io_threads} duration={config.SWEEP_V3_DURATION}s warmup={config.SWEEP_V3_WARMUP}s reps={args.repetitions}"
+    )
     if args.server_args:
         print(f"  server-args: {args.server_args}")
     if args.set_ratio > 0:
         print(f"  set-ratio: {args.set_ratio}%")
-    if args.value_size != config.LATENCY_VAL_SIZE:
+    if args.value_size != config.SWEEP_V3_VAL_SIZE:
         print(f"  value-size: {args.value_size}B")
     return 0
 
 
 def handle_queue_add_mixed(args: argparse.Namespace) -> int:
-    """Handle 'queue add-mixed': submit mixed GET/SET throughput tasks."""
-    from conductress.tasks.task_mixed import MixedTaskData
+    """Handle 'queue add-mixed': submit mixed GET/SET throughput tasks.
+
+    One cachecannon cell per (size, io-threads, pipelining) combination, scored
+    on throughput. The defaults are the epoch-3 mixed sweep's shape.
+    """
+    from conductress.tasks.task_cachecannon import CachecannonTaskData
 
     if not _source_is_valid(args.source):
         return 1
@@ -1245,42 +1317,12 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
 
     try:
         sizes = _parse_comma_separated_bytes(args.sizes, "sizes")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        key_sizes = _parse_comma_separated_bytes(args.key_sizes, "key-sizes")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-    if any(key_size != 0 for key_size in key_sizes):
-        print(
-            "Error: --key-sizes is not supported by mixed memtier tasks; use 0 (the default)",
-            file=sys.stderr,
-        )
-        return 1
-
-    try:
         io_threads = _parse_comma_separated_ints(args.io_threads, "io-threads")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
         pipelining = _parse_comma_separated_ints(args.pipelining, "pipelining")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
         duration = _parse_human_time(args.duration, "duration")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
         warmup = _parse_human_time(args.warmup, "warmup")
+        validate_cpulist(args.server_cpus)
+        validate_cpulist(args.client_cpus)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1288,55 +1330,39 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     if args.repetitions < 1:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
-
-    try:
-        validate_cpulist(args.server_cpus)
-    except ValueError as e:
-        print(f"Error (--server-cpus): {e}", file=sys.stderr)
+    if args.connections < 1 or args.threads < 1:
+        print("Error: --connections and --threads must be >= 1", file=sys.stderr)
         return 1
-    try:
-        validate_cpulist(args.client_cpus)
-    except ValueError as e:
-        print(f"Error (--client-cpus): {e}", file=sys.stderr)
+    if args.keyspace < 1:
+        print(f"Error: --keyspace must be >= 1, got {args.keyspace}", file=sys.stderr)
         return 1
 
-    memtier_threads = args.memtier_threads
-    memtier_clients = args.memtier_clients
-    from conductress.tasks.task_mixed import _validate_memtier_bounds
-
-    try:
-        _validate_memtier_bounds(memtier_threads, memtier_clients)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    import itertools
-
-    combinations = list(itertools.product(sizes, io_threads, pipelining, key_sizes))
+    combinations = list(itertools.product(sizes, io_threads, pipelining))
 
     queue = _TaskSubmitter(args)
-    for val_size, io_thread, pipeline, key_size in combinations:
-        task = MixedTaskData(
+    for val_size, io_thread, pipeline in combinations:
+        task = CachecannonTaskData(
             source=args.source,
             specifier=args.specifier,
             make_args=args.make_args,
             topology=topology,
             note=args.note,
             requirements={},
+            test="get",
             set_ratio=args.set_ratio,
             val_size=val_size,
             io_threads=io_thread,
             pipelining=pipeline,
-            duration=duration,
+            connections=args.connections,
+            threads=args.threads,
             warmup=warmup,
+            duration=duration,
             repetitions=args.repetitions,
+            keyspace_count=args.keyspace,
             perf_stat_enabled=args.perf_stat,
-            key_size=key_size,
             server_cpu_override=args.server_cpus,
             benchmark_cpu_override=args.client_cpus,
             server_args=args.server_args,
-            memtier_threads=memtier_threads,
-            memtier_clients=memtier_clients,
         )
         queue.submit_task(task)
 
@@ -1344,16 +1370,11 @@ def handle_queue_add_mixed(args: argparse.Namespace) -> int:
     if _finish_submission(submission, args):
         return 0
     ratio_str = f"{args.set_ratio}%SET/{100-args.set_ratio}%GET"
-    from conductress.tasks.task_mixed import _effective_memtier_clients, _effective_memtier_threads
-
-    eff_t = _effective_memtier_threads(memtier_threads)
-    eff_c = _effective_memtier_clients(memtier_clients)
-    total_conns = eff_t * eff_c
     print(f"Queued {len(combinations)} mixed task(s) ({ratio_str}):")
     print(f"  source={args.source} specifier={args.specifier}")
     print(f"  topology: {_describe_topology(topology)}")
     print(f"  sizes={sizes} io-threads={io_threads} pipeline={pipelining}")
-    print(f"  connections={total_conns} ({eff_t} threads × {eff_c} clients)")
+    print(f"  connections={args.connections} threads={args.threads} keyspace={args.keyspace}")
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions}")
     if args.server_args:
         print(f"  server-args: {args.server_args}")

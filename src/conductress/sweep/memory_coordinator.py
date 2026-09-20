@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from conductress.config import CONDUCTRESS_RESULTS, MEMORY_STATE_DIR, PROJECT_ROOT, SweepEngine
+from conductress.config import (
+    CONDUCTRESS_RESULTS,
+    MEMORY_STATE_DIR,
+    PROJECT_ROOT,
+    SWEEP_GENERATOR_INDEPENDENT_EPOCHS,
+    SweepEngine,
+)
 from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
 from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
@@ -75,6 +81,16 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
     @property
     def metric_id(self) -> str:  # type: ignore[override]
         return "memory"
+
+    @property
+    def epoch_id(self) -> str:
+        """The epoch this series schedules under: the first of ``epoch_ids``."""
+        return SWEEP_GENERATOR_INDEPENDENT_EPOCHS[0]
+
+    @property
+    def epoch_ids(self) -> tuple[str, ...]:
+        """Memory overhead needs no load generator, so one series serves every epoch."""
+        return SWEEP_GENERATOR_INDEPENDENT_EPOCHS
 
     @property
     def workload_id(self) -> str:  # type: ignore[override]
