@@ -200,16 +200,20 @@ def test_probe_row_has_one_twin_axis_for_all_reps():
     assert len(twin) == 1 and len(twin[0].get_lines()) == 3  # one dotted line per rep on the shared twin
 
 
-def test_figure_has_a_legend_naming_the_line_styles(views):
+def test_each_row_has_its_own_legend(views):
     pytest.importorskip("matplotlib")
     from conductress.plots.connection_storm import build_storm_figure
 
     fig = build_storm_figure(views)
-    assert fig.legends, "figure-level legend missing"
-    labels = [t.get_text() for t in fig.legends[0].get_texts()]
-    assert any("median" in lbl for lbl in labels)
-    assert any("stall" in lbl for lbl in labels)
-    assert any("connected" in lbl for lbl in labels)
+    assert not fig.legends, "legends belong to rows, not the figure"
+    ncols = len(views)
+    legends = [fig.axes[row * ncols].get_legend() for row in range(4)]  # first column of each row
+    assert all(lg is not None for lg in legends), "every row's first column carries a legend"
+    texts = ["\n".join(t.get_text() for t in lg.get_texts()) for lg in legends]
+    assert "median" in texts[0] and "stall" in texts[0]
+    assert "connected_clients" in texts[1]
+    assert "overflows" in texts[2]
+    assert "timeouts" in texts[3] and "cumulative" in texts[3]
 
 
 def test_gap_breaks_the_connected_line_with_nan(views):

@@ -453,34 +453,56 @@ def build_storm_figure(
         if xrange is not None:
             axes[0][col].set_xlim(*xrange)
 
-    _add_legend(fig, has_probe=any(_probe_xy(r, series_t0(r), "served")[0] for v in views for r in v.reps))
+    _add_row_legends(
+        axes,
+        has_probe=any(_probe_xy(r, series_t0(r), "served")[0] for v in views for r in v.reps),
+        has_background=any(_bg_series(r, series_t0(r))[0] for v in views for r in v.reps),
+    )
 
     meta = views[0]
     fig.suptitle(
         f"connection-storm: {meta.source} @ {meta.commit_hash[:12]} on {meta.runner_id}",
         fontsize=12,
     )
-    fig.tight_layout(rect=(0, 0.05, 1, 0.97))
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
     return fig
 
 
-def _add_legend(fig, *, has_probe: bool) -> None:
-    """One figure-level legend explaining the line styles shared by every column."""
+def _add_row_legends(axes, *, has_probe: bool, has_background: bool) -> None:
+    """One compact legend per row, in the row's first column, naming only that row's marks.
+
+    Shared style conventions (bold median vs thin repetitions, the stall band,
+    the quiescence marker) are explained once, in the top row.
+    """
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
     grey = "#4d4d4d"
-    handles = [
-        Line2D([], [], color=grey, lw=1.8, label="median repetition (bold)"),
-        Line2D([], [], color=grey, lw=0.9, alpha=0.5, label="other repetitions (thin)"),
-        Patch(facecolor="#7f8c8d", alpha=0.3, label="stall / slow loop"),
-        Line2D([], [], color=grey, lw=1, ls="-.", label="all storm clients connected"),
-        Patch(facecolor=grey, alpha=0.8, label="timeouts per bucket (bars)"),
-        Patch(facecolor=grey, alpha=0.15, label="cumulative connected (fill)"),
-    ]
+    band = Patch(facecolor="#7f8c8d", alpha=0.3, label="stall / slow loop")
+    quiescence = Line2D([], [], color=grey, lw=1, ls="-.", label="all storm clients connected")
+    row0 = []
     if has_probe:
-        handles.insert(2, Line2D([], [], color=grey, lw=1.4, ls=":", label="probe p99 ms (right axis)"))
-        handles.insert(2, Line2D([], [], color=grey, lw=1.4, label="goodput: probe served/s"))
+        row0.append(Line2D([], [], color=grey, lw=1.8, label="probe goodput, served/s (left axis)"))
+        row0.append(Line2D([], [], color=grey, lw=1.4, ls=":", label="probe p99, ms (right axis)"))
+        if has_background:
+            row0.append(Line2D([], [], color=grey, lw=0.8, alpha=0.35, label="background GET/s (faint)"))
     else:
-        handles.insert(2, Line2D([], [], color=grey, lw=1.4, label="background GET/s"))
-    fig.legend(handles=handles, loc="lower center", ncol=min(len(handles), 5), fontsize=8, frameon=False)
+        row0.append(Line2D([], [], color=grey, lw=1.8, label="background GET/s"))
+    row0 += [
+        Line2D([], [], color=grey, lw=1.8, label="bold: median repetition"),
+        Line2D([], [], color=grey, lw=0.9, alpha=0.5, label="thin: other repetitions"),
+        band,
+        quiescence,
+    ]
+    rows = [
+        row0,
+        [Line2D([], [], color=grey, lw=1.8, label="connected_clients (server INFO)"), band],
+        [Line2D([], [], color=grey, lw=1.8, label="kernel listen-queue overflows, cumulative"), band],
+        [
+            Patch(facecolor=grey, alpha=0.8, label="storm timeouts per bucket (bars)"),
+            Patch(facecolor=grey, alpha=0.15, label="storm clients connected, cumulative (fill)"),
+            quiescence,
+        ],
+    ]
+    for row, handles in enumerate(rows):
+        axes[row][0].legend(handles=handles, loc="upper left", fontsize=7, frameon=True, framealpha=0.85)
