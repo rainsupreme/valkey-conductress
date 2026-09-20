@@ -3,11 +3,23 @@ import subprocess
 import sys
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 from conductress.file_protocol import FileProtocol
 from conductress.server import Server
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Property tests here check numerical and parsing invariants, not speed. Hypothesis
+# defaults to a per-example deadline and a health check on input-generation time,
+# both of which measure wall-clock and fail spuriously when the suite shares a
+# CPU with other work. Disable the timing checks; per-test max_examples is kept.
+settings.register_profile(
+    "conductress",
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.load_profile("conductress")
 
 
 def pytest_sessionstart(session):
