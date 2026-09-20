@@ -39,7 +39,7 @@ The subtitle is **ONLY DATA IS REAL**.
 | `logo/favicon.ico` | 16 + 32 + 48 bundled | `<link rel="icon">` |
 | `pride/`, `trans/`, `bi/`, `lesbian/`, `nonbinary/` | The same set in each flag palette | June, or whenever you choose |
 | `valkey/` | The same set in Valkey's periwinkle, as a tonal ramp | Co-branded surfaces: a ValkeyConf slide, a Valkey-hosted page |
-| `mono/` | One flat colour, stencil-safe (explicit paths, no clip/gradient/opacity): light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`), each with a `-plain` no-trail lockup. No hero. | Shirts, embroidery, vinyl, engraving, one-ink print |
+| `mono/` | One flat colour, stencil-safe (explicit paths, no clip/gradient/opacity): light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`), each with a `-plain` no-trail lockup. No hero. | Shirts, embroidery, vinyl, engraving, one-ink print; documents that render in both a light and a dark theme (see below) |
 | `terminal/conductress-logo-ascii.py` and `*.ansi` | The lockup for a Linux terminal | CLI banner, TUI splash, MOTD |
 | `motion/conductress-signon.html` | The animated sign-on | Dashboard loading screen, talk openers |
 
@@ -63,6 +63,24 @@ wordmark, rule and subtitle stacked to its right and left-aligned, the same
 layout as the terminal lockup. It has no trail, so it has no motion; use it
 where the stacked lockup's height would not fit, not as the default. Every
 palette has one, including the one-colour set.
+
+**One-colour horizontal lockup** at the top of a document that is not the front
+page and renders in both a light and a dark theme: a contributing guide, a
+user guide, a wiki page. The full-colour lockups assume a dark ground and the
+hero would outweigh the text, so use the `mono/` pair and let the reader's
+theme pick the colour. On GitHub that is a `<picture>` element with
+`-mono-dark` as the default `<img>` and `-mono-light` behind a
+`(prefers-color-scheme: dark)` source, at about 400px wide:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/mono/conductress-lockup-mono-light-horizontal.svg">
+  <img src="brand/mono/conductress-lockup-mono-dark-horizontal.svg" width="400" alt="Conductress">
+</picture>
+```
+
+An SVG loaded through `<img>` cannot see the page's text colour, so a single
+`currentColor` file would not work here; the pair is the mechanism.
 
 **Mark alone** below about 200px wide, where the wordmark stops being legible.
 Pick the cut by rendered size, not by file preference: the 7-stripe mark turns
@@ -154,7 +172,8 @@ variant, not an implication of endorsement; see the trademark note.
 
 `mono/` is the mark and lockup in a single flat colour for anything that
 cannot carry a gradient or a tint: shirts, embroidery, vinyl, laser engraving,
-one-ink print, a favicon on themed browser chrome. `-mono-light` is paper
+one-ink print, a favicon on themed browser chrome, and the header of a document
+that renders in both a light and a dark theme. `-mono-light` is paper
 `#fff6ea` for dark grounds; `-mono-dark` is midnight `#150c26` for light ones.
 
 These files are built differently from the rest, and that is the point:
