@@ -409,14 +409,19 @@ class CachecannonLatencySweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
         )
 
 
-def create_v3_coordinators(repo_path: Path) -> list[BaseCachecannonSweepCoordinatorV3]:
-    """Build the v3 coordinator roster.
+def create_v3_coordinators(
+    repo_path: Path, engine: Optional[config.SweepEngine] = None
+) -> list[BaseCachecannonSweepCoordinatorV3]:
+    """Build the v3 coordinator roster for one engine.
 
     The roster is deliberately small: it multiplies directly against a
-    full-history backfill across every platform.
+    full-history backfill across every platform.  A comparison engine (Redis)
+    gets the same three series under its own prefix, so the engine comparison
+    reads like-for-like cells; its ``scope`` decides how much of its history
+    they measure.
     """
     return [
-        CachecannonThroughputSweepCoordinatorV3(repo_path),
-        CachecannonMixedSweepCoordinatorV3(repo_path),
-        CachecannonLatencySweepCoordinatorV3(repo_path),
+        CachecannonThroughputSweepCoordinatorV3(repo_path, engine=engine),
+        CachecannonMixedSweepCoordinatorV3(repo_path, engine=engine),
+        CachecannonLatencySweepCoordinatorV3(repo_path, engine=engine),
     ]

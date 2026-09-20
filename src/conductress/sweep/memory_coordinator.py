@@ -153,7 +153,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     def export(self, output_path: Path, platform: str) -> int:
         """Override to pass num_keys for export-time re-categorization."""
-        from conductress.config import should_profile_internals
+        from conductress.config import engine_repo_slug, should_profile_internals
         from conductress.sweep.exporter import export_series
 
         export_series(
@@ -167,6 +167,8 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             # which exposes the binary's allocation-site symbols. Also stops pre-existing
             # breakdowns in state from being re-published.
             include_breakdown=should_profile_internals(self.engine),
+            repo=engine_repo_slug(self.engine),
+            engine=self.engine,
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 

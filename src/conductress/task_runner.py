@@ -108,10 +108,9 @@ class TaskRunner:
             # Additive v3 epoch: cachecannon is the canonical generator for
             # GET/SET/DELETE and mixed ratios. Isolated state under sweep_data/v3.
             from conductress.config import SWEEP_V3_ENABLED
+            from conductress.sweep.coordinator_v3 import create_v3_coordinators
 
             if SWEEP_V3_ENABLED:
-                from conductress.sweep.coordinator_v3 import create_v3_coordinators
-
                 for v3_coordinator in create_v3_coordinators(repo_path):
                     v3_coordinator.initialize()
                     self._subscribers.append(v3_coordinator)
@@ -130,7 +129,10 @@ class TaskRunner:
                 mem_coordinator.initialize()
                 self._subscribers.append(mem_coordinator)
 
-            # Additional engines (e.g. Redis) -- throughput + memory sweep
+            # Additional engines (e.g. Redis) -- throughput + memory sweep.
+            # The epoch-1 throughput mirror is registered so its history keeps
+            # publishing; every one of those series is retired, so the engine's
+            # v3 coordinators are the only ones that still measure it.
             from conductress.config import SWEEP_ENGINES
 
             for engine in SWEEP_ENGINES:
@@ -157,6 +159,10 @@ class TaskRunner:
                     )
                     extra.initialize()
                     self._subscribers.append(extra)
+                if SWEEP_V3_ENABLED:
+                    for v3_coordinator in create_v3_coordinators(engine_repo, engine=engine):
+                        v3_coordinator.initialize()
+                        self._subscribers.append(v3_coordinator)
                 # Memory sweep for this engine
                 for mem_coordinator in create_memory_coordinators(engine_repo, engine=engine):
                     mem_coordinator.initialize()

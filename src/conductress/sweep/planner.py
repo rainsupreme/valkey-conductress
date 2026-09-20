@@ -8,13 +8,19 @@ Priority order:
 2. Release commits not yet benchmarked (mandatory landmarks)
 3. Active bisection (narrowing a detected regression/improvement)
 4. Largest unresolved historical segment (backfill)
+
+A planner built with ``tracks_history=False`` stops after step 2: it measures
+the release landmarks it is given and the tip, the tip at most once per
+``tip_interval_seconds``, and never bisects or backfills.  That is the shape of
+a comparison engine whose history nobody reads.
 """
 
 import math
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 class PointStatus(Enum):
@@ -61,6 +67,10 @@ class BenchmarkPoint:
     latency_data: Optional[dict] = None  # full latency results (p50, p99.9, histogram, rps)
     cpu_stacks_main: Optional[list[list]] = None  # per-thread collapsed stacks [[stack, count], ...]
     cpu_stacks_io: Optional[list[list]] = None  # IO thread collapsed stacks [[stack, count], ...]
+    # Why this commit was measured: "release" (a landmark), "tip" (HEAD when
+    # measured) or "history" (bisection / backfill).  None on points recorded
+    # before the field existed.
+    sample: Optional[str] = None
     status: PointStatus = PointStatus.PENDING
 
     @property
@@ -175,6 +185,8 @@ class SweepState:
     commit_titles: dict[str, str] = field(default_factory=dict)
     # Last known HEAD that was benchmarked
     last_benchmarked_head: Optional[str] = None
+    # Unix time the last tip measurement was recorded (spacing for release-and-tip engines)
+    last_benchmarked_head_at: Optional[float] = None
     # Threshold for bisection (relative, e.g. 0.01 = 1%)
     threshold: float = 0.02
 
@@ -185,6 +197,7 @@ class SweepState:
         data = {
             "threshold": self.threshold,
             "last_benchmarked_head": self.last_benchmarked_head,
+            "last_benchmarked_head_at": self.last_benchmarked_head_at,
             "merge_commits": self.merge_commits,
             "commit_dates": self.commit_dates,
             "commit_prs": self.commit_prs,
@@ -211,6 +224,7 @@ class SweepState:
                     "latency_data": p.latency_data,
                     "cpu_stacks_main": p.cpu_stacks_main,
                     "cpu_stacks_io": p.cpu_stacks_io,
+                    "sample": p.sample,
                     "status": p.status.name,
                 }
                 for commit, p in self.points.items()
@@ -231,6 +245,7 @@ class SweepState:
         state = cls(
             threshold=data.get("threshold", 0.02),
             last_benchmarked_head=data.get("last_benchmarked_head"),
+            last_benchmarked_head_at=data.get("last_benchmarked_head_at"),
             merge_commits=data.get("merge_commits", []),
             commit_dates=data.get("commit_dates", {}),
             commit_prs=data.get("commit_prs", {}),
@@ -267,6 +282,7 @@ class SweepState:
                 latency_data=p_data.get("latency_data"),
                 cpu_stacks_main=p_data.get("cpu_stacks_main"),
                 cpu_stacks_io=p_data.get("cpu_stacks_io"),
+                sample=p_data.get("sample"),
                 status=PointStatus[p_data.get("status", "PENDING")],
             )
 
@@ -280,8 +296,17 @@ class SweepPlanner:
     It does not perform I/O, git operations, or benchmarking itself.
     """
 
-    def __init__(self, state: SweepState):
+    def __init__(
+        self,
+        state: SweepState,
+        tracks_history: bool = True,
+        tip_interval_seconds: float = 0.0,
+        clock: Callable[[], float] = time.time,
+    ):
         self.state = state
+        self.tracks_history = tracks_history
+        self.tip_interval_seconds = tip_interval_seconds
+        self._clock = clock
         # Build index for fast commit position lookup
         self._commit_index: dict[str, int] = {c: i for i, c in enumerate(state.merge_commits)}
 
@@ -305,6 +330,11 @@ class SweepPlanner:
         if task:
             return task
 
+        # A release-and-tip planner stops here: nobody reads this engine's
+        # history, so there is nothing to bisect or backfill.
+        if not self.tracks_history:
+            return None
+
         # Priority 3: Bisection — narrow the largest unresolved segment
         task = self._check_bisection()
         if task:
@@ -325,8 +355,14 @@ class SweepPlanner:
         reps: int = 3,
         pr: Optional[int] = None,
         pr_title: Optional[str] = None,
+        sample: Optional[str] = None,
     ) -> None:
-        """Record a benchmark result for a commit."""
+        """Record a benchmark result for a commit.
+
+        ``sample`` says why the commit was measured ("release", "tip",
+        "history"); it is stored on the point so the export can tell a
+        comparison reader which points are release and tip samples.
+        """
         if commit not in self.state.points:
             date = self.state.commit_dates.get(commit, "")
             self.state.points[commit] = BenchmarkPoint(
@@ -337,6 +373,7 @@ class SweepPlanner:
                 reps=reps,
                 pr=pr,
                 pr_title=pr_title,
+                sample=sample,
                 status=PointStatus.COMPLETED,
             )
         else:
@@ -349,6 +386,8 @@ class SweepPlanner:
                 point.pr = pr
             if pr_title is not None:
                 point.pr_title = pr_title
+            if sample is not None:
+                point.sample = sample
 
     def record_build_failure(self, commit: str) -> None:
         """Mark a commit as having a build failure."""
@@ -398,14 +437,32 @@ class SweepPlanner:
             if s.abs_delta >= self.state.threshold and s.is_significant and s.commit_count > 0
         ]
 
+    def tip_due(self, current_head: Optional[str]) -> bool:
+        """Whether the current tip should be measured now.
+
+        A tip is due when it has not been measured yet and, for a planner with a
+        tip interval, the previous tip measurement is at least that old.  The
+        interval is what keeps a busy upstream (several merges a day) from
+        turning every merge into a full cell set for an engine whose tip only
+        needs to be recent, not complete.
+        """
+        if current_head is None:
+            return False
+        if current_head == self.state.last_benchmarked_head:
+            return False
+        if current_head in self.state.points:
+            return False
+        last_at = self.state.last_benchmarked_head_at
+        if self.tip_interval_seconds > 0 and last_at is not None:
+            if self._clock() - last_at < self.tip_interval_seconds:
+                return False
+        return True
+
     def _check_nightly(self, current_head: Optional[str]) -> Optional[SweepTask]:
         """Check if HEAD needs benchmarking."""
-        if current_head is None:
+        if not self.tip_due(current_head):
             return None
-        if current_head == self.state.last_benchmarked_head:
-            return None
-        if current_head in self.state.points:
-            return None
+        assert current_head is not None
         date = self.state.commit_dates.get(current_head, "")
         return SweepTask(
             commit=current_head,

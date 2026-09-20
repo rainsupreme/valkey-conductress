@@ -4,11 +4,14 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from conductress.config import ANNOTATION_THRESHOLD
 from conductress.heap_profiler import recategorize_from_stacks
 from conductress.sweep.planner import BenchmarkPoint, PointStatus, Segment, SweepPlanner, SweepState
+
+if TYPE_CHECKING:
+    from conductress.config import SweepEngine
 
 # =============================================================================
 # Perf metric definitions and normalization
@@ -257,6 +260,7 @@ def export_series(
     repo: str = "valkey-io/valkey",
     branch: str = "unstable",
     include_breakdown: bool = True,
+    engine: Optional["SweepEngine"] = None,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -268,6 +272,9 @@ def export_series(
         num_keys: If provided and point has raw_stacks, recompute breakdown at export time.
         include_breakdown: When False, omit the jemalloc memory breakdown entirely (engines that
             opt out of internal profiling, e.g. Redis, keep total memory but not the decomposition).
+        engine: The engine this series measures; names it and its scope in ``metadata`` so a
+            reader can tell a full-history series from a release-and-tip one.  None is the
+            default Valkey sweep.
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -299,6 +306,8 @@ def export_series(
             entry["pr"] = pr
         if pr_title is not None:
             entry["pr_title"] = pr_title
+        if point.sample is not None:
+            entry["sample"] = point.sample
         if include_breakdown and point.raw_stacks and num_keys > 0:
             entry["breakdown"] = recategorize_from_stacks(point.raw_stacks, num_keys)
             has_breakdown = True
@@ -328,6 +337,8 @@ def export_series(
             "branch": branch,
             "platform": platform,
             "workload": workload,
+            "engine": engine.source if engine else "valkey",
+            "scope": engine.scope if engine else "history",
             "generated": datetime.now(timezone.utc).isoformat(),
             "total_commits": len(state.merge_commits),
         },
