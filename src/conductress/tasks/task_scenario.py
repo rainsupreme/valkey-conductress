@@ -13,6 +13,7 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import random
 import re
 import sys
@@ -24,7 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from scipy.stats import t as t_dist
 
-from conductress.config import PERF_BENCH_KEYSPACE, ServerInfo, get_sweep_engine, should_profile_internals
+from conductress import cpu_sampling
+from conductress.config import PERF_BENCH_KEYSPACE, TLS_CERT_DIR, ServerInfo, get_sweep_engine, should_profile_internals
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
 from conductress.server import Server
@@ -366,6 +368,22 @@ STORM_SPEC_DEFAULTS: Dict[str, Any] = {
     "prewarm_connections": None,  # None -> generator default (= clients)
     "workers": 0,  # 0 -> generator auto (min(8, cpu_count))
     "bind_addrs": [],
+    # TLS herd: wrap the herd's connections in TLS against the runner's test CA.
+    # The server's plaintext port carries prefill/INFO/memtier/probe unchanged;
+    # the herd uses the TLS port. tls_port and tls_ca_cert are filled by the
+    # runner (they are runner-side facts, not user knobs), so they are not in
+    # the CLI-serialized spec.
+    "tls": False,
+    "tls_port": None,
+    "tls_ca_cert": None,
+    # Active herd: a connected client re-sends first_command every N ms and
+    # applies reply_timeout; a timeout closes and reconnects. 0 = idle hold.
+    "herd_command_interval_ms": 0.0,
+    # Fixed-rate goodput probe (0 clients disables it). The probe uses the
+    # plaintext port unless probe_tls is set.
+    "probe_clients": 0,
+    "probe_rate": 0,
+    "probe_tls": False,
 }
 # The single key the connection-storm overlay's default first command reads.
 STORM_KEY = "storm:key"
@@ -429,6 +447,16 @@ def parse_storm_spec(spec: str) -> Dict[str, Any]:
         raise ValueError("connection-storm handshake must be a JSON array of command strings")
     if not isinstance(out["bind_addrs"], list):
         raise ValueError("connection-storm bind_addrs must be a JSON array of source addresses")
+    if float(out["herd_command_interval_ms"]) < 0:
+        raise ValueError(
+            f"connection-storm herd_command_interval_ms must be >= 0, got {out['herd_command_interval_ms']}"
+        )
+    if int(out["probe_clients"]) < 0:
+        raise ValueError(f"connection-storm probe_clients must be >= 0, got {out['probe_clients']}")
+    if int(out["probe_rate"]) < 0:
+        raise ValueError(f"connection-storm probe_rate must be >= 0, got {out['probe_rate']}")
+    if (int(out["probe_clients"]) > 0) != (int(out["probe_rate"]) > 0):
+        raise ValueError("connection-storm probe_clients and probe_rate must both be set (or both unset)")
     return out
 
 
@@ -482,6 +510,78 @@ def parse_info_fields(blob: str) -> Dict[str, int]:
     return out
 
 
+# The literal line valkey logs when accept() fails on the listening socket.
+# Counted per tick from a byte offset so a stall's accept storm is visible.
+ACCEPT_ERROR_MARKER = "Error accepting a client connection"
+
+
+def parse_extra_info_fields(blob: str, names: List[str]) -> Dict[str, Any]:
+    """Extract arbitrary named INFO fields from one or more reply blobs.
+
+    Each ``name`` in ``names`` maps to its value parsed as ``int`` when it
+    looks like one, else the raw string; a name the server did not report maps
+    to ``None``. Pure function -- this is what lets ``--server-sample-fields``
+    surface a patched build's counter with no code change (and record ``null``
+    for an unknown field rather than erroring).
+    """
+    wanted = {n for n in names if n}
+    out: Dict[str, Any] = {n: None for n in wanted}
+    if not wanted:
+        return out
+    for line in blob.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        if key in wanted:
+            value = value.strip()
+            try:
+                out[key] = int(value)
+            except ValueError:
+                out[key] = value
+    return out
+
+
+def count_accept_errors(log_text: str) -> int:
+    """Count ``Error accepting a client connection`` lines in a log chunk (pure)."""
+    return log_text.count(ACCEPT_ERROR_MARKER)
+
+
+def thread_cpu_percent(
+    prev: Dict[int, Dict[str, Any]],
+    cur: Dict[int, Dict[str, Any]],
+    pid: Optional[int],
+    dt: float,
+) -> Tuple[Optional[float], Optional[float]]:
+    """(main_cpu_pct, io_threads_cpu_pct) over one interval from two /proc reads.
+
+    ``prev``/``cur`` are ``{tid: {comm, ticks}}`` (``read_local_thread_stats``).
+    A percentage is the busy fraction of ONE core x 100 (so 100.0 == a fully
+    busy thread); ``io_threads_cpu_pct`` sums every ``io_thd*`` thread. Only
+    threads present in BOTH reads count, so an io-thread that spawns mid-tick
+    is skipped for that interval rather than mis-charged. Returns ``(None,
+    None)`` when there is no usable pair (``dt <= 0`` or ``pid`` unknown).
+    """
+    if pid is None or dt <= 0 or not prev or not cur:
+        return None, None
+
+    def busy(tid: int) -> Optional[float]:
+        a, b = prev.get(tid), cur.get(tid)
+        if a is None or b is None:
+            return None
+        return max(0.0, (b["ticks"] - a["ticks"]) / cpu_sampling.USER_HZ / dt) * 100.0
+
+    main_pct = busy(pid)
+    io_vals: List[float] = []
+    for tid, info in cur.items():
+        if info.get("comm", "").startswith("io_thd"):
+            value = busy(tid)
+            if value is not None:
+                io_vals.append(value)
+    io_pct: Optional[float] = sum(io_vals) if io_vals else None
+    return main_pct, io_pct
+
+
 def sampler_gaps(rows: List[Dict[str, Any]], tick_ms: int) -> List[Dict[str, float]]:
     """Return the intervals where a sample's reply came back late (a gap).
 
@@ -525,11 +625,30 @@ class ServerSampler:
     reply simply arrives late and the real ``t_reply`` is recorded.
     """
 
-    def __init__(self, host: str, port: int, tick_ms: int, connect_timeout: float = 5.0):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        tick_ms: int,
+        connect_timeout: float = 5.0,
+        pid: Optional[int] = None,
+        logfile: Optional[str] = None,
+        extra_fields: Optional[List[str]] = None,
+    ):
         self.host = host
         self.port = port
         self.tick_ms = tick_ms
         self.connect_timeout = connect_timeout
+        # The server's main pid (local runs only) so each tick can read the
+        # main thread's and io-threads' CPU jiffies via /proc; None -> no CPU.
+        self.pid = pid
+        # The server's logfile (local runs) so each tick can count new
+        # "Error accepting a client connection" lines from a byte offset.
+        self.logfile = logfile
+        # Extra INFO fields (any section) recorded verbatim per tick; a field
+        # the server did not report is null, so a patched build's counter
+        # appears without a code change and an absent one is not an error.
+        self.extra_fields = list(extra_fields) if extra_fields else []
         self.rows: List[Dict[str, Any]] = []
         self._local = host in _LOOPBACK_HOSTS
         self._baseline: Optional[netstat.ListenCounters] = None
@@ -541,6 +660,15 @@ class ServerSampler:
         # One RESP parser per connection: leftover bytes from a read that
         # carried more than one reply belong to the next reply, not the bin.
         self._parser = ReplyParser()
+        # Accept-error accounting: byte offset into the logfile and the running
+        # count of matching lines seen since the first tick (recorded as the
+        # per-tick delta). Set on the first tick that reads the log.
+        self._log_offset: Optional[int] = None
+        self._accept_errors_total = 0
+        # Per-thread CPU: previous tick's {tid: {comm, ticks}} and wall time, so
+        # a tick can compute the busy fraction over the interval it just ended.
+        self._prev_threads: Optional[Dict[int, Dict[str, Any]]] = None
+        self._prev_cpu_wall: Optional[float] = None
 
     def stop(self) -> None:
         self._stop_requested = True
@@ -592,12 +720,61 @@ class ServerSampler:
             logger.warning("ServerSampler read failed: %s", exc)
             return
         t_reply = time.time()
-        fields = parse_info_fields(f"{first}\n{second}")
+        blob = f"{first}\n{second}"
+        fields = parse_info_fields(blob)
         row: Dict[str, Any] = {"t_sent": t_sent, "t_reply": t_reply}
         for name in _SAMPLED_INT_FIELDS:
             row[name] = fields.get(name)
         row["listen_overflows"], row["listen_drops"] = self._netstat_deltas()
+        # Main/io-thread CPU% over the interval since the previous tick (local
+        # only). The first tick has no previous read, so its CPU is null.
+        row["main_cpu_pct"], row["io_threads_cpu_pct"] = self._cpu_percents(t_reply)
+        # New accept()-failure lines in the server log since the last tick.
+        row["accept_errors"] = self._accept_error_delta()
+        # Extra INFO fields (verbatim; unknown -> null).
+        if self.extra_fields:
+            row.update(parse_extra_info_fields(blob, self.extra_fields))
         self.rows.append(row)
+
+    def _cpu_percents(self, now_wall: float) -> Tuple[Optional[float], Optional[float]]:
+        """(main_cpu_pct, io_threads_cpu_pct) since the last tick; (None, None) if remote/first/unknown."""
+        if not self._local or self.pid is None:
+            return None, None
+        cur = cpu_sampling.read_local_thread_stats(self.pid)
+        result: Tuple[Optional[float], Optional[float]] = (None, None)
+        if self._prev_threads is not None and self._prev_cpu_wall is not None:
+            dt = now_wall - self._prev_cpu_wall
+            result = thread_cpu_percent(self._prev_threads, cur, self.pid, dt)
+        self._prev_threads = cur
+        self._prev_cpu_wall = now_wall
+        return result
+
+    def _accept_error_delta(self) -> Optional[int]:
+        """New accept-error lines in the server log since the last tick (local only).
+
+        Reads only the bytes appended since the recorded offset, so the cost is
+        the tick's own log growth, not the whole file. ``None`` when remote or
+        there is no logfile; a log that shrank (rotated) resets the offset.
+        """
+        if not self._local or not self.logfile:
+            return None
+        try:
+            size = os.path.getsize(self.logfile)
+        except OSError:
+            return None
+        if self._log_offset is None:
+            self._log_offset = size  # first tick establishes the baseline offset
+            return 0
+        if size < self._log_offset:
+            self._log_offset = 0  # log rotated/truncated; re-read from the start
+        try:
+            with open(self.logfile, "r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(self._log_offset)
+                chunk = handle.read()
+                self._log_offset = handle.tell()
+        except OSError:
+            return None
+        return count_accept_errors(chunk)
 
     def _netstat_deltas(self) -> Tuple[Optional[int], Optional[int]]:
         """(ListenOverflows, ListenDrops) delta from the first tick; (None, None) if remote/unreadable."""
@@ -735,6 +912,21 @@ class StormOverlay(Overlay):
         args: List[str] = []
         if storm_uses_debug_sleep(self.spec):
             args.append("--enable-debug-command local")
+        # TLS herd: serve TLS on a SECOND port (plaintext port + 1) so the
+        # plaintext port still carries prefill, INFO, memtier and the probe
+        # unchanged; only the herd (and the probe when probe_tls) uses TLS.
+        # --tls-auth-clients no because these loopback test certs authenticate
+        # nothing; the herd verifies the server, not the reverse.
+        if self.spec.get("tls"):
+            tls_port = int(self.spec["tls_port"])
+            cert_dir = str(self.spec["tls_cert_dir"])
+            args.append(
+                f"--tls-port {tls_port} "
+                f"--tls-cert-file {cert_dir}/server.crt "
+                f"--tls-key-file {cert_dir}/server.key "
+                f"--tls-ca-cert-file {cert_dir}/ca.crt "
+                f"--tls-auth-clients no"
+            )
         # Storm size guard: a large storm's clients, plus the background memtier
         # load and the sampler, can exceed the server's default maxclients
         # (10000) and be rejected with "max number of clients reached" -- which
@@ -757,6 +949,11 @@ class StormOverlay(Overlay):
 
     def _command(self, server: "Server", json_path: str) -> str:
         spec = self.spec
+        plaintext_port = server.port or 6379
+        tls_on = bool(spec.get("tls"))
+        # --port is always the PLAINTEXT port: the stall injector's DEBUG SLEEP,
+        # the connect-capacity baseline, and the probe (by default) use it. The
+        # herd connects to --tls-port when TLS is on.
         parts: List[str] = [
             sys.executable,
             "-m",
@@ -764,7 +961,7 @@ class StormOverlay(Overlay):
             "--host",
             server.ip,
             "--port",
-            str(server.port or 6379),
+            str(plaintext_port),
             "--clients",
             str(spec["clients"]),
             "--burst-ms",
@@ -788,6 +985,27 @@ class StormOverlay(Overlay):
             "--json",
             json_path,
         ]
+        if tls_on:
+            parts += [
+                "--tls",
+                "--tls-ca-cert",
+                f"{spec['tls_cert_dir']}/ca.crt",
+                "--tls-port",
+                str(int(spec["tls_port"])),
+            ]
+        interval = float(spec.get("herd_command_interval_ms", 0.0))
+        if interval > 0:
+            parts += ["--herd-command-interval-ms", _num(interval)]
+        probe_clients = int(spec.get("probe_clients", 0))
+        probe_rate = int(spec.get("probe_rate", 0))
+        if probe_clients > 0 and probe_rate > 0:
+            parts += ["--probe-clients", str(probe_clients), "--probe-rate", str(probe_rate)]
+            if spec.get("probe_tls") and tls_on:
+                # A TLS probe measures the handshake path, so it targets the
+                # TLS port (the plaintext port has no TLS listener).
+                parts += ["--probe-tls", "--probe-port", str(int(spec["tls_port"]))]
+            # Otherwise the probe uses --port (plaintext) by default -- the
+            # main-thread goodput measure -- which needs no extra flag.
         if spec["burst_first"]:
             parts.append("--burst-first")
         if spec["prewarm_connections"] is not None:
@@ -904,6 +1122,14 @@ def storm_metrics_namespace(document: Dict[str, Any]) -> Dict[str, Any]:
             "origin_wall": document.get("origin_wall"),
             "schema_version": document.get("schema_version"),
             "generator_config": document.get("config"),
+            # TLS herd + active herd + probe (schema_version 4 onward).
+            "tls": document.get("tls"),
+            "tls_port": document.get("tls_port"),
+            "openssl_version": document.get("openssl_version"),
+            "herd_commands_ok": document.get("herd_commands_ok"),
+            "herd_connects_per_s_capacity": document.get("herd_connects_per_s_capacity"),
+            "probe_timeline": document.get("probe_timeline"),
+            "probe_recovery_s": document.get("probe_recovery_s"),
         }
     }
 
@@ -955,6 +1181,9 @@ class ScenarioTaskData(BaseTaskData):
     overlay_value_size: int = 0  # value size for the large-value-reader overlay keyset (0 = default 10KB)
     overlay_spec: str = ""  # JSON object string parameterising an overlay (connection-storm only, for now)
     server_sample_ms: int = 0  # server INFO-sampler cadence in ms (0 = off); connection-storm defaults to 100 via CLI
+    tls: bool = False  # connection-storm: run the herd over TLS on a dedicated TLS port (plaintext port unchanged)
+    background: str = "memtier"  # background load: "memtier" (default) or "none" (probe is the goodput measure)
+    server_sample_fields: str = ""  # extra INFO fields the sampler records per tick (comma-separated; unknown -> null)
 
     def __post_init__(self):
         super().__post_init__()
@@ -974,6 +1203,14 @@ class ScenarioTaskData(BaseTaskData):
             parse_storm_spec(self.overlay_spec)
         elif self.overlay_spec:
             raise ValueError(f"overlay_spec is only valid for scenario '{CONNECTION_STORM}', not '{self.scenario}'")
+        if self.background not in ("memtier", "none"):
+            raise ValueError(f"background must be 'memtier' or 'none', got '{self.background}'")
+        if self.background == "none" and self.scenario != CONNECTION_STORM:
+            raise ValueError(
+                f"background 'none' is only valid for scenario '{CONNECTION_STORM}', not '{self.scenario}'"
+            )
+        if self.tls and self.scenario != CONNECTION_STORM:
+            raise ValueError(f"tls is only valid for scenario '{CONNECTION_STORM}', not '{self.scenario}'")
 
     def storm_spec(self) -> Dict[str, Any]:
         """The validated connection-storm overlay spec (call only for that scenario)."""
@@ -1020,6 +1257,9 @@ class ScenarioTaskData(BaseTaskData):
             overlay_value_size=self.overlay_value_size,
             overlay_spec=self.overlay_spec,
             server_sample_ms=self.server_sample_ms,
+            tls=self.tls,
+            background=self.background,
+            server_sample_fields=self.server_sample_fields,
         )
 
 
@@ -1049,6 +1289,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
         overlay_value_size: int = 0,
         overlay_spec: str = "",
         server_sample_ms: int = 0,
+        tls: bool = False,
+        background: str = "memtier",
+        server_sample_fields: str = "",
         topology: Optional[TopologySpec] = None,
     ):
         super().__init__(task_name)
@@ -1056,7 +1299,6 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.topology = topology if topology is not None else TopologySpec.standalone()
         self.source = source
         self.specifier = specifier
-        self.make_args = make_args
         self.io_threads = io_threads
         self.val_size = val_size
         self.pipelining = pipelining
@@ -1074,6 +1316,21 @@ class ScenarioTaskRunner(BaseTaskRunner):
         self.overlay_value_size = overlay_value_size
         self.overlay_spec = overlay_spec
         self.server_sample_ms = server_sample_ms
+        self.tls = tls
+        self.background = background
+        self.server_sample_fields = server_sample_fields
+
+        # TLS herd needs a BUILD_TLS=yes binary: append it to make_args when it
+        # is not already there, so the same source/specifier without --tls
+        # still builds (and caches) a byte-identical non-TLS binary.
+        self.make_args = make_args
+        if tls and "BUILD_TLS=yes" not in make_args:
+            self.make_args = f"{make_args} BUILD_TLS=yes".strip()
+
+        # The standalone primary's port; the TLS herd listens on port + 1 while
+        # the plaintext port keeps serving prefill/INFO/memtier/probe.
+        self._primary_port = self.topology.primary.port
+        self._tls_port = self._primary_port + 1
 
         # Build the overlay driver once. connection-storm runs the standalone
         # generator; every other scenario uses the unchanged shell-command path.
@@ -1081,6 +1338,13 @@ class ScenarioTaskRunner(BaseTaskRunner):
         if scenario == CONNECTION_STORM:
             self._storm_spec = parse_storm_spec(overlay_spec)
             self._storm_spec["_duration_s"] = float(duration)
+            # Inject the runner-side TLS facts the CLI spec cannot know: the
+            # dedicated TLS port and the per-runner CA cert path. The generator
+            # verifies the server against this CA.
+            self._storm_spec["tls"] = tls
+            self._storm_spec["tls_port"] = self._tls_port
+            self._storm_spec["tls_cert_dir"] = str(TLS_CERT_DIR)
+            self._storm_spec["tls_ca_cert"] = str(TLS_CERT_DIR / "ca.crt")
             self._overlay: Overlay = StormOverlay(self._storm_spec, self.file_protocol.work_dir)
         else:
             self._overlay = CommandOverlay(self)
@@ -1255,8 +1519,17 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     # Server-side sampler (opt-in via server_sample_ms). Started
                     # just before the overlay so it captures the pre-overlay
                     # baseline, stopped after the background measurement ends.
+                    # On a local run it also reads the server's main/io-thread
+                    # CPU and its accept-error log; those are null when remote.
                     if self.server_sample_ms > 0:
-                        sampler = ServerSampler(server.ip, server.port, self.server_sample_ms)
+                        sampler = ServerSampler(
+                            server.ip,
+                            server.port,
+                            self.server_sample_ms,
+                            pid=server.valkey_pid if server.valkey_pid > 0 else None,
+                            logfile=str(server.server_logfile),
+                            extra_fields=[f.strip() for f in self.server_sample_fields.split(",") if f.strip()],
+                        )
                         sampler_task = asyncio.ensure_future(sampler.run())
 
                     # Start overlay driver (CommandOverlay for the shell-command
@@ -1272,23 +1545,30 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     await asyncio.sleep(1)
                     overlay_start_offset_s = time.monotonic() - measure_start
 
-                    # Run background load measurement (under pathology)
+                    # Run background load measurement (under pathology). With
+                    # --background none the runner skips memtier entirely (the
+                    # probe is the goodput measure); it just holds the window
+                    # open for the duration so the storm and sampler run.
                     json_out = f"/tmp/memtier_scenario_rep{rep}.json"
-                    bg_ratio = set_ratio_to_memtier_ratio(self.background_set_ratio)
-                    measure_cmd = (
-                        f"~/conductress/memtier_benchmark "
-                        f"--server {server.ip} --port {server.port} --protocol redis "
-                        f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
-                        f"--ratio {bg_ratio} --key-pattern R:R "
-                        f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
-                        f"--data-size {self.val_size} "
-                        f"--pipeline {self.pipelining} "
-                        f"--test-time {self.duration} "
-                        f"--json-out-file {json_out} "
-                        f"--hide-histogram"
-                    )
+                    stdout = ""
                     background_start_wall = time.time()
-                    stdout, _ = await server.run_host_command(measure_cmd)
+                    if self.background == "none":
+                        await asyncio.sleep(self.duration)
+                    else:
+                        bg_ratio = set_ratio_to_memtier_ratio(self.background_set_ratio)
+                        measure_cmd = (
+                            f"~/conductress/memtier_benchmark "
+                            f"--server {server.ip} --port {server.port} --protocol redis "
+                            f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
+                            f"--ratio {bg_ratio} --key-pattern R:R "
+                            f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
+                            f"--data-size {self.val_size} "
+                            f"--pipeline {self.pipelining} "
+                            f"--test-time {self.duration} "
+                            f"--json-out-file {json_out} "
+                            f"--hide-histogram"
+                        )
+                        stdout, _ = await server.run_host_command(measure_cmd)
                     background_end_wall = time.time()
 
                     # Stop the sampler (background measurement is over) and collect rows.
@@ -1309,23 +1589,31 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if self.perf_stat_enabled:
                         await server.perf_stat_stop()
 
-                    # Parse baseline GET RPS
-                    total_rps = parse_memtier_total_rps(stdout)
-                    if total_rps is None:
-                        raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
+                    # Baseline GET RPS. With --background none there is no memtier
+                    # goodput number; the probe (storm.probe_timeline) is the
+                    # goodput measure, so the score/rps is 0 and dip metrics are
+                    # empty rather than a parse failure.
+                    if self.background == "none":
+                        total_rps = 0.0
+                    else:
+                        parsed_rps = parse_memtier_total_rps(stdout)
+                        if parsed_rps is None:
+                            raise RuntimeError(f"Failed to parse memtier output for rep {rep + 1}")
+                        total_rps = parsed_rps
 
                     # Try to get interval RPS from JSON output (Time-Serie)
                     interval_rps: List[float] = []
-                    try:
-                        json_stdout, _ = await server.run_host_command(f"cat {json_out}", check=False)
-                        if json_stdout.strip():
-                            interval_rps = parse_memtier_json_intervals(json_out, json_stdout)
-                    except Exception:
-                        pass  # interval data is best-effort
+                    if self.background != "none":
+                        try:
+                            json_stdout, _ = await server.run_host_command(f"cat {json_out}", check=False)
+                            if json_stdout.strip():
+                                interval_rps = parse_memtier_json_intervals(json_out, json_stdout)
+                        except Exception:
+                            pass  # interval data is best-effort
 
-                    # Fallback: parse stdout progress lines if JSON had no timeseries
-                    if not interval_rps and stdout:
-                        interval_rps = parse_memtier_stdout_intervals(stdout)
+                        # Fallback: parse stdout progress lines if JSON had no timeseries
+                        if not interval_rps and stdout:
+                            interval_rps = parse_memtier_stdout_intervals(stdout)
 
                     per_run_rps.append(total_rps)
                     logger.info(
@@ -1446,6 +1734,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
             "server_args": self.server_args,
             "server_args_effective": self.server_args_effective,
             "overlay_spec": self.overlay_spec,
+            "tls": self.tls,
+            "background": self.background,
+            "server_sample_fields": self.server_sample_fields,
             "per_run_rps": per_run_rps,
             "mean_rps": mean_rps,
             "ci_95": ci_95,

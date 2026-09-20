@@ -29,4 +29,8 @@ others:
 # v3 adds the slow-loop stall's achieved-block fields to the ``stall`` record
 # (``blocks_issued``, ``achieved_block_ms_p50``, ``achieved_block_ms_max``,
 # ``effective_duty``); they are ``0``/``null`` for a hard stall or no stall.
-SCHEMA_VERSION = 3
+# v4 adds TLS herd support, the active herd (``herd_command_interval_ms``,
+# ``herd_commands_ok``, the ``reply_timeout_steady`` outcome), the herd
+# connect-capacity check, and the fixed-rate probe (``probe_timeline``,
+# ``probe_recovery_s``); ``tls``/``openssl_version`` are recorded per document.
+SCHEMA_VERSION = 4

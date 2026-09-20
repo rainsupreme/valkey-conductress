@@ -32,7 +32,7 @@ from conductress.analysis import AnalysisModule
 COLUMN_HUES = ("#c0392b", "#e67e22", "#1e8449")
 MAX_COLUMNS = 3
 ROW_LABELS = (
-    "background GET/s",
+    "goodput/s\n(probe served, else GET)",
     "server: connected_clients",
     "listen-queue overflows\n(cumulative)",
     "storm clients per bucket",
@@ -289,6 +289,23 @@ def _sampler_xy(rep: Dict[str, Any], t0: float, field_name: str) -> Tuple[List[f
     return xs, ys
 
 
+def _probe_xy(rep: Dict[str, Any], t0: float, key: str) -> Tuple[List[float], List[float]]:
+    """A ``storm.probe_timeline`` field per 1 s bucket, on the shared axis.
+
+    Probe buckets carry ``t_ms`` relative to the storm origin (same convention
+    as the storm timeline), so they map onto the axis by adding ``origin_wall``
+    and subtracting ``t0``. Empty lists when there is no probe series.
+    """
+    storm = rep.get("storm") or {}
+    origin_wall = storm.get("origin_wall")
+    timeline = storm.get("probe_timeline") or []
+    if origin_wall is None or not timeline:
+        return [], []
+    xs = [wall_to_axis(float(origin_wall) + b.get("t_ms", 0) / 1000.0, t0) for b in timeline]
+    ys = [float(b.get(key, 0)) for b in timeline]
+    return xs, ys
+
+
 def _storm_bucket_xy(rep: Dict[str, Any], t0: float, key: str) -> Tuple[List[float], List[float]]:
     """A storm timeline field per bucket, anchored at the storm origin_wall."""
     storm = rep.get("storm") or {}
@@ -385,8 +402,24 @@ def build_storm_figure(
                 alpha = 1.0 if bold else 0.5
                 t0 = series_t0(data)
                 if ax_row == 0:
-                    xs, ys = _bg_series(data, t0)
-                    axis.step(xs, ys, where="post", color=hue, lw=lw, alpha=alpha)
+                    px, pserved = _probe_xy(data, t0, "served")
+                    if px:
+                        # A probe series exists: it is the goodput measure. Draw
+                        # probe served/s as a step in the column hue, its p99 on
+                        # a twin axis dotted in the same hue, and (if memtier
+                        # also ran) interval_rps as a faint line behind.
+                        bx, by = _bg_series(data, t0)
+                        if bx:
+                            axis.plot(bx, by, color=hue, lw=0.8, alpha=0.25 * alpha)
+                        axis.step(px, pserved, where="post", color=hue, lw=lw, alpha=alpha)
+                        _px99, p99 = _probe_xy(data, t0, "p99_ms")
+                        if _px99:
+                            twin = axis.twinx()
+                            twin.plot(_px99, p99, color=hue, lw=lw, ls=":", alpha=alpha)
+                            twin.set_ylabel("probe p99 (ms)", fontsize=8)
+                    else:
+                        xs, ys = _bg_series(data, t0)
+                        axis.step(xs, ys, where="post", color=hue, lw=lw, alpha=alpha)
                 elif ax_row == 1:
                     xs, ys = _sampler_xy(data, t0, "connected_clients")
                     axis.plot(xs, ys, color=hue, lw=lw, alpha=alpha)
