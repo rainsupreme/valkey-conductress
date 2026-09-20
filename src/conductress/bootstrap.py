@@ -1,8 +1,17 @@
-"""Updates/installs all packages and dependencies and sets up servers for use."""
+"""Provision benchmark runner hosts.
+
+Driven by ``conductress setup``. For every host in ``servers.json`` plus this
+machine, over SSH: upgrade and install system packages, install this package
+editable from ``~/conductress``, raise file-descriptor limits, enable io_uring,
+clone and build the load generators at pinned commits, and install the runner
+systemd service. It needs sudo on each host and changes host-wide settings.
+
+This is not developer setup. To work on the code, install the package into a
+virtualenv (see CONTRIBUTING.md); nothing here is required to run the tests.
+"""
 
 import asyncio
 import logging
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,31 +41,16 @@ def load_requirements(name: str) -> list[str]:
     return lines
 
 
-def subprocess_command(command: str) -> None:
-    cmd_list = command.split()
-    result = subprocess.run(
-        cmd_list,
-        check=True,
-        encoding="utf-8",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.stderr:
-        logger.error(repr(result.stderr))
-
-
-# ======== ensure asyncssh installed and imported ========
+# asyncssh is a declared dependency of the package. Importing this module must
+# never install software or escalate privileges on the importing machine; a
+# missing dependency is an install problem for the caller to fix.
 try:
     import asyncssh
-except ImportError:
-    subprocess_command("sudo dnf install -y python3-pip")
-    subprocess_command("python3 -m pip install --upgrade pip")
-    subprocess_command("pip install asyncssh")
-    try:
-        import asyncssh
-    except ImportError:
-        logger.error("asyncssh is not available even after installation. Try again - python may need to be restarted.")
-        sys.exit(1)
+except ImportError as exc:
+    raise ImportError(
+        "conductress.bootstrap requires asyncssh, which is a declared dependency of the "
+        "conductress package. Reinstall the package (pip install -e .) in the active environment."
+    ) from exc
 from conductress.config import PUBLISH_TARGET
 from conductress.utility import async_run
 

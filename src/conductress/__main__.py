@@ -59,7 +59,12 @@ def main() -> None:
         default=None,
         help="Seconds to settle after boundary network activity before task execution",
     )
-    subparsers.add_parser("setup", help="Run setup/bootstrap")
+    subparsers.add_parser(
+        "setup",
+        help="Provision this machine and every servers.json host as a benchmark runner "
+        "(sudo: system package upgrade, sysctl and limits changes, systemd service). "
+        "Not needed to develop or run the tests.",
+    )
     subparsers.add_parser("queue", help="Manage the task queue (list, add, remove)", add_help=False)
     subparsers.add_parser("plot", help="Render a figure from a task's results", add_help=False)
     subparsers.add_parser("fleet", help="Discover and inspect benchmark runners", add_help=False)

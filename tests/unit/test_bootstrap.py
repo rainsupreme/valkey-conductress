@@ -291,6 +291,66 @@ class TestBootstrapImportOrdering:
         assert found_asyncssh, "bootstrap.py should import asyncssh (it's a runtime script, not packaging)"
 
 
+class TestImportHasNoSideEffects:
+    """Importing bootstrap must never install software or escalate privileges.
+
+    The module is imported by the CLI dispatcher and by tests on machines that
+    are not benchmark runners. A missing dependency is an install error for the
+    caller, never a reason for the module to run sudo or pip on its own."""
+
+    @staticmethod
+    def _module_source() -> str:
+        bootstrap_path = Path(__file__).parent.parent.parent / "src" / "conductress" / "bootstrap.py"
+        return bootstrap_path.read_text(encoding="utf-8")
+
+    def test_module_level_code_does_not_spawn_processes(self):
+        """No module-level statement may call subprocess; only functions and
+        coroutines (which run on an explicit `conductress setup`) may act."""
+        tree = ast.parse(self._module_source())
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    name = ast.unparse(sub.func)
+                    assert "subprocess" not in name, f"module-level subprocess call: {name}"
+                    assert name != "subprocess_command", "module-level subprocess_command call"
+
+    def test_no_sudo_on_import_path(self):
+        """No module-level string may carry a privilege escalation, so a
+        missing asyncssh cannot trigger one."""
+        tree = ast.parse(self._module_source())
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                continue  # the module docstring describes sudo; it does not run it
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    assert "sudo " not in sub.value, f"sudo command in module-level code: {sub.value!r}"
+
+    def test_missing_asyncssh_raises_import_error_with_hint(self):
+        """A missing asyncssh surfaces as ImportError naming the fix, not as
+        an attempted install or a sys.exit."""
+        tree = ast.parse(self._module_source())
+        handlers = [
+            h
+            for node in tree.body
+            if isinstance(node, ast.Try)
+            for h in node.handlers
+            if h.type is not None and ast.unparse(h.type) == "ImportError"
+        ]
+        assert handlers, "expected a module-level try/except ImportError around `import asyncssh`"
+        for handler in handlers:
+            assert len(handler.body) == 1 and isinstance(
+                handler.body[0], ast.Raise
+            ), "the ImportError handler must only re-raise with a hint"
+            raised = handler.body[0].exc
+            assert raised is not None and ast.unparse(raised.func) == "ImportError"
+            message = "".join(ast.unparse(a) for a in raised.args)
+            assert "pip install" in message
+
+
 class TestPathExists:
 
     @pytest.mark.asyncio
