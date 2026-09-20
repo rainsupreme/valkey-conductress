@@ -70,25 +70,35 @@ def test_every_add_command_has_the_note_and_make_args_footer(command):
     assert flags["--make-args"].help, f"{command}: --make-args must carry help text"
 
 
+# Commands whose cells should match a sweep's shape out of the box carry that
+# sweep's run-length defaults; every other command shares the DEFAULT_* trio.
+RUN_LENGTH_DEFAULTS = {
+    "add-mixed": (config.SWEEP_V3_WARMUP, config.SWEEP_V3_DURATION, config.SWEEP_V3_REPETITIONS),
+}
+
+
 @pytest.mark.parametrize("command,expected", RUN_LENGTH_COMMANDS.items())
 def test_run_length_flags_share_defaults_and_types(command, expected):
     flags = _flags(_subparser(command))
     present = {f for f in ("--warmup", "--duration", "--repetitions") if f in flags}
     assert present == expected
+    warmup, duration, repetitions = RUN_LENGTH_DEFAULTS.get(
+        command, (config.DEFAULT_WARMUP, config.DEFAULT_DURATION, config.DEFAULT_REPETITIONS)
+    )
     if "--warmup" in present:
-        assert flags["--warmup"].default == f"{config.DEFAULT_WARMUP}s"
-        assert f"Default: {config.DEFAULT_WARMUP}s" in flags["--warmup"].help
+        assert flags["--warmup"].default == f"{warmup}s"
+        assert f"Default: {warmup}s" in flags["--warmup"].help
     if "--duration" in present:
-        assert flags["--duration"].default == f"{config.DEFAULT_DURATION}s"
-        assert f"Default: {config.DEFAULT_DURATION}s" in flags["--duration"].help
+        assert flags["--duration"].default == f"{duration}s"
+        assert f"Default: {duration}s" in flags["--duration"].help
     assert flags["--repetitions"].type is int
-    assert flags["--repetitions"].default == config.DEFAULT_REPETITIONS
+    assert flags["--repetitions"].default == repetitions
     assert flags["--repetitions"].help, f"{command}: --repetitions must carry help text"
 
 
 def test_per_command_help_wording_is_preserved():
     assert "per config" in _flags(_subparser("add"))["--repetitions"].help
-    assert "memtier" in _flags(_subparser("add-mixed"))["--warmup"].help
+    assert "scored window" in _flags(_subparser("add-mixed"))["--warmup"].help
     assert _flags(_subparser("add-replica-read"))["--warmup"].help.startswith("Reader warmup")
     assert "or path" in _flags(_subparser("add-memory"))["--specifier"].help
 

@@ -375,7 +375,9 @@ class TaskRunner:
             return
 
         config = load_sweep_config()
-        ordered = self._epoch_ordered_subscribers()
+        # A retired series (replaced by one in a newer epoch) is never a
+        # scheduling candidate; it stays registered only so it keeps publishing.
+        ordered = [sub for sub in self._epoch_ordered_subscribers() if getattr(sub, "retired", False) is not True]
 
         # Absolute priority: any coordinator with a NIGHTLY task goes first
         for sub in ordered:

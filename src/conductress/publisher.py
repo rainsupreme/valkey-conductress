@@ -111,6 +111,14 @@ class DashboardPublisher:
         epoch_id = getattr(coord, "epoch_id", "v1")
         return epoch_id if isinstance(epoch_id, str) and epoch_id else "v1"
 
+    @classmethod
+    def _coord_epochs(cls, coord: object) -> tuple[str, ...]:
+        """Every epoch a series is published under (one for generator-bound series)."""
+        epoch_ids = getattr(coord, "epoch_ids", None)
+        if isinstance(epoch_ids, (tuple, list)) and epoch_ids:
+            return tuple(e for e in epoch_ids if isinstance(e, str) and e) or (cls._coord_epoch(coord),)
+        return (cls._coord_epoch(coord),)
+
     @staticmethod
     def _epoch_def(epoch_id: str) -> dict:
         """Resolve dashboard metadata for an epoch from the shared registry.
@@ -165,18 +173,22 @@ class DashboardPublisher:
         )
 
         try:
-            epoch_ids = list(dict.fromkeys(self._coord_epoch(c) for c in self.coordinators))
+            epoch_ids = list(dict.fromkeys(e for c in self.coordinators for e in self._coord_epochs(c)))
             epoch_defs = [self._epoch_def(epoch_id) for epoch_id in epoch_ids]
 
             for coord in self.coordinators:
-                epoch_id = self._coord_epoch(coord)
                 base = self._export_dir / f"series-{self._platform_id}-{coord.workload_id}-{coord.metric_id}.json"
-                output = self._epoch_path(base, epoch_id)
-                coord.export(output, platform=self._platform_label)
-                self._stamp_epoch(output, epoch_id)
+                # A generator-independent series is written once per epoch it
+                # belongs to, from the same state, so every epoch's dashboard
+                # shows its full history.
+                for epoch_id in self._coord_epochs(coord):
+                    output = self._epoch_path(base, epoch_id)
+                    coord.export(output, platform=self._platform_label)
+                    self._stamp_epoch(output, epoch_id)
 
                 if coord.metric_id != "throughput":
                     continue
+                epoch_id = self._coord_epoch(coord)
 
                 repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
                 branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
@@ -205,7 +217,7 @@ class DashboardPublisher:
             # legacy manifest advertises every available epoch so old URLs stay
             # valid while new dashboards can discover v2.
             for epoch_id in epoch_ids:
-                epoch_coords = [c for c in self.coordinators if self._coord_epoch(c) == epoch_id]
+                epoch_coords = [c for c in self.coordinators if epoch_id in self._coord_epochs(c)]
                 notable_sources = [
                     NotableSource(
                         state=coord.state,

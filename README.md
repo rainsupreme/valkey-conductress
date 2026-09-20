@@ -127,7 +127,7 @@ conductress queue add-insertion --specifier my-branch --insertions 20M --key-siz
 conductress queue add-memory --types set,zadd,hset --sizes 8,20,64
 ```
 
-**`add-mixed`** — Queue a mixed GET/SET throughput task driven by `memtier_benchmark`. `--set-ratio` sets the write percentage (e.g. `20` = 20% SET / 80% GET).
+**`add-mixed`** — Queue a mixed GET/SET throughput task driven by cachecannon. `--set-ratio` sets the write percentage (e.g. `20` = 20% SET / 80% GET). Every other default is the epoch-3 mixed sweep's shape (400 connections, 8 client threads, 16 B values, io-threads 7, pipeline 10, 10 s warmup, 30 s scored, 5 repetitions), so a cell queued with only `--set-ratio 20` is comparable with that sweep's points.
 
 ```bash
 conductress queue add-mixed --set-ratio 20 --sizes 512 --duration 30s
@@ -139,7 +139,7 @@ conductress queue add-mixed --set-ratio 20 --sizes 512 --duration 30s
 conductress queue add-scenario --scenario connection-storm --duration 60s
 ```
 
-**`add-latency`** — Queue a latency-measurement task at a fixed request rate. Takes positional `source`, `specifier`, and `target_rps` (use roughly 70% of measured max throughput).
+**`add-latency`** — Queue a latency-measurement task: cachecannon drives a fixed request rate with no pipelining and the recorded score is the p99 latency in microseconds. Takes positional `source`, `specifier`, and `target_rps`; the epoch-3 latency sweep uses 100000, and the other defaults match that sweep's shape. The result also records the achieved rate, which is how you check the generator held the requested one.
 
 ```bash
 conductress queue add-latency valkey my-branch 100000 --value-size 16

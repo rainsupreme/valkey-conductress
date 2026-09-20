@@ -53,6 +53,26 @@ from conductress.utility import (
 
 logger = logging.getLogger(__name__)
 
+# Measurements a task may record as its ``score``.  "throughput" is ops/s over the
+# scored window; "p99" is the p99 latency of the dominant command in microseconds
+# (the unit the latency series has always used), for rate-limited runs whose
+# throughput is fixed by configuration.
+SCORE_METRICS = frozenset({"throughput", "p99"})
+
+
+def score_from_parsed(parsed: dict, score_metric: str) -> float:
+    """Pick the recorded score out of one rep's parsed cachecannon result.
+
+    Raises ValueError when a latency score is requested and the result carries
+    no latency block, rather than recording a zero the bisection would trust.
+    """
+    if score_metric == "throughput":
+        return float(parsed["throughput_rps"])
+    latency = parsed.get("latency")
+    if not latency:
+        raise ValueError("cachecannon result carries no latency block; cannot record a p99 score")
+    return float(latency["p99_ms"]) * 1000.0
+
 
 def _compute_aggregated_stats(per_run_rps: list) -> tuple:
     """Compute mean and 95% CI. Deferred import to avoid circular dependency."""
@@ -169,11 +189,18 @@ class CachecannonTaskData(BaseTaskData):
     rate_limit: int = 0  # fixed total req/s (open loop); 0 = closed loop (unlimited)
     perf_stat_enabled: bool = False  # perf stat per-thread counters every rep; CPU flamegraph on the last rep
     info_sections: str = ""  # comma-separated INFO sections to snapshot at the scored-window edges
+    # Which measurement the recorded ``score`` carries, and which one adaptive
+    # stopping bounds: "throughput" (ops/s, the default) or "p99" (p99 latency of
+    # the dominant command in microseconds).  A rate-limited run measures
+    # latency, so its throughput is the configured rate and says nothing.
+    score_metric: str = "throughput"
 
     def __post_init__(self):
         super().__post_init__()
         self.warmup = int(self.warmup)
         self.duration = int(self.duration)
+        if self.score_metric not in SCORE_METRICS:
+            raise ValueError(f"score_metric must be one of {sorted(SCORE_METRICS)}, got {self.score_metric!r}")
         # These must be REAL controls. An accepted-but-ignored value is a fake
         # lever: it makes the operator believe they configured a precision
         # target that never took effect. Adaptive stopping can only ever fire
@@ -241,6 +268,7 @@ class CachecannonTaskData(BaseTaskData):
             rate_limit=self.rate_limit,
             perf_stat_enabled=self.perf_stat_enabled,
             info_sections=parse_info_sections(self.info_sections),
+            score_metric=self.score_metric,
         )
 
 
@@ -282,9 +310,13 @@ class CachecannonTaskRunner(BaseTaskRunner):
         perf_stat_enabled: bool = False,
         info_sections: Optional[list[str]] = None,
         topology: Optional[TopologySpec] = None,
+        score_metric: str = "throughput",
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
+        if score_metric not in SCORE_METRICS:
+            raise ValueError(f"score_metric must be one of {sorted(SCORE_METRICS)}, got {score_metric!r}")
+        self.score_metric = score_metric
 
         self.server_infos = server_infos
         self.topology = topology if topology is not None else TopologySpec.standalone()
@@ -416,6 +448,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         client = None
         server = None
         per_run_rps: list[float] = []
+        per_run_scores: list[float] = []  # the score_metric measurement, one per rep
         all_results: list[dict] = []
         perf_counters: Optional[dict] = None
 
@@ -647,6 +680,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     )
 
                 per_run_rps.append(parsed["throughput_rps"])
+                per_run_scores.append(score_from_parsed(parsed, self.score_metric))
                 all_results.append(parsed)
                 self.logger.info(
                     "Rep %d/%d: %.0f rps, %.2f%% errors, hit rate %.1f%%",
@@ -669,15 +703,16 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     cores_busy = (client_cpu_s1 - client_cpu_s0) / (client_cpu_t1 - client_cpu_t0)
                     self._client_cores_busy_per_rep.append(cores_busy)
 
-                # Adaptive stop: once the 95% CI half-width is inside the
-                # precision target there is nothing to gain from more reps, and
-                # each one costs a full server restart plus a 3M-key prefill.
-                if _should_stop_adaptive(per_run_rps, rep, self.repetitions, self.target_cv):
-                    mean_rps, ci_95 = _compute_aggregated_stats(per_run_rps)
+                # Adaptive stop: once the 95% CI half-width of the scored
+                # measurement is inside the precision target there is nothing to
+                # gain from more reps, and each one costs a full server restart
+                # plus a 3M-key prefill.
+                if _should_stop_adaptive(per_run_scores, rep, self.repetitions, self.target_cv):
+                    mean_score, ci_95 = _compute_aggregated_stats(per_run_scores)
                     self.logger.info(
                         "Adaptive stop after %d reps: 95%% CI half-width %.3f%% <= target %.3f%%",
                         rep + 1,
-                        (ci_95 / mean_rps) * 100 if mean_rps else 0.0,
+                        (ci_95 / mean_score) * 100 if mean_score else 0.0,
                         self.target_cv,
                     )
                     self.status.steps_total = (self.warmup + self.duration) * (rep + 1)
@@ -686,7 +721,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             # Record aggregated results
             if server is None:
                 raise RuntimeError("No server available for recording results")
-            await self._record_result(server, per_run_rps, all_results, toml_content, perf_counters)
+            await self._record_result(server, per_run_rps, all_results, toml_content, perf_counters, per_run_scores)
 
             # Final status
             self.status.state = "completed"
@@ -706,20 +741,33 @@ class CachecannonTaskRunner(BaseTaskRunner):
         all_results: list[dict],
         toml_content: str,
         perf_counters: Optional[dict] = None,
+        per_run_scores: Optional[list[float]] = None,
     ):
-        """Record the final benchmark result."""
+        """Record the final benchmark result.
+
+        ``score``, ``cv`` and ``reps`` describe the ``score_metric``
+        measurement; the throughput fields are recorded regardless, since a
+        rate-limited run's achieved rate is how one checks the generator held
+        the requested rate.
+        """
         completion_time = datetime.datetime.now()
         lscpu_output, _ = await server.run_host_command("lscpu")
 
         # Compute aggregated stats
         if len(per_run_rps) >= 2:
             mean_rps, ci_95 = _compute_aggregated_stats(per_run_rps)
-            cv = (stdev(per_run_rps) / mean_rps) * 100 if mean_rps else 0.0
         else:
             mean_rps = per_run_rps[0] if per_run_rps else 0
             ci_95 = 0.0
+        scores = per_run_scores if per_run_scores is not None else per_run_rps
+        if len(scores) >= 2:
+            score, score_ci_95 = _compute_aggregated_stats(scores)
+            cv = (stdev(scores) / score) * 100 if score else 0.0
+        else:
+            score = scores[0] if scores else 0
+            score_ci_95 = 0.0
             cv = 0.0
-        reps = len(per_run_rps)
+        reps = len(scores)
 
         # Build detailed data
         detailed_data = {
@@ -744,7 +792,15 @@ class CachecannonTaskRunner(BaseTaskRunner):
             "per_run_rps": per_run_rps,
             "mean_rps": mean_rps,
             "ci_95": ci_95,
+            "score_metric": self.score_metric,
         }
+        if self.score_metric != "throughput":
+            # The score series in its own unit, so a reader of the record (and the
+            # sweep coordinator computing CV) never has to re-derive it from the
+            # per-rep latency blocks.
+            detailed_data[f"per_run_{self.score_metric}_us"] = scores
+            detailed_data[f"mean_{self.score_metric}_us"] = score
+            detailed_data[f"{self.score_metric}_ci_95_us"] = score_ci_95
 
         # Latency from last rep (most representative after warmup effects)
         if all_results and all_results[-1].get("latency"):
@@ -801,7 +857,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
             source=self.source,
             specifier=self.specifier,
             commit_hash=self.commit_hash,
-            score=mean_rps,
+            score=score,
             end_time=completion_time,
             data=detailed_data,
             make_args=self.make_args,
