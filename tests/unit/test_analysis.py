@@ -17,7 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.stats import ttest_ind
 
-from conductress.analysis import AnalysisModule, ComparisonRow, _format_size
+from conductress.analysis import AnalysisModule, ComparisonRow, SideSpec, _format_size, _split_specifier
 
 
 @pytest.fixture
@@ -241,7 +241,7 @@ class TestGroupResults:
 
         module = AnalysisModule(results_path=path)
         results = module.load_results()
-        groups = module.group_results(results, "branch-a", "branch-b")
+        groups, _ = module.group_results(results, "branch-a", "branch-b")
 
         assert len(groups) == 1
         key = list(groups.keys())[0]
@@ -261,7 +261,7 @@ class TestGroupResults:
 
         module = AnalysisModule(results_path=path)
         results = module.load_results()
-        groups = module.group_results(results, "a", "b")
+        groups, _ = module.group_results(results, "a", "b")
 
         key = list(groups.keys())[0]
         assert len(groups[key]["a"]) == 2
@@ -279,7 +279,7 @@ class TestGroupResults:
 
         module = AnalysisModule(results_path=path)
         results = module.load_results()
-        groups = module.group_results(results, "a", "b")
+        groups, _ = module.group_results(results, "a", "b")
 
         key = list(groups.keys())[0]
         assert groups[key]["a"] == [100.0]
@@ -298,7 +298,7 @@ class TestGroupResults:
 
         module = AnalysisModule(results_path=path)
         results = module.load_results()
-        groups = module.group_results(results, "a", "b")
+        groups, _ = module.group_results(results, "a", "b")
 
         assert len(groups) == 2
 
@@ -755,3 +755,253 @@ class TestFormatSize:
 
     def test_format_size_megabytes(self):
         assert _format_size(1048576) == "1MB"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cross-source specifiers: source:specifier parsing and per-side source matching
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSplitSpecifier:
+    """Test the _split_specifier helper."""
+
+    def test_bare_specifier_has_no_source(self):
+        side = _split_specifier("unstable")
+        assert side == SideSpec(specifier="unstable", source=None)
+
+    def test_source_prefix_is_split(self):
+        side = _split_specifier("valkey:unstable")
+        assert side == SideSpec(specifier="unstable", source="valkey")
+
+    def test_split_on_first_colon_only(self):
+        # A specifier should never contain a colon, but if a value somehow does,
+        # only the first colon separates source from specifier.
+        side = _split_specifier("valkey-rainfall:feature:weird")
+        assert side == SideSpec(specifier="feature:weird", source="valkey-rainfall")
+
+    def test_empty_source_prefix(self):
+        # A leading colon yields an empty source string (an explicit, if odd,
+        # constraint) and the remainder as the specifier.
+        side = _split_specifier(":unstable")
+        assert side == SideSpec(specifier="unstable", source="")
+
+
+class TestCrossSourceCompare:
+    """Test per-side source constraints in compare()."""
+
+    def test_explicit_side_source_selects_records(self, temp_dir):
+        """An explicit per-side source restricts that side to its source."""
+        records = [
+            _make_result(specifier="unstable", source="valkey", score=100),
+            _make_result(specifier="unstable", source="valkey", score=110),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=300),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=310),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        # Same specifier string on both sides, different sources.
+        rows = module.compare("unstable", "unstable", source_a="valkey", source_b="valkey-rainfall")
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.mean_a == pytest.approx(105.0)
+        assert row.mean_b == pytest.approx(305.0)
+        assert row.n_a == 2
+        assert row.n_b == 2
+
+    def test_same_specifier_two_sources_compared(self, temp_dir):
+        """Comparing one branch name across two repos works end to end."""
+        records = [
+            _make_result(specifier="my-branch", source="valkey", score=100),
+            _make_result(specifier="my-branch", source="valkey", score=100),
+            _make_result(specifier="my-branch", source="valkey-rainfall", score=150),
+            _make_result(specifier="my-branch", source="valkey-rainfall", score=150),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        rows = module.compare("my-branch", "my-branch", source_a="valkey", source_b="valkey-rainfall")
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.mean_a == pytest.approx(100.0)
+        assert row.mean_b == pytest.approx(150.0)
+        assert row.delta_pct == pytest.approx(50.0)
+
+    def test_bare_specifier_inherits_source_filter(self, temp_dir):
+        """A bare specifier inherits the global --source filter."""
+        records = [
+            _make_result(specifier="a", source="valkey", score=100),
+            _make_result(specifier="a", source="valkey", score=110),
+            _make_result(specifier="b", source="valkey", score=200),
+            _make_result(specifier="b", source="valkey", score=210),
+            # Records from another source that must be excluded by --source.
+            _make_result(specifier="a", source="other", score=999),
+            _make_result(specifier="b", source="other", score=999),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        rows = module.compare("a", "b", source_filter="valkey")
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.mean_a == pytest.approx(105.0)
+        assert row.mean_b == pytest.approx(205.0)
+
+    def test_explicit_side_source_beats_source_filter(self, temp_dir):
+        """An explicit per-side source overrides the global --source for that side."""
+        records = [
+            # Side A pinned to valkey.
+            _make_result(specifier="unstable", source="valkey", score=100),
+            _make_result(specifier="unstable", source="valkey", score=100),
+            # Side B is bare and inherits --source=valkey-rainfall.
+            _make_result(specifier="feature", source="valkey-rainfall", score=200),
+            _make_result(specifier="feature", source="valkey-rainfall", score=200),
+            # Noise in the global-filter source for side A's specifier: must be
+            # excluded because side A explicitly pins valkey.
+            _make_result(specifier="unstable", source="valkey-rainfall", score=999),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        rows = module.compare(
+            "unstable",
+            "feature",
+            source_filter="valkey-rainfall",
+            source_a="valkey",
+        )
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.mean_a == pytest.approx(100.0)
+        assert row.mean_b == pytest.approx(200.0)
+        assert row.n_a == 2
+        assert row.n_b == 2
+
+    def test_multi_source_warning_emitted(self, temp_dir, capsys):
+        """An unconstrained side spanning multiple sources warns to stderr."""
+        records = [
+            _make_result(specifier="unstable", source="valkey", score=100),
+            _make_result(specifier="unstable", source="valkey", score=110),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=120),
+            _make_result(specifier="other", source="valkey", score=200),
+            _make_result(specifier="other", source="valkey", score=210),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        module.compare("unstable", "other")
+
+        captured = capsys.readouterr()
+        assert "matched results from 2 sources" in captured.err
+        assert "valkey: 2" in captured.err
+        assert "valkey-rainfall: 1" in captured.err
+        assert "source:specifier" in captured.err
+
+    def test_no_warning_when_single_source(self, temp_dir, capsys):
+        """No warning when an unconstrained side matches a single source."""
+        records = [
+            _make_result(specifier="a", source="valkey", score=100),
+            _make_result(specifier="a", source="valkey", score=110),
+            _make_result(specifier="b", source="valkey", score=200),
+            _make_result(specifier="b", source="valkey", score=210),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        module.compare("a", "b")
+
+        captured = capsys.readouterr()
+        assert "matched results from" not in captured.err
+
+    def test_no_warning_when_side_source_constrained(self, temp_dir, capsys):
+        """No warning when a side pins its source, even across multiple sources."""
+        records = [
+            _make_result(specifier="unstable", source="valkey", score=100),
+            _make_result(specifier="unstable", source="valkey", score=110),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=300),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=310),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        module.compare("unstable", "unstable", source_a="valkey", source_b="valkey-rainfall")
+
+        captured = capsys.readouterr()
+        assert "matched results from" not in captured.err
+
+    def test_old_call_form_still_works(self, temp_dir):
+        """The historical positional/keyword call form is unchanged."""
+        records = [
+            _make_result(specifier="a", score=100),
+            _make_result(specifier="a", score=110),
+            _make_result(specifier="b", score=200),
+            _make_result(specifier="b", score=210),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        module = AnalysisModule(results_path=path)
+        # Positional specifiers, no source parameters at all.
+        rows = module.compare("a", "b")
+
+        assert len(rows) == 1
+        assert rows[0].mean_a == pytest.approx(105.0)
+        assert rows[0].mean_b == pytest.approx(205.0)
+
+
+class TestCrossSourceMain:
+    """Test the CLI main() banner and dispatch for cross-source specifiers."""
+
+    def test_main_prints_compared_banner_with_sources(self, temp_dir, capsys, monkeypatch):
+        """main() prints an A/B banner naming the source when specified."""
+        records = [
+            _make_result(specifier="unstable", source="valkey", score=100),
+            _make_result(specifier="unstable", source="valkey", score=110),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=200),
+            _make_result(specifier="unstable", source="valkey-rainfall", score=210),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        from conductress import analysis as analysis_mod
+
+        module = AnalysisModule(results_path=path)
+        monkeypatch.setattr(analysis_mod, "AnalysisModule", lambda: module)
+
+        rc = analysis_mod.main(["valkey:unstable", "valkey-rainfall:unstable"])
+        assert rc == 0
+
+        captured = capsys.readouterr()
+        assert "A: valkey:unstable  B: valkey-rainfall:unstable" in captured.out
+
+    def test_main_banner_bare_specifier(self, temp_dir, capsys, monkeypatch):
+        """A bare specifier with no --source shows no source in the banner."""
+        records = [
+            _make_result(specifier="a", score=100),
+            _make_result(specifier="a", score=110),
+            _make_result(specifier="b", score=200),
+            _make_result(specifier="b", score=210),
+        ]
+        path = temp_dir / "output.jsonl"
+        _write_jsonl(path, records)
+
+        from conductress import analysis as analysis_mod
+
+        module = AnalysisModule(results_path=path)
+        monkeypatch.setattr(analysis_mod, "AnalysisModule", lambda: module)
+
+        rc = analysis_mod.main(["a", "b"])
+        assert rc == 0
+
+        captured = capsys.readouterr()
+        assert "A: a  B: b" in captured.out
