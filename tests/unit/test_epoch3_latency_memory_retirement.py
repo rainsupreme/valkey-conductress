@@ -328,6 +328,55 @@ class TestLatencySweepCoordinatorV3:
         assert point.value == 410.0
         assert point.latency_data["p99_9_us"] == pytest.approx(900.0)
 
+    def test_completion_lifts_perf_counters_at_the_achieved_rate(self, tmp_path):
+        """A latency cell collects the same counters as a throughput cell; the
+        point must carry them so the per-request series can be published, and
+        the rate they are normalised by is the achieved request rate, not p99."""
+        coord = _v3_latency(tmp_path)
+        task = coord._create_task(_sweep_task())
+        task.sweep_commit = "a" * 40
+        coord.state.commit_dates["a" * 40] = "2026-01-01"
+        entry = {
+            "score": 410.0,
+            "data": {
+                "per_run_p99_us": [400.0, 420.0, 410.0],
+                "latency": {"p50_ms": 0.2, "p99_ms": 0.41, "p999_ms": 0.9, "max_ms": 3.2},
+                "rate_limit": 100_000,
+                "mean_rps": 99_998.5,
+                "perf_counters": {
+                    "all": {"instructions": 900, "cycles": 300},
+                    "main": {"instructions": 500, "cycles": 200},
+                    "io": {"instructions": 400, "cycles": 100},
+                },
+                "perf_counters_scope": "user+kernel",
+                "perf_duration_seconds": 28.7,
+                "perf_rep_count": 3,
+                "cpu_stacks_main": {"stacks": [["a", "b"]], "samples": [1]},
+            },
+        }
+        with patch.object(coord, "_find_task_entry", return_value=entry), patch.object(coord.state, "save"):
+            with patch("conductress.sweep.coordinator.get_head", side_effect=Exception("no repo")):
+                coord.on_task_completed(task)
+        point = coord.state.points["a" * 40]
+        assert point.value == 410.0
+        assert point.latency_data["actual_rps"] == 99_998.5
+        assert point.perf_counters == {"instructions": 900, "cycles": 300}
+        assert point.perf_counters_main == {"instructions": 500, "cycles": 200}
+        assert point.perf_counters_io == {"instructions": 400, "cycles": 100}
+        assert point.perf_counters_scope == "user+kernel"
+        assert (point.perf_duration_seconds, point.perf_rep_count) == (28.7, 3)
+        assert point.perf_rps == 99_998.5, "normalise by the achieved rate, never by the p99 score"
+        assert point.cpu_stacks_main is not None
+
+    def test_completion_without_a_result_records_nothing(self, tmp_path):
+        coord = _v3_latency(tmp_path)
+        task = coord._create_task(_sweep_task())
+        task.sweep_commit = "a" * 40
+        with patch.object(coord, "_find_task_entry", return_value=None), patch.object(coord.state, "save"):
+            coord.on_task_completed(task)
+        point = coord.state.points.get("a" * 40)
+        assert point is None or (point.value is None and point.perf_counters is None)
+
     def test_export_names_cachecannon_as_the_tool(self, tmp_path):
         coord = _v3_latency(tmp_path)
         commit = "a" * 40

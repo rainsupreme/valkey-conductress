@@ -75,6 +75,14 @@ def perf_counters_from_entry(entry: dict) -> Optional[PerfCounterRecord]:
     bucketed dict as written by the profiling manager
     (``perf_counters = {"all": ..., "main": ..., "io": ...}``). Both are
     normalised here so every coordinator records the same point fields.
+
+    ``rps`` is the request rate the counters were collected at, which the
+    exporter divides by to get per-request metrics. Rows that record it
+    directly (``data.mean_rps``, written by the cachecannon task) supply it;
+    for a throughput cell that is the score itself, and for a rate-limited
+    latency cell it is the achieved rate where the score is a percentile in
+    microseconds. Rows without it fall back to the score, which is only right
+    when the score is a throughput.
     """
     data = entry.get("data", {})
     raw = data.get("perf_counters")
@@ -90,10 +98,13 @@ def perf_counters_from_entry(entry: dict) -> Optional[PerfCounterRecord]:
         counters_io = data.get("perf_counters_io")
     if not counters:
         return None
+    rps = data.get("mean_rps")
+    if not rps:
+        rps = entry.get("score", 0.0)
     return PerfCounterRecord(
         counters=counters,
         duration=data.get("perf_duration_seconds", 0.0),
-        rps=entry.get("score", 0.0),
+        rps=rps,
         counters_main=counters_main,
         counters_io=counters_io,
         rep_count=data.get("perf_rep_count"),

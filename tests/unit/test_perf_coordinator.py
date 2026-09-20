@@ -218,6 +218,32 @@ class TestPerfCountersFromEntry:
         assert perf_counters_from_entry({"score": 1, "data": {"perf_counters": {"all": {}, "main": {}}}}) is None
         assert perf_counters_from_entry({"score": 1, "data": {}}) is None
 
+    def test_rate_limited_latency_row_uses_the_achieved_rate_not_the_p99_score(self):
+        # A latency cell scores p99 in microseconds; dividing counters by that
+        # would inflate every per-request metric ~1000x. The row records the
+        # rate the counters were collected at.
+        entry = {
+            "score": 92.2,
+            "data": {
+                "perf_counters": {"all": {"instructions": 900, "cycles": 300}},
+                "mean_rps": 99_999.6,
+                "score_metric": "p99",
+                "perf_duration_seconds": 28.7,
+                "perf_rep_count": 10,
+            },
+        }
+        rec = perf_counters_from_entry(entry)
+        assert rec is not None
+        assert rec.rps == 99_999.6
+
+    def test_throughput_row_rate_is_unchanged_by_the_recorded_mean(self):
+        # cachecannon throughput rows record mean_rps equal to the score; rows
+        # from tasks that do not record it keep using the score.
+        with_mean = {"score": 1_990_000.0, "data": {"perf_counters": {"all": {"cycles": 3}}, "mean_rps": 1_990_000.0}}
+        without = {"score": 2_000_000.0, "data": {"perf_counters": {"cycles": 3}}}
+        assert perf_counters_from_entry(with_mean).rps == 1_990_000.0  # type: ignore[union-attr]
+        assert perf_counters_from_entry(without).rps == 2_000_000.0  # type: ignore[union-attr]
+
 
 class TestPerfScopeRecording:
     def test_scope_is_stored_and_persisted(self, coordinator):

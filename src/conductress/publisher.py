@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Series metrics whose cells drive a request stream under perf stat, and so
+# have per-request counter series to publish beside the score series.
+PERF_EXPORT_METRICS = ("throughput", "latency")
+
 
 def detect_platform() -> tuple[str, str]:
     """Detect platform ID and label. Kept as a compatibility wrapper."""
@@ -186,7 +190,10 @@ class DashboardPublisher:
                     coord.export(output, platform=self._platform_label)
                     self._stamp_epoch(output, epoch_id)
 
-                if coord.metric_id != "throughput":
+                # Perf counters are collected by the cells that drive a request
+                # stream: throughput and rate-limited latency. Memory cells run
+                # no request stream and record none, so there is nothing to export.
+                if coord.metric_id not in PERF_EXPORT_METRICS:
                     continue
                 epoch_id = self._coord_epoch(coord)
 
