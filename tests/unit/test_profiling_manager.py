@@ -56,25 +56,15 @@ class TestCpuProfileCollect:
         manager._main_tid = "12345"
         manager._io_tids = ["12346", "12347"]
 
-        # First call: write main stacks to file
         main_output = "func_a;func_b;hashtableFind 500\nfunc_a;func_c;zmalloc 200\n"
-        # Second call: read main stacks file
-        # Third call: write IO stacks to file
         io_output = "io_thd_1;IOThreadMain;pthread_mutex_lock 1000\n"
-        # Fourth call: read IO stacks file
-        # Fifth call: cleanup
-
-        call_count = [0]
 
         async def mock_run(cmd):
-            call_count[0] += 1
-            if call_count[0] == 1:  # write main stacks to file
-                return ("", "")
-            elif call_count[0] == 2:  # cat main stacks file
+            if cmd.startswith("stat -c %s"):
+                return ("4096000\n", "")
+            if cmd.startswith("cat ") and cmd.endswith("collapsed-main.txt"):
                 return (main_output, "")
-            elif call_count[0] == 3:  # write io stacks to file
-                return ("", "")
-            elif call_count[0] == 4:  # cat io stacks file
+            if cmd.startswith("cat ") and cmd.endswith("collapsed-io.txt"):
                 return (io_output, "")
             return ("", "")
 
@@ -86,6 +76,69 @@ class TestCpuProfileCollect:
         assert main[1] == ["func_a;func_c;zmalloc", 200]
         assert len(io) == 1
         assert io[0] == ["io_thd_1;IOThreadMain;pthread_mutex_lock", 1000]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stat_output", ["0\n", "missing\n", ""])
+    async def test_empty_or_missing_recording_is_an_error_not_an_empty_profile(
+        self, manager, mock_host, stat_output, caplog
+    ):
+        """A 0-byte or absent perf.data (e.g. full filesystem) must not collapse silently to []."""
+        manager._target_pid = 12345
+        manager._main_tid = "12345"
+        manager._io_tids = ["12346"]
+        manager._cpu_profile_returncode = 255
+        commands: list[str] = []
+
+        async def mock_run(cmd):
+            commands.append(cmd)
+            if cmd.startswith("stat -c %s"):
+                return (stat_output, "")
+            return ("", "")
+
+        mock_host.run_host_command = mock_run
+
+        with caplog.at_level("ERROR", logger="conductress.profiling_manager"):
+            main, io = await manager.cpu_profile_collect()
+
+        assert (main, io) == ([], [])
+        assert not any("perf script" in c for c in commands), "must not script an empty recording"
+        assert any(c.startswith("sudo rm -f") for c in commands), "artifacts are still cleaned up"
+        assert any("CPU profile produced no data" in r.message and "255" in r.message for r in caplog.records)
+
+    def test_recording_lives_under_home_not_tmp(self, manager):
+        """perf.data and the collapsed stacks are written under ~, not the tmpfs-backed /tmp."""
+        from conductress import profiling_manager as pm
+
+        for path in (pm.CPU_PROFILE_DATA, pm.CPU_PROFILE_COLLAPSED_MAIN, pm.CPU_PROFILE_COLLAPSED_IO):
+            assert path.startswith("~/"), path
+            assert not path.startswith("/tmp"), path
+
+    def test_record_command_creates_directory_and_keeps_exit_status(self, manager):
+        """The recorder mkdir -p's its directory first and records perf's exit status."""
+        manager._target_pid = 4242
+        launched: dict = {}
+
+        class FakeProc:
+            returncode = 7
+
+            def wait(self):
+                return 7
+
+            def terminate(self):
+                pass
+
+        def fake_popen(cmd, *args, **kwargs):
+            launched["cmd"] = cmd
+            return FakeProc()
+
+        with patch("conductress.profiling_manager.subprocess.Popen", side_effect=fake_popen):
+            manager._cpu_profile_run_sync(duration=10)
+
+        from conductress import profiling_manager as pm
+
+        assert launched["cmd"].startswith(f"mkdir -p {pm.CPU_PROFILE_DIR} && exec sudo perf record")
+        assert f"-o {pm.CPU_PROFILE_DATA}" in launched["cmd"]
+        assert manager._cpu_profile_returncode == 7
 
 
 class TestParseCollapsed:

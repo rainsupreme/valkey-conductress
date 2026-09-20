@@ -183,25 +183,55 @@ def _get_hostname() -> str:
     return socket.gethostname().split(".")[0]
 
 
-def _get_disk_info() -> dict[str, Any]:
-    """Report free space on the filesystem holding builds, benchmark output, and RDBs.
+# Filesystems the per-host disk alarm watches. PROJECT_ROOT holds builds,
+# results and RDBs; the temp directory holds perf.data and other scratch, and
+# is often a separate RAM-backed tmpfs that can fill while the root disk still
+# reads mostly free.
+DISK_WATCH_PATHS: tuple[str, ...] = (str(PROJECT_ROOT), tempfile.gettempdir())
 
-    A host's local disk can fill (perf.data captures, build trees, stray RDBs, logs)
-    and stall the runner, so the dashboard surfaces a per-host disk alarm. Measured on
-    PROJECT_ROOT, which shares a filesystem with the ~/valkey and ~/redis build trees.
-    """
+
+def _disk_usage_entry(path: str) -> Optional[dict[str, Any]]:
+    """Usage of the filesystem holding ``path``, or None if it cannot be read."""
     try:
-        usage = shutil.disk_usage(PROJECT_ROOT)
+        usage = shutil.disk_usage(path)
+        device = os.stat(path).st_dev
     except OSError:
-        return {}
+        return None
     free_pct = round(usage.free * 100 / usage.total) if usage.total else 0
     return {
-        "path": str(PROJECT_ROOT),
+        "path": path,
+        "device": device,
         "size_bytes": usage.total,
         "used_bytes": usage.used,
         "avail_bytes": usage.free,
         "free_pct": free_pct,
     }
+
+
+def _get_disk_info(paths: tuple[str, ...] = DISK_WATCH_PATHS) -> dict[str, Any]:
+    """Report free space on every filesystem the runner writes to.
+
+    A host's local disk can fill (perf.data captures, build trees, stray RDBs,
+    logs) and stall the runner, so the dashboard surfaces a per-host disk alarm.
+    Each distinct filesystem under ``paths`` is listed once in ``filesystems``;
+    the top-level ``path``/``size_bytes``/``used_bytes``/``avail_bytes``/
+    ``free_pct`` describe the tightest of them, which is what the dashboard's
+    alarm reads. Returns ``{}`` when no path can be measured.
+    """
+    seen: set[int] = set()
+    filesystems: list[dict[str, Any]] = []
+    for path in paths:
+        entry = _disk_usage_entry(path)
+        if entry is None or entry["device"] in seen:
+            continue
+        seen.add(entry["device"])
+        filesystems.append(entry)
+    if not filesystems:
+        return {}
+    tightest = min(filesystems, key=lambda e: e["free_pct"])
+    info = {k: v for k, v in tightest.items() if k != "device"}
+    info["filesystems"] = [{k: v for k, v in e.items() if k != "device"} for e in filesystems]
+    return info
 
 
 def _get_runner_info() -> dict[str, Any]:

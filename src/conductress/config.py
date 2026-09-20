@@ -386,6 +386,12 @@ TLS_CERT_DIR = PROJECT_ROOT / "tls"
 
 CONDUCTRESS_QUEUE = PROJECT_ROOT / "benchmark_queue"
 CONDUCTRESS_TMP = PROJECT_ROOT / "tmp"
+# Staging directory the dashboard publisher rebuilds on every publish. Kept on
+# the project disk rather than under tempfile.gettempdir(): on many hosts that
+# is a RAM-backed tmpfs, and a full export copy is large enough that staging
+# it there competes with the benchmark for memory and can fill the filesystem
+# that perf and other scratch writers also depend on.
+PUBLISH_EXPORT_DIR = CONDUCTRESS_TMP / "publish-export"
 CONDUCTRESS_FAILED_LOG = PROJECT_ROOT / "failed_tasks.jsonl"
 CONDUCTRESS_FAILED_DIR = PROJECT_ROOT / "failed"
 

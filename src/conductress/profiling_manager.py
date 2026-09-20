@@ -15,7 +15,15 @@ from .ssh_host import SshHost
 
 PERF_STAT_STATUS_FILE = "/tmp/perf_stat_running"
 PERF_STATS_PATH = Path("~") / "perf_stat_output"
-CPU_PROFILE_DATA = "/tmp/perf-cpu-profile.data"
+# perf record output and its collapsed stacks live under the home directory,
+# not the temp directory: that is often a RAM-backed tmpfs, and on a full
+# filesystem perf record leaves a 0-byte perf.data that collapses to an empty
+# profile with no error. ``~`` is expanded by the shell on whichever host runs
+# the command, local or remote.
+CPU_PROFILE_DIR = Path("~") / "conductress-profile"
+CPU_PROFILE_DATA = str(CPU_PROFILE_DIR / "perf-cpu-profile.data")
+CPU_PROFILE_COLLAPSED_MAIN = str(CPU_PROFILE_DIR / "collapsed-main.txt")
+CPU_PROFILE_COLLAPSED_IO = str(CPU_PROFILE_DIR / "collapsed-io.txt")
 FLAMEGRAPH_DIR = Path("~") / "FlameGraph"
 
 logger = logging.getLogger(__name__)
@@ -30,6 +38,8 @@ class ProfilingManager:
         self._cpu_profile_thread: Optional[Thread] = None
         self._cpu_profile_cancel_event: Event = Event()
         self._cpu_profile_process: Optional[subprocess.Popen] = None
+        # Exit status of the last perf record, None until one has finished.
+        self._cpu_profile_returncode: Optional[int] = None
         self._target_pid: int = -1
         # Thread-group TIDs discovered at server start (main thread + IO threads).
         # Shared by the CPU-profile (flamegraph) and per-thread perf-stat paths.
@@ -76,6 +86,7 @@ class ProfilingManager:
         self._discover_thread_tids()
         self._cpu_profile_cancel_event.clear()
         self._cpu_profile_process = None
+        self._cpu_profile_returncode = None
         self._cpu_profile_thread = Thread(target=self._cpu_profile_run_sync, args=(duration, delay_seconds))
         self._cpu_profile_thread.start()
 
@@ -153,7 +164,7 @@ class ProfilingManager:
             return  # check again after wait
         ip = self._host.ip
         command = (
-            f"exec sudo perf record -g --call-graph fp -p {self._target_pid} "
+            f"mkdir -p {CPU_PROFILE_DIR} && exec sudo perf record -g --call-graph fp -p {self._target_pid} "
             f"-o {CPU_PROFILE_DATA} -- sleep {max(duration - 2, 5)}"
         )
         if ip in ["127.0.0.1", "localhost"]:
@@ -170,6 +181,7 @@ class ProfilingManager:
             except Exception:
                 pass
         proc.wait()
+        self._cpu_profile_returncode = proc.returncode
         self._cpu_profile_process = None
 
     async def cpu_profile_collect(self) -> tuple[list[list], list[list]]:
@@ -191,15 +203,32 @@ class ProfilingManager:
             await self._cpu_profile_cleanup()
             return [], []
 
+        # perf record can exit 0 or fail quietly and still leave nothing usable
+        # behind (a full filesystem gives a 0-byte perf.data). perf script on
+        # that file yields an empty profile with no error, so check the
+        # recording before trusting what it collapses to.
+        size_output, _ = await self._host.run_host_command(f"stat -c %s {CPU_PROFILE_DATA} 2>/dev/null || echo missing")
+        size_text = size_output.strip().splitlines()[-1] if size_output.strip() else "missing"
+        if not size_text.isdigit() or int(size_text) == 0:
+            logger.error(
+                "CPU profile produced no data: %s is %s (perf record exit status %s); "
+                "check free space on the filesystem holding it",
+                CPU_PROFILE_DATA,
+                "missing" if not size_text.isdigit() else "0 bytes",
+                self._cpu_profile_returncode,
+            )
+            await self._cpu_profile_cleanup()
+            return [], []
+
         stackcollapse = f"{FLAMEGRAPH_DIR}/stackcollapse-perf.pl"
 
         # Generate collapsed stacks for main thread
         main_cmd = (
             f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={main_tid} | "
-            f"{stackcollapse} > /tmp/collapsed-main.txt'"
+            f"{stackcollapse} > {CPU_PROFILE_COLLAPSED_MAIN}'"
         )
         await self._host.run_host_command(main_cmd)
-        main_output, _ = await self._host.run_host_command("cat /tmp/collapsed-main.txt")
+        main_output, _ = await self._host.run_host_command(f"cat {CPU_PROFILE_COLLAPSED_MAIN}")
         main_stacks = self._parse_collapsed(main_output)
 
         # Generate collapsed stacks for IO threads
@@ -208,10 +237,10 @@ class ProfilingManager:
             io_tid_str = ",".join(io_tids)
             io_cmd = (
                 f"bash -c 'sudo perf script -i {CPU_PROFILE_DATA} --tid={io_tid_str} | "
-                f"{stackcollapse} > /tmp/collapsed-io.txt'"
+                f"{stackcollapse} > {CPU_PROFILE_COLLAPSED_IO}'"
             )
             await self._host.run_host_command(io_cmd)
-            io_output, _ = await self._host.run_host_command("cat /tmp/collapsed-io.txt")
+            io_output, _ = await self._host.run_host_command(f"cat {CPU_PROFILE_COLLAPSED_IO}")
             io_stacks = self._parse_collapsed(io_output)
 
         await self._cpu_profile_cleanup()
@@ -236,7 +265,7 @@ class ProfilingManager:
     async def _cpu_profile_cleanup(self) -> None:
         """Remove CPU profile data file from remote host."""
         await self._host.run_host_command(
-            f"sudo rm -f {CPU_PROFILE_DATA} /tmp/collapsed-main.txt /tmp/collapsed-io.txt"
+            f"sudo rm -f {CPU_PROFILE_DATA} {CPU_PROFILE_COLLAPSED_MAIN} {CPU_PROFILE_COLLAPSED_IO}"
         )
 
     # =========================================================================
