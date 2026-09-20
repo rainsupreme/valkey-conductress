@@ -21,6 +21,7 @@ release in ``finally``, and the shape of the row that lands in ``output.jsonl``.
 
 import asyncio
 import json
+import logging
 import time
 from typing import Optional
 from unittest.mock import MagicMock
@@ -158,6 +159,8 @@ class FakeInstance:
 class FakeGroup:
     """Records lifecycle calls; serves samples with a controlled 1 s clock."""
 
+    lag_bytes = 50  # replica offset behind the primary in every sample; the stream advances 1000 B/s
+
     instances = {}  # port -> FakeInstance, set per test
     events: list = []
 
@@ -209,7 +212,10 @@ class FakeGroup:
             "t": self._t0 + n,
             "instances": {
                 self.primary.port: {"master_repl_offset": 1000 * n, "eventloop_duration_sum": 100_000 * n},
-                self.replicas[0].port: {"master_repl_offset": 1000 * n - 50, "eventloop_duration_sum": 800_000 * n},
+                self.replicas[0].port: {
+                    "master_repl_offset": 1000 * n - FakeGroup.lag_bytes,
+                    "eventloop_duration_sum": 800_000 * n,
+                },
             },
             "cores": cores,
             "threads": {
@@ -319,6 +325,7 @@ def faked(monkeypatch, tmp_path):
     FakeCommand.launch_cpus = []
     FakeGroup.pins = []
     FakeGroup.host_scans = []
+    FakeGroup.lag_bytes = 50
     FakeInstance.profile_calls = []
     FakeInstance.profile_error = None
     FakeCommand.results = {
@@ -508,26 +515,107 @@ def test_cpu_profile_appears_in_descriptions():
 # --------------------------------------------------------------------------- guards
 
 
-def test_check_guards_rejects_low_hit_rate(faked):
+NO_LAG = {"samples": 5, "mean_bytes": 0, "max_bytes": 0, "stream_bytes_per_second": 1000.0, "mean_seconds": 0.0}
+
+
+def _lag(mean_seconds, *, rate=100_000.0, samples=5):
+    mean_bytes = mean_seconds * rate
+    return {
+        "samples": samples,
+        "mean_bytes": mean_bytes,
+        "max_bytes": int(mean_bytes * 2),
+        "stream_bytes_per_second": rate,
+        "mean_seconds": mean_seconds,
+    }
+
+
+def test_check_guards_rejects_low_hit_rate_naming_the_counts(faked):
     runner = faked()
-    reader = {"hit_rate": {"percent": 98.9}, "throughput_rps": 1.0}
+    reader = {"hit_rate": {"percent": 98.9, "hits": 989.0, "misses": 11.0}, "throughput_rps": 1.0}
     writer = {"throughput_rps": 20_000.0}
-    with pytest.raises(RuntimeError, match="hit rate 98.9%"):
-        runner._check_guards(reader, writer)
+    with pytest.raises(RuntimeError, match=r"hit rate 98.9% < 99.0% \(989.0 hits, 11.0 misses\)"):
+        runner._check_guards(reader, writer, NO_LAG)
 
 
 def test_check_guards_rejects_underdelivering_writer(faked):
     runner = faked(write_rate=20_000)
     reader = {"hit_rate": {"percent": 100.0}, "throughput_rps": 1.0}
     with pytest.raises(RuntimeError, match="writer achieved 17999/s"):
-        runner._check_guards(reader, {"throughput_rps": 17_999.0})
-    runner._check_guards(reader, {"throughput_rps": 18_000.0})  # exactly 90% passes
+        runner._check_guards(reader, {"throughput_rps": 17_999.0}, NO_LAG)
+    runner._check_guards(reader, {"throughput_rps": 18_000.0}, NO_LAG)  # exactly 90% passes
 
 
 def test_check_guards_treats_missing_hit_rate_as_zero(faked):
     runner = faked()
     with pytest.raises(RuntimeError, match="hit rate 0.0%"):
-        runner._check_guards({"hit_rate": None}, {"throughput_rps": 20_000.0})
+        runner._check_guards({"hit_rate": None}, {"throughput_rps": 20_000.0}, NO_LAG)
+
+
+def test_lag_guard_fails_a_replica_behind_its_primary(faked):
+    runner = faked()  # default max_lag_seconds 1.0
+    with pytest.raises(RuntimeError, match=r"replica lag 2.50 s mean over the scored window > max_lag_seconds 1.0"):
+        runner._check_lag_guard(_lag(2.5))
+
+
+def test_lag_guard_threshold_is_in_seconds_of_stream_not_bytes(faked):
+    # The same 200 KB mean lag is 2 s behind a 100 KB/s stream and 0.02 s behind a 10 MB/s one.
+    runner = faked()
+    with pytest.raises(RuntimeError, match="replica lag 2.00 s"):
+        runner._check_lag_guard(_lag(2.0, rate=100_000.0))
+    runner._check_lag_guard(_lag(0.02, rate=10_000_000.0))
+
+
+def test_lag_guard_passes_at_the_threshold_and_honours_the_task_value(faked):
+    runner = faked(max_lag_seconds=3.0)
+    runner._check_lag_guard(_lag(3.0))
+    with pytest.raises(RuntimeError, match="> max_lag_seconds 3.0"):
+        runner._check_lag_guard(_lag(3.01))
+
+
+def test_lag_guard_names_the_evidence(faked):
+    runner = faked()
+    with pytest.raises(RuntimeError) as exc:
+        runner._check_lag_guard(_lag(2.0, rate=100_000.0, samples=30))
+    assert "mean 200,000 bytes, max 400,000 bytes over 30 samples, stream 100,000 bytes/s" in str(exc.value)
+
+
+def test_lag_guard_fails_when_lag_exists_but_the_stream_did_not_advance(faked):
+    runner = faked()
+    stalled = {
+        "samples": 5,
+        "mean_bytes": 700.0,
+        "max_bytes": 700,
+        "stream_bytes_per_second": 0.0,
+        "mean_seconds": None,
+    }
+    with pytest.raises(RuntimeError, match="stream that did not advance"):
+        runner._check_lag_guard(stalled)
+
+
+def test_lag_guard_skips_with_a_warning_when_the_window_has_too_few_samples(faked, caplog):
+    runner = faked()
+    with caplog.at_level(logging.WARNING):
+        runner._check_lag_guard({"samples": 1, "mean_bytes": 10**9, "max_bytes": 10**9, "mean_seconds": None})
+        runner._check_lag_guard({"samples": 0})
+    assert caplog.text.count("lag guard skipped") == 2
+
+
+def test_max_lag_seconds_must_be_positive():
+    with pytest.raises(ValueError, match="max_lag_seconds must be > 0"):
+        _task(max_lag_seconds=0)
+    with pytest.raises(ValueError, match="max_lag_seconds must be > 0"):
+        _task(max_lag_seconds=-1)
+    assert _task(max_lag_seconds="2.5").max_lag_seconds == 2.5  # queue files hand strings back
+
+
+@pytest.mark.asyncio
+async def test_run_fails_the_rep_when_the_replica_lags(faked):
+    # The fake stream advances 1000 B/s; a 5000 B lag is five seconds behind.
+    FakeGroup.lag_bytes = 5000
+    runner = faked()
+    with pytest.raises(RuntimeError, match="replica lag 5.00 s mean over the scored window"):
+        await runner.run()
+    assert "stop-all" in FakeGroup.events  # the topology is torn down after a guard failure
 
 
 # --------------------------------------------------------------------------- judge
@@ -716,7 +804,12 @@ async def test_record_result_row_shape(faked):
     assert data["server_cpus"] == {6379: [0], 6380: [1, 2]}
     assert data["io-threads"] == 8 and data["write_rate_target"] == 20_000
     assert data["write_rate_achieved_mean"] == 19_900.0
-    assert data["replication_lag"] == {"max_bytes": 40, "mean_bytes": 10.0}
+    assert data["replication_lag"] == {
+        "max_bytes": 40,
+        "mean_bytes": 10.0,
+        "max_scored_mean_seconds": 0.0,
+        "max_lag_seconds": 1.0,
+    }
     assert data["bottleneck"]["verdict"] == cs.VERDICT_HOST and data["bottleneck"]["per_rep"][2] == cs.VERDICT_HOST
     assert data["reader_toml"] == "reader-toml" and data["writer_toml"] == "writer-toml"
     assert data["lscpu"].startswith("ran: lscpu")

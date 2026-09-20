@@ -345,3 +345,25 @@ async def test_sample_forwards_pin_cpus_to_the_host_command(fake_server):
     await group.sample(cpu=False, pin_cpus="190,191")
     assert captured["pin"] == "190,191"
     assert "info replication stats" in captured["command"] and "=== conductress-instance 6379" in captured["command"]
+
+
+@pytest.mark.asyncio
+async def test_sample_fetches_every_info_section_only_when_extra_fields_are_requested(fake_server):
+    """A requested field may live in any section, including one only the build under test has."""
+    captured = {}
+
+    async def run_host_command(command, check=True, pin_cpus=""):  # pylint: disable=unused-argument
+        captured["command"] = command
+        return ("", "")
+
+    group = TopologyGroup(HOST, TopologySpec.standalone(1), "valkey", "unstable")
+    with patch("conductress.topology.asyncio.sleep"):
+        await group.start()
+    group.primary.run_host_command = run_host_command
+
+    await group.sample(cpu=False)
+    assert "info replication stats" in captured["command"] and "info everything" not in captured["command"]
+    await group.sample(extra_fields=["some_counter"], cpu=False)
+    assert "info everything" in captured["command"] and "info replication stats" not in captured["command"]
+    await group.sample(extra_fields=[], cpu=False)
+    assert "info replication stats" in captured["command"]

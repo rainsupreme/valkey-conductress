@@ -45,14 +45,23 @@ change on a single build.
    stats` is sampled from every instance every `--sample-interval` seconds
    with a single remote shell per sample, so primary/replica offset skew is a
    few milliseconds. `--info-fields` adds arbitrary INFO fields to the sample
-   (for example counters a build under test exposes); absent fields are
-   omitted, not errors. The same shell also reads the host's per-core
+   (for example counters a build under test exposes); when any are requested
+   the sample fetches `INFO everything`, so a field is found in whichever
+   section its build puts it, and absent fields are omitted, not errors. The
+   same shell also reads the host's per-core
    `/proc/stat` and every instance's per-thread CPU ticks; the two local
    cachecannon processes' thread ticks are read from `/proc` on the runner in
    the same tick.
 4. Guards (fail loudly): reader 0% errors and >= 99% hit rate; writer 0%
-   errors and achieved rate >= 90% of `--write-rate`. An under-delivering
-   writer would silently turn the run into a lower-write-rate run.
+   errors and achieved rate >= 90% of `--write-rate`; replica mean lag over
+   the scored window at most `--max-lag-seconds` (default 1) of replication
+   stream. An under-delivering writer would silently turn the run into a
+   lower-write-rate run. A replica that falls behind keeps answering every
+   GET at a full hit rate from a dataset the primary has moved past, so its
+   reader throughput describes a different experiment; the guard measures
+   lag in seconds of stream (mean lag bytes over the primary's offset rate)
+   because that unit means the same thing at every write rate, while the
+   sampling skew that bounds resolution is a few milliseconds at any rate.
 5. Bottleneck verdict (recorded, logged at WARNING when not `server`; the run
    does not fail, its data is still diagnostic). Computed over the samples
    after `--warmup`:
@@ -129,7 +138,9 @@ change on a single build.
 `method = "replica-read"`, `score` = mean reader rps over reps, `cv`/`reps`
 as for other tasks. `data` carries: the topology spec, per-port server CPUs,
 writer target and achieved rate, replication lag (primary minus replica
-offset, bytes: max/mean, per-rep p99), per-rep reader/writer latency, the
+offset, bytes: max/mean, per-rep p99; per rep also the scored window alone,
+with the stream rate and the mean lag in seconds of stream, and at row level
+the worst rep's scored mean seconds beside the `--max-lag-seconds` limit), per-rep reader/writer latency, the
 per-instance INFO series (offsets, ops/sec, eventloop counters, `--info-fields`),
 both generated TOMLs, and `bottleneck`: the row-level verdict (`server` only
 if every rep was), the worst rep's reason, mean replica `loop_duty`, and the
