@@ -339,6 +339,15 @@ async def test_stall_first_ordering_starts_burst_after_stall_is_issued(monkeypat
 
     monkeypatch.setattr(runner_mod, "parse_stall", lambda spec: RecordingStall())
 
+    # The startup connect-capacity check (200 sequential connects, ~100 ms on
+    # loopback) runs before the storm's origin is set, which would inflate the
+    # test's external run_origin reference relative to the events' origin. It is
+    # orthogonal to ordering, so stub it out to keep the timing invariant clean.
+    async def _no_capacity(config, connects=200):
+        return 0.0
+
+    monkeypatch.setattr(runner_mod, "measure_connect_capacity", _no_capacity)
+
     server = FakeServer()
     await server.start()
     try:

@@ -213,6 +213,132 @@ def test_non_storm_scenario_never_appends_debug_command():
     assert "--enable-debug-command" not in runner.server_args_effective
 
 
+# --------------------------------------------------------------------------- TLS herd, active herd, probe
+
+
+def test_tls_scenario_appends_tls_server_args_and_build_tls():
+    """--tls adds the TLS listener flags on port+1 and BUILD_TLS=yes to make_args."""
+    runner = _scenario_task(scenario="connection-storm", tls=True).prepare_task_runner([HOST])
+    args = runner.server_args_effective
+    assert "--tls-port 6380" in args  # standalone primary is 6379; TLS on +1
+    assert "--tls-cert-file" in args and "--tls-key-file" in args and "--tls-ca-cert-file" in args
+    assert "--tls-auth-clients no" in args
+    assert "BUILD_TLS=yes" in runner.make_args
+
+
+def test_non_tls_scenario_server_args_and_make_args_unchanged():
+    """Without --tls the command is byte-identical to today's (equivalence)."""
+    plain = _scenario_task(scenario="connection-storm").prepare_task_runner([HOST])
+    assert "--tls-port" not in plain.server_args_effective
+    assert "BUILD_TLS=yes" not in plain.make_args
+
+
+def test_tls_herd_command_targets_tls_port_and_passes_ca():
+    """The generator command keeps --port plaintext and adds --tls-port + --tls-ca-cert."""
+    runner = _scenario_task(scenario="connection-storm", tls=True).prepare_task_runner([HOST])
+    server = _FakeServer()
+    command = runner._overlay._command(server, "/tmp/out.json")
+    assert "--port 6379" in command  # plaintext port for stall/capacity/probe
+    assert "--tls-port 6380" in command  # herd connects to the TLS port
+    assert "--tls-ca-cert" in command
+
+
+def test_probe_flags_serialize_into_generator_command():
+    """--storm-probe-* and herd interval reach the generator command line."""
+    spec = json.dumps({"probe_clients": 4, "probe_rate": 1000, "herd_command_interval_ms": 1000, "stall": "none"})
+    runner = _scenario_task(scenario="connection-storm", overlay_spec=spec).prepare_task_runner([HOST])
+    command = runner._overlay._command(_FakeServer(), "/tmp/out.json")
+    assert "--probe-clients 4" in command
+    assert "--probe-rate 1000" in command
+    assert "--herd-command-interval-ms 1000" in command
+
+
+def test_tls_herd_plaintext_probe_gets_plaintext_probe_port():
+    """A TLS herd with a plaintext probe uses --port (plaintext); no --probe-port needed."""
+    spec = json.dumps({"probe_clients": 2, "probe_rate": 500, "stall": "none"})
+    runner = _scenario_task(scenario="connection-storm", tls=True, overlay_spec=spec).prepare_task_runner([HOST])
+    command = runner._overlay._command(_FakeServer(), "/tmp/out.json")
+    assert "--port 6379" in command  # plaintext port; the probe defaults to it
+    assert "--tls-port 6380" in command  # herd is TLS on 6380
+    assert "--probe-tls" not in command
+
+
+def test_tls_herd_tls_probe_targets_the_tls_port():
+    """--storm-probe-tls with a TLS herd points the probe at the TLS port."""
+    spec = json.dumps({"probe_clients": 2, "probe_rate": 500, "probe_tls": True, "stall": "none"})
+    runner = _scenario_task(scenario="connection-storm", tls=True, overlay_spec=spec).prepare_task_runner([HOST])
+    command = runner._overlay._command(_FakeServer(), "/tmp/out.json")
+    assert "--probe-tls" in command
+    assert "--probe-port 6380" in command
+
+
+def test_background_none_only_valid_for_connection_storm():
+    with pytest.raises(ValueError):
+        _scenario_task(scenario="eval-storm", background="none")
+
+
+def test_tls_only_valid_for_connection_storm():
+    with pytest.raises(ValueError):
+        _scenario_task(scenario="eval-storm", tls=True)
+
+
+def test_invalid_background_rejected():
+    with pytest.raises(ValueError):
+        _scenario_task(scenario="connection-storm", background="bogus")
+
+
+def test_new_scenario_fields_round_trip(tmp_path):
+    """tls/background/server_sample_fields survive save/load."""
+    task = _scenario_task(
+        scenario="connection-storm",
+        tls=True,
+        background="none",
+        server_sample_fields="dead_at_accept,other",
+    )
+    path = tmp_path / "task.json"
+    task.save_to_file(path)
+    loaded = BaseTaskData.from_file(path)
+    assert loaded.tls is True
+    assert loaded.background == "none"
+    assert loaded.server_sample_fields == "dead_at_accept,other"
+
+
+def test_probe_spec_gating_requires_both_clients_and_rate():
+    with pytest.raises(ValueError):
+        parse_storm_spec(json.dumps({"probe_clients": 4}))  # rate missing
+    with pytest.raises(ValueError):
+        parse_storm_spec(json.dumps({"probe_rate": 1000}))  # clients missing
+
+
+def test_negative_herd_interval_rejected():
+    with pytest.raises(ValueError):
+        parse_storm_spec(json.dumps({"herd_command_interval_ms": -1}))
+
+
+def test_storm_metrics_namespace_folds_tls_and_probe_fields():
+    doc = _storm_document()
+    doc.update(
+        {
+            "schema_version": 4,
+            "tls": True,
+            "tls_port": 6380,
+            "openssl_version": "OpenSSL 3.0.0",
+            "herd_commands_ok": 42,
+            "herd_connects_per_s_capacity": 1800.0,
+            "probe_timeline": [{"t_ms": 0, "served": 1000, "p99_ms": 0.5}],
+            "probe_recovery_s": 3.0,
+        }
+    )
+    storm = storm_metrics_namespace(doc)["storm"]
+    assert storm["tls"] is True
+    assert storm["tls_port"] == 6380
+    assert storm["openssl_version"] == "OpenSSL 3.0.0"
+    assert storm["herd_commands_ok"] == 42
+    assert storm["herd_connects_per_s_capacity"] == 1800.0
+    assert storm["probe_recovery_s"] == 3.0
+    assert storm["probe_timeline"][0]["served"] == 1000
+
+
 # --------------------------------------------------------------------------- StormOverlay result assembly
 
 
@@ -412,6 +538,42 @@ def test_cli_storm_flags_serialize_into_overlay_spec():
     assert spec["bind_addrs"] == ["127.0.0.2", "127.0.0.3"]
     # And it parses cleanly through the validator.
     assert parse_storm_spec(spec_str)["clients"] == 1500
+
+
+def test_cli_probe_and_herd_flags_serialize_into_overlay_spec():
+    from conductress import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "queue",
+            "add-scenario",
+            "--scenario",
+            "connection-storm",
+            "--source",
+            config.REPO_NAMES[0],
+            "--tls",
+            "--background",
+            "none",
+            "--server-sample-fields",
+            "dead_at_accept,foo",
+            "--storm-herd-command-interval-ms",
+            "1000",
+            "--storm-probe-clients",
+            "4",
+            "--storm-probe-rate",
+            "1000",
+            "--storm-probe-tls",
+        ]
+    )
+    spec = json.loads(cli.build_scenario_overlay_spec(args))
+    assert spec["herd_command_interval_ms"] == 1000
+    assert spec["probe_clients"] == 4
+    assert spec["probe_rate"] == 1000
+    assert spec["probe_tls"] is True
+    assert args.tls is True
+    assert args.background == "none"
+    assert args.server_sample_fields == "dead_at_accept,foo"
 
 
 def test_cli_storm_flags_rejected_without_connection_storm():

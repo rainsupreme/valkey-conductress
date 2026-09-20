@@ -79,6 +79,18 @@ optional; each falls back to a default.
   "Cold-server first-contact cost".
 - `--storm-bind-addrs` -- `,`-separated loopback source addresses to spread the
   clients' ephemeral ports across (see "Ephemeral-port exhaustion").
+- `--storm-herd-command-interval-ms` -- active herd: a connected client re-sends
+  the first command every N ms (`0` = idle hold, the default). See "Active herd".
+- `--storm-probe-clients` / `--storm-probe-rate` -- fixed-rate goodput probe:
+  this many open-loop clients sending this aggregate commands/s. Both or
+  neither. See "Fixed-rate probe".
+- `--storm-probe-tls` -- run the probe over TLS too (default: plaintext port).
+- `--tls` -- run the herd over TLS on a dedicated TLS port (builds
+  `BUILD_TLS=yes`). See "TLS herd".
+- `--background none|memtier` -- background load: `memtier` (default) or `none`
+  (skip memtier; the probe is the goodput measure and dip metrics are empty).
+- `--server-sample-fields` -- `,`-separated extra INFO fields the sampler records
+  per tick (unknown fields record `null`). See "Sampler additions".
 - `--server-sample-ms` -- poll the server's INFO counters every N ms during the
   measurement (`0` = off, else `>= 20`). connection-storm defaults to 100 when
   the flag is absent (see "The server-side sampler").
@@ -200,6 +212,16 @@ Under the per-rep scenario metrics (and aggregated in results):
   (wall-clock), `--storm-start-delay-s` after the overlay started; the
   generator's prewarm runs between this and `storm.origin_wall`.
 - `storm.generator_config`, `storm.schema_version` -- provenance.
+- `storm.tls`, `storm.tls_port`, `storm.openssl_version` -- TLS herd provenance
+  (from generator `schema_version` 4).
+- `storm.herd_commands_ok` -- successful active-herd steady-command replies
+  (`0` for the idle hold).
+- `storm.herd_connects_per_s_capacity` -- the generator's measured sequential
+  connect rate at startup; a herd target rate above this is generator-bound.
+- `storm.probe_timeline` -- the fixed-rate probe's per-second buckets (`sent`,
+  `served`, `skipped`, `p50_ms`, `p99_ms`, `max_ms`); empty when no probe ran.
+- `storm.probe_recovery_s` -- probe goodput recovery time (see "Fixed-rate
+  probe"); `null` when it never recovered or no probe ran.
 
 The scenario also records `overlay_start_offset_s`: how long after the
 background measurement began the overlay started (the 1 s connect-establish
@@ -261,6 +283,137 @@ the background buckets from `background_start_wall + second`, the sampler rows
 from their own `t_reply`, and the storm timeline from `storm.origin_wall +
 t_ms/1000`. This replaces the older ~1 s inference via `overlay_start_offset_s`.
 
+## TLS herd
+
+`--tls` runs the storm herd over TLS. Valkey serves TLS only when built with
+`BUILD_TLS=yes` and started with `--tls-port`, so the scenario:
+
+- appends `BUILD_TLS=yes` to the build's make args (the same source/specifier
+  without `--tls` still builds and caches a byte-identical non-TLS binary);
+- serves TLS on a **dedicated port** (`--port` + 1, i.e. 6380 for the default
+  6379) with `--tls-cert-file`/`--tls-key-file`/`--tls-ca-cert-file` and
+  `--tls-auth-clients no`, while the plaintext port keeps carrying prefill,
+  `INFO`, memtier and the probe unchanged;
+- points the herd at the TLS port and verifies the server against the runner's
+  test CA (`check_hostname` off, since the herd targets loopback aliases the
+  cert does not name).
+
+The connect timeout covers the TCP connect **and** the TLS handshake together,
+matching what a client library's connect timeout covers; a handshake that does
+not complete in time is a `connect_timeout` (there is no separate
+handshake-timeout outcome). The document records `tls: true`, the TLS port, and
+the client's OpenSSL version.
+
+Certificates are generated **once per runner** in bootstrap
+(`ensure_tls_test_certs`): a self-signed CA plus a server cert for
+`127.0.0.1`/`localhost` (10-year, RSA 2048) under `~/conductress/tls/`, mirroring
+what Valkey's own `utils/gen-test-certs.sh` produces but without depending on a
+Valkey source checkout at run time. It is idempotent -- a re-bootstrap does not
+rotate the certs. These authenticate nothing real; they exist only for the
+loopback benchmark.
+
+`io-threads` matters here: Valkey offloads the TLS handshake to I/O threads only
+when `io-threads > 1`; with `io-threads 1` the handshake runs on the main
+thread. Both are legitimate arms -- neither is a default, so name the one you
+mean.
+
+TLS handshakes cost real client CPU (~1-2 ms each in Python), so a large TLS
+herd needs enough workers: at `--storm-clients 8000` with 1 s timeouts, use
+`--storm-workers 16` or more. `herd_connects_per_s_capacity` (below) flags a
+herd the generator cannot drive.
+
+## Active herd
+
+By default a connected client holds its connection idle until the deadline
+(today's behaviour). `--storm-herd-command-interval-ms N` makes it an **active
+herd** instead: a connected client re-sends `--storm-first-command` every `N`
+ms and applies `--storm-reply-timeout-ms` to each reply. A reply timeout closes
+the connection and re-enters the reconnect policy, recording the outcome
+`reply_timeout_steady` (a timeout *while connected*, distinct from
+`reply_timeout` on the first command of a fresh connection).
+
+This is what lets a stall at t=T kick an **already-connected** fleet into
+reconnecting, which is what makes post-trigger hysteresis observable: with an
+idle hold, clients that connected before the stall simply sit there; with an
+active herd, they issue a command during the stall, time out, and rejoin the
+reconnect storm. Successful steady replies are counted as `storm.herd_commands_ok`
+(the herd is not the goodput probe -- use the fixed-rate probe for that).
+
+`storm.herd_connects_per_s_capacity` is measured at startup by timing 200
+sequential connects (TLS or plain, matching the herd's transport), so a cell
+whose herd is generator-bound is flagged in the result rather than misread as a
+server ceiling.
+
+## Fixed-rate probe
+
+`--storm-probe-clients C --storm-probe-rate R` run a **fixed-rate open-loop
+goodput probe**: `C` steady clients that send `--storm-first-command` at an
+aggregate `R` commands/s, measuring served commands/s and per-request latency
+at 1 s. It lives in the generator (not memtier) because it needs per-request
+latencies, which memtier's per-second aggregate output does not give.
+
+- **Open-loop.** The probe sends on schedule regardless of replies: at most one
+  request is outstanding per client, and a slot that arrives while the previous
+  request is still in flight is *skipped* (counted `skipped`), not queued. That
+  is what makes it a goodput measure -- a stalled main thread shows as skips and
+  a served/s collapse, not a growing backlog that hides the stall.
+- **Plaintext by default.** The probe uses the **plaintext** port, since it
+  measures the main thread's goodput, not the handshake path. `--storm-probe-tls`
+  runs it over TLS instead. With a TLS herd, the probe still targets the
+  plaintext port automatically.
+- **Timeline.** `storm.probe_timeline` carries one bucket per second: `sent`,
+  `served`, `skipped`, `p50_ms`, `p99_ms`, `max_ms`, on the storm's shared
+  wall-clock origin. The probe starts with the generator (so it captures the
+  pre-storm baseline) and ends with it.
+- **Recovery.** `storm.probe_recovery_s` is the time from the stall end (or the
+  storm origin when there is no stall) until probe `served` is back within 10 %
+  of its pre-storm mean for 3 consecutive seconds; `None` if it never recovers.
+  This is the probe's success criterion (typically a few seconds).
+
+`--background none` skips memtier entirely, so `interval_rps`/dip metrics are
+empty and the probe series is the goodput measure. `--background memtier` (the
+default) keeps the steady memtier load; the probe then measures goodput at a
+finer, latency-aware resolution alongside it.
+
+## Sampler additions: CPU, accept errors, extra fields
+
+Beyond the INFO counters, on a **local** run (runner and server share a host --
+the fleet today) the sampler also records, per tick:
+
+- `main_cpu_pct` / `io_threads_cpu_pct` -- the server main thread's and (when
+  `io-threads > 1`) the summed I/O threads' CPU over the tick, read from
+  `/proc/<pid>/task/<tid>/stat` (reusing `cpu_sampling.read_local_thread_stats`).
+  A percentage is the busy fraction of one core x 100. `null` when the server is
+  remote.
+- `accept_errors` -- new `Error accepting a client connection` lines in the
+  server log since the last tick, counted from a byte offset (so the cost is the
+  tick's own log growth, not the whole file). `null` when remote.
+
+`--server-sample-fields dead_at_accept,other_field` records arbitrary extra INFO
+fields (any section) verbatim per tick, so a patched build's counter appears in
+the `server_timeline` rows with no code change; an unknown field records `null`
+rather than erroring. Ticks stay at their configured cadence (100 ms default);
+a 1 s consumer resolution is a downsample of that, never the other way round.
+
+## Cells this enables
+
+These are documented here but **not run by the code change** -- they are the
+experiment the feature exists for. On armbench (Graviton 3), a 5-minute window,
+stall `debug-sleep:3` at 60 s (`--storm-start-delay-s 60`), active herd
+(`--storm-herd-command-interval-ms 1000`), probe 4 x 1000/s, memtier off,
+prewarm on, 3 reps:
+
+- **TLS vs plain herd**, N = 2000, unstable baseline, io-threads 1 and 9
+  (the handshake runs on the main thread at io-threads 1, offloaded at 9).
+- **N sweep** 500, 1000, 2000, 4000, 8000 on the TLS herd: the collapse-threshold
+  curve is `storm.probe_recovery_s` (and `storm.amplification`) against N, per
+  build.
+- **Builds**: unstable; unstable + `TCP_DEFER_ACCEPT` on the listener; unstable +
+  an RDHUP/RST check before the TLS handshake (both are separate branches on
+  `valkey-rainfall/valkey`). Run as matched `--source/--specifier` A/B pairs on
+  the same runner.
+- **Pacing arm**: `--server-args "--max-new-connections-per-cycle 1"`.
+
 ## Plotting
 
 With the `plots` extra installed (`pip install 'conductress[plots]'`):
@@ -272,7 +425,9 @@ conductress plot connection-storm <task-id> [<task-id> <task-id>] \
 
 One column per task id (at most three), four rows sharing the x axis:
 
-1. background throughput (memtier `interval_rps`, step plot at 1 s)
+1. goodput/s: when a probe series exists, probe `served`/s (step) with `p99` on
+   a twin axis (same hue, dotted) and memtier `interval_rps` faint behind it;
+   otherwise memtier `interval_rps` (step at 1 s)
 2. `connected_clients` (server sampler, line broken across gaps)
 3. listen-queue overflows (cumulative, its own row and scale -- not a twin
    axis; an empty row with a note when the server was remote)
