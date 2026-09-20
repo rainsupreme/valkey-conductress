@@ -164,6 +164,36 @@ class TestDashboardPublisher:
         assert "get-k16-v64-t7-p10" in workload_ids
 
     @patch("conductress.utility.subprocess.run")
+    def test_perf_metrics_exported_for_latency_but_not_memory(self, mock_run):
+        """Rate-limited latency cells collect the same counters as throughput cells
+        and must publish the same per-request series; memory cells collect none."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        def make_coord(workload_id, metric_id):
+            coord = MagicMock()
+            coord.workload_id = workload_id
+            coord.metric_id = metric_id
+            coord.state = MagicMock()
+            coord.export.return_value = 1
+            return coord
+
+        pub = DashboardPublisher(
+            "user@host:/path",
+            [
+                make_coord("get-k16-v16-t7-p10", "throughput"),
+                make_coord("get-k16-v16-t7-p1-r100k", "latency"),
+                make_coord("memory-set-k16-v64", "memory"),
+            ],
+        )
+
+        with patch("conductress.sweep.exporter.export_perf_metrics") as mock_perf:
+            with patch("conductress.sweep.exporter.export_manifest"):
+                pub.on_task_completed(MagicMock())
+
+        workload_ids = [call.args[3] for call in mock_perf.call_args_list]
+        assert workload_ids == ["get-k16-v16-t7-p10", "get-k16-v16-t7-p1-r100k"]
+
+    @patch("conductress.utility.subprocess.run")
     def test_notable_export_includes_valkey_throughput_and_memory_only(self, mock_run):
         """Notable feed aggregates Valkey throughput+memory series; Redis and latency are excluded."""
         mock_run.return_value = MagicMock(returncode=0)

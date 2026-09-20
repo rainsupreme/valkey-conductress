@@ -379,21 +379,25 @@ class CachecannonLatencySweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
         }
 
     def on_task_completed(self, task: BaseTaskData) -> None:
-        """Record p99 for bisection and keep the full percentile set for export."""
+        """Record p99 for bisection, the counters the cell collected, and the full percentile set.
+
+        The base class records the score and CV, then lifts the perf counters
+        and CPU stacks the cell collected (the same fields a throughput point
+        carries, so the same per-request series can be published for this
+        workload). The percentile detail is the only latency-specific field.
+        """
         if not self._is_my_task(task):
             return
         entry = self._find_task_entry(task)
-        result = self._extract_result(task)
-        if result and entry:
-            value, cv, reps = result
-            self.record_result(task.sweep_commit, value, cv, reps)  # type: ignore[attr-defined]
-            latency_data = self.latency_data_from_entry(entry)
-            if latency_data and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
-                self.state.points[task.sweep_commit].latency_data = latency_data  # type: ignore[attr-defined]
-                self.state.save(self.state_file)
-        else:
+        if not entry or not self._extract_result(task):
             commit = getattr(task, "sweep_commit", "?")
             logger.warning("Could not extract latency result for %s", commit[:8])
+            return
+        super().on_task_completed(task)
+        latency_data = self.latency_data_from_entry(entry)
+        if latency_data and task.sweep_commit in self.state.points:  # type: ignore[attr-defined]
+            self.state.points[task.sweep_commit].latency_data = latency_data  # type: ignore[attr-defined]
+            self.state.save(self.state_file)
 
     def export(self, output_path: Path, platform: str) -> int:
         from conductress.sweep.exporter import export_latency
