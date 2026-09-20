@@ -19,9 +19,9 @@ through the real ENA path in both directions:
   both private IPs as local and short-circuits via the `local` routing table.
 - The generator targets the **primary ENI's private IP** (conductress rewrites
   a localhost target automatically when `--client-netns` is set).
-- Both directions traverse real driver/IRQ/NAPI machinery. Validated on
-  g4bench: ~99µs fabric RTT (vs ~15µs loopback) and 400K+ hardware interrupts
-  on the secondary ENI during a short burst.
+- Both directions traverse real driver/IRQ/NAPI machinery. Measured on a
+  Graviton 4 host: ~99µs fabric RTT (vs ~15µs loopback) and 400K+ hardware
+  interrupts on the secondary ENI during a short burst.
 
 ## When to use which path
 
@@ -38,7 +38,7 @@ be a deliberate step-change with overlap cells.
 
 1. Create a secondary ENI in the instance's subnet and attach it (device
    index 1). The ENI needs security groups that admit intra-SG traffic — on
-   our hosts that means BOTH `default + web server` AND `default` (the latter
+   these instances that means BOTH `default + web server` AND `default` (the latter
    carries the self-referencing allow-all rule; without it the hairpin
    silently drops).
 
@@ -70,14 +70,9 @@ be a deliberate step-change with overlap cells.
    immediately at preflight with a pointer here — not with a cryptic
    benchmark error mid-run.
 
-## Provisioned hosts (Aug 2026)
-
-| Host | ENI | netns IP | MAC | Gateway |
-|---|---|---|---|---|
-| g4bench | eni-06b9b580692985dbe | 172.31.45.237 | 0e:5c:94:9d:0e:73 | 172.31.32.1 |
-| bench | eni-0a2b2cb2324b7f8a1 | 172.31.40.160 | 0e:9d:8f:cd:cf:e1 | 172.31.32.1 |
-| armbench | eni-02dbc99b6f9e561e9 | 172.31.65.103 | 16:ff:ee:8c:9e:69 | 172.31.64.1 |
-| intelbench | eni-092c9b0568abf0145 | 172.31.69.61 | 16:ff:dc:03:32:b1 | 172.31.64.1 |
+Each host's ENI ID, private IP, MAC and subnet gateway are deployment details.
+Keep them in that host's `/etc/loadgen-netns.conf` (which the systemd unit
+already reads) or in local notes, not in this document.
 
 ## Usage
 

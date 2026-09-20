@@ -1,6 +1,6 @@
 # Runner fleet mailbox
 
-Step 4 connects an independent Conductress runner to its central per-runner inbox. Management traffic occurs only between tasks; task execution remains local and independent.
+The runner fleet mailbox connects an independent Conductress runner to its central per-runner inbox. Runners push updates between jobs; during a job no data is transferred and no other work is done, so task execution stays local and independent.
 
 ## Modes
 
@@ -74,22 +74,16 @@ At restart:
 - pending outcomes are replayed idempotently;
 - missing accepted work without a result is treated as a blocking recovery error.
 
-## Boundary-only status migration
+## Status publication
 
-Migration is complete fleet-wide (Sep 2026). The per-minute
-`conductress-status.timer` (`python3 -m conductress status-export --publish`
-every 60 s) is retired: `bootstrap.py` now disables and removes the unit
-files wherever it still finds them (`retire_status_timer`), so a
-re-bootstrapped host does not get it back. The runner publishes at task
-boundaries and while idle from its own loop; the `status-export` CLI
-subcommand remains for a manual one-off export.
+Runners publish status only between jobs and while idle; there is no periodic
+status timer. The `status-export` CLI subcommand remains for a manual one-off
+export.
 
-The timer had been left enabled on one runner (g4bench) after the migration.
-Each run consumed ~12 CPU-seconds across 64 threads on whatever cores the
-scheduler picked, and the replica-read bottleneck verdict reported it as a
-busy unallocated core on five consecutive cells before the thread
-attribution named it. A runner that reports `host` with a `python3` main
-thread on a random core is the signature of this timer having come back.
+Bootstrap disables and removes any periodic status-timer unit it finds
+(`retire_status_timer`), so a re-bootstrapped host does not acquire one. A
+runner that reports `host` with a `python3` main thread on a random core is the
+signature of a periodic status timer running.
 
 The runner service should still carry:
 
@@ -123,12 +117,12 @@ These fields only report state. They expose no queue, cancel, or execution contr
 
 1. Deploy the control service and CLI.
 2. Configure runner identity and token.
-3. Enable `shadow` on `armbench`; verify status/authentication over several boundaries.
+3. Enable `shadow` on one runner first; verify status/authentication over several boundaries.
 4. Enable `live`; submit one harmless task and verify claim/import/accept/outcome.
 5. Verify data-host access logs show no runner requests between starting and completion boundaries.
 6. Confirm bootstrap retired the periodic status timer (`systemctl is-enabled conductress-status.timer` reports not-found) and set `CONDUCTRESS_BOUNDARY_STATUS_ONLY=1`.
 7. Observe at least three clean boundaries.
-8. Repeat sequentially for `g4bench`, `bench`, then `intelbench`.
+8. Repeat sequentially for each remaining runner.
 
 ## Versioned sweep epoch toggle
 

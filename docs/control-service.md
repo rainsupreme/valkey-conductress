@@ -1,8 +1,8 @@
 # Fleet control service
 
-The Phase 2 control service is a durable mailbox and status registry for independent Conductress runners. It runs only on the data host. It does not execute benchmarks and it never opens connections to benchmark hosts.
+The control service is a durable mailbox and status registry for independent Conductress runners. It runs only on the data host. It does not execute benchmarks and it never opens connections to benchmark hosts.
 
-Runner polling and inbox-to-local-queue import are Phase 4 work. Deploying this service alone does not change any runner.
+Runner polling and inbox-to-local-queue import are handled elsewhere; deploying this service alone changes no runner.
 
 ## Safety invariants
 
@@ -150,13 +150,13 @@ sqlite3 /var/lib/conductress-control/control.db ".backup '/var/lib/conductress-c
 
 `audit_log` in SQLite is authoritative. `/var/log/conductress-control/audit.jsonl` is a best-effort append-only mirror for external inspection.
 
-## Phase boundary
+## Out of scope for this service
 
-This PR intentionally does not include:
+This service does not include:
 
 - fleet-aware local CLI commands;
 - runner mailbox polling or local queue import;
-- boundary-only status publication migration;
+- status publication between jobs;
 - daily canary scheduling;
-- live data-host deployment;
+- deployment to the data host;
 - multiple same-platform scheduling.

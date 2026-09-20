@@ -256,7 +256,7 @@ the client population.
   detects a gap as `t_reply - t_sent > 5 x tick` (helper `sampler_gaps(rows,
   tick_ms)`); the plot uses it to break the line and draw a grey marker.
 - **Kernel counters are local-only.** When the runner and the server share a
-  host (loopback, the fleet today) each row carries `ListenOverflows` /
+  host (loopback) each row carries `ListenOverflows` /
   `ListenDrops` as deltas from the first tick, read from `/proc/net/netstat`
   (reusing `conductress.stormgen.netstat`). When the server is remote those two
   fields are `null` (logged once) -- the counters would be the runner host's,
@@ -324,8 +324,8 @@ herd the generator cannot drive.
 
 ## Active herd
 
-By default a connected client holds its connection idle until the deadline
-(today's behaviour). `--storm-herd-command-interval-ms N` makes it an **active
+By default a connected client holds its connection idle until the deadline.
+`--storm-herd-command-interval-ms N` makes it an **active
 herd** instead: a connected client re-sends `--storm-first-command` every `N`
 ms and applies `--storm-reply-timeout-ms` to each reply. A reply timeout closes
 the connection and re-enters the reconnect policy, recording the outcome
@@ -377,8 +377,8 @@ finer, latency-aware resolution alongside it.
 
 ## Sampler additions: CPU, accept errors, extra fields
 
-Beyond the INFO counters, on a **local** run (runner and server share a host --
-the fleet today) the sampler also records, per tick:
+Beyond the INFO counters, on a **local** run (runner and server share a host)
+the sampler also records, per tick:
 
 - `main_cpu_pct` / `io_threads_cpu_pct` -- the server main thread's and (when
   `io-threads > 1`) the summed I/O threads' CPU over the tick, read from
@@ -398,7 +398,7 @@ a 1 s consumer resolution is a downsample of that, never the other way round.
 ## Cells this enables
 
 These are documented here but **not run by the code change** -- they are the
-experiment the feature exists for. On armbench (Graviton 3), a 5-minute window,
+experiment the feature exists for. On a Graviton 3 runner, a 5-minute window,
 stall `debug-sleep:3` at 60 s (`--storm-start-delay-s 60`), active herd
 (`--storm-herd-command-interval-ms 1000`), probe 4 x 1000/s, memtier off,
 prewarm on, 3 reps:
@@ -409,8 +409,8 @@ prewarm on, 3 reps:
   curve is `storm.probe_recovery_s` (and `storm.amplification`) against N, per
   build.
 - **Builds**: unstable; unstable + `TCP_DEFER_ACCEPT` on the listener; unstable +
-  an RDHUP/RST check before the TLS handshake (both are separate branches on
-  `valkey-rainfall/valkey`). Run as matched `--source/--specifier` A/B pairs on
+  an RDHUP/RST check before the TLS handshake (both are separate experimental
+  branches). Run as matched `--source/--specifier` A/B pairs on
   the same runner.
 - **Pacing arm**: `--server-args "--max-new-connections-per-cycle 1"`.
 
