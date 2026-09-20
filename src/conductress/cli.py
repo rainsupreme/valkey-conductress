@@ -13,6 +13,7 @@ from .cachecannon import DEFAULT_CACHECANNON_BINARY
 from .fleet_client import FleetClientError
 from .task_queue import BaseTaskData, TaskQueue
 from .tasks.task_perf_benchmark import PerfTaskData
+from .tasks.task_replica_read import DEFAULT_MAX_LAG_SECONDS
 from .topology import TopologySpec
 from .utility import HumanByte, HumanTime, validate_cpulist
 
@@ -895,7 +896,15 @@ def build_parser() -> argparse.ArgumentParser:
     rr_parser.add_argument(
         "--info-fields",
         default="",
-        help="Comma-separated extra INFO fields to sample from every instance (e.g. counters a build under test exposes)",
+        help="Comma-separated extra INFO fields to sample from every instance, from any INFO section "
+        "(e.g. counters a build under test exposes)",
+    )
+    rr_parser.add_argument(
+        "--max-lag-seconds",
+        type=float,
+        default=DEFAULT_MAX_LAG_SECONDS,
+        help="Guard: fail a rep whose replica sat more than this far behind the primary on average over the "
+        f"scored window, measured in seconds of replication stream (default: {DEFAULT_MAX_LAG_SECONDS})",
     )
     _add_cachecannon_binary_arg(rr_parser)
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
@@ -1663,6 +1672,7 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
             write_pipelining=args.write_pipelining,
             sample_interval=args.sample_interval,
             info_fields=args.info_fields,
+            max_lag_seconds=args.max_lag_seconds,
             cachecannon_binary=args.cachecannon_binary,
             benchmark_cpu_override=args.client_cpus,
             cpu_profile=args.cpu_profile,
@@ -1687,6 +1697,7 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
     )
     print(f"  reader: GET size={val_size} P{args.pipelining} {args.connections}c {args.threads}t at the first replica")
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions} keyspace={args.keyspace}")
+    print(f"  lag guard: scored-window mean <= {args.max_lag_seconds} s of replication stream")
     for label, value in (
         ("server-args", args.server_args),
         ("primary-args", args.primary_args),

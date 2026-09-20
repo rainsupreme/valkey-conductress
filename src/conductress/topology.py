@@ -538,7 +538,7 @@ class TopologyGroup:
     async def sample(
         self, extra_fields: Optional[list] = None, cpu: bool = True, pin_cpus: str = "", host_threads: bool = False
     ) -> dict:
-        """One ``INFO replication stats`` snapshot per instance.
+        """One INFO snapshot per instance.
 
         All instances are queried from ONE remote shell invocation, back to
         back, so the skew between the primary's and a replica's offset reading
@@ -546,6 +546,13 @@ class TopologyGroup:
         SSH round trip per instance. Lag resolution is therefore about
         ``skew_seconds * replication_bytes_per_second``; treat lags below that
         as zero.
+
+        Without ``extra_fields`` only the ``replication`` and ``stats`` sections
+        are fetched. With them the whole of ``INFO everything`` is fetched, so
+        a requested field is found in whichever section its build puts it
+        (a build-specific section, ``memory``, ``commandstats``, a module's
+        section) without this code knowing the section's name. The larger
+        payload is a few tens of KB per instance per tick.
 
         Returns ``{"t": monotonic_seconds, "instances": {port: {...}}}`` with the
         replication offsets, ops/sec, and any ``extra_fields`` present (missing
@@ -574,9 +581,9 @@ class TopologyGroup:
             )
         extra_fields = extra_fields or []
         cli = str(config.PROJECT_ROOT / config.VALKEY_CLI)
+        sections = info_sections(extra_fields)
         parts = [
-            f"echo '{_SAMPLE_SEPARATOR}{s.port}'; {cli} -h {s.ip} -p {s.port} info replication stats"
-            for s in self.servers
+            f"echo '{_SAMPLE_SEPARATOR}{s.port}'; {cli} -h {s.ip} -p {s.port} info {sections}" for s in self.servers
         ]
         if cpu:
             parts.append(
@@ -604,6 +611,18 @@ class TopologyGroup:
 
 
 _SAMPLE_SEPARATOR = "=== conductress-instance "
+_BASE_INFO_SECTIONS = "replication stats"
+
+
+def info_sections(extra_fields: Optional[list]) -> str:
+    """INFO section argument for one sampling tick.
+
+    The base sections carry everything the sampler itself reads (offsets,
+    ops/sec, event-loop counters). A requested extra field may live in any
+    section, including ones only the build under test has, so asking for any
+    extra field widens the fetch to ``everything``.
+    """
+    return "everything" if extra_fields else _BASE_INFO_SECTIONS
 
 
 def parse_multi_info(output: str, extra_fields: Optional[list] = None) -> dict:
@@ -672,8 +691,21 @@ def _to_number(value: str):
 
 
 def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -> dict:
-    """Summarise primary-minus-replica offset deltas (bytes) across samples."""
+    """Summarise primary-minus-replica offset deltas (bytes) across samples.
+
+    Besides the byte statistics the summary carries the replication stream's
+    rate over the samples (``stream_bytes_per_second``, from the primary's
+    offset advance between the first and last sample) and the mean lag
+    expressed in that rate's units (``mean_seconds``: how far behind the
+    primary the replica sat, as time). Seconds are the comparable unit across
+    write rates: a fixed byte threshold means different things at 10k and
+    200k writes per second, while a few milliseconds of sampling skew is the
+    noise floor at every rate. ``mean_seconds`` is ``None`` when the rate
+    cannot be derived (fewer than two samples, or a stream that did not
+    advance).
+    """
     lags = []
+    primary_points = []
     for sample in samples:
         inst = sample["instances"]
         p = inst.get(primary_port, {}).get("master_repl_offset")
@@ -681,12 +713,22 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
         if p is None or r is None:
             continue
         lags.append(max(0, p - r))
+        if "t" in sample:
+            primary_points.append((sample["t"], p))
     if not lags:
         return {"samples": 0}
     lags_sorted = sorted(lags)
+    mean_bytes = sum(lags) / len(lags)
+    rate = None
+    if len(primary_points) >= 2:
+        (t0, p0), (t1, p1) = primary_points[0], primary_points[-1]
+        if t1 > t0:
+            rate = (p1 - p0) / (t1 - t0)
     return {
         "samples": len(lags),
-        "mean_bytes": sum(lags) / len(lags),
+        "mean_bytes": mean_bytes,
         "max_bytes": lags_sorted[-1],
         "p99_bytes": lags_sorted[min(len(lags_sorted) - 1, int(round(0.99 * (len(lags_sorted) - 1))))],
+        "stream_bytes_per_second": rate,
+        "mean_seconds": (mean_bytes / rate) if rate is not None and rate > 0 else None,
     }

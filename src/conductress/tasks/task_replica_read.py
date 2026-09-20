@@ -22,7 +22,9 @@ Phases per repetition:
        whole reader window
     4. guards: reader 0% errors and >= 99% hit rate; writer 0% errors and
        achieved rate within tolerance of the target (an under-delivering
-       writer silently turns the run into a lower-write-rate run)
+       writer silently turns the run into a lower-write-rate run); replica
+       mean lag over the scored window within --max-lag-seconds of stream (a
+       replica that falls behind serves stale data at a full hit rate)
     5. bottleneck verdict: was anything other than the server the limit?
        Recorded on the result, never a failure (see cpu_sampling)
 
@@ -79,12 +81,21 @@ WRITE_RATE_TOLERANCE = 0.10
 PRELOAD_DURATION_SECONDS = 1
 # Reader must hit: every key was written to the primary and replicated.
 READER_MIN_HIT_RATE_PCT = 99.0
+# Replica must be keeping up: mean lag over the scored window, in seconds of
+# replication stream. Sampling skew puts the noise floor at a few
+# milliseconds, so one second is far above it at any write rate while still
+# catching a replica whose main thread is starving the replication link.
+DEFAULT_MAX_LAG_SECONDS = 1.0
 
 
 def _io_threads_of(inst) -> int:
     if inst.io_threads is None:
         raise ValueError(f"instance on port {inst.port} has no io_threads")
     return inst.io_threads
+
+
+def _fmt_seconds(value: Optional[float]) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 @dataclass
@@ -112,6 +123,11 @@ class ReplicaReadTaskData(BaseTaskData):
     # Sampling
     sample_interval: float = 1.0
     info_fields: str = ""  # comma-separated extra INFO fields to sample (e.g. counters a build under test exposes)
+    # Guard: a rep fails when the replica's mean lag over the scored window,
+    # expressed as seconds of replication stream, exceeds this. A replica that
+    # falls behind serves the reader stale data at a full hit rate, so the run
+    # would silently measure a different experiment (see _check_guards).
+    max_lag_seconds: float = DEFAULT_MAX_LAG_SECONDS
     cachecannon_binary: str = DEFAULT_CACHECANNON_BINARY
     benchmark_cpu_override: str = ""
     # perf-record the measured replica (main + io threads, frame-pointer call
@@ -138,6 +154,9 @@ class ReplicaReadTaskData(BaseTaskData):
             raise ValueError(f"repetitions must be >= 1, got {self.repetitions}")
         if self.duration < 1:
             raise ValueError(f"duration must be >= 1s, got {self.duration}")
+        self.max_lag_seconds = float(self.max_lag_seconds)
+        if not self.max_lag_seconds > 0:
+            raise ValueError(f"max_lag_seconds must be > 0, got {self.max_lag_seconds}")
         if self.sample_interval <= 0:
             raise ValueError(f"sample_interval must be > 0, got {self.sample_interval}")
         for name in ("connections", "threads", "write_connections", "write_threads", "pipelining", "write_pipelining"):
@@ -540,11 +559,20 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         self._cpu_stacks_io = io_stacks
         self.logger.info("CPU profile: %d main-thread stacks, %d io-thread stacks", len(main_stacks), len(io_stacks))
 
-    def _check_guards(self, reader: dict, writer: dict) -> None:
-        """Phase 4: conditions under which the rep is not the experiment it claims to be."""
-        hit = reader["hit_rate"]["percent"] if reader["hit_rate"] else 0.0
+    def _check_guards(self, reader: dict, writer: dict, lag: dict) -> None:
+        """Phase 4: conditions under which the rep is not the experiment it claims to be.
+
+        ``lag`` is ``replication_lag_stats`` over the scored window only: the
+        warmup is the reader ramping, the scored window is what the score is
+        made of.
+        """
+        hit_rate = reader["hit_rate"] or {}
+        hit = hit_rate.get("percent", 0.0)
         if hit < READER_MIN_HIT_RATE_PCT:
-            raise RuntimeError(f"reader hit rate {hit}% < {READER_MIN_HIT_RATE_PCT}%: replica dataset incomplete")
+            raise RuntimeError(
+                f"reader hit rate {hit}% < {READER_MIN_HIT_RATE_PCT}% "
+                f"({hit_rate.get('hits')} hits, {hit_rate.get('misses')} misses): replica dataset incomplete"
+            )
         achieved = writer["throughput_rps"]
         target = self.task.write_rate
         if achieved < target * (1 - WRITE_RATE_TOLERANCE):
@@ -552,29 +580,62 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 f"writer achieved {achieved:.0f}/s, below {1 - WRITE_RATE_TOLERANCE:.0%} of target "
                 f"{target}/s: primary or writer could not sustain the rate"
             )
+        self._check_lag_guard(lag)
+
+    def _check_lag_guard(self, lag: dict) -> None:
+        """Fail the rep when the replica sat behind its primary during the scored window.
+
+        The threshold is in seconds of replication stream (``mean_seconds``),
+        the unit that means the same thing at every write rate. A replica that
+        cannot keep up still answers every GET, at a full hit rate, from a
+        dataset the primary has already moved past; the reader's throughput is
+        then a number about a different experiment.
+        """
+        if lag.get("samples", 0) < 2:
+            self.logger.warning("lag guard skipped: %d offset samples in the scored window", lag.get("samples", 0))
+            return
+        mean_bytes = lag["mean_bytes"]
+        if mean_bytes == 0:
+            return
+        seconds = lag["mean_seconds"]
+        evidence = (
+            f"mean {mean_bytes:,.0f} bytes, max {lag['max_bytes']:,} bytes over {lag['samples']} samples, "
+            f"stream {lag['stream_bytes_per_second'] or 0:,.0f} bytes/s"
+        )
+        if seconds is None:
+            raise RuntimeError(f"replica lag behind a stream that did not advance ({evidence}): replica not keeping up")
+        if seconds > self.task.max_lag_seconds:
+            raise RuntimeError(
+                f"replica lag {seconds:.2f} s mean over the scored window > max_lag_seconds "
+                f"{self.task.max_lag_seconds} ({evidence}): reads measured a replica behind its primary"
+            )
 
     def _judge(self, group: TopologyGroup, rep: int, placement: "_Placement", m: "_Measurement") -> dict:
         """Phases 4-5: apply the guards, then reduce the rep to its result row entry with a verdict."""
-        self._check_guards(m.reader, m.writer)
         primary, replica = _primary_and_replica(group)
+        window_start = m.reader_started + self.task.warmup
         lag = replication_lag_stats(m.samples, primary.port, replica.port)
+        lag["scored"] = replication_lag_stats(
+            [s for s in m.samples if s.get("t", 0.0) >= window_start], primary.port, replica.port
+        )
+        self._check_guards(m.reader, m.writer, lag["scored"])
         parties = cpu_sampling.Parties(
             replica=cpu_sampling.ServerIdentity(replica.port, replica.valkey_pid),
             primary=cpu_sampling.ServerIdentity(primary.port, primary.valkey_pid),
             allocated_cpus=self._allocated_cpus(group, placement),
         )
-        bottleneck = cpu_sampling.bottleneck_verdict(
-            m.samples, parties, window_start=m.reader_started + self.task.warmup
-        )
+        bottleneck = cpu_sampling.bottleneck_verdict(m.samples, parties, window_start=window_start)
         log = self.logger.info if bottleneck["valid"] else self.logger.warning
         log(
-            "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes, bottleneck=%s (%s)",
+            "rep %d/%d: reader %.0f rps, writer %.0f rps (target %d), lag max %s bytes (scored mean %s s), "
+            "bottleneck=%s (%s)",
             rep,
             self.task.repetitions,
             m.reader["throughput_rps"],
             m.writer["throughput_rps"],
             self.task.write_rate,
             lag.get("max_bytes"),
+            _fmt_seconds(lag["scored"].get("mean_seconds")),
             bottleneck["verdict"],
             bottleneck["reason"],
         )
@@ -708,6 +769,10 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "replication_lag": {
                 "max_bytes": max((r["lag"].get("max_bytes", 0) or 0) for r in reps),
                 "mean_bytes": mean((r["lag"].get("mean_bytes", 0.0) or 0.0) for r in reps),
+                # Worst rep's mean lag over its scored window, in seconds of
+                # stream: the quantity the lag guard judged, next to its limit.
+                "max_scored_mean_seconds": max((r["lag"].get("scored", {}).get("mean_seconds") or 0.0) for r in reps),
+                "max_lag_seconds": task.max_lag_seconds,
             },
             "per_run_rps": reader_rps,
             "mean_rps": mean_rps,

@@ -11,7 +11,7 @@ from conductress.cli import build_parser, main
 from conductress.task_queue import BaseTaskData
 from conductress.task_runner import required_server_count
 from conductress.tasks.task_replica_read import METHOD, ReplicaReadTaskData, ReplicaReadTaskRunner
-from conductress.topology import InstanceSpec, TopologySpec, parse_multi_info, replication_lag_stats
+from conductress.topology import InstanceSpec, TopologySpec, info_sections, parse_multi_info, replication_lag_stats
 
 
 def _valid_source():
@@ -128,6 +128,55 @@ def test_replication_lag_stats_from_samples():
     assert stats["max_bytes"] == 300
     assert stats["mean_bytes"] == pytest.approx((100 + 0 + 300) / 3)
     assert replication_lag_stats([], 6379, 6380) == {"samples": 0}
+    # The primary advanced 2000 bytes over the 2 s between the first and last usable sample.
+    assert stats["stream_bytes_per_second"] == pytest.approx(1000.0)
+    assert stats["mean_seconds"] == pytest.approx((100 + 0 + 300) / 3 / 1000.0)
+
+
+def test_replication_lag_stats_seconds_need_an_advancing_stream_and_two_samples():
+    one = [{"t": 0.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}]
+    stats = replication_lag_stats(one, 6379, 6380)
+    assert stats["samples"] == 1 and stats["mean_bytes"] == 400
+    assert stats["stream_bytes_per_second"] is None and stats["mean_seconds"] is None
+    stalled = [
+        {"t": 0.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}},
+        {"t": 1.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}},
+    ]
+    stats = replication_lag_stats(stalled, 6379, 6380)
+    assert stats["stream_bytes_per_second"] == 0.0 and stats["mean_seconds"] is None
+    # Samples without a clock still contribute bytes but never a rate.
+    unclocked = [{"instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}] * 3
+    stats = replication_lag_stats(unclocked, 6379, 6380)
+    assert stats["samples"] == 3 and stats["mean_seconds"] is None
+
+
+def test_info_sections_widen_to_everything_only_for_extra_fields():
+    assert info_sections(None) == "replication stats"
+    assert info_sections([]) == "replication stats"
+    assert info_sections(["dplus_speculative_hits"]) == "everything"
+
+
+def test_parse_multi_info_picks_extra_fields_out_of_other_sections():
+    output = """=== conductress-instance 6379
+# Replication
+role:master
+master_repl_offset:5000
+# Stats
+total_commands_processed:10
+# Memory
+used_memory:123456
+# Commandstats
+cmdstat_get:calls=7,usec=70,usec_per_call=10.00
+# Keyspace
+db0:keys=3,expires=0
+"""
+    row = parse_multi_info(output, ["used_memory", "cmdstat_get", "db0", "absent_field"])[6379]
+    assert row["master_repl_offset"] == 5000 and row["total_commands_processed"] == 10
+    assert row["used_memory"] == 123456
+    # Non-numeric values are kept verbatim; the line splits on its first colon only.
+    assert row["cmdstat_get"] == "calls=7,usec=70,usec_per_call=10.00"
+    assert row["db0"] == "keys=3,expires=0"
+    assert "absent_field" not in row
 
 
 def test_parse_multi_info_splits_instances_and_extra_fields():
@@ -233,7 +282,13 @@ def test_task_rejects_invalid_levers(overrides, match):
 
 
 def test_task_round_trips_through_queue_document(tmp_path):
-    task = _task(replica_count=2, write_rate=200_000, replica_args="--io-threads-ownership yes", info_fields="a, b")
+    task = _task(
+        replica_count=2,
+        write_rate=200_000,
+        replica_args="--io-threads-ownership yes",
+        info_fields="a, b",
+        max_lag_seconds=2.5,
+    )
     path = tmp_path / "task.json"
     task.save_to_file(path)
     loaded = BaseTaskData.from_file(path)
@@ -243,6 +298,7 @@ def test_task_round_trips_through_queue_document(tmp_path):
     assert loaded.write_rate == 200_000
     assert loaded.topology.replicas[0].server_args == "--io-threads-ownership yes"
     assert loaded.extra_info_fields() == ["a", "b"]
+    assert loaded.max_lag_seconds == 2.5
     assert json.loads(path.read_text())["task_type"] == "ReplicaReadTaskData"
 
 
@@ -278,6 +334,8 @@ def test_cli_add_replica_read_parses_role_args():
             "--io-threads-ownership yes",
             "--info-fields",
             "dplus_speculated,dplus_punted",
+            "--max-lag-seconds",
+            "0.5",
         ]
     )
     assert args.queue_command == "add-replica-read"
@@ -286,7 +344,14 @@ def test_cli_add_replica_read_parses_role_args():
     assert args.write_rate == 200000
     assert args.replica_args == "--io-threads-ownership yes"
     assert args.info_fields == "dplus_speculated,dplus_punted"
+    assert args.max_lag_seconds == 0.5
     assert args.primary_io_threads == 1
+    assert (
+        build_parser()
+        .parse_args(["queue", "add-replica-read", "--source", _valid_source(), "--specifier", "x"])
+        .max_lag_seconds
+        == 1.0
+    )
 
 
 def test_task_needs_exactly_one_configured_server():
