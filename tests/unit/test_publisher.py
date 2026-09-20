@@ -27,6 +27,16 @@ class TestDetectPlatform:
         assert label_fragment in label
 
 
+@pytest.fixture(autouse=True)
+def _isolated_dirs(tmp_path, monkeypatch):
+    """Keep every publisher under test off the real export dir and temp dir."""
+    from conductress import config as _config
+
+    monkeypatch.setattr(_config, "PUBLISH_EXPORT_DIR", tmp_path / "publish-export")
+    monkeypatch.setattr("conductress.publisher.tempfile.gettempdir", lambda: str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+
+
 class TestDashboardPublisher:
     def test_init(self, tmp_path):
         coord = MagicMock()
@@ -35,6 +45,37 @@ class TestDashboardPublisher:
         pub = DashboardPublisher("user@host:/path", [coord])
         assert pub.target == "user@host:/path"
         assert pub.coordinators == [coord]
+        assert pub._export_dir == tmp_path / "publish-export"
+        assert pub._export_dir.is_dir()
+
+    def test_export_dir_is_fixed_and_rebuilt_in_place(self, tmp_path):
+        """A second publisher reuses the same path and starts from an empty directory."""
+        export_dir = tmp_path / "publish-export"
+        export_dir.mkdir()
+        (export_dir / "series-stale.json").write_text("{}")
+        first = DashboardPublisher("user@host:/path", [])
+        assert first._export_dir == export_dir
+        assert list(export_dir.iterdir()) == []
+        second = DashboardPublisher("user@host:/path", [])
+        assert second._export_dir == export_dir
+        assert not str(export_dir).startswith(str(tmp_path / "tmp")), "export dir must not live under tempdir"
+
+    def test_legacy_mkdtemp_export_dirs_are_swept_on_init(self, tmp_path):
+        """Directories left by the retired mkdtemp publisher are removed; nothing else is touched."""
+        tmp = tmp_path / "tmp"
+        for name in ("conductress-publish-abc123", "conductress-publish-def456"):
+            (tmp / name).mkdir()
+            (tmp / name / "series-x.json").write_text("{}")
+        (tmp / "conductress-publish-not-a-dir").write_text("")
+        (tmp / "unrelated-dir").mkdir()
+        (tmp / "unrelated-dir" / "keep.txt").write_text("keep")
+
+        DashboardPublisher("user@host:/path", [])
+
+        assert not (tmp / "conductress-publish-abc123").exists()
+        assert not (tmp / "conductress-publish-def456").exists()
+        assert (tmp / "conductress-publish-not-a-dir").exists()
+        assert (tmp / "unrelated-dir" / "keep.txt").read_text() == "keep"
 
     def test_on_task_failed_is_noop(self):
         pub = DashboardPublisher("user@host:/path", [])

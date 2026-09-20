@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from conductress import config
 from conductress.config import should_profile_internals
 from conductress.utility import run_rsync
 
@@ -40,8 +41,45 @@ class DashboardPublisher:
         candidates = [Path.home() / "conductress" / "server-keyfile.pem", Path.home() / ".ssh" / "openssh-ec2-pair.pem"]
         self._ssh_key = next((k for k in candidates if k.exists()), candidates[0])
         self._platform_id, self._platform_label = detect_platform()
-        self._export_dir = Path(tempfile.mkdtemp(prefix="conductress-publish-"))
-        logger.info("Publisher initialized: target=%s, platform=%s", target, self._platform_id)
+        self._export_dir = self._prepare_export_dir(Path(config.PUBLISH_EXPORT_DIR))
+        self._sweep_legacy_export_dirs()
+        logger.info(
+            "Publisher initialized: target=%s, platform=%s, export_dir=%s",
+            target,
+            self._platform_id,
+            self._export_dir,
+        )
+
+    @staticmethod
+    def _prepare_export_dir(path: Path) -> Path:
+        """Return an empty export directory at a fixed path, rebuilt in place.
+
+        Every publish regenerates the whole export from the coordinators' state,
+        so nothing in this directory outlives the process that wrote it. A fixed
+        path replaces a per-process ``mkdtemp`` under the temp directory, which
+        left one full export copy behind for every runner start, on hosts where
+        the temp directory is a RAM-backed tmpfs.
+        """
+        shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def _sweep_legacy_export_dirs() -> int:
+        """Remove ``conductress-publish-*`` directories left by earlier publishers.
+
+        Only the retired ``mkdtemp`` path ever created that prefix, so anything
+        matching it under the temp directory is a leak from a previous runner
+        process. Returns the number of directories removed.
+        """
+        removed = 0
+        for stale in Path(tempfile.gettempdir()).glob("conductress-publish-*"):
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+                removed += 1
+        if removed:
+            logger.info("Removed %d legacy conductress-publish-* export dir(s) from %s", removed, tempfile.gettempdir())
+        return removed
 
     def on_task_completed(self, task: "BaseTaskData") -> None:
         """Export and publish after each completed task."""
