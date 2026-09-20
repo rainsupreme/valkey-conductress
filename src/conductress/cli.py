@@ -13,7 +13,14 @@ from .cachecannon import DEFAULT_CACHECANNON_BINARY
 from .fleet_client import FleetClientError
 from .task_queue import BaseTaskData, TaskQueue
 from .tasks.task_perf_benchmark import PerfTaskData
-from .tasks.task_replica_read import DEFAULT_MAX_LAG_SECONDS
+from .tasks.task_replica_read import (
+    DEFAULT_MAX_LAG_SECONDS,
+    DEFAULT_MAX_LAG_SLOPE,
+    DEFAULT_READ_RATE_MAX,
+    DEFAULT_READ_RATE_START,
+    DEFAULT_READ_RATE_STEP,
+    DEFAULT_READ_RATE_TOLERANCE,
+)
 from .topology import TopologySpec
 from .utility import HumanByte, HumanTime, validate_cpulist
 
@@ -960,6 +967,44 @@ def build_parser() -> argparse.ArgumentParser:
         f"scored window, measured in seconds of replication stream (default: {DEFAULT_MAX_LAG_SECONDS})",
     )
     _add_cachecannon_binary_arg(rr_parser)
+    rr_parser.add_argument(
+        "--read-rate-search",
+        action="store_true",
+        help="Instead of one closed-loop reader, probe open-loop reader rates (climb then bisect) and score the "
+        "highest rate at which the replica still keeps up with its primary; --warmup/--duration apply per probe",
+    )
+    rr_parser.add_argument(
+        "--read-rate-start",
+        type=int,
+        default=DEFAULT_READ_RATE_START,
+        help=f"Search: first reader rate to probe, GET/s (default: {DEFAULT_READ_RATE_START})",
+    )
+    rr_parser.add_argument(
+        "--read-rate-max",
+        type=int,
+        default=DEFAULT_READ_RATE_MAX,
+        help=f"Search: never probe above this reader rate; passing it ends the search (default: {DEFAULT_READ_RATE_MAX})",
+    )
+    rr_parser.add_argument(
+        "--read-rate-step",
+        type=float,
+        default=DEFAULT_READ_RATE_STEP,
+        help=f"Search: climb multiplier between passing probes (default: {DEFAULT_READ_RATE_STEP})",
+    )
+    rr_parser.add_argument(
+        "--read-rate-tolerance",
+        type=float,
+        default=DEFAULT_READ_RATE_TOLERANCE,
+        help="Search: stop bisecting when the pass/fail bracket is within this fraction of its upper end "
+        f"(default: {DEFAULT_READ_RATE_TOLERANCE})",
+    )
+    rr_parser.add_argument(
+        "--max-lag-slope",
+        type=float,
+        default=DEFAULT_MAX_LAG_SLOPE,
+        help="Search: a probe fails when the replica's lag grows faster than this over the scored window, in "
+        f"seconds of replication stream per second (default: {DEFAULT_MAX_LAG_SLOPE})",
+    )
     rr_parser.add_argument("--client-cpus", default="", help="Expert: explicit cpulist override for both generators")
     rr_parser.add_argument(
         "--cpu-profile",
@@ -1703,6 +1748,12 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
             sample_interval=args.sample_interval,
             info_fields=args.info_fields,
             max_lag_seconds=args.max_lag_seconds,
+            read_rate_search=args.read_rate_search,
+            read_rate_start=args.read_rate_start,
+            read_rate_max=args.read_rate_max,
+            read_rate_step=args.read_rate_step,
+            read_rate_tolerance=args.read_rate_tolerance,
+            max_lag_slope=args.max_lag_slope,
             cachecannon_binary=args.cachecannon_binary,
             benchmark_cpu_override=args.client_cpus,
             cpu_profile=args.cpu_profile,
@@ -1726,6 +1777,12 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
         f"  writer: {args.write_rate} SET/s, {args.write_connections}c P{args.write_pipelining} {args.write_threads}t at the primary"
     )
     print(f"  reader: GET size={val_size} P{args.pipelining} {args.connections}c {args.threads}t at the first replica")
+    if args.read_rate_search:
+        print(
+            f"  read-rate search: from {args.read_rate_start}/s x{args.read_rate_step:g} up to {args.read_rate_max}/s, "
+            f"bisect to {args.read_rate_tolerance:.0%}; a probe fails on lag mean > {args.max_lag_seconds} s or "
+            f"lag slope > {args.max_lag_slope} s/s; warmup/duration are per probe"
+        )
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions} keyspace={args.keyspace}")
     print(f"  lag guard: scored-window mean <= {args.max_lag_seconds} s of replication stream")
     for label, value in (

@@ -703,8 +703,18 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
     noise floor at every rate. ``mean_seconds`` is ``None`` when the rate
     cannot be derived (fewer than two samples, or a stream that did not
     advance).
+
+    ``slope_seconds_per_second`` is the least-squares trend of the lag over
+    the samples, in seconds of stream per second of wall clock. Lag is a
+    queue: its level says how far behind the replica is right now, its slope
+    says whether the replica is keeping up at all. A positive slope is the
+    fraction of the stream the replica cannot apply (0.05 = five percent of
+    the writes pile up every second), and any positive slope ends in a
+    dropped link once the primary's output buffer for the replica fills.
+    ``None`` when the rate cannot be derived.
     """
     lags = []
+    lag_points = []
     primary_points = []
     for sample in samples:
         inst = sample["instances"]
@@ -712,9 +722,11 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
         r = inst.get(replica_port, {}).get("master_repl_offset")
         if p is None or r is None:
             continue
-        lags.append(max(0, p - r))
+        lag = max(0, p - r)
+        lags.append(lag)
         if "t" in sample:
             primary_points.append((sample["t"], p))
+            lag_points.append((sample["t"], lag))
     if not lags:
         return {"samples": 0}
     lags_sorted = sorted(lags)
@@ -724,6 +736,7 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
         (t0, p0), (t1, p1) = primary_points[0], primary_points[-1]
         if t1 > t0:
             rate = (p1 - p0) / (t1 - t0)
+    slope_bytes = _least_squares_slope(lag_points)
     return {
         "samples": len(lags),
         "mean_bytes": mean_bytes,
@@ -731,4 +744,20 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
         "p99_bytes": lags_sorted[min(len(lags_sorted) - 1, int(round(0.99 * (len(lags_sorted) - 1))))],
         "stream_bytes_per_second": rate,
         "mean_seconds": (mean_bytes / rate) if rate is not None and rate > 0 else None,
+        "slope_seconds_per_second": (
+            (slope_bytes / rate) if slope_bytes is not None and rate is not None and rate > 0 else None
+        ),
     }
+
+
+def _least_squares_slope(points: list) -> Optional[float]:
+    """Slope of y over x for ``(x, y)`` points; None with fewer than two distinct x."""
+    if len(points) < 2:
+        return None
+    n = len(points)
+    mean_x = sum(x for x, _ in points) / n
+    mean_y = sum(y for _, y in points) / n
+    var_x = sum((x - mean_x) ** 2 for x, _ in points)
+    if var_x == 0:
+        return None
+    return sum((x - mean_x) * (y - mean_y) for x, y in points) / var_x
