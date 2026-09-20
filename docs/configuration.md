@@ -10,8 +10,8 @@ Conductress reads its settings from three places, in order of specificity:
    never committed (each is gitignored, with a committed `*.default.json`
    example alongside it).
 
-Nothing here changes benchmark behavior on its own: the defaults are the live
-values, and an unset override leaves the default in place.
+Nothing here changes benchmark behavior on its own: the defaults are the
+effective values unless an override is set.
 
 ## Local files
 
@@ -51,8 +51,18 @@ a new workload, not a continuation of the series.
 
 ## Sweep environment toggles
 
-These control which measurement epochs run. They fail startup on an unrecognized
-value rather than silently selecting the wrong epoch.
+The sweep measures each new commit under a fixed combination of load generator
+and benchmark parameter set; one such combination is a *sweep epoch*, and each
+epoch carries an identifier (`v1`, `v3`, ...). Results are comparable only
+within an epoch, so the `v1`/`v3` shorthand used here and elsewhere names which
+generator-and-parameter identity produced a point. `v1` identifies the sweep
+driven by `valkey-benchmark`, Valkey's stock load generator; `v3` identifies the
+cachecannon-driven sweep.
+
+These variables control which epochs run. Each toggle enables or disables one
+epoch's coordinators, and the precedence variable sets which epoch measures a
+new commit first. They fail startup on an unrecognized value rather than
+silently selecting the wrong epoch.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
@@ -103,7 +113,7 @@ Example — keep the defaults and add one more:
 ## Publish and control endpoints
 
 The dashboard data server and the fleet control-plane URL both have a default
-that points at the live endpoint and an environment override.
+that points at the project's default endpoint and an environment override.
 
 | Setting | Default | Environment override | Notes |
 | --- | --- | --- | --- |
