@@ -661,6 +661,14 @@ def build_parser() -> argparse.ArgumentParser:
         "series has an undisturbed baseline before the stall (default: 5)",
     )
     storm_group.add_argument(
+        "--storm-stall-after-s",
+        type=float,
+        default=None,
+        help="Seconds into the storm generator's run at which the stall is injected, in both orderings "
+        "(default: 1). Use with --storm-burst-first and a large value (e.g. 30) to have the herd connected "
+        "and the probe running a baseline before the stall lands.",
+    )
+    storm_group.add_argument(
         "--storm-burst-first",
         action="store_true",
         help="Legacy ordering: burst first, then stall (default is stall-first)",
@@ -1372,6 +1380,7 @@ def build_scenario_overlay_spec(args: argparse.Namespace) -> str:
         "policy": args.storm_policy,
         "stall": args.storm_stall,
         "burst_after_stall_ms": args.storm_burst_after_stall_ms,
+        "stall_after_s": args.storm_stall_after_s,
         "start_delay_s": args.storm_start_delay_s,
         "prewarm_connections": args.storm_prewarm_connections,
         "workers": args.storm_workers,

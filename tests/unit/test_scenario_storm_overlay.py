@@ -714,3 +714,40 @@ def test_cli_storm_start_delay_flag_serializes():
     )
     spec = json.loads(cli.build_scenario_overlay_spec(args))
     assert spec["start_delay_s"] == 8.0
+
+
+# --------------------------------------------------------------------------- stall_after_s
+
+
+def test_parse_storm_spec_stall_after_default_and_validation():
+    assert parse_storm_spec("")["stall_after_s"] == 1.0
+    assert parse_storm_spec(json.dumps({"stall_after_s": 30}))["stall_after_s"] == 30
+    with pytest.raises(ValueError):
+        parse_storm_spec(json.dumps({"stall_after_s": -1}))
+
+
+def test_storm_command_passes_stall_after_s():
+    spec = parse_storm_spec(json.dumps({"stall_after_s": 30, "burst_first": True}))
+    spec["_duration_s"] = 300.0
+    command = StormOverlay(spec, "/tmp")._command(_FakeServer(), "/tmp/x.json")  # pylint: disable=protected-access
+    assert "--stall-after-s 30" in command and "--burst-first" in command
+
+
+def test_cli_storm_stall_after_flag_serializes():
+    from conductress import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "queue",
+            "add-scenario",
+            "--scenario",
+            "connection-storm",
+            "--source",
+            config.REPO_NAMES[0],
+            "--storm-stall-after-s",
+            "30",
+        ]
+    )
+    spec = json.loads(cli.build_scenario_overlay_spec(args))
+    assert spec["stall_after_s"] == 30.0

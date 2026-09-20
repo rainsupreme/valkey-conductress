@@ -82,7 +82,12 @@ class StormConfig:
     # after the stall command is issued. burst_first restores the old ordering.
     burst_first: bool = False
     burst_after_stall_ms: int = 200
-    stall_after_s: float = 1.0  # burst_first only
+    # Seconds after the origin at which the stall is injected, in BOTH orderings.
+    # Stall-first: the stall waits this long, then the burst follows it by
+    # burst_after_stall_ms -- so a probe (and, with burst_first, a pre-connected
+    # herd) gets a baseline before the event. burst_first: the burst starts at the
+    # origin and the stall lands this long after it.
+    stall_after_s: float = 1.0
     # Prewarm: None -> default to `clients`; 0 -> disabled.
     prewarm_connections: Optional[int] = None
     bucket_ms: int = 100
@@ -361,7 +366,7 @@ async def run_storm(config: StormConfig) -> StormResult:
         issued = asyncio.Event()
 
         async def _driver() -> StallRecord:
-            return await _drive_stall(config, on_issued=issued.set)
+            return await _drive_stall(config, delay_from=origin, on_issued=issued.set)
 
         stall_task = asyncio.ensure_future(_driver())
         await issued.wait()
@@ -415,7 +420,7 @@ async def _run_clients(
 async def _drive_stall(config: StormConfig, *, delay_from: Optional[float] = None, on_issued=None) -> StallRecord:
     """Inject the stall (parent side).
 
-    ``delay_from`` (burst-first mode) waits ``stall_after_s`` past that origin
+    ``delay_from`` waits ``stall_after_s`` past that origin (both orderings)
     before injecting. In stall-first mode ``delay_from`` is None (inject at
     once) and ``on_issued`` fires when the stall command has been sent.
     """
@@ -425,7 +430,7 @@ async def _drive_stall(config: StormConfig, *, delay_from: Optional[float] = Non
     # A time-bounded stall (a slow loop) must end inside the storm window;
     # clamp it against the storm duration and the burst offset. One-shot stalls
     # ignore this (their duration is sized by the caller).
-    injector.clamp_to_storm(config.duration_s, config.burst_after_stall_ms / 1000.0)
+    injector.clamp_to_storm(max(1.0, config.duration_s - config.stall_after_s), config.burst_after_stall_ms / 1000.0)
     if delay_from is not None:
         wait = delay_from + config.stall_after_s - time.monotonic()
         if wait > 0:

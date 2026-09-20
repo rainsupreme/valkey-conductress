@@ -184,7 +184,32 @@ def test_build_figure_probe_row_adds_a_twin_axis():
     # 4 rows x 1 column = 4, plus one twin axis for the probe p99.
     assert len(fig.get_axes()) == 5
     twin_labels = {ax.get_ylabel() for ax in fig.get_axes()}
-    assert "probe p99 (ms)" in twin_labels
+    assert "probe p99 (ms, dotted)" in twin_labels
+
+
+def test_probe_row_has_one_twin_axis_for_all_reps():
+    """Three reps share ONE right-hand p99 axis per column, not one per rep."""
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    view = _probe_view()
+    view.reps = [dict(view.reps[0]) for _ in range(3)]
+    fig = build_storm_figure([view])  # all reps drawn
+    assert len(fig.get_axes()) == 5  # 4 rows + exactly one twin
+    twin = [ax for ax in fig.get_axes() if ax.get_ylabel() == "probe p99 (ms, dotted)"]
+    assert len(twin) == 1 and len(twin[0].get_lines()) == 3  # one dotted line per rep on the shared twin
+
+
+def test_figure_has_a_legend_naming_the_line_styles(views):
+    pytest.importorskip("matplotlib")
+    from conductress.plots.connection_storm import build_storm_figure
+
+    fig = build_storm_figure(views)
+    assert fig.legends, "figure-level legend missing"
+    labels = [t.get_text() for t in fig.legends[0].get_texts()]
+    assert any("median" in lbl for lbl in labels)
+    assert any("stall" in lbl for lbl in labels)
+    assert any("connected" in lbl for lbl in labels)
 
 
 def test_gap_breaks_the_connected_line_with_nan(views):

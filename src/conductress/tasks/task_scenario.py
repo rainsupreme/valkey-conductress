@@ -369,6 +369,10 @@ STORM_SPEC_DEFAULTS: Dict[str, Any] = {
     "stall": "none",
     "burst_after_stall_ms": 200,
     "burst_first": False,
+    # Seconds after the generator's origin at which the stall is injected (both
+    # orderings). With burst_first the herd is connected and settled before the
+    # stall lands, which is the shape of a fleet being kicked into reconnecting.
+    "stall_after_s": 1.0,
     # Launch the generator this long after the overlay starts, so the background
     # series carries an undisturbed baseline before the stall and the burst.
     "start_delay_s": 5.0,
@@ -446,6 +450,8 @@ def parse_storm_spec(spec: str) -> Dict[str, Any]:
         raise ValueError(f"connection-storm workers must be >= 0 (0 = auto), got {out['workers']}")
     if int(out["burst_after_stall_ms"]) < 0:
         raise ValueError(f"connection-storm burst_after_stall_ms must be >= 0, got {out['burst_after_stall_ms']}")
+    if float(out["stall_after_s"]) < 0:
+        raise ValueError(f"connection-storm stall_after_s must be >= 0, got {out['stall_after_s']}")
     if float(out["start_delay_s"]) < 0:
         raise ValueError(f"connection-storm start_delay_s must be >= 0, got {out['start_delay_s']}")
     if out["prewarm_connections"] is not None and int(out["prewarm_connections"]) < 0:
@@ -987,6 +993,8 @@ class StormOverlay(Overlay):
             str(spec["stall"]),
             "--burst-after-stall-ms",
             str(spec["burst_after_stall_ms"]),
+            "--stall-after-s",
+            _num(float(spec["stall_after_s"])),
             "--workers",
             str(spec["workers"]),
             "--json",

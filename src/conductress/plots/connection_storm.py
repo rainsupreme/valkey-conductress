@@ -393,6 +393,10 @@ def build_storm_figure(
         rep_indices = [rep] if (rep is not None and 0 <= rep < len(reps)) else list(range(len(reps)))
         median_idx = view.median_rep_index()
 
+        # One right-hand axis per column for the probe's p99, shared by every rep
+        # (a twin per rep would stack several right axes and labels on top of each other).
+        p99_axis = None
+
         for ax_row in range(4):
             axis = axes[ax_row][col]
             for ridx in rep_indices:
@@ -414,9 +418,10 @@ def build_storm_figure(
                         axis.step(px, pserved, where="post", color=hue, lw=lw, alpha=alpha)
                         _px99, p99 = _probe_xy(data, t0, "p99_ms")
                         if _px99:
-                            twin = axis.twinx()
-                            twin.plot(_px99, p99, color=hue, lw=lw, ls=":", alpha=alpha)
-                            twin.set_ylabel("probe p99 (ms)", fontsize=8)
+                            if p99_axis is None:
+                                p99_axis = axis.twinx()
+                                p99_axis.set_ylabel("probe p99 (ms, dotted)", fontsize=8)
+                            p99_axis.plot(_px99, p99, color=hue, lw=lw, ls=":", alpha=alpha)
                     else:
                         xs, ys = _bg_series(data, t0)
                         axis.step(xs, ys, where="post", color=hue, lw=lw, alpha=alpha)
@@ -448,10 +453,34 @@ def build_storm_figure(
         if xrange is not None:
             axes[0][col].set_xlim(*xrange)
 
+    _add_legend(fig, has_probe=any(_probe_xy(r, series_t0(r), "served")[0] for v in views for r in v.reps))
+
     meta = views[0]
     fig.suptitle(
         f"connection-storm: {meta.source} @ {meta.commit_hash[:12]} on {meta.runner_id}",
         fontsize=12,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0.05, 1, 0.97))
     return fig
+
+
+def _add_legend(fig, *, has_probe: bool) -> None:
+    """One figure-level legend explaining the line styles shared by every column."""
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    grey = "#4d4d4d"
+    handles = [
+        Line2D([], [], color=grey, lw=1.8, label="median repetition (bold)"),
+        Line2D([], [], color=grey, lw=0.9, alpha=0.5, label="other repetitions (thin)"),
+        Patch(facecolor="#7f8c8d", alpha=0.3, label="stall / slow loop"),
+        Line2D([], [], color=grey, lw=1, ls="-.", label="all storm clients connected"),
+        Patch(facecolor=grey, alpha=0.8, label="timeouts per bucket (bars)"),
+        Patch(facecolor=grey, alpha=0.15, label="cumulative connected (fill)"),
+    ]
+    if has_probe:
+        handles.insert(2, Line2D([], [], color=grey, lw=1.4, ls=":", label="probe p99 ms (right axis)"))
+        handles.insert(2, Line2D([], [], color=grey, lw=1.4, label="goodput: probe served/s"))
+    else:
+        handles.insert(2, Line2D([], [], color=grey, lw=1.4, label="background GET/s"))
+    fig.legend(handles=handles, loc="lower center", ncol=min(len(handles), 5), fontsize=8, frameon=False)

@@ -59,8 +59,18 @@ optional; each falls back to a default.
 - **Ordering** -- by default the storm is *stall-first*: the stall command is
   issued, then the burst starts `--storm-burst-after-stall-ms` (default 200)
   later. This is the realistic case: a stall already in progress when
-  reconnecting clients arrive. Pass `--storm-burst-first` for the legacy
-  ordering (burst first, stall injected part-way through).
+  reconnecting clients arrive. Pass `--storm-burst-first` for the other
+  shape: the herd connects first and the stall lands on an already-connected
+  fleet, which is what kicks a steady fleet into reconnecting.
+- `--storm-stall-after-s` -- seconds into the generator's run at which the
+  stall is injected, in both orderings (default 1). Two shapes worth naming:
+  *storm during a stall* (stall-first, default) and *fleet kicked out by a
+  stall* (`--storm-burst-first --storm-stall-after-s 30
+  --storm-herd-command-interval-ms 1000`): the herd connects at the origin, the
+  probe runs a 30 s baseline, the stall lands, every connected client's steady
+  command times out (`reply_timeout_steady`) and the fleet reconnects. The
+  generator's clock, and therefore `storm.probe_recovery_s`, is unaffected by
+  the delay.
 - `--storm-start-delay-s` -- launch the generator this many seconds after the
   overlay starts (default 5). The background measurement begins about one
   second after the overlay starts, so the stall lands roughly `delay - 1`
