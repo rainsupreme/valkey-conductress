@@ -1,6 +1,7 @@
 """Compatibility contracts for current tasks and future fleet documents."""
 
 import json
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from conductress.task_queue import BaseTaskData
 
 ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DIR = ROOT / "tests" / "fixtures" / "golden_tasks"
-SCHEMA_DIR = ROOT / "schemas"
+SCHEMA_DIR = Path(str(files("conductress.schemas")))
 EXPECTED_TASK_TYPES = {
     "BoundedInsertionTaskData",
     "PerfTaskData",
