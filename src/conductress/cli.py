@@ -964,7 +964,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MAX_LAG_SECONDS,
         help="Guard: fail a rep whose replica sat more than this far behind the primary on average over the "
-        f"scored window, measured in seconds of replication stream (default: {DEFAULT_MAX_LAG_SECONDS})",
+        f"scored window, measured in seconds of replication stream (default: {DEFAULT_MAX_LAG_SECONDS}). "
+        "With --read-rate-search a probe is judged on its lag at the end of the window instead, so a probe "
+        "that drains a startup backlog passes",
     )
     _add_cachecannon_binary_arg(rr_parser)
     rr_parser.add_argument(
@@ -1780,8 +1782,8 @@ def handle_queue_add_replica_read(args: argparse.Namespace) -> int:
     if args.read_rate_search:
         print(
             f"  read-rate search: from {args.read_rate_start}/s x{args.read_rate_step:g} up to {args.read_rate_max}/s, "
-            f"bisect to {args.read_rate_tolerance:.0%}; a probe fails on lag mean > {args.max_lag_seconds} s or "
-            f"lag slope > {args.max_lag_slope} s/s; warmup/duration are per probe"
+            f"bisect to {args.read_rate_tolerance:.0%}; a probe fails on lag slope > {args.max_lag_slope} s/s or "
+            f"lag at the end of the window > {args.max_lag_seconds} s; warmup/duration are per probe"
         )
     print(f"  duration={duration}s warmup={warmup}s reps={args.repetitions} keyspace={args.keyspace}")
     print(f"  lag guard: scored-window mean <= {args.max_lag_seconds} s of replication stream")

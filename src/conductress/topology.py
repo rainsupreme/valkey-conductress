@@ -612,6 +612,10 @@ class TopologyGroup:
 
 _SAMPLE_SEPARATOR = "=== conductress-instance "
 _BASE_INFO_SECTIONS = "replication stats"
+# Samples that make up a window's closing lag level (``end_seconds``). Three
+# one-second samples average out a single sample's offset-read skew while
+# still describing the last few seconds rather than the whole window.
+END_WINDOW_SAMPLES = 3
 
 
 def info_sections(extra_fields: Optional[list]) -> str:
@@ -712,6 +716,15 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
     the writes pile up every second), and any positive slope ends in a
     dropped link once the primary's output buffer for the replica fills.
     ``None`` when the rate cannot be derived.
+
+    ``end_seconds`` is the lag where the window closed: the mean of the last
+    ``END_WINDOW_SAMPLES`` samples, in seconds of stream. A window can open
+    on a backlog the replica is still draining (several hundred connections
+    reconnecting while its main thread is near saturation leaves one behind
+    for a few seconds), and the window mean carries that backlog long after
+    it is gone. The end level says where the queue stood once the window's
+    own load had been running for its whole length. ``None`` when the rate
+    cannot be derived.
     """
     lags = []
     lag_points = []
@@ -737,13 +750,16 @@ def replication_lag_stats(samples: list, primary_port: int, replica_port: int) -
         if t1 > t0:
             rate = (p1 - p0) / (t1 - t0)
     slope_bytes = _least_squares_slope(lag_points)
+    end_bytes = sum(lags[-END_WINDOW_SAMPLES:]) / len(lags[-END_WINDOW_SAMPLES:])
     return {
         "samples": len(lags),
         "mean_bytes": mean_bytes,
         "max_bytes": lags_sorted[-1],
         "p99_bytes": lags_sorted[min(len(lags_sorted) - 1, int(round(0.99 * (len(lags_sorted) - 1))))],
+        "end_bytes": end_bytes,
         "stream_bytes_per_second": rate,
         "mean_seconds": (mean_bytes / rate) if rate is not None and rate > 0 else None,
+        "end_seconds": (end_bytes / rate) if rate is not None and rate > 0 else None,
         "slope_seconds_per_second": (
             (slope_bytes / rate) if slope_bytes is not None and rate is not None and rate > 0 else None
         ),

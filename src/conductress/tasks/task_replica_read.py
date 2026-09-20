@@ -692,12 +692,21 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         """(passed, reason) for one search probe at ``read_rate``.
 
         A probe passes when the reader actually offered its rate, the replica's
-        mean lag over the scored window is within ``max_lag_seconds`` and its
-        lag trend is within ``max_lag_slope``. The reason names the limit that
-        was hit so the knee's bracket says what bounded it: ``reader`` (the
-        read path, or the generator, could not deliver the rate) or ``lag``
-        (the replica could not keep up while serving it). Cell-level guards
-        (hit rate, writer) are not probe outcomes and are checked separately.
+        lag trend over the scored window is within ``max_lag_slope`` and the
+        lag where the window closed is within ``max_lag_seconds``. The reason
+        names the limit that was hit so the knee's bracket says what bounded
+        it: ``reader`` (the read path, or the generator, could not deliver the
+        rate) or ``lag`` (the replica could not keep up while serving it).
+
+        The slope is the keeping-up test; the level is judged at the window's
+        end rather than as its mean because a probe can open on a backlog and
+        drain it: several hundred reader connections reconnecting while the
+        replica's main thread is near saturation leave it seconds behind for
+        the first part of the window. A window mean carries that backlog after
+        it is gone and would fail a rate the replica sustains, biasing the
+        knee low; the closing level says where the queue stood once the
+        probe's own load had run for the whole window. Cell-level guards (hit
+        rate, writer) are not probe outcomes and are checked separately.
         """
         achieved = reader["throughput_rps"]
         if achieved < read_rate * READ_RATE_MIN_DELIVERY:
@@ -708,20 +717,22 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         if lag.get("samples", 0) >= 2 and lag.get("mean_bytes", 0) > 0:
             stream = lag.get("stream_bytes_per_second") or 0
             mean_seconds = lag.get("mean_seconds")
+            end_seconds = lag.get("end_seconds")
             slope = lag.get("slope_seconds_per_second")
             evidence = (
                 f"mean {lag['mean_bytes']:,.0f} bytes, max {lag['max_bytes']:,} bytes, stream {stream:,.0f} bytes/s"
             )
-            if mean_seconds is None:
+            if mean_seconds is None or end_seconds is None:
                 return False, f"lag: replica behind a stream that did not advance ({evidence})"
-            if mean_seconds > self.task.max_lag_seconds:
-                return False, (
-                    f"lag: mean {mean_seconds:.2f} s of stream > max_lag_seconds {self.task.max_lag_seconds} ({evidence})"
-                )
             if slope is not None and slope > self.task.max_lag_slope:
                 return False, (
                     f"lag: growing {slope:.3f} s of stream per second > max_lag_slope {self.task.max_lag_slope} "
                     f"(replica not applying {slope:.1%} of the writes; {evidence})"
+                )
+            if end_seconds > self.task.max_lag_seconds:
+                return False, (
+                    f"lag: {end_seconds:.2f} s of stream at the end of the window > max_lag_seconds "
+                    f"{self.task.max_lag_seconds} (window mean {mean_seconds:.2f} s; {evidence})"
                 )
         return True, ""
 
@@ -833,7 +844,8 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             entry = self._entry(group, placement, last, lag, window_start)
             entry.update({"probe": number, "target_rps": step.rate, "passed": passed, "reason": reason})
             self.logger.info(
-                "rep %d/%d probe %d: %d/s -> %s (reader %.0f rps, lag scored mean %s s, slope %s/s, bottleneck=%s)%s",
+                "rep %d/%d probe %d: %d/s -> %s (reader %.0f rps, lag scored mean %s s, end %s s, slope %s/s, "
+                "bottleneck=%s)%s",
                 rep,
                 task.repetitions,
                 number,
@@ -841,6 +853,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 "pass" if passed else "FAIL",
                 last.reader["throughput_rps"],
                 _fmt_seconds(lag["scored"].get("mean_seconds")),
+                _fmt_seconds(lag["scored"].get("end_seconds")),
                 _fmt_seconds(lag["scored"].get("slope_seconds_per_second")),
                 entry["bottleneck"]["verdict"],
                 f": {reason}" if reason else "",
