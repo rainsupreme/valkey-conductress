@@ -384,6 +384,7 @@ The runner writes per-host runtime state into the project root: `sweep_data/`, `
 - [Fleet-aware CLI](docs/fleet-cli.md) — fleet discovery, remote queue management, secure client configuration, and runner/platform routing.
 
 ### Design notes and implementation history
+- [Dragonfly as a comparator engine](docs/dragonfly-comparator-plan.md) — plan for a prebuilt-release reference engine: official binaries only (no source), release tracking, launch profiles, stepped-series semantics, fleet rollout.
 - [Fleet control plane and daily drift canary](docs/fleet-control-plane-implementation-plan.md) — per-runner inboxes that runners pull from between jobs, fleet discovery, and canary rollout.
 - [Fleet control service](docs/control-service.md) — SQLite mailbox/status API, authentication, deployment examples, and safety invariants.
 - [Runner fleet mailbox](docs/runner-mailbox.md) — how a runner claims, imports, accepts, and reports one remote task between jobs, with a recovery journal and a shadow mode for rollout.

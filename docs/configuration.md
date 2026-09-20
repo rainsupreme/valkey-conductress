@@ -76,6 +76,39 @@ Two series rules follow from that definition:
   `conductress sweep pause` selectors are the runtime lever for everything
   else; retirement is the permanent one.
 
+### Engines
+
+The sweep can measure more than one server (`SWEEP_ENGINES` in `config.py`).
+An engine is described on two independent axes:
+
+- **Provisioning** says how a binary for a revision comes to exist.
+  `built-from-git` clones the engine's repository, checks out the revision and
+  runs `make` with the engine's `make_args`. `prebuilt-release` is reserved for an engine whose source licence the
+  project does not accept on its runners: only the official release asset for
+  the host architecture would be downloaded and run, and no source would ever
+  be checked out. Declaring an engine with it is a startup error until the
+  download path exists.
+- **Scope** says how much of the engine's history the sweep measures. `history`
+  is the full treatment: release landmarks, bisection of significant deltas,
+  backfill of gaps, and every new tip. `release-and-tip` measures the latest
+  release once and the current tip at most once per `tip_interval_hours`, with
+  no bisection and no backfill.
+
+Valkey is `history`. Redis is `release-and-tip` at 24 hours: it exists to power
+the engine comparison, which reads one point at each engine's latest release
+and the recent tip and nothing else, so measuring its history would spend
+runner time on data nobody reads. A comparison engine's series carry the
+engine name as a prefix (`redis-get-k16-v16-t7-p10`), are exported with
+`metadata.engine` and `metadata.scope`, and tag each point with why it was
+measured (`sample`: `release`, `tip` or `history`). Every epoch-1 throughput
+series of a comparison engine is retired; its v3 series are the ones that
+measure. Memory series follow the engine's scope like any other series.
+
+An engine that opts out of internal profiling (`profile_internals=False`)
+records aggregate results only: throughput, latency and total memory, with no
+CPU flamegraph and no allocation breakdown, so nothing from its binary's symbol
+table is published.
+
 These variables control which epochs run. Each toggle enables or disables one
 epoch's coordinators, and the precedence variable sets which epoch measures a
 new commit first. They fail startup on an unrecognized value rather than

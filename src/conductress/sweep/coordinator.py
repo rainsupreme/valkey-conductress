@@ -21,7 +21,6 @@ from conductress.config import (
     SWEEP_DURATION,
     SWEEP_FETCH_INTERVAL,
     SWEEP_IO_THREADS,
-    SWEEP_KEY_SIZE,
     SWEEP_MAKE_ARGS,
     SWEEP_MAX_REPS,
     SWEEP_PIPELINING,
@@ -112,6 +111,20 @@ def perf_counters_from_entry(entry: dict) -> Optional[PerfCounterRecord]:
     )
 
 
+def latest_release_landmark(landmarks: list[Landmark], merge_commits: list[str]) -> list[Landmark]:
+    """The single newest release landmark, by position on the sweep ref.
+
+    Release labels start with a digit (``8.10``, ``9.2``); anything else is a
+    descriptive marker and is dropped along with the older releases.  Returns an
+    empty list when no release landmark exists.
+    """
+    index = {c: i for i, c in enumerate(merge_commits)}
+    releases = [lm for lm in landmarks if lm.label[:1].isdigit() and lm.commit in index]
+    if not releases:
+        return []
+    return [max(releases, key=lambda lm: index[lm.commit])]
+
+
 class BaseSweepCoordinator(ABC):
     """Abstract base for sweep coordinators.
 
@@ -126,8 +139,16 @@ class BaseSweepCoordinator(ABC):
         self.state_file = state_file
         self.engine = engine
         self.state = SweepState.load(state_file)
-        self.planner = SweepPlanner(self.state)
+        self.planner = self._new_planner()
         self._last_fetch_time: float = 0.0
+
+    def _new_planner(self) -> SweepPlanner:
+        """A planner over the current state, shaped by the engine's scope."""
+        return SweepPlanner(
+            self.state,
+            tracks_history=config.engine_tracks_history(self.engine),
+            tip_interval_seconds=config.engine_tip_interval_seconds(self.engine),
+        )
 
     @property
     def _sweep_source(self) -> str:
@@ -148,15 +169,24 @@ class BaseSweepCoordinator(ABC):
 
     def record_result(self, commit: str, value: float, cv: float, reps: int) -> None:
         """Record a completed benchmark result and persist state."""
-        self.planner.record_result(commit, value, cv, reps)
         try:
-            head = get_head(self.repo_path, ref=self._sweep_ref)
-            if commit == head:
-                self.state.last_benchmarked_head = commit
+            head: Optional[str] = get_head(self.repo_path, ref=self._sweep_ref)
         except Exception:
-            pass
+            head = None
+        self.planner.record_result(commit, value, cv, reps, sample=self._sample_kind(commit, head))
+        if head is not None and commit == head:
+            self.state.last_benchmarked_head = commit
+            self.state.last_benchmarked_head_at = time.time()
         self.state.save(self.state_file)
         logger.info("Sweep result recorded: %s -> %.0f (CV %.2f%%)", commit[:8], value, cv)
+
+    def _sample_kind(self, commit: str, head: Optional[str]) -> str:
+        """Why a commit was measured: a release landmark, the tip, or history."""
+        if any(lm.commit == commit for lm in self.state.landmarks):
+            return "release"
+        if head is not None and commit == head:
+            return "tip"
+        return "history"
 
     def record_perf_counters(
         self,
@@ -306,11 +336,13 @@ class BaseSweepCoordinator(ABC):
         if head not in set(self.state.merge_commits):
             # Stale commit list — refresh it so we can check properly
             self._fetch_and_refresh()
-        return (
-            head != self.state.last_benchmarked_head
-            and (head not in self.state.points or not self.state.points[head].is_complete)
-            and head in set(self.state.merge_commits)
-        )
+        if head not in set(self.state.merge_commits):
+            return False
+        point = self.state.points.get(head)
+        if point is not None and not point.is_complete:
+            # A pending or failed tip is re-tried; tip_due would treat it as done.
+            return head != self.state.last_benchmarked_head
+        return self.planner.tip_due(head)
 
     # --- Abstract methods (subclass defines) ---
 
@@ -375,7 +407,6 @@ class BaseSweepCoordinator(ABC):
         """Export this coordinator's data to a series JSON file. Returns point count."""
         from conductress.sweep.exporter import export_series
 
-        repo = "redis/redis" if self.engine and self.engine.source == "redis" else "valkey-io/valkey"
         branch = self._sweep_ref.replace("origin/", "") if self.engine else "unstable"
         export_series(
             self.state,
@@ -383,8 +414,9 @@ class BaseSweepCoordinator(ABC):
             platform=platform,
             workload=self.workload_id,
             lower_is_better=self.lower_is_better,
-            repo=repo,
+            repo=config.engine_repo_slug(self.engine),
             branch=branch,
+            engine=self.engine,
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
@@ -474,7 +506,7 @@ class BaseSweepCoordinator(ABC):
         self._populate_commits()
         self._populate_landmarks()
         self.state.save(self.state_file)
-        self.planner = SweepPlanner(self.state)
+        self.planner = self._new_planner()
 
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history."""
@@ -493,7 +525,14 @@ class BaseSweepCoordinator(ABC):
         self.state.commit_titles = {c.hash: c.pr_title for c in commits if c.pr_title is not None}
 
     def _populate_landmarks(self) -> None:
-        """Populate landmarks from release branch points on unstable."""
+        """Populate landmarks from release branch points on unstable.
+
+        The list is rebuilt from scratch on every call: it used to be appended
+        to, so each HEAD change added another copy of every landmark to the
+        state file and the export.  A release-and-tip engine keeps only its
+        latest release, the one point the engine comparison reads.
+        """
+        self.state.landmarks = []
         PRE_FORK_LANDMARKS = [
             Landmark(
                 commit="3431b1f156b05866e4f9a368304216974f047c43",
@@ -518,6 +557,8 @@ class BaseSweepCoordinator(ABC):
                     self.state.landmarks.append(Landmark(commit=commit_hash, date=date, label=label))
         except Exception as e:
             logger.warning("Failed to enumerate release branch points: %s", e)
+        if not config.engine_tracks_history(self.engine):
+            self.state.landmarks = latest_release_landmark(self.state.landmarks, self.state.merge_commits)
 
 
 # =============================================================================
@@ -544,8 +585,7 @@ class SweepCoordinator(BaseSweepCoordinator):
         self._test = test
         self._io_threads = io_threads
         self._pipelining = pipelining
-        engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
-        self._label = f"{engine_prefix}{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+        self._label = config.sweep_throughput_label(test, val_size, io_threads, pipelining, engine)
         state_file = SWEEP_STATE_DIR / f"state_{self._label}.json"
         super().__init__(repo_path, state_file, engine=engine)
 

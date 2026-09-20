@@ -421,7 +421,12 @@ class TestLatencySweepCoordinatorV3:
 
 class TestRetiredSeries:
     def test_registry_names_the_replaced_series(self):
-        assert SWEEP_V1_RETIRED_SERIES == {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"}
+        # The Valkey series a v3 series replaced, plus every epoch-1 throughput
+        # mirror of a comparison engine (the redis-* set is pinned in
+        # test_engine_release_and_tip.py).
+        assert {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"} <= SWEEP_V1_RETIRED_SERIES
+        valkey_only = {s for s in SWEEP_V1_RETIRED_SERIES if not s.split(":", 1)[1].startswith("redis-")}
+        assert valkey_only == {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"}
 
     def test_v1_default_get_sweep_is_retired(self, tmp_path):
         from conductress.sweep.coordinator import SweepCoordinator

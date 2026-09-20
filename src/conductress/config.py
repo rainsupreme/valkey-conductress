@@ -274,8 +274,9 @@ SWEEP_GENERATOR_INDEPENDENT_EPOCHS: tuple[str, ...] = ("v3", "v1")
 
 # Epoch-1 series that a v3 series has replaced.  A retired series keeps
 # publishing the history it already holds but never queues another task, so
-# the replacement is the only one still measuring.  Keyed "metric:workload".
-SWEEP_V1_RETIRED_SERIES: frozenset[str] = frozenset(
+# the replacement is the only one still measuring.  Keyed "metric:workload";
+# built below once the engines and workload roster are defined.
+_V1_RETIRED_VALKEY_SERIES: frozenset[str] = frozenset(
     {
         "throughput:get-k16-v16-t7-p10",  # replaced by the v3 GET sweep
         "latency:get-k16-v16",  # replaced by the v3 latency sweep
@@ -318,6 +319,29 @@ SWEEP_THROUGHPUT_WORKLOADS: list[dict] = [
 # =============================================================================
 
 
+# An engine is described on two independent axes.
+#
+# Provisioning: how a server binary for a given revision comes to exist.
+#   "built-from-git"   clone ``source``, check out the revision, run make with
+#                      ``make_args`` (Valkey, Redis).
+#   "prebuilt-release" download the official release asset for the host
+#                      architecture; no source is ever checked out.  Reserved
+#                      for engines whose source licence the project does not
+#                      accept on its runners; not implemented yet.
+#
+# Scope: which revisions the sweep measures.
+#   "history"          every merge commit since the floor: release landmarks,
+#                      bisection of significant deltas, backfill of gaps, and
+#                      each new tip (Valkey).
+#   "release-and-tip"  the latest release only, plus the current tip sampled at
+#                      most once per ``tip_interval_hours``.  No bisection, no
+#                      backfill.  Enough to power the engine comparison, which
+#                      reads one release point and the recent tip and nothing
+#                      else (Redis).
+ENGINE_PROVISIONING = ("built-from-git", "prebuilt-release")
+ENGINE_SCOPES = ("history", "release-and-tip")
+
+
 @dataclass
 class SweepEngine:
     """Configuration for a benchmarking engine (server software to sweep)."""
@@ -329,6 +353,28 @@ class SweepEngine:
     make_args: str = DEFAULT_MAKE_ARGS  # compiler flags
     heap_alloc_funcs: list[str] = field(default_factory=list)  # for memory profiling
     profile_internals: bool = True  # collect CPU flamegraphs + jemalloc allocation breakdown for this engine
+    provisioning: str = "built-from-git"  # see ENGINE_PROVISIONING
+    scope: str = "history"  # see ENGINE_SCOPES
+    tip_interval_hours: float = 24.0  # release-and-tip: minimum spacing between tip samples
+
+    def __post_init__(self) -> None:
+        if self.provisioning not in ENGINE_PROVISIONING:
+            raise ValueError(f"engine {self.source!r}: provisioning must be one of {ENGINE_PROVISIONING}")
+        if self.provisioning == "prebuilt-release":
+            raise NotImplementedError(f"engine {self.source!r}: prebuilt-release provisioning is not implemented")
+        if self.scope not in ENGINE_SCOPES:
+            raise ValueError(f"engine {self.source!r}: scope must be one of {ENGINE_SCOPES}")
+        if self.tip_interval_hours <= 0:
+            raise ValueError(f"engine {self.source!r}: tip_interval_hours must be positive")
+
+    @property
+    def tracks_history(self) -> bool:
+        """True when the sweep bisects and backfills this engine's history."""
+        return self.scope == "history"
+
+    @property
+    def tip_interval_seconds(self) -> float:
+        return self.tip_interval_hours * 3600.0
 
 
 SWEEP_ENGINES: list[SweepEngine] = [
@@ -351,6 +397,10 @@ SWEEP_ENGINES: list[SweepEngine] = [
         # symbol table (function names / call graph), which we do not analyze or surface.
         # Redis keeps aggregate performance data only: throughput, latency, total memory.
         profile_internals=False,
+        # Redis exists here to power the engine comparison, which needs the latest
+        # release and the current tip.  Its history is not bisected.
+        scope="release-and-tip",
+        tip_interval_hours=24.0,
     ),
 ]
 
@@ -361,6 +411,67 @@ def get_sweep_engine(source: str) -> Optional["SweepEngine"]:
         if engine.source == source:
             return engine
     return None
+
+
+def engine_tracks_history(engine: Optional["SweepEngine"]) -> bool:
+    """Whether a series bisects and backfills history (True for the default Valkey sweep)."""
+    return engine.tracks_history if engine else True
+
+
+def engine_tip_interval_seconds(engine: Optional["SweepEngine"]) -> float:
+    """Minimum spacing between tip samples; zero for history engines, which measure every new tip."""
+    return 0.0 if engine is None or engine.tracks_history else engine.tip_interval_seconds
+
+
+def engine_series_prefix(engine: Optional["SweepEngine"]) -> str:
+    """The workload-id prefix that keeps one engine's series apart from another's."""
+    return f"{engine.source}-" if engine and engine.source != "valkey" else ""
+
+
+def engine_repo_slug(engine: Optional["SweepEngine"]) -> str:
+    """The ``owner/repo`` an engine's commit links point at, from its REPOSITORIES entry."""
+    source = engine.source if engine else "valkey"
+    for url, name in REPOSITORIES:
+        if name == source:
+            path = url.rsplit("github.com/", 1)[-1]
+            return path[:-4] if path.endswith(".git") else path
+    return "valkey-io/valkey"
+
+
+def sweep_throughput_label(
+    test: str = SWEEP_TEST,
+    val_size: int = SWEEP_VAL_SIZE,
+    io_threads: int = SWEEP_IO_THREADS,
+    pipelining: int = SWEEP_PIPELINING,
+    engine: Optional["SweepEngine"] = None,
+) -> str:
+    """Workload id of an epoch-1 throughput series, e.g. ``redis-get-k16-v64-t7-p10``."""
+    return f"{engine_series_prefix(engine)}{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
+
+
+def _v1_engine_mirror_series(engine: "SweepEngine") -> frozenset[str]:
+    """Every epoch-1 throughput series the sweep mirrors for a non-Valkey engine."""
+    labels = {sweep_throughput_label(engine=engine)}
+    for wl in SWEEP_THROUGHPUT_WORKLOADS:
+        labels.add(
+            sweep_throughput_label(
+                test=wl.get("test", SWEEP_TEST),
+                val_size=wl["val_size"],
+                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                engine=engine,
+            )
+        )
+    return frozenset(f"throughput:{label}" for label in labels)
+
+
+# The full registry: the Valkey series a v3 series replaced, plus every
+# epoch-1 throughput mirror of a comparison engine (Redis).  Those mirrors are
+# replaced by the engine's v3 series, which measure only what the comparison
+# reads (release and tip), so no new epoch-1 Redis data is produced.
+SWEEP_V1_RETIRED_SERIES: frozenset[str] = _V1_RETIRED_VALKEY_SERIES.union(
+    *(_v1_engine_mirror_series(e) for e in SWEEP_ENGINES if e.source != "valkey")
+)
 
 
 def should_profile_internals(engine: Optional["SweepEngine"]) -> bool:

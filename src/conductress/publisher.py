@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from conductress import config
-from conductress.config import should_profile_internals
+from conductress.config import engine_repo_slug, should_profile_internals
 from conductress.utility import run_rsync
 
 if TYPE_CHECKING:
@@ -197,7 +197,7 @@ class DashboardPublisher:
                     continue
                 epoch_id = self._coord_epoch(coord)
 
-                repo = "redis/redis" if coord.engine and coord.engine.source == "redis" else "valkey-io/valkey"
+                repo = engine_repo_slug(coord.engine)
                 branch = coord._sweep_ref.replace("origin/", "") if coord.engine else "unstable"
                 export_dir = self._export_dir
                 stage = None
