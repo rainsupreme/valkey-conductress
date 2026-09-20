@@ -1,9 +1,13 @@
 # Mixed-client scaling: implementation notes
 
+*This document records the design of mixed-client scaling as it was
+implemented; the command-line `--help` output and `config.py` are the source of
+truth for current flags and defaults.*
+
 ## Feature summary
 
 Parameterized memtier_benchmark thread/connection counts and empirical
-client-CPU measurement for `MixedTaskData`, enabling the authorized
+client-CPU measurement for `MixedTaskData`, enabling a
 400/1200/2400-connection client-count sweep to distinguish latency-bound
 behavior from capacity ceilings.
 
@@ -24,7 +28,8 @@ CPU-seconds that the pinned process actually consumed.
 
 ### 2. Capacity model: `capacity_cores` / `capacity_basis`
 
-Two capacity models replace the previous `allocated_cores` field:
+Client-side capacity is expressed through two capacity models rather than a
+single `allocated_cores` field:
 
 | Mode | `capacity_cores` | `capacity_basis` | Rationale |
 |------|------------------|-------------------|-----------|
@@ -77,9 +82,9 @@ but excludes warmup operations from the reported benchmark statistics.
 
 ### 6. Backward compatibility
 
-- `memtier_threads=0` and `memtier_clients=0` in task JSON mean "use legacy
-  default (8 and 50 respectively)".  Old envelopes without these fields
-  deserialize with 0 and produce identical behavior.
+- `memtier_threads=0` and `memtier_clients=0` in task JSON mean "use the
+  built-in default (8 and 50 respectively)".  Envelopes without these fields
+  deserialize with 0 and behave identically.
 - `short_description()` only shows concurrency info when overridden, keeping
   the default case uncluttered.
 - Golden fixture `MixedTaskData.json` was updated with the new fields at
@@ -168,14 +173,15 @@ are completely unaffected. The `Server.perf_stat_start()` and
 argument with default 0.
 
 
-### 11. Lifecycle correctness and cancellation (round 5)
+### 11. Lifecycle correctness and cancellation
 
-The per-repetition collector lifecycle was refactored so that ANY code path
-after perf stat or CPU profile arming reaches a single `finally` block.
-Previously, cleanup only ran when `run_host_command` raised (the memtier
-invocation); exceptions during GNU-time parsing, RPS parsing, perf stop,
-perf report, metric writing, or result handling could leave background
-perf threads and perf-record subprocesses racing server shutdown.
+The per-repetition collector lifecycle guarantees that ANY code path after perf
+stat or CPU profile arming reaches a single `finally` block. Cleanup therefore
+runs on every exit path — not only when the memtier invocation
+(`run_host_command`) raises, but also when an exception occurs during GNU-time
+parsing, RPS parsing, perf stop, perf report, metric writing, or result
+handling. This ensures no background perf thread or perf-record subprocess is
+left racing server shutdown.
 
 **try/finally per-rep block**: Each repetition in `MixedTaskRunner.run()` now
 has an inner `try/finally` that:

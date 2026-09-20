@@ -1,10 +1,14 @@
-# Canary Drift Analysis (PR2)
+# Canary Drift Analysis
+
+*This document records the design of canary drift analysis and its operator
+API as implemented; the command-line `--help` output and `config.py` are the
+source of truth for current flags and defaults.*
 
 ## Overview
 
 Ingests completed canary benchmark outcomes into immutable daily observations
 and computes rolling median/MAD statistics to detect environmental drift over
-time. Designed to be consumed by the Phase 5 PR3 CLI and dashboard.
+time. Consumed by the canary status CLI and dashboard.
 
 ## Data Model
 
@@ -164,7 +168,7 @@ for tests and legacy compatibility.
 `CanaryProfileRegistry` and `FleetRegistry` are wired into `DriftAnalyzer`
 from `create_app` via `ControlService`.
 
-## Query Helpers (for PR3 CLI)
+## Query Helpers
 
 ```python
 analyzer = DriftAnalyzer(database)
@@ -185,7 +189,7 @@ The `canary_observations` table includes a partial unique index enforcing at
 most one accepted observation per `(runner, profile, version, date)`.
 Migration is forward-compatible and idempotent (safe to run multiple times).
 
-## Operator API (PR3)
+## Operator API
 
 Authenticated read-only endpoints for canary status. Operator token required.
 Not exposed on the public dashboard endpoint.
@@ -270,7 +274,7 @@ Detailed canary status for one runner. Returns 404 for unknown runners.
 These endpoints perform no writes: no scheduler ticks, no task creation,
 no observation ingestion. They are purely read-only aggregations.
 
-## CLI (PR3)
+## CLI
 
 ### conductress canary status
 
