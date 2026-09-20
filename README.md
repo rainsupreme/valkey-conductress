@@ -422,6 +422,10 @@ mypy src/ --ignore-missing-imports
 
 Always set `PYTHONPATH=src` when running tests or mypy: other editable installs on the same host can otherwise shadow this tree.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks CI runs (`make ci` runs the same set locally), the DCO sign-off requirement, and the writing conventions for anything committed to the repository.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
