@@ -63,7 +63,7 @@ Requires Python 3.9 or newer. The `control` extra pulls in the fleet control ser
 
 ## Command Reference
 
-Every command is a subcommand of `conductress`. Run `conductress <command> --help` for the full argument list. Running `conductress` with no subcommand prints usage.
+Every command is a subcommand of `conductress`. Run `conductress <command> --help` for the full argument list. Running `conductress` with no subcommand prints usage. `conductress --version` prints the installed version; on an interactive terminal it shows the Conductress mark above it (set `NO_COLOR` to get only the version line).
 
 ### Core commands
 

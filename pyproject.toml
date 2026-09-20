@@ -42,7 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "conductress.schemas" = ["*.json"]
-"conductress" = ["canary_profiles/*.json"]
+"conductress" = ["canary_profiles/*.json", "assets/*.ansi"]
 
 [tool.black]
 line-length = 120

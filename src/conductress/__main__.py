@@ -4,11 +4,13 @@ import argparse
 import logging
 import sys
 
+from conductress.banner import VersionAction
 from conductress.config import CONDUCTRESS_LOG
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="conductress", description="Valkey Conductress")
+    parser.add_argument("--version", action=VersionAction)
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Start the task runner worker")
