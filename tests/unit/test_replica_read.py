@@ -178,6 +178,24 @@ def test_replication_lag_slope_is_the_fraction_of_the_stream_not_applied():
     assert abs(stats["slope_seconds_per_second"]) < 0.005
 
 
+def test_replication_lag_end_level_is_where_the_window_closed():
+    # A backlog drained inside the window: the mean still carries it, the end level does not.
+    stats = replication_lag_stats(_lag_series([300_000, 200_000, 100_000, 0, 0, 0]), 6379, 6380)
+    assert stats["mean_seconds"] == pytest.approx(1.0)
+    assert stats["end_seconds"] == pytest.approx(0.0)
+    assert stats["end_bytes"] == 0
+    assert stats["slope_seconds_per_second"] < 0
+    # Growing lag: the end level is above the mean, where the queue actually stood.
+    stats = replication_lag_stats(_lag_series([0, 50_000, 100_000, 150_000, 200_000, 250_000]), 6379, 6380)
+    assert stats["end_seconds"] == pytest.approx((150_000 + 200_000 + 250_000) / 3 / 100_000)
+    # Fewer samples than the closing window: the end level is the mean of what there is.
+    stats = replication_lag_stats(_lag_series([40_000, 60_000]), 6379, 6380)
+    assert stats["end_seconds"] == pytest.approx(0.5)
+    # No rate, no seconds.
+    unclocked = [{"instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}] * 3
+    assert replication_lag_stats(unclocked, 6379, 6380)["end_seconds"] is None
+
+
 def test_replication_lag_slope_needs_a_rate_and_two_clocked_samples():
     one = [{"t": 0.0, "instances": {6379: {"master_repl_offset": 500}, 6380: {"master_repl_offset": 100}}}]
     assert replication_lag_stats(one, 6379, 6380)["slope_seconds_per_second"] is None

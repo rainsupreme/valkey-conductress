@@ -936,16 +936,18 @@ async def test_search_run_treats_a_lagging_replica_as_a_failed_probe_not_an_erro
     FakeGroup.lag_bytes = 5000
     FakeCommand.reader_by_rate = _delivers_up_to(10_000_000)
     runner = faked(**_search_task(read_rate_max_bisect_steps=1))
-    with pytest.raises(RuntimeError, match=r"no read rate passed.*lag: mean 5\.00 s"):
+    with pytest.raises(RuntimeError, match=r"no read rate passed.*lag: 5\.00 s of stream at the end of the window"):
         await runner.run()
 
 
 # --------------------------------------------------------------------------- probe verdict
 
 
-def _lag_trend(mean_seconds, slope, *, rate=100_000.0, samples=15):
+def _lag_trend(mean_seconds, slope, *, end_seconds=None, rate=100_000.0, samples=15):
     lag = _lag(mean_seconds, rate=rate, samples=samples)
     lag["slope_seconds_per_second"] = slope
+    lag["end_seconds"] = mean_seconds if end_seconds is None else end_seconds
+    lag["end_bytes"] = lag["end_seconds"] * rate
     return lag
 
 
@@ -963,11 +965,35 @@ def test_probe_fails_on_reader_delivery_before_looking_at_lag(faked):
     assert not passed and reason.startswith("reader: delivered 900,000/s of 1,000,000/s target (90.0% < 97%)")
 
 
-def test_probe_fails_on_lag_level(faked):
+def test_probe_fails_on_lag_level_at_the_end_of_the_window(faked):
     runner = faked(**_search_task(max_lag_seconds=1.0))
     reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
     passed, reason = runner._probe_verdict(1_000_000, reader, _lag_trend(1.5, 0.0))
-    assert not passed and reason.startswith("lag: mean 1.50 s of stream > max_lag_seconds 1.0")
+    assert not passed
+    assert reason.startswith("lag: 1.50 s of stream at the end of the window > max_lag_seconds 1.0 (window mean 1.50 s")
+    # At the threshold it passes: a strict comparison like the cell guard.
+    assert runner._probe_verdict(1_000_000, reader, _lag_trend(1.0, 0.0))[0]
+
+
+def test_probe_that_drains_a_startup_backlog_passes(faked):
+    # g4bench smoke cell 2026.09.20_21.10.31, probe 11: 1.76 s mean over the window, slope -0.047 s/s, lag near
+    # zero by the window's end. The replica was keeping up at that rate; the window mean was the backlog left by
+    # 464 connections reconnecting into a saturated main thread. Judging the mean failed it and put the knee one
+    # bracket low.
+    runner = faked(**_search_task(max_lag_seconds=1.0))
+    reader = {"throughput_rps": 2_040_009.0, "hit_rate": {"percent": 100.0}}
+    assert runner._probe_verdict(1_957_763, reader, _lag_trend(1.76, -0.047, end_seconds=0.05)) == (True, "")
+    # Probe 6 of the same cell (0.74 s mean, draining) passed under both rules.
+    assert runner._probe_verdict(1_898_437, reader, _lag_trend(0.74, -0.139, end_seconds=0.0)) == (True, "")
+
+
+def test_probe_that_ends_above_the_level_fails_even_when_the_mean_is_under_it(faked):
+    # The mirror case: a window that opens caught up and ends far behind has a small mean; the end level and the
+    # slope both say the replica is not keeping up.
+    runner = faked(**_search_task(max_lag_seconds=1.0, max_lag_slope=0.02))
+    reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
+    passed, reason = runner._probe_verdict(1_000_000, reader, _lag_trend(0.8, 0.0, end_seconds=1.6))
+    assert not passed and reason.startswith("lag: 1.60 s of stream at the end of the window")
 
 
 def test_probe_fails_on_lag_slope_even_when_the_level_is_small(faked):
@@ -981,9 +1007,24 @@ def test_probe_fails_on_lag_slope_even_when_the_level_is_small(faked):
     assert runner._probe_verdict(1_000_000, reader, _lag_trend(0.3, 0.02))[0]
 
 
+def test_probe_reason_names_the_slope_when_both_limits_are_exceeded(faked):
+    # Smoke cell probe 10: growing at 0.23 s/s and 2.8 s behind. Growth is the mechanism; the level is its result.
+    runner = faked(**_search_task(max_lag_seconds=1.0, max_lag_slope=0.02))
+    reader = {"throughput_rps": 2_107_584.0, "hit_rate": {"percent": 100.0}}
+    passed, reason = runner._probe_verdict(2_017_089, reader, _lag_trend(2.8, 0.231, end_seconds=4.4))
+    assert not passed and reason.startswith("lag: growing 0.231 s of stream per second")
+
+
 def test_probe_fails_when_lag_exists_but_the_stream_did_not_advance(faked):
     runner = faked(**_search_task())
     reader = {"throughput_rps": 1_000_000.0, "hit_rate": {"percent": 100.0}}
-    lag = {"samples": 5, "mean_bytes": 500.0, "max_bytes": 900, "stream_bytes_per_second": 0.0, "mean_seconds": None}
+    lag = {
+        "samples": 5,
+        "mean_bytes": 500.0,
+        "max_bytes": 900,
+        "stream_bytes_per_second": 0.0,
+        "mean_seconds": None,
+        "end_seconds": None,
+    }
     passed, reason = runner._probe_verdict(1_000_000, reader, lag)
     assert not passed and reason.startswith("lag: replica behind a stream that did not advance")
