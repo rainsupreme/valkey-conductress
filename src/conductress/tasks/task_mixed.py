@@ -15,7 +15,13 @@ from typing import List, Optional
 
 from scipy.stats import t as t_dist
 
-from conductress.config import PERF_BENCH_KEYSPACE, ServerInfo, get_sweep_engine, should_profile_internals
+from conductress.config import (
+    PERF_BENCH_KEYSPACE,
+    REMOTE_MEMTIER_BENCHMARK,
+    ServerInfo,
+    get_sweep_engine,
+    should_profile_internals,
+)
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, MetricData
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -495,7 +501,7 @@ class MixedTaskRunner(BaseTaskRunner):
 
                 # Prefill keyspace so GETs hit (same approach as perf task)
                 prefill_cmd = (
-                    f"{taskset_pfx}~/conductress/memtier_benchmark "
+                    f"{taskset_pfx}{REMOTE_MEMTIER_BENCHMARK} "
                     f"--server {server.ip} --port {server.port} --protocol redis "
                     f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
                     f"--ratio 1:0 --key-pattern P:P "
@@ -527,7 +533,7 @@ class MixedTaskRunner(BaseTaskRunner):
                     # Run measurement phase (memtier handles warmup + scored interval)
                     ratio_str = set_ratio_to_memtier_ratio(self.set_ratio)
                     measure_cmd = (
-                        f"{taskset_pfx}~/conductress/memtier_benchmark "
+                        f"{taskset_pfx}{REMOTE_MEMTIER_BENCHMARK} "
                         f"--server {server.ip} --port {server.port} --protocol redis "
                         f"--threads {self.memtier_threads} --clients {self.memtier_clients} "
                         f"--ratio {ratio_str} --key-pattern R:R "

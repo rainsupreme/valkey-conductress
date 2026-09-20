@@ -6,6 +6,7 @@ Conductress assumes a separate machine (or machines) to run `valkey-server`, dis
 
 ## Design and implementation plans
 
+- [Configuration](docs/configuration.md) — every user-editable setting, the environment overrides, and the local `servers.json` / `runner.json` / `repositories.json` files.
 - [Fleet control plane and daily drift canary](docs/fleet-control-plane-implementation-plan.md) — pull-based remote inboxes, boundary-only network activity, fleet discovery, and canary rollout. Multiple same-platform runners are deferred.
 - [Fleet control service](docs/control-service.md) — Phase 2 SQLite mailbox/status API, authentication, deployment examples, and safety invariants.
 - [Fleet-aware CLI](docs/fleet-cli.md) — fleet discovery, remote queue management, secure client configuration, and runner/platform routing.

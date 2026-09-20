@@ -5,7 +5,8 @@ Its workload definition differs from valkey-benchmark -- results are a SEPARATE
 series, never sweep-comparable. Use for generator-wall cross-checks and
 absolute ceiling validation.
 
-Binary: /home/ec2-user/cachecannon/target/release/cachecannon (on bench hosts).
+Binary: config.CACHECANNON_BINARY (default ~/cachecannon/target/release/cachecannon
+on bench hosts; override with CONDUCTRESS_CACHECANNON_BINARY).
 Config: TOML file generated per-run in the result directory.
 """
 

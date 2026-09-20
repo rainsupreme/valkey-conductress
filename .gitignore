@@ -2,6 +2,7 @@
 *.pyc
 servers.json
 runner.json
+repositories.json
 valkey-benchmark
 fleet_delivery.json
 valkey-cli
