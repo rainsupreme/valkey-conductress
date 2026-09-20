@@ -15,6 +15,7 @@ from conductress.stormgen import metrics
 from conductress.stormgen.__main__ import build_document, build_parser, config_from_args
 from conductress.stormgen.resp import ReplyParser, encode_command
 from conductress.stormgen.runner import StormConfig, run_storm
+from tests.unit.asyncio_server_support import close_server
 
 
 class FakeServer:
@@ -37,9 +38,7 @@ class FakeServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server, self._reply_gate)
 
     def pause_replies(self):
         self._reply_gate.clear()

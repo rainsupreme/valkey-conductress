@@ -16,6 +16,7 @@ import pytest
 from conductress.stormgen import SCHEMA_VERSION
 from conductress.stormgen.resp import ReplyParser
 from conductress.stormgen.stall import SlowLoopStall, StallRecord, parse_stall
+from tests.unit.asyncio_server_support import close_server
 
 # --------------------------------------------------------------------------- parse / validate
 
@@ -89,9 +90,7 @@ class SlowLoopFakeServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server)
 
     async def _handle(self, reader, writer):
         parser = ReplyParser()

@@ -16,6 +16,7 @@ import pytest
 from conductress.stormgen.metrics import probe_recovery_s
 from conductress.stormgen.probe import ProbeConfig, ProbeSample, _bucketize, measure_connect_capacity, run_probe
 from conductress.stormgen.resp import ReplyParser
+from tests.unit.asyncio_server_support import close_server
 
 
 class _ProbeFakeServer:
@@ -33,9 +34,7 @@ class _ProbeFakeServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server, self._gate)
 
     def stall(self):
         self._gate.clear()

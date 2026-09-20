@@ -22,6 +22,7 @@ import pytest
 from conductress.stormgen.client import ClientConfig, StormClient, run_clients
 from conductress.stormgen.policy import parse_policy
 from conductress.stormgen.resp import ReplyParser
+from tests.unit.asyncio_server_support import close_server
 
 _OPENSSL = shutil.which("openssl")
 requires_openssl = pytest.mark.skipif(_OPENSSL is None, reason="openssl not installed")
@@ -79,9 +80,8 @@ class _TLSFakeServer:
 
     async def stop(self):
         if self._server is not None:
-            self._server.close()
             try:
-                await self._server.wait_closed()
+                await close_server(self._server)
             except (ssl.SSLError, OSError):
                 pass
 
@@ -188,9 +188,7 @@ class _ActiveHerdServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self):
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        await close_server(self._server, self._gate)
 
     def stall(self):
         self._gate.clear()
