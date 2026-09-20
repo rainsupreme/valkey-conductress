@@ -19,7 +19,7 @@ PERF_BENCH_THREADS = 16  # 75 connections per thread
 # (USE_FAST_FLOAT was a no-op — no such variable exists in the Valkey Makefile.)
 DEFAULT_MAKE_ARGS = ""
 
-# Benchmark defaults (single source of truth for CLI and TUI)
+# Benchmark defaults (single source of truth for the CLI and the runner)
 DEFAULT_IO_THREADS = 9
 DEFAULT_PIPELINING = 10
 DEFAULT_WARMUP = 5  # seconds
@@ -94,9 +94,6 @@ MEM_TEST_MEMBER_SIZE = 20  # Size of "element:__rand_int__" pattern (used by sad
 MEM_TEST_SCORE_SIZE = 8  # Size of a double score (used by zadd)
 MEM_TEST_MAX_CONCURRENT = 9  # Max concurrent server instances # TODO max session limit typically 10 by default
 MEM_TEST_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days expiration
-
-# TUI refresh interval in seconds
-TUI_REFRESH_INTERVAL = 15
 
 # =============================================================================
 # RUNTIME CONSTANTS

@@ -7,11 +7,10 @@ import time
 from dataclasses import dataclass
 from math import sqrt
 from statistics import mean, stdev
-from typing import Any, List, Optional, Sequence, Union
+from typing import Any, Optional
 
 from scipy.stats import t as t_dist
 
-from conductress.base_task_visualizer import PlotTaskVisualizer
 from conductress.config import (
     BENCHMARK_MAX_ITERATIONS,
     BENCHMARK_UPDATE_INTERVAL,
@@ -26,7 +25,7 @@ from conductress.config import (
     should_profile_internals,
 )
 from conductress.cpu_allocator import AllocationTag
-from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
+from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, MetricData
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec
@@ -1393,33 +1392,3 @@ class BoundedInsertionTaskRunner(PerfTaskRunner):
             await topology_group.stop_all_servers()
             if benchmark_alloc_tag and client:
                 client.release_cpus(benchmark_alloc_tag)
-
-
-class PerfTaskVisualizer(PlotTaskVisualizer):
-    """Visualizer for performance benchmark tasks."""
-
-    def __init__(self, task_id: str, file_protocol: FileProtocol, *args, **kwargs):
-        super().__init__(task_id, *args, **kwargs)
-        self.file_protocol = file_protocol
-
-    def format_x_tick(self, value: float) -> str:
-        return HumanTime.to_human(value / 4)
-
-    def format_y_tick(self, value: float) -> str:
-        return HumanNumber.to_human(value, 3)
-
-    def get_plot_data(self) -> "List[Optional[float]]":
-        datapoints = self.file_protocol.read_metrics()
-        data = [dp.metrics.get("rps", 0.0) for dp in datapoints]
-
-        if len(data) < 4:
-            return data  # type: ignore[return-value]
-
-        sorted_data = sorted(data)
-        q1_idx: int = len(sorted_data) // 4
-        q3_idx: int = 3 * len(sorted_data) // 4
-        q1, q3 = sorted_data[q1_idx], sorted_data[q3_idx]
-        iqr = q3 - q1
-        lower, upper = q1 - 3 * iqr, q3 + 3 * iqr
-
-        return [x if lower <= x <= upper else None for x in data]

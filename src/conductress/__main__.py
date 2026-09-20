@@ -11,7 +11,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="conductress", description="Valkey Conductress")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("tui", help="Launch the TUI")
     run_parser = subparsers.add_parser("run", help="Start the task runner worker")
     run_parser.add_argument(
         "--sweep",
@@ -148,13 +147,7 @@ def main() -> None:
         parser.print_usage()
         sys.exit(0)
 
-    if args.command == "tui":
-        from conductress.tui import BenchmarkApp
-
-        app = BenchmarkApp()
-        app.run()
-
-    elif args.command == "run":
+    if args.command == "run":
         import asyncio
         import json
         import traceback

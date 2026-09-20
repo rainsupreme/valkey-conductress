@@ -170,16 +170,16 @@ class TestTaskRunnerCleanup:
         assert not mock_task_runner.file_protocol.status_file.exists()
 
 
-class TestTUIStatusIntegration:
-    """Test TUI status tab integration with file protocol."""
+class TestStatusDataRoundTrip:
+    """Status and metrics written by a task can be read back and summarised by a consumer."""
 
     @pytest.fixture
     def tmp_dir(self, tmp_path):
         """Provide temporary directory for tests."""
         return tmp_path
 
-    def test_tui_status_data_processing(self, tmp_dir):
-        """Test that TUI can process status data from file protocol."""
+    def test_status_data_processing(self, tmp_dir):
+        """A consumer can read status and metrics back from the file protocol."""
         # Create test data
         task_id = "2024.01.01_12.00.00.000000_set_perf"
         protocol = FileProtocol(task_id, role_id="client", base_dir=tmp_dir)
@@ -205,7 +205,7 @@ class TestTUIStatusIntegration:
         assert len(metrics) == 3
         assert metrics[-1].metrics["rps"] == 1020.0  # Last metric should have highest RPS
 
-        # Verify the data format matches what TUI expects
+        # Build the summary row a status consumer derives from the protocol
         progress = "N/A"
         if read_status.steps_total and read_status.steps_completed is not None:
             pct = (read_status.steps_completed / read_status.steps_total) * 100

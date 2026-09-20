@@ -40,7 +40,7 @@ The subtitle is **ONLY DATA IS REAL**.
 | `pride/`, `trans/`, `bi/`, `lesbian/`, `nonbinary/` | The same set in each flag palette | June, or whenever you choose |
 | `valkey/` | The same set in Valkey's periwinkle, as a tonal ramp | Co-branded surfaces: a ValkeyConf slide, a Valkey-hosted page |
 | `mono/` | One flat colour, stencil-safe (explicit paths, no clip/gradient/opacity): light-on-dark (`-mono-light`) and dark-on-light (`-mono-dark`), each with a `-plain` no-trail lockup. No hero. | Shirts, embroidery, vinyl, engraving, one-ink print; documents that render in both a light and a dark theme (see below) |
-| `terminal/conductress-logo-ascii.py` and `*.ansi` | The lockup for a Linux terminal | CLI banner, TUI splash, MOTD |
+| `terminal/conductress-logo-ascii.py` and `*.ansi` | The lockup for a Linux terminal | CLI banner, MOTD |
 | `motion/conductress-signon.html` | The animated sign-on | Dashboard loading screen, talk openers |
 
 Every SVG has its type converted to outlines, so it renders identically with no
@@ -88,7 +88,7 @@ into a gradient blob below 64px, so 32-63px uses the 5-stripe cut and 16px uses
 the 3-stripe cut. The trail never appears below 64px; at that size it is a
 smear attached to a blob.
 
-**Terminal** for the CLI banner and TUI splash. See `terminal/`.
+**Terminal** for the CLI banner. See `terminal/`.
 
 Clear space: keep at least half a hexagon width of empty space around the mark
 or lockup. Do not put the lockup on a photograph or on top of a chart.

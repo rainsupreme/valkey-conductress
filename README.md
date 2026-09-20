@@ -4,7 +4,7 @@
 
 # Conductress
 
-A benchmarking framework for [Valkey](https://github.com/valkey-io/valkey) that queues and runs performance, memory, and replication benchmarks. It provides a TUI for interactive use, a CLI for scripted automation, and a statistical analysis module for comparing results.
+A benchmarking framework for [Valkey](https://github.com/valkey-io/valkey) that queues and runs performance, memory, and replication benchmarks. It provides a CLI for queueing, monitoring, and scripted automation, and a statistical analysis module for comparing results.
 
 Conductress runs `valkey-server` on a target machine (or machines) distinct from the machine that conducts the tests and generates load. Localhost is also supported as a server target, and is the default.
 
@@ -66,12 +66,6 @@ Requires Python 3.9 or newer. The `control` extra pulls in the fleet control ser
 Every command is a subcommand of `conductress`. Run `conductress <command> --help` for the full argument list. Running `conductress` with no subcommand prints usage.
 
 ### Core commands
-
-**`tui`** — Launch the interactive terminal UI for monitoring runners and queuing tasks.
-
-```bash
-conductress tui
-```
 
 **`run`** — Start the task runner worker that pulls queued tasks and executes them. Add `--sweep` to auto-generate historical benchmark tasks when the queue is empty, `--memory-sweep` to track per-item memory overhead across history, or `--fleet-mode {off,shadow,live}` to take work from a central control service (see [Standalone runner or managed fleet](#standalone-runner-or-managed-fleet)).
 
@@ -339,7 +333,7 @@ conductress compare valkey:unstable valkey-rainfall:my-feature
 
 ## Configuration
 
-Benchmark defaults and runtime constants live in `src/conductress/config.py`, the single source of truth for both the CLI and the TUI. Generator paths, publish and control endpoints, and the repository list can be overridden without editing source through environment variables and local JSON files; [docs/configuration.md](docs/configuration.md) lists every setting and its override. The benchmark defaults:
+Benchmark defaults and runtime constants live in `src/conductress/config.py`, the single source of truth for the CLI and the runner. Generator paths, publish and control endpoints, and the repository list can be overridden without editing source through environment variables and local JSON files; [docs/configuration.md](docs/configuration.md) lists every setting and its override. The benchmark defaults:
 
 | Setting | Default | Description |
 |---------|---------|-------------|

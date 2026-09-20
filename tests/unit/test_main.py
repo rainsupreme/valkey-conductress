@@ -10,19 +10,6 @@ import pytest
 from conductress.__main__ import main
 
 
-class TestTuiSubcommand:
-    """Test that the 'tui' subcommand dispatches to conductress.tui.BenchmarkApp."""
-
-    @patch("sys.argv", ["conductress", "tui"])
-    @patch("conductress.__main__.logging")
-    def test_tui_dispatches_to_benchmark_app(self, mock_logging):
-        mock_app = MagicMock()
-        with patch("conductress.tui.BenchmarkApp", return_value=mock_app) as mock_cls:
-            main()
-            mock_cls.assert_called_once()
-            mock_app.run.assert_called_once()
-
-
 class TestRunSubcommand:
     """Test that the 'run' subcommand dispatches to conductress.task_runner.TaskRunner."""
 

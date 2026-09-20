@@ -45,7 +45,7 @@ The throughput and latency defaults (connection counts, thread counts,
 pipelining, warmup and scored durations, value sizes, adaptive-repetition
 targets) are grouped near the top of `config.py` under the `Benchmark defaults`
 and `Sweep configuration` headings. Change them in source; they are the single
-source of truth shared by the CLI and the text UI. The cachecannon v3 sweep
+source of truth shared by the CLI and the runner. The cachecannon v3 sweep
 values are locked to a measured workload identity — changing any of them defines
 a new workload, not a continuation of the series.
 
