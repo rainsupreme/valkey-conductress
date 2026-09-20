@@ -65,20 +65,35 @@ class DashboardPublisher:
         return path
 
     @staticmethod
-    def _sweep_legacy_export_dirs() -> int:
+    def _legacy_temp_dirs() -> list[Path]:
+        """Temp directories an earlier ``mkdtemp``-based publisher may have used.
+
+        ``tempfile.gettempdir()`` returns the first writable candidate, so a
+        process started while ``/tmp`` was full resolved to ``/var/tmp``; both
+        are checked alongside whatever it resolves to now.
+        """
+        seen: list[Path] = []
+        for candidate in (tempfile.gettempdir(), "/tmp", "/var/tmp"):
+            path = Path(candidate)
+            if path not in seen:
+                seen.append(path)
+        return seen
+
+    @classmethod
+    def _sweep_legacy_export_dirs(cls) -> int:
         """Remove ``conductress-publish-*`` directories left by earlier publishers.
 
         Only the retired ``mkdtemp`` path ever created that prefix, so anything
-        matching it under the temp directory is a leak from a previous runner
+        matching it in a temp directory is a leak from a previous runner
         process. Returns the number of directories removed.
         """
         removed = 0
-        for stale in Path(tempfile.gettempdir()).glob("conductress-publish-*"):
-            if stale.is_dir():
-                shutil.rmtree(stale, ignore_errors=True)
-                removed += 1
-        if removed:
-            logger.info("Removed %d legacy conductress-publish-* export dir(s) from %s", removed, tempfile.gettempdir())
+        for temp_dir in cls._legacy_temp_dirs():
+            for stale in temp_dir.glob("conductress-publish-*"):
+                if stale.is_dir():
+                    shutil.rmtree(stale, ignore_errors=True)
+                    removed += 1
+                    logger.info("Removed legacy export dir %s", stale)
         return removed
 
     def on_task_completed(self, task: "BaseTaskData") -> None:

@@ -29,12 +29,15 @@ class TestDetectPlatform:
 
 @pytest.fixture(autouse=True)
 def _isolated_dirs(tmp_path, monkeypatch):
-    """Keep every publisher under test off the real export dir and temp dir."""
+    """Keep every publisher under test off the real export dir and temp dirs."""
     from conductress import config as _config
 
     monkeypatch.setattr(_config, "PUBLISH_EXPORT_DIR", tmp_path / "publish-export")
-    monkeypatch.setattr("conductress.publisher.tempfile.gettempdir", lambda: str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
+    (tmp_path / "var-tmp").mkdir()
+    monkeypatch.setattr(
+        DashboardPublisher, "_legacy_temp_dirs", staticmethod(lambda: [tmp_path / "tmp", tmp_path / "var-tmp"])
+    )
 
 
 class TestDashboardPublisher:
@@ -61,11 +64,13 @@ class TestDashboardPublisher:
         assert not str(export_dir).startswith(str(tmp_path / "tmp")), "export dir must not live under tempdir"
 
     def test_legacy_mkdtemp_export_dirs_are_swept_on_init(self, tmp_path):
-        """Directories left by the retired mkdtemp publisher are removed; nothing else is touched."""
+        """Directories left by the retired mkdtemp publisher are removed from every temp dir; nothing else is touched."""
         tmp = tmp_path / "tmp"
+        var_tmp = tmp_path / "var-tmp"
         for name in ("conductress-publish-abc123", "conductress-publish-def456"):
             (tmp / name).mkdir()
             (tmp / name / "series-x.json").write_text("{}")
+        (var_tmp / "conductress-publish-fallback").mkdir()
         (tmp / "conductress-publish-not-a-dir").write_text("")
         (tmp / "unrelated-dir").mkdir()
         (tmp / "unrelated-dir" / "keep.txt").write_text("keep")
@@ -74,8 +79,16 @@ class TestDashboardPublisher:
 
         assert not (tmp / "conductress-publish-abc123").exists()
         assert not (tmp / "conductress-publish-def456").exists()
+        assert not (var_tmp / "conductress-publish-fallback").exists()
         assert (tmp / "conductress-publish-not-a-dir").exists()
         assert (tmp / "unrelated-dir" / "keep.txt").read_text() == "keep"
+
+    def test_legacy_temp_dirs_cover_tmp_and_var_tmp(self, monkeypatch):
+        """gettempdir() moves to /var/tmp once /tmp is full, so both are always candidates, deduplicated."""
+        monkeypatch.undo()  # drop the autouse patch of _legacy_temp_dirs for this test
+        monkeypatch.setattr("conductress.publisher.tempfile.gettempdir", lambda: "/var/tmp")
+        dirs = DashboardPublisher._legacy_temp_dirs()
+        assert dirs == [Path("/var/tmp"), Path("/tmp")]
 
     def test_on_task_failed_is_noop(self):
         pub = DashboardPublisher("user@host:/path", [])

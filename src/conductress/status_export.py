@@ -186,8 +186,11 @@ def _get_hostname() -> str:
 # Filesystems the per-host disk alarm watches. PROJECT_ROOT holds builds,
 # results and RDBs; the temp directory holds perf.data and other scratch, and
 # is often a separate RAM-backed tmpfs that can fill while the root disk still
-# reads mostly free.
-DISK_WATCH_PATHS: tuple[str, ...] = (str(PROJECT_ROOT), tempfile.gettempdir())
+# reads mostly free. ``/tmp`` is listed on its own as well: tempfile.gettempdir()
+# returns the first candidate it can write to, so once /tmp is full it resolves
+# to /var/tmp and would drop the full filesystem from the watch. Paths on the
+# same filesystem are reported once.
+DISK_WATCH_PATHS: tuple[str, ...] = (str(PROJECT_ROOT), tempfile.gettempdir(), "/tmp")
 
 
 def _disk_usage_entry(path: str) -> Optional[dict[str, Any]]:

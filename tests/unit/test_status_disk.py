@@ -16,14 +16,15 @@ def _stat(dev: int):
 class TestGetDiskInfo:
     """_get_disk_info feeds the per-host disk alarm on the status dashboard."""
 
-    def test_watches_project_root_and_temp_dir(self):
-        """Both the project filesystem and the temp filesystem are in the watch list."""
+    def test_watches_project_root_temp_dir_and_tmp(self):
+        """The project filesystem, the resolved temp dir and /tmp itself are all in the watch list."""
         import tempfile
 
         from conductress.config import PROJECT_ROOT
 
         assert str(PROJECT_ROOT) in DISK_WATCH_PATHS
         assert tempfile.gettempdir() in DISK_WATCH_PATHS
+        assert "/tmp" in DISK_WATCH_PATHS
 
     def test_single_filesystem_keeps_legacy_shape(self):
         """Same device under both paths: one entry, top-level fields as before."""
