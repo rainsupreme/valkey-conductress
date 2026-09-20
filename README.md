@@ -377,6 +377,7 @@ The runner writes per-host runtime state into the project root: `sweep_data/`, `
 ### User guides
 - [Configuration](docs/configuration.md) — every user-editable setting, the environment overrides, and the local `servers.json` / `runner.json` / `repositories.json` files.
 - [Benchmark precision guide](docs/benchmark-precision-guide.md) — measurement stability, the bimodal between-restart distribution, and how repetitions and adaptive stopping keep results trustworthy.
+- [Binary layout noise](docs/layout-noise.md) — why a stock build's per-commit throughput can swing several percent with no code cost, how to tell layout from work, and how to hold the layout fixed with `--make-args`.
 - [Connection-storm scenario](docs/connection-storm-scenario.md) — the reconnecting-client burst overlay, its `--storm-*` knobs, and the TLS herd.
 - [Replica-read task](docs/replica-read-task.md) — measuring replica read performance under a live replication stream.
 - [Real-NIC hairpin](docs/real-nic-hairpin.md) — running the benchmark client in a separate network namespace over a real NIC path.
