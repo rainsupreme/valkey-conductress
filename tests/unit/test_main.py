@@ -107,6 +107,28 @@ class TestCompareSubcommand:
                 main()
             assert exc_info.value.code == 1
 
+    @patch("sys.argv", ["conductress", "compare", "--help"])
+    @patch("conductress.__main__.logging")
+    def test_compare_forwards_help_to_analysis_main(self, mock_logging):
+        """The forwarding subparser must not consume --help itself, or the user
+        sees an empty usage line instead of the real compare arguments."""
+        with patch("conductress.analysis.main", return_value=0) as mock_analysis_main:
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+            mock_analysis_main.assert_called_once_with(["--help"])
+
+    @patch("sys.argv", ["conductress", "compare", "--help"])
+    @patch("conductress.__main__.logging")
+    def test_compare_help_lists_analysis_arguments(self, mock_logging, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "specifier_a" in out
+        assert "--source" in out
+        assert "--method" in out
+
 
 class TestNoSubcommand:
     """Test that invoking without a subcommand prints usage information."""
