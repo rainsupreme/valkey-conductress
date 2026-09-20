@@ -5,6 +5,11 @@
 
 ## Executive Summary
 
+This guide records the methodology and measurements from the precision
+investigation conducted on the date above; the platform CVs reported here are
+the values measured then. The command-line `--help` output and `config.py` are
+the source of truth for current flags and defaults.
+
 This guide documents how to achieve **repeatable** benchmark results on bare-metal servers for Valkey performance testing — meaning results measured at different times can be validly compared without misleading conclusions.
 
 The primary goal is **repeatability** (valid cross-session comparisons), not just precision (tight error bars within one session). A measurement with ±0.06% CI95 is useless if the environment drifted 3% between sessions.
@@ -91,7 +96,7 @@ Record these with every measurement session. Two sessions are comparable only if
 | Memory pressure | ⚠️ Record | `free -m` — flag if <80% available |
 | Background load | ⚠️ Record | `uptime` load average — flag if >0.5 |
 
-The [`valkey-perf-benchmark` metadata enrichment PR](https://github.com/valkey-io/valkey-perf-benchmark/pull/55) captures most of these automatically.
+The [`valkey-perf-benchmark` metadata enrichment support](https://github.com/valkey-io/valkey-perf-benchmark/pull/55) captures most of these automatically.
 
 ### Validity Window
 
@@ -407,7 +412,7 @@ sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
 
 **Why io-threads=7 not 9?** On 8-core CCDs, io-threads=7 (main + 6 IO = 7 threads) leaves 1 core free for OS/interrupts while keeping all communication within the shared 32MB L3. io-threads=9 requires spanning 2 CCDs, which is 51% slower and introduces multimodal variance.
 
-**Client saturation sweet spot**: t=8, c=800, P=10. Client ceiling on 1 CCD at 2.6 GHz is ~2.85M rps — provides 42% headroom over current server max (~2.0M rps).
+**Client saturation sweet spot**: t=8, c=800, P=10. Client ceiling on 1 CCD at 2.6 GHz is ~2.85M rps — provides 42% headroom over the ~2.0M rps server ceiling measured here.
 
 ---
 
@@ -522,9 +527,9 @@ The tradeoff: AMD requires much more effort to stabilize and has a lower absolut
 
 ## Implementation: Conductress & valkey-perf-benchmark
 
-### Conductress Changes (feature/x86-stabilization branch)
+### Conductress changes
 
-The following has been implemented in Conductress's `enable_cpu_consistency_mode()`:
+Conductress's `enable_cpu_consistency_mode()` does the following:
 
 | Change | File | Effect |
 |--------|------|--------|
@@ -535,15 +540,13 @@ The following has been implemented in Conductress's `enable_cpu_consistency_mode
 | Reduced threads/clients | `config.py` | 8 threads / 800 clients (fits 1 CCD) |
 | Restore on cleanup | `server.py` | ASLR=2, freq range, boost re-enabled |
 
-### valkey-perf-benchmark (OSS) Planned PRs
+### Possible follow-up work in valkey-perf-benchmark
 
-| PR | Feature | Status |
-|----|---------|--------|
-| 1 | Metadata enrichment (record environment state) | Ready to push |
-| 2 | Pin valkey-benchmark to fixed tag | Planned |
-| 3 | `--stabilize-environment` opt-in | Planned |
-| 4 | IRQ + NUMA + CCD-aware pinning | Planned |
-| 5 | perf stat opt-in | Planned |
+- [Metadata enrichment](https://github.com/valkey-io/valkey-perf-benchmark/pull/55) — record environment state with each measurement.
+- Pin valkey-benchmark to a fixed tag.
+- `--stabilize-environment` opt-in.
+- IRQ + NUMA + CCD-aware pinning.
+- `perf stat` opt-in.
 
 ## Quick Reference: Minimum Viable Benchmark
 
