@@ -486,7 +486,7 @@ def _add_row_legends(axes, *, has_probe: bool, has_background: bool) -> None:
     grey = "#4d4d4d"
     band = Patch(facecolor="#7f8c8d", alpha=0.3, label="stall / slow loop")
     quiescence = Line2D([], [], color=grey, lw=1, ls="-.", label="all storm clients connected")
-    row0 = []
+    row0: List[Any] = []  # mixed Line2D and Patch handles
     if has_probe:
         row0.append(Line2D([], [], color=grey, lw=1.8, label="probe goodput, served/s (left axis)"))
         row0.append(Line2D([], [], color=grey, lw=1.4, ls=":", label="probe p99, ms (right axis)"))
