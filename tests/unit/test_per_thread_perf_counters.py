@@ -322,7 +322,7 @@ class TestPerThreadManifestGroups:
 
     def test_group_series_reference_suffixed_metrics(self):
         eff_main = next(g for g in PER_THREAD_PERF_GROUPS if g["id"] == "efficiency-main")
-        assert eff_main["series"] == ["ipc-main", "instructions-per-req-main"]
+        assert eff_main["series"] == ["ipc-main", "instructions-per-req-main", "cycles-per-req-main"]
         # y-axis series are suffixed too
         left = next(a for a in eff_main["y_axes"] if a["id"] == "left")
         assert left["series"] == ["ipc-main"]

@@ -115,6 +115,16 @@ class TestComputeMetric:
         # 900B / (2M * 30 * 5) = 3000
         assert result == pytest.approx(3000.0, rel=1e-6)
 
+    def test_cycles_per_req(self, sample_state):
+        point = sample_state.points["aaa"]
+        result = _compute_metric(point, "cycles-per-req")
+        # Same rep correction as instructions-per-req: 300B / (2M * 30 * 5) = 1000
+        assert result == pytest.approx(1000.0, rel=1e-6)
+        # and the two agree with IPC: 3000 insn / 1000 cyc = 3.0
+        assert _compute_metric(point, "instructions-per-req") / result == pytest.approx(
+            _compute_metric(point, "ipc"), rel=1e-6
+        )
+
     def test_no_counters_returns_none(self):
         point = BenchmarkPoint(commit="x", date="2024-01-01", status=PointStatus.COMPLETED)
         assert _compute_metric(point, "ipc") is None

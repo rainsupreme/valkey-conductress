@@ -33,6 +33,17 @@ PERF_METRICS: dict[str, dict[str, Any]] = {
             c["instructions"] / (rps * duration * (reps or 1)) if rps and duration and c.get("instructions") else None
         ),
     },
+    "cycles-per-req": {
+        "label": "Cycles per Request",
+        "unit": "cycles/request",
+        # Same summed-across-reps correction as instructions-per-req. Read the two
+        # together: a commit that changes cycles/request while instructions/request
+        # stays flat changed how the same work is fetched or scheduled (code layout,
+        # cache placement), not how much work is done.
+        "compute": lambda c, rps=0, duration=0, reps=1, **_: (
+            c["cycles"] / (rps * duration * (reps or 1)) if rps and duration and c.get("cycles") else None
+        ),
+    },
     "icache-mpki": {
         "label": "I-Cache MPKI",
         "unit": "misses/1Ki",
@@ -130,10 +141,10 @@ PERF_GROUPS: list[dict[str, Any]] = [
     {
         "id": "efficiency",
         "title": "Execution Efficiency",
-        "series": ["ipc", "instructions-per-req"],
+        "series": ["ipc", "instructions-per-req", "cycles-per-req"],
         "y_axes": [
             {"id": "left", "label": "IPC", "series": ["ipc"]},
-            {"id": "right", "label": "insn/request", "series": ["instructions-per-req"]},
+            {"id": "right", "label": "per request", "series": ["instructions-per-req", "cycles-per-req"]},
         ],
     },
     {
