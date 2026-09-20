@@ -142,6 +142,24 @@ not stored (they would add about 1 MB per rep on a 96-core host).
 Lag resolution is bounded by sample skew times replication bytes per second;
 lags below that are noise and are clamped at zero.
 
+### CPU profile (`--cpu-profile`)
+
+`--cpu-profile` runs `perf record -g --call-graph fp` on the measured replica
+(main thread and io-threads) for the scored window of the **last rep** only:
+perf sleeps through the reader's warmup, then records for `duration`. The
+collapsed stacks land on the row as `cpu_stacks_main` / `cpu_stacks_io` (the
+perf task's keys, so `file_protocol` also writes `cpu_stacks_main.json` /
+`cpu_stacks_io.json` beside the row and the flamegraph tooling reads them
+unchanged), with `cpu_profile_rep` naming the rep that was sampled. perf's
+sampling interrupts cost the replica a little, so treat that rep's throughput
+as slightly depressed and keep profiled cells out of A/B means. The profile is
+diagnostic and best effort: a failed `perf record`/`perf script` logs a
+warning and leaves the row without stacks, never failing the cell; a reader
+failure inside the window cancels perf instead of waiting it out. Use it when a
+verdict says `server` and you want to know what the replica's main thread is
+doing with its loop duty (the Tier-0 grid's feature-1 arm showed ~0.90 loop
+duty with ~0.01 command duty at io4/io8, which only a profile can explain).
+
 ## A/B recipe
 
 Two tasks that differ only in `--specifier` (two builds) or `--replica-args`
