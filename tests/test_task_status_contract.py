@@ -10,7 +10,7 @@ import inspect
 import pytest
 
 from conductress.task_queue import BaseTaskRunner
-from conductress.tasks.task_latency import LatencyTaskRunner  # noqa: F401
+from conductress.tasks.task_cachecannon import CachecannonTaskRunner  # noqa: F401
 from conductress.tasks.task_mem_efficiency import MemTaskRunner  # noqa: F401
 from conductress.tasks.task_perf_benchmark import PerfTaskRunner  # noqa: F401
 

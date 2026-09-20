@@ -1,8 +1,8 @@
 """Pathological-workload scenario benchmark task.
 
 Measures how badly a named pathology disturbs concurrent GET throughput.
-Architecture: steady background GET load via memtier (same prefill/keyspace as
-task_mixed), PLUS an overlay driver that exercises the pathological pattern.
+Architecture: steady background GET load via memtier (same prefill and keyspace
+as the throughput sweeps), PLUS an overlay driver that exercises the pathological pattern.
 
 Reports:
   - Sustained baseline throughput (per-interval RPS timeseries)
@@ -36,19 +36,19 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
+from conductress.memtier import (
+    MEMTIER_CLIENTS,
+    MEMTIER_KEYSPACE,
+    MEMTIER_THREADS,
+    parse_memtier_total_rps,
+    set_ratio_to_memtier_ratio,
+)
 from conductress.server import Server
 from conductress.stormgen import netstat
 from conductress.stormgen.policy import parse_policy
 from conductress.stormgen.resp import ReplyParser, encode_command
 from conductress.stormgen.stall import SlowLoopStall, parse_stall
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
-from conductress.tasks.task_mixed import (
-    MIXED_CLIENTS,
-    MIXED_KEYSPACE,
-    MIXED_THREADS,
-    parse_memtier_total_rps,
-    set_ratio_to_memtier_ratio,
-)
 from conductress.topology import TopologyGroup, TopologySpec
 from conductress.utility import RealtimeCommand
 
@@ -298,7 +298,7 @@ def build_overlay_command(
         # Single FLUSHALL (ASYNC if supported) mid-measurement, then re-prefill.
         # We'll schedule FLUSHALL at ~40% through duration, then re-prefill.
         flush_delay = max(2, duration * 2 // 5)
-        prefill_n = keyspace // (MIXED_THREADS * MIXED_CLIENTS)
+        prefill_n = keyspace // (MEMTIER_THREADS * MEMTIER_CLIENTS)
         memtier = REMOTE_MEMTIER_BENCHMARK
         return (
             f"bash -c '"
@@ -306,7 +306,7 @@ def build_overlay_command(
             f"{cli} -h {server_ip} -p {port} FLUSHALL ASYNC; "
             f"sleep 1; "
             f"{memtier} --server {server_ip} --port {port} --protocol redis "
-            f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
+            f"--threads {MEMTIER_THREADS} --clients {MEMTIER_CLIENTS} "
             f"--ratio 1:0 --key-pattern P:P "
             f"--key-minimum 1 --key-maximum {keyspace} "
             f"--data-size {val_size} "
@@ -886,7 +886,7 @@ class CommandOverlay(Overlay):
             server_ip=server.ip,
             port=server.port,
             duration=self._runner.duration,
-            keyspace=MIXED_KEYSPACE,
+            keyspace=MEMTIER_KEYSPACE,
             val_size=self._runner.val_size,
             overlay_value_size=self._runner.overlay_value_size,
         )
@@ -1422,7 +1422,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
         """
         payload = generate_multi_exec_resp_payload(
             num_transactions=1000,
-            keyspace=MIXED_KEYSPACE,
+            keyspace=MEMTIER_KEYSPACE,
             val_size=self.val_size,
         )
         # Write payload via base64 to avoid shell quoting issues with binary RESP
@@ -1492,15 +1492,15 @@ class ScenarioTaskRunner(BaseTaskRunner):
                 self.commit_hash = server.get_build_hash() or ""
 
                 # Prefill keyspace
-                total_conns = MIXED_THREADS * MIXED_CLIENTS
+                total_conns = MEMTIER_THREADS * MEMTIER_CLIENTS
                 prefill_cmd = (
                     f"{REMOTE_MEMTIER_BENCHMARK} "
                     f"--server {server.ip} --port {server.port} --protocol redis "
-                    f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
+                    f"--threads {MEMTIER_THREADS} --clients {MEMTIER_CLIENTS} "
                     f"--ratio 1:0 --key-pattern P:P "
-                    f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
+                    f"--key-minimum 1 --key-maximum {MEMTIER_KEYSPACE} "
                     f"--data-size {self.val_size} "
-                    f"--requests {MIXED_KEYSPACE // total_conns} "
+                    f"--requests {MEMTIER_KEYSPACE // total_conns} "
                     f"--hide-histogram"
                 )
                 await server.run_host_command(prefill_cmd)
@@ -1574,9 +1574,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         measure_cmd = (
                             f"{REMOTE_MEMTIER_BENCHMARK} "
                             f"--server {server.ip} --port {server.port} --protocol redis "
-                            f"--threads {MIXED_THREADS} --clients {MIXED_CLIENTS} "
+                            f"--threads {MEMTIER_THREADS} --clients {MEMTIER_CLIENTS} "
                             f"--ratio {bg_ratio} --key-pattern R:R "
-                            f"--key-minimum 1 --key-maximum {MIXED_KEYSPACE} "
+                            f"--key-minimum 1 --key-maximum {MEMTIER_KEYSPACE} "
                             f"--data-size {self.val_size} "
                             f"--pipeline {self.pipelining} "
                             f"--test-time {self.duration} "
@@ -1741,9 +1741,9 @@ class ScenarioTaskRunner(BaseTaskRunner):
             "io_threads": self.io_threads,
             "pipeline": self.pipelining,
             "size": self.val_size,
-            "keyspace": MIXED_KEYSPACE,
-            "threads": MIXED_THREADS,
-            "clients": MIXED_CLIENTS,
+            "keyspace": MEMTIER_KEYSPACE,
+            "threads": MEMTIER_THREADS,
+            "clients": MEMTIER_CLIENTS,
             "repetitions": self.repetitions,
             "background_set_ratio": self.background_set_ratio,
             "server_args": self.server_args,

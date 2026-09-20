@@ -1,4 +1,8 @@
-"""Tests for LatencySweepCoordinator (flat 100K rps, P=1, no throughput dependency)."""
+"""Tests for the retired epoch-1 latency series.
+
+The coordinator exists to publish the history already in its state file; it
+must never claim, create, or record a task.
+"""
 
 import json
 from pathlib import Path
@@ -8,231 +12,112 @@ import pytest
 
 from conductress.config import LATENCY_TARGET_RPS
 from conductress.sweep.latency_coordinator import LatencySweepCoordinator
-from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepState
-from conductress.tasks.task_latency import LatencyTaskData
+from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepPlanner, SweepTask, TaskPriority
+from conductress.tasks.task_cachecannon import CachecannonTaskData
 from conductress.topology import TopologySpec
 
 
 @pytest.fixture(autouse=True)
 def patch_repo_names(monkeypatch):
-    """Allow 'valkey' as a valid source in task creation."""
     monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
 
 
 @pytest.fixture
 def latency_state_file(tmp_path, monkeypatch):
-    """Patch the latency state file to use tmp_path."""
     state_file = tmp_path / "latency_state.json"
     monkeypatch.setattr("conductress.sweep.latency_coordinator.LATENCY_STATE_FILE", state_file)
     return state_file
 
 
 @pytest.fixture
-def repo_path(tmp_path):
-    """Create a fake repo path."""
+def coordinator(tmp_path, latency_state_file):
     repo = tmp_path / "valkey"
     repo.mkdir()
-    return repo
-
-
-@pytest.fixture
-def coordinator(repo_path, latency_state_file):
-    """Create a LatencySweepCoordinator with test fixtures."""
-    coord = LatencySweepCoordinator(repo_path)
-    # Manually set merge commits (normally done by initialize())
+    coord = LatencySweepCoordinator(repo)
     coord.state.merge_commits = ["aaa", "bbb", "ccc", "ddd", "eee"]
     coord.planner = SweepPlanner(coord.state)
     return coord
 
 
-class TestLatencyCoordinatorProperties:
-    def test_metric_id(self, coordinator):
+def _cachecannon_task() -> CachecannonTaskData:
+    task = CachecannonTaskData(
+        source="valkey",
+        specifier="abc123",
+        make_args="",
+        topology=TopologySpec.standalone(),
+        note="",
+        requirements={},
+        test="get",
+        set_ratio=0,
+        val_size=16,
+        io_threads=7,
+        pipelining=1,
+        connections=400,
+        threads=8,
+        warmup=10,
+        duration=30,
+        keyspace_count=3_000_000,
+        distribution="uniform",
+        rate_limit=LATENCY_TARGET_RPS,
+        score_metric="p99",
+    )
+    task.sweep_commit = "aaa"  # type: ignore[attr-defined]
+    return task
+
+
+class TestIdentity:
+    def test_metric_and_workload(self, coordinator):
         assert coordinator.metric_id == "latency"
-
-    def test_lower_is_better(self, coordinator):
-        assert coordinator.lower_is_better is True
-
-    def test_workload_id(self, coordinator):
         assert coordinator.workload_id == "get-k16-v16"
+        assert coordinator.metric_unit == "µs"
+        assert coordinator.lower_is_better is True
+        assert coordinator.epoch_id == "v1"
 
     def test_export_filename_no_double_suffix(self, coordinator):
-        """Publisher uses {workload_id}-{metric_id}.json — workload_id must not contain metric_id."""
+        """Publisher names files {workload_id}-{metric_id}.json; the workload must not repeat the metric."""
         filename = f"series-arm64-{coordinator.workload_id}-{coordinator.metric_id}.json"
-        assert filename == "series-arm64-get-k16-v16-latency.json"
-        assert "latency-latency" not in filename
+        assert filename.count("latency") == 1
 
 
-class TestUrgencyScore:
-    def test_infinity_for_new_series(self, coordinator):
-        """New series with <2 latency points gets infinity."""
-        assert coordinator.get_urgency_score() == float("inf")
+class TestRetired:
+    def test_is_retired(self, coordinator):
+        assert coordinator.retired is True
 
-    def test_finite_after_two_points(self, coordinator):
-        """After 2+ points, urgency is dampened by 0.5x."""
-        coordinator.state.points["aaa"] = BenchmarkPoint(
-            commit="aaa", date="2026-01-01", value=50, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.state.points["eee"] = BenchmarkPoint(
-            commit="eee", date="2026-05-01", value=90, cv=0, reps=3, status=PointStatus.COMPLETED
-        )
-        coordinator.planner = SweepPlanner(coordinator.state)
-        score = coordinator.get_urgency_score()
-        assert 0 < score < float("inf")
+    def test_urgency_is_zero_even_with_no_points(self, coordinator):
+        assert coordinator.get_urgency_score() == 0.0
 
+    def test_never_queues(self, coordinator):
+        with patch("conductress.sweep.coordinator.TaskQueue") as queue:
+            assert coordinator.queue_next_if_needed() is False
+        queue.return_value.submit_task.assert_not_called()
 
-class TestCreateTask:
-    def test_creates_latency_task_with_flat_rate(self, coordinator):
-        from conductress.sweep.planner import SweepTask, TaskPriority
-
-        task = coordinator._create_task(
-            SweepTask(commit="ccc", date="2026-03-01", priority=TaskPriority.BISECTION, reason="test")
-        )
-        assert isinstance(task, LatencyTaskData)
-        assert task.target_rps == LATENCY_TARGET_RPS
-        assert task.source == "valkey"
-        assert task.specifier == "ccc"
-
-    def test_task_note_mentions_flat_rate(self, coordinator):
-        from conductress.sweep.planner import SweepTask, TaskPriority
-
-        task = coordinator._create_task(
-            SweepTask(commit="aaa", date="2026-01-01", priority=TaskPriority.LANDMARK, reason="landmark")
-        )
-        assert "100K rps flat" in task.note
-
-
-class TestIsMyTask:
-    def test_matches_latency_task_with_sweep_commit(self, coordinator):
-        task = LatencyTaskData(
-            source="valkey",
-            specifier="ccc",
-            make_args="",
-            topology=TopologySpec.standalone(),
-            note="test",
-            requirements={},
-            target_rps=100000,
-        )
-        task.sweep_commit = "ccc"
-        assert coordinator._is_my_task(task) is True
-
-    def test_rejects_latency_task_without_sweep_commit(self, coordinator):
-        task = LatencyTaskData(
-            source="valkey",
-            specifier="ccc",
-            make_args="",
-            topology=TopologySpec.standalone(),
-            note="test",
-            requirements={},
-            target_rps=100000,
-        )
-        assert coordinator._is_my_task(task) is False
-
-    def test_rejects_non_latency_task(self, coordinator):
-        from conductress.tasks.task_perf_benchmark import PerfTaskData
-
-        task = PerfTaskData(
-            source="valkey",
-            specifier="ccc",
-            make_args="",
-            topology=TopologySpec.standalone(),
-            note="test",
-            requirements={},
-            test="get",
-            val_size=16,
-            io_threads=7,
-            pipelining=10,
-            warmup=5,
-            duration=30,
-            perf_stat_enabled=False,
-            has_expire=False,
-            preload_keys=True,
-        )
-        task.sweep_commit = "ccc"
-        assert coordinator._is_my_task(task) is False
-
-
-class TestExtractResult:
-    def test_extracts_p99_from_output(self, coordinator, tmp_path, monkeypatch):
-        output_file = tmp_path / "output.jsonl"
-        entry = {
-            "task_id": "2026-05-27_01-00-00",
-            "score": 42.0,
-            "data": {"reps": 3, "p99_us": 42.0},
-        }
-        output_file.write_text(json.dumps(entry) + "\n")
-        monkeypatch.setattr("conductress.sweep.latency_coordinator.CONDUCTRESS_RESULTS", tmp_path)
-
-        task = LatencyTaskData(
-            source="valkey",
-            specifier="ccc",
-            make_args="",
-            topology=TopologySpec.standalone(),
-            note="test",
-            requirements={},
-            target_rps=100000,
-        )
-        from unittest.mock import PropertyMock
-
-        type(task).task_id = PropertyMock(return_value="2026-05-27_01-00-00")
-
-        result = coordinator._extract_result(task)
-        assert result == (42.0, 0.0, 3)
-
-
-class TestNoThroughputDependency:
-    """Verify the coordinator operates independently of throughput data."""
-
-    def test_no_throughput_state_file_parameter(self):
-        """Constructor takes only repo_path — no throughput_state_file."""
-        import inspect
-
-        sig = inspect.signature(LatencySweepCoordinator.__init__)
-        params = list(sig.parameters.keys())
-        assert params == ["self", "repo_path"]
-
-    def test_operates_on_full_commit_history(self, coordinator):
-        """Uses all merge commits, not a throughput-measured subset."""
-        # The coordinator's state has all 5 commits
-        assert len(coordinator.state.merge_commits) == 5
-
-    def test_all_commits_eligible_for_tasks(self, coordinator):
-        """Any commit can get a latency task (no throughput gate)."""
-        from conductress.sweep.planner import SweepTask, TaskPriority
-
-        # Even commits without throughput data can get tasks
-        for commit in ["aaa", "bbb", "ccc", "ddd", "eee"]:
-            task = coordinator._create_task(
-                SweepTask(commit=commit, date="2026-01-01", priority=TaskPriority.BACKFILL, reason="test")
+    def test_create_task_is_unreachable(self, coordinator):
+        with pytest.raises(RuntimeError, match="retired"):
+            coordinator._create_task(
+                SweepTask(commit="aaa", date="2026-01-01", priority=TaskPriority.NIGHTLY, reason="test")
             )
-            assert task.target_rps == LATENCY_TARGET_RPS
+
+    def test_claims_no_task(self, coordinator):
+        assert coordinator._is_my_task(_cachecannon_task()) is False
+
+    def test_completion_of_a_latency_shaped_cell_records_nothing(self, coordinator):
+        with patch.object(coordinator, "record_result") as record:
+            coordinator.on_task_completed(_cachecannon_task())
+        record.assert_not_called()
 
 
-class TestLatencyTaskSerialization:
-    """Regression test: sweep_commit must survive queue save/load roundtrip."""
-
-    def test_sweep_commit_persists_through_queue(self, tmp_path, monkeypatch):
-        from conductress.task_queue import TaskQueue
-
-        monkeypatch.setattr("conductress.task_queue.config.REPO_NAMES", ["valkey"])
-        monkeypatch.setattr("conductress.task_queue.config.CONDUCTRESS_QUEUE", tmp_path)
-
-        task = LatencyTaskData(
-            source="valkey",
-            specifier="abc123def456",
-            make_args="",
-            topology=TopologySpec.standalone(),
-            note="test",
-            requirements={},
-            target_rps=LATENCY_TARGET_RPS,
-            io_threads=7,
-            sweep_commit="abc123def456",
+class TestHistoryExport:
+    def test_exports_recorded_points(self, coordinator, tmp_path):
+        coordinator.state.points["aaa"] = BenchmarkPoint(
+            commit="aaa", date="2026-01-01", value=812.0, cv=1.1, reps=3, status=PointStatus.COMPLETED
         )
-
-        queue = TaskQueue(queue_dir=tmp_path)
-        queue.submit_task(task)
-
-        loaded = queue.get_next_task()
-        assert loaded is not None
-        assert isinstance(loaded, LatencyTaskData)
-        assert loaded.sweep_commit == "abc123def456"
-        assert loaded.target_rps == LATENCY_TARGET_RPS
+        coordinator.state.points["ccc"] = BenchmarkPoint(
+            commit="ccc", date="2026-01-03", value=790.0, cv=0.9, reps=3, status=PointStatus.COMPLETED
+        )
+        out = tmp_path / "series.json"
+        count = coordinator.export(out, platform="arm64")
+        assert count == 2
+        payload = json.loads(out.read_text())
+        assert payload["metadata"]["target_rps"] == LATENCY_TARGET_RPS
+        assert payload["metadata"]["tool"] == "memtier_benchmark"
+        assert len(payload["points"]) == 2

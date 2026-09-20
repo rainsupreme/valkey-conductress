@@ -1,3 +1,4 @@
+import json
 import logging
 import shutil
 import tempfile
@@ -140,16 +141,45 @@ def test_task_queue_get_queue_length(temp_dir):
     assert queue.get_queue_length() == 1
 
 
-def test_invalid_json_file_skipped(temp_dir):
+def test_invalid_json_file_set_aside(temp_dir, caplog):
+    """A file the queue cannot load must not head the queue forever; it is renamed out of the scan."""
     queue = task_queue.TaskQueue(queue_dir=temp_dir)
-    # Write invalid JSON
     bad_file = temp_dir / "task_20220101T000000.json"
-    with bad_file.open("w") as f:
-        f.write("{not valid json")
+    bad_file.write_text("{not valid json")
+    good = make_task()
+    queue.submit_task(good)
 
-    with pytest.raises(ValueError) as excinfo:
-        queue.get_next_task()
-    assert "Invalid JSON in file" in str(excinfo.value)
+    with caplog.at_level(logging.ERROR):
+        first = queue.get_next_task()
+    assert first is None
+    assert not bad_file.exists()
+    assert (temp_dir / "task_20220101T000000.json.unsupported").exists()
+    assert "setting aside" in caplog.text
+
+    # The queue proceeds to the loadable task on the next poll.
+    second = queue.get_next_task()
+    assert second is not None
+    assert second.timestamp == good.timestamp
+
+
+def test_unknown_task_type_file_set_aside(temp_dir, caplog):
+    """A well-formed task whose type this code no longer has is set aside, not run and not deleted."""
+    queue = task_queue.TaskQueue(queue_dir=temp_dir)
+    task = make_task()
+    queue.submit_task(task)
+    task_file = next(temp_dir.glob("task_*.json"))
+    document = json.loads(task_file.read_text())
+    document["task_type"] = "RetiredTaskData"
+    task_file.write_text(json.dumps(document))
+
+    with caplog.at_level(logging.ERROR):
+        assert queue.get_next_task() is None
+    assert not task_file.exists()
+    parked = task_file.with_name(task_file.name + ".unsupported")
+    assert parked.exists()
+    assert json.loads(parked.read_text())["task_type"] == "RetiredTaskData"
+    assert "Unknown task type: RetiredTaskData" in caplog.text
+    assert queue.get_queue_length() == 0
 
 
 def test_finish_task_logs_error_when_file_missing(temp_dir, caplog):

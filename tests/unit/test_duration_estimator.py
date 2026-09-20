@@ -24,13 +24,9 @@ def test_task_shape_estimates_scale_with_repetitions_and_phases():
     assert ten_reps == 590
     assert ten_reps > one_rep
 
-    mixed = estimate_task_duration_seconds(
-        {"task_type": "MixedTaskData", "warmup": 5, "duration": 30, "repetitions": 3}
-    )
     scenario = estimate_task_duration_seconds(
         {"task_type": "ScenarioTaskData", "warmup": 5, "duration": 30, "repetitions": 3}
     )
-    assert mixed == 315
     assert scenario == 450
 
 

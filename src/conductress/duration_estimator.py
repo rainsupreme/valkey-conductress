@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 DEFAULT_TASK_DURATION_SECONDS = 300
-LATENCY_PHASE_SECONDS = 60
 
 
 def task_family(task_type: str) -> str:
@@ -20,9 +19,7 @@ def task_family(task_type: str) -> str:
         "CanaryPerfTaskData": "perf",
         "BoundedInsertionTaskData": "perf",
         "CachecannonTaskData": "cachecannon",
-        "MixedTaskData": "mixed",
         "ScenarioTaskData": "scenario",
-        "LatencyTaskData": "latency",
         "MemTaskData": "memory",
     }.get(task_type, "other")
 
@@ -60,13 +57,8 @@ def estimate_task_duration_seconds(task: Any, calibration: Optional[Mapping[str,
             seconds += 45
     elif task_type == "CachecannonTaskData":
         seconds = 90 + repetitions * (warmup + duration + 15)
-    elif task_type == "MixedTaskData":
-        # One request-bounded prefill plus one warmup+measurement phase per rep.
-        seconds = 120 + repetitions * (warmup + duration + 30)
     elif task_type == "ScenarioTaskData":
         seconds = 180 + repetitions * (2 * (warmup + duration) + 20)
-    elif task_type == "LatencyTaskData":
-        seconds = 120 + repetitions * (2 * LATENCY_PHASE_SECONDS + 15)
     elif task_type == "MemTaskData":
         sizes = document.get("val_sizes") or [0]
         seconds = 180 + len(sizes) * (120 + (90 if document.get("settle") else 0))

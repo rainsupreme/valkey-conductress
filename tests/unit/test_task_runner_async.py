@@ -205,30 +205,6 @@ class TestTaskRunnerLoop:
             mock_server_instance.kill_all_valkey_instances_on_host.assert_called()
 
 
-def test_sweep_v2_flag_registers_get_and_mixed_coordinators():
-    with (
-        patch("conductress.config.SWEEP_V2_ENABLED", True),
-        patch("conductress.sweep.coordinator.SweepCoordinator") as legacy,
-        patch("conductress.sweep.coordinator_v2.ThroughputSweepCoordinatorV2") as get_v2,
-        patch("conductress.sweep.coordinator_v2.MixedSweepCoordinatorV2") as mixed_v2,
-        patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as latency,
-        patch("conductress.sweep.memory_coordinator.create_memory_coordinators", return_value=[]),
-        patch("conductress.platform.get_local_platform_tag", return_value="amd64"),
-    ):
-        legacy.return_value.initialize = MagicMock()
-        get_v2.return_value.initialize = MagicMock()
-        mixed_v2.return_value.initialize = MagicMock()
-        latency.return_value.initialize = MagicMock()
-        runner = TaskRunner(sweep=True)
-
-    get_v2.assert_called_once()
-    mixed_v2.assert_called_once()
-    get_v2.return_value.initialize.assert_called_once()
-    mixed_v2.return_value.initialize.assert_called_once()
-    assert get_v2.return_value in runner._subscribers
-    assert mixed_v2.return_value in runner._subscribers
-
-
 class _FakeManagement:
     """Stands in for ManagementCores: records acquire/release relative to the task's run()."""
 
