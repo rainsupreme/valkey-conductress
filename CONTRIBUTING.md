@@ -65,6 +65,18 @@ black --line-length 120 src/ tests/
 isort --profile black --line-length 120 src/ tests/
 ```
 
+### Makefile targets
+
+The Makefile wraps these checks and acts on the active virtualenv only. Each target runs against `src/` and `tests/`:
+
+- `make install` — editable install with the `dev`, `control`, and `plots` extras.
+- `make lint` — `black --check`, `isort --check-only`, and `pylint --errors-only`.
+- `make format` — apply `black` and `isort` in place.
+- `make test` — unit and control-service tests with the coverage gate.
+- `make integration` — integration tests that do not need a running server.
+- `make typecheck` — `mypy` over `src/`.
+- `make ci` — `lint`, `test`, `integration`, and `typecheck` in sequence, mirroring what CI runs.
+
 ### Always set `PYTHONPATH=src`
 
 Run pytest and mypy with `PYTHONPATH=src`. Other editable installs on the same host can otherwise shadow this tree, so a check may run against the wrong code. The Makefile sets this for you.

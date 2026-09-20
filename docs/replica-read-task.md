@@ -91,8 +91,8 @@ change on a single build.
    `server` means "nothing else is implicated", **not** "the server was proven
    saturated". Valkey's I/O threads busy-wait for work and the main thread
    polls without sleeping while I/O jobs are in flight, so server CPU time
-   reads close to 100% far below the throughput ceiling. On a 16-core x86
-   development host with a stock build and `--io-threads 2`, the I/O thread
+   reads close to 100% far below the throughput ceiling. On one 16-core x86
+   host with a stock build and `--io-threads 2`, the I/O thread
    read 1.00 of a core at one fifth of the throughput it later sustained, and
    the main thread read 0.81 at one half. Server CPU is therefore stored but
    never thresholded. The main thread's `loop_duty` (`eventloop_duration_sum`
@@ -168,7 +168,7 @@ diagnostic and best effort: a failed `perf record`/`perf script` logs a
 warning and leaves the row without stacks, never failing the cell; a reader
 failure inside the window cancels perf instead of waiting it out. Use it when a
 verdict says `server` and you want to know what the replica's main thread is
-doing with its loop duty (the Tier-0 grid's feature-1 arm showed ~0.90 loop
+doing with its loop duty (a profiled run showed ~0.90 loop
 duty with ~0.01 command duty at io4/io8, which only a profile can explain).
 
 ## A/B recipe

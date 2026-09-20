@@ -444,7 +444,7 @@ Acceptance:
 
 Deliverables:
 
-- Boundary-only `FleetClient`.
+- `FleetClient` that pushes updates between jobs, transferring no data and doing no other work during a job.
 - Atomic inbox-to-local-queue import.
 - Durable delivery journal and restart reconciliation.
 - Explicit queue classes/priority ordering.

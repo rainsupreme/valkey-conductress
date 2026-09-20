@@ -1,8 +1,8 @@
 # Fleet-aware CLI
 
-The Phase 3 CLI lets humans and agents discover the Conductress fleet and manage the central remote queue without SSH access to benchmark hosts.
+The fleet-aware CLI lets humans and agents discover the Conductress fleet and manage the central remote queue without SSH access to benchmark hosts.
 
-Remote tasks will remain `queued` in the control service until Phase 4 enables between-task mailbox polling on runners. Existing local queue commands remain the execution path until then.
+Runners import remote tasks only between local tasks, so a submitted remote task stays `queued` in the control service until a runner reaches a boundary and imports it. Existing local queue commands remain the execution path.
 
 ## Configuration
 
@@ -33,7 +33,7 @@ CONDUCTRESS_CONTROL_TIMEOUT      request timeout in seconds, default 10
 CONDUCTRESS_CONTROL_CA_BUNDLE    optional custom CA bundle; TLS verification remains enabled
 ```
 
-The Phase 3 CLI is short-lived and keeps the operator token in memory only for the command duration. Phase 4 must re-evaluate secret loading for the long-lived runner poller rather than blindly reusing this lifetime model.
+The CLI is short-lived and keeps the operator token in memory only for the command duration. A long-lived runner poller must re-evaluate secret loading rather than blindly reusing this lifetime model.
 
 Plain HTTP is rejected except for `localhost` and `127.0.0.1` development servers.
 
@@ -42,7 +42,7 @@ Plain HTTP is rejected except for `localhost` and `127.0.0.1` development server
 ```bash
 conductress fleet list
 conductress fleet status
-conductress fleet show armbench
+conductress fleet show <runner>
 ```
 
 Every command supports `--json` for a versioned machine contract:
