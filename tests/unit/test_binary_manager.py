@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncssh
 import pytest
 
-from conductress.binary_manager import BinaryManager
+from conductress.binary_manager import BinaryManager, _rpath_names_lua_module
 
 
 @pytest.fixture
@@ -40,6 +40,7 @@ class TestCacheHitSkipsBuild:
                 ("refs/remotes/origin/unstable\n", ""),  # rev-parse
                 ("", ""),  # git reset --hard
                 ("abc123def456\n", ""),  # git rev-parse HEAD
+                ("", ""),  # readelf -d (no RPATH: binary needs no module)
             ]
         )
 
@@ -154,6 +155,7 @@ class TestEnsureBinaryCached:
                 ("refs/remotes/origin/main\n", ""),  # rev-parse
                 ("", ""),  # git reset
                 ("deadbeef\n", ""),  # rev-parse HEAD
+                ("", ""),  # readelf -d (no RPATH: binary needs no module)
             ]
         )
 
@@ -175,10 +177,12 @@ class TestLuaModuleCaching:
     points into the shared source tree, so a leftover tree .so from a
     different commit would load silently.
 
-    Pre-existing half-cached entries are cleaned up eagerly at deploy time
-    (one-shot sweep); there is no lazy self-heal. Correctness going forward
-    relies on write ordering: runtime artifacts are cached before the binary,
-    whose presence is the cache-hit marker.
+    Pre-existing half-cached entries (binary present, module absent) are
+    detected at cache-hit time: the binary's DT_RPATH says whether it dlopens
+    the module, and an entry missing a required module is discarded and
+    rebuilt. Correctness for new entries relies on write ordering: runtime
+    artifacts are cached before the binary, whose presence is the cache-hit
+    marker.
     """
 
     @pytest.mark.asyncio
@@ -234,6 +238,156 @@ class TestLuaModuleCaching:
         assert module_idx < binary_idx, (
             f"module must be cached before the binary (module at {module_idx}, " f"binary at {binary_idx}): {commands}"
         )
+
+
+class TestRpathNamesLuaModule:
+    """The pure parser behind the cache-hit predicate, fed real readelf shapes."""
+
+    MODULE_ERA = (
+        "Dynamic section at offset 0x3f1c58 contains 30 entries:\n"
+        "  Tag        Type                         Name/Value\n"
+        " 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n"
+        " 0x000000000000000f (RPATH)              Library rpath: "
+        "[/usr/local/lib:/home/ec2-user/valkey/src/modules/lua]\n"
+        " 0x000000000000000c (INIT)               0x5c000\n"
+    )
+    NO_RPATH = (
+        "Dynamic section at offset 0x3e2c30 contains 28 entries:\n"
+        "  Tag        Type                         Name/Value\n"
+        " 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n"
+        " 0x000000000000000c (INIT)               0x5b000\n"
+    )
+
+    def test_module_era_rpath_detected(self):
+        assert _rpath_names_lua_module(self.MODULE_ERA) is True
+
+    def test_runpath_variant_detected(self):
+        assert _rpath_names_lua_module(self.MODULE_ERA.replace("(RPATH)", "(RUNPATH)")) is True
+
+    def test_trailing_slash_in_rpath_entry_detected(self):
+        assert _rpath_names_lua_module(self.MODULE_ERA.replace("modules/lua]", "modules/lua/]")) is True
+
+    def test_no_rpath_is_false(self):
+        assert _rpath_names_lua_module(self.NO_RPATH) is False
+
+    def test_rpath_without_module_dir_is_false(self):
+        out = self.MODULE_ERA.replace(":/home/ec2-user/valkey/src/modules/lua", "")
+        assert _rpath_names_lua_module(out) is False
+
+    def test_module_dir_outside_rpath_line_does_not_count(self):
+        out = self.NO_RPATH + " 0x0000000000000001 (NEEDED)             Shared library: [modules/lua]\n"
+        assert _rpath_names_lua_module(out) is False
+
+    def test_empty_output_is_false(self):
+        assert _rpath_names_lua_module("") is False
+
+
+class TestCacheHitRequiresRuntimeArtifacts:
+    """A cached binary counts as a hit only with every artifact it needs.
+
+    Entries holding a module-era binary without libvalkeylua.so were written
+    before the module was cached beside the binary; they boot-crash on every
+    launch. The predicate must discard them and report a miss so the normal
+    build path rebuilds the entry.
+    """
+
+    MODULE_ERA_READELF = TestRpathNamesLuaModule.MODULE_ERA
+    NO_RPATH_READELF = TestRpathNamesLuaModule.NO_RPATH
+
+    @staticmethod
+    def _exists(binary: bool, module: bool):
+        async def check(path):
+            s = str(path)
+            if s.endswith("libvalkeylua.so"):
+                return module
+            return binary
+
+        return check
+
+    @pytest.mark.asyncio
+    async def test_module_era_binary_with_module_is_a_hit(self, manager, mock_host):
+        manager.hash = "abc123"
+        mock_host.check_file_exists = AsyncMock(side_effect=self._exists(binary=True, module=True))
+        mock_host.run_host_command = AsyncMock(return_value=(self.MODULE_ERA_READELF, ""))
+
+        assert await manager._is_binary_cached() is True
+        commands = [call[0][0] for call in mock_host.run_host_command.call_args_list]
+        assert not any("rm -rf" in cmd for cmd in commands)
+
+    @pytest.mark.asyncio
+    async def test_module_era_binary_without_module_is_discarded(self, manager, mock_host):
+        manager.hash = "abc123"
+        mock_host.check_file_exists = AsyncMock(side_effect=self._exists(binary=True, module=False))
+        mock_host.run_host_command = AsyncMock(return_value=(self.MODULE_ERA_READELF, ""))
+
+        assert await manager._is_binary_cached() is False
+        commands = [call[0][0] for call in mock_host.run_host_command.call_args_list]
+        removed = [cmd for cmd in commands if cmd.startswith("rm -rf ")]
+        assert removed == [f"rm -rf {manager.get_cached_build_path()}"], commands
+
+    @pytest.mark.asyncio
+    async def test_binary_without_rpath_is_a_hit_regardless_of_module(self, manager, mock_host):
+        manager.hash = "abc123"
+        mock_host.check_file_exists = AsyncMock(side_effect=self._exists(binary=True, module=False))
+        mock_host.run_host_command = AsyncMock(return_value=(self.NO_RPATH_READELF, ""))
+
+        assert await manager._is_binary_cached() is True
+        module_checks = [
+            c for c in mock_host.check_file_exists.call_args_list if str(c[0][0]).endswith("libvalkeylua.so")
+        ]
+        assert not module_checks, "a binary that needs no module must not be judged on one"
+
+    @pytest.mark.asyncio
+    async def test_missing_binary_is_a_miss_without_reading_elf(self, manager, mock_host):
+        manager.hash = "abc123"
+        mock_host.check_file_exists = AsyncMock(return_value=False)
+        mock_host.run_host_command = AsyncMock(return_value=("", ""))
+
+        assert await manager._is_binary_cached() is False
+        mock_host.run_host_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_elf_is_treated_as_needing_nothing(self, manager, mock_host):
+        manager.hash = "abc123"
+        mock_host.check_file_exists = AsyncMock(side_effect=self._exists(binary=True, module=False))
+        error = asyncssh.ProcessError(None, "readelf", None, 127, None, 127, "", "readelf: not found")
+        mock_host.run_host_command = AsyncMock(side_effect=error)
+
+        assert await manager._is_binary_cached() is True
+
+    @pytest.mark.asyncio
+    async def test_poisoned_entry_triggers_rebuild(self, manager, mock_host):
+        """End to end through _ensure_build_cached: a poisoned entry is removed,
+        then rebuilt with the module cached before the binary."""
+
+        async def check(path):
+            s = str(path)
+            if s.endswith("modules/lua/libvalkeylua.so"):
+                return True  # rebuilt tree produced the module
+            if "build_cache" in s and s.endswith("libvalkeylua.so"):
+                return False  # poisoned entry: no module
+            if "build_cache" in s:
+                return True  # poisoned entry: binary present
+            return True
+
+        async def run(command, check=True):
+            if command.startswith("readelf"):
+                return (self.MODULE_ERA_READELF, "")
+            if "rev-parse --symbolic-full-name" in command:
+                return ("refs/remotes/origin/unstable\n", "")
+            return ("abc123\n", "")
+
+        mock_host.check_file_exists = AsyncMock(side_effect=check)
+        mock_host.run_host_command = AsyncMock(side_effect=run)
+
+        await manager._ensure_build_cached()
+
+        commands = [call[0][0] for call in mock_host.run_host_command.call_args_list]
+        rm_idx = next(i for i, c in enumerate(commands) if c.startswith("rm -rf "))
+        make_idx = next(i for i, c in enumerate(commands) if "make -j" in c)
+        module_idx = next(i for i, c in enumerate(commands) if "libvalkeylua.so" in c and "cp " in c)
+        binary_idx = next(i for i, c in enumerate(commands) if c.startswith("cp ") and "libvalkeylua.so" not in c)
+        assert rm_idx < make_idx < module_idx < binary_idx, commands
 
 
 class TestMakeArgsAffectCacheKey:

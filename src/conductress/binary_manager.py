@@ -30,7 +30,31 @@ VALKEY_BINARY = "valkey-server"
 LUA_MODULE = "libvalkeylua.so"
 LUA_MODULE_SRC_RELPATH = Path("modules/lua") / LUA_MODULE
 
+# The module directory as it appears in a module-mode binary's DT_RPATH
+# (the build bakes the absolute source-tree path, which ends in this).
+LUA_MODULE_RPATH_DIR = "modules/lua"
+
 logger = logging.getLogger(__name__)
+
+
+def _rpath_names_lua_module(readelf_dynamic_output: str) -> bool:
+    """Return True when a `readelf -d` dump has an RPATH or RUNPATH entry
+    whose search list contains the Lua module directory.
+
+    Only the rpath/runpath lines are consulted, so a stray mention of the
+    directory elsewhere in the dump (a NEEDED entry, a comment) does not count.
+    """
+    for line in readelf_dynamic_output.splitlines():
+        if "(RPATH)" not in line and "(RUNPATH)" not in line:
+            continue
+        start = line.find("[")
+        end = line.rfind("]")
+        if start == -1 or end <= start:
+            continue
+        search_list = line[start + 1 : end]
+        if any(entry.rstrip("/").endswith(LUA_MODULE_RPATH_DIR) for entry in search_list.split(":")):
+            return True
+    return False
 
 
 class BinaryManager:
@@ -99,7 +123,47 @@ class BinaryManager:
         return self.path_root / self.source / "src"
 
     async def _is_binary_cached(self) -> bool:
-        return await self._host.check_file_exists(self.get_cached_build_path() / self.binary_name)
+        """Return True when the cache entry is complete and safe to launch.
+
+        The binary alone is not a hit. A module-mode binary that was cached
+        without its Lua module boot-crashes on every launch, and such
+        entries exist wherever a binary was cached before the module was
+        cached beside it. An incomplete entry is removed here and reported
+        as a miss so the caller rebuilds it, which writes the module first
+        and the binary last.
+        """
+        cached_build_path = self.get_cached_build_path()
+        binary = cached_build_path / self.binary_name
+        if not await self._host.check_file_exists(binary):
+            return False
+        if not await self._binary_needs_lua_module(binary):
+            return True
+        if await self._host.check_file_exists(cached_build_path / LUA_MODULE):
+            return True
+        self._logger.warning(
+            "cached %s at %s needs %s but the entry has none; discarding the entry and rebuilding",
+            self.binary_name,
+            cached_build_path,
+            LUA_MODULE,
+        )
+        await self._host.run_host_command(f"rm -rf {cached_build_path}")
+        return False
+
+    async def _binary_needs_lua_module(self, binary: Path) -> bool:
+        """Return True when the binary dlopens the dynamic Lua module at startup.
+
+        Module-mode builds bake the module's source-tree directory into the
+        binary's DT_RPATH, so the binary itself records the dependency. Reading
+        it from the ELF header avoids pinning a commit range that would go
+        stale on backports or forks. A binary whose dynamic section cannot be
+        read is treated as needing nothing, which matches how the binary
+        behaved before this check existed.
+        """
+        try:
+            out, _ = await self._host.run_host_command(f"readelf -d {binary} 2>/dev/null || true")
+        except asyncssh.ProcessError:
+            return False
+        return _rpath_names_lua_module(out)
 
     async def _normalize_specifier(self, specifier: Optional[str]) -> str:
         """Resolve a specifier to a valid git ref. Fetches from origin first."""
