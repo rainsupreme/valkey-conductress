@@ -22,6 +22,49 @@ from . import config
 VALKEY_BINARY = "valkey-server"
 
 
+CRASH_REPORT_CONTEXT_LINES = 10
+
+
+def crash_report_window(marker_lines: str) -> Optional[tuple[int, Optional[int]]]:
+    """Pick the line range of the LAST crash report from ``grep -n`` marker output.
+
+    ``marker_lines`` is the stdout of ``grep -n 'CRASHED BY SIGNAL\\|=== VALKEY
+    BUG REPORT' logfile``: one ``lineno:text`` per matching line. Returns
+    ``(start, end)`` where ``start`` is a few lines before the last report's
+    START marker (or its CRASHED BY SIGNAL line, whichever comes first) and
+    ``end`` is the line of the END marker that closes it, or ``None`` when the
+    report is still open (print to EOF). Returns ``None`` when the log holds
+    no report. Ignoring END markers as anchors is the point: the previous
+    ``tail -1`` picked END and printed only what followed the report.
+    """
+    starts: list[int] = []
+    ends: list[int] = []
+    signals: list[int] = []
+    for raw in marker_lines.splitlines():
+        lineno_text = raw.split(":", 1)
+        if len(lineno_text) != 2 or not lineno_text[0].strip().isdigit():
+            continue
+        lineno, text = int(lineno_text[0]), lineno_text[1]
+        if "BUG REPORT START" in text:
+            starts.append(lineno)
+        elif "BUG REPORT END" in text:
+            ends.append(lineno)
+        elif "CRASHED BY SIGNAL" in text:
+            signals.append(lineno)
+    if not starts and not signals:
+        return None
+    anchor = max(starts) if starts else max(signals)
+    # A signal line belongs to this report only if it precedes START and no
+    # earlier report's END separates them.
+    preceding_end = max((e for e in ends if e < anchor), default=0)
+    for sig in signals:
+        if preceding_end < sig < anchor:
+            anchor = sig
+    start = max(1, anchor - CRASH_REPORT_CONTEXT_LINES)
+    end = min((e for e in ends if e > anchor), default=None)
+    return start, end
+
+
 class Server:
     """Represents a server running a Valkey instance."""
 
@@ -727,19 +770,25 @@ class Server:
         await self._profiling.cleanup()
 
     async def _log_server_crash(self) -> None:
-        """Read and log the server crash dump from the logfile."""
+        """Read and log the server crash report from the logfile.
+
+        A Valkey crash report runs from ``=== VALKEY BUG REPORT START`` to
+        ``=== VALKEY BUG REPORT END``; a signal crash additionally prints
+        ``CRASHED BY SIGNAL`` just before START, an assertion failure prints
+        ``ASSERTION FAILED`` instead and no signal line at all. The logfile
+        accumulates every crash of every instance that ever used it, so the
+        window must be the LAST report, from its START through its END.
+        """
         try:
-            # Valkey crash dumps start with this signature
-            crash_log, _ = await self.run_host_command(
-                f"grep -n 'CRASHED BY SIGNAL\\|=== VALKEY BUG REPORT' {self.server_logfile} "
-                f"| tail -1 | cut -d: -f1",
+            marker_lines, _ = await self.run_host_command(
+                f"grep -n 'CRASHED BY SIGNAL\\|=== VALKEY BUG REPORT' {self.server_logfile}",
                 check=False,
             )
-            crash_line = crash_log.strip()
-            if crash_line:
-                # Grab 10 lines before the crash marker through EOF
-                start = max(1, int(crash_line) - 10)
-                log_tail, _ = await self.run_host_command(f"sed -n '{start},$p' {self.server_logfile}", check=False)
+            window = crash_report_window(marker_lines)
+            if window:
+                start, end = window
+                sed_range = f"{start},{end}p" if end else f"{start},$p"
+                log_tail, _ = await self.run_host_command(f"sed -n '{sed_range}' {self.server_logfile}", check=False)
             else:
                 # No crash signature found — grab last 100 lines as fallback
                 log_tail, _ = await self.run_host_command(f"tail -100 {self.server_logfile}", check=False)
