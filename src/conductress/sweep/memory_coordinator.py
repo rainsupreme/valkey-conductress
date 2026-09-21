@@ -18,7 +18,7 @@ from conductress.config import (
     SWEEP_GENERATOR_INDEPENDENT_EPOCHS,
     SweepEngine,
 )
-from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
+from conductress.heap_profiler import with_jemalloc_prof
 from conductress.sweep.coordinator import SWEEP_SOURCE, BaseSweepCoordinator
 from conductress.sweep.planner import SweepTask
 from conductress.task_queue import BaseTaskData
@@ -173,13 +173,10 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
     def _create_task(self, sweep_task: SweepTask) -> MemTaskData:
-        # Combine engine make_args with jemalloc profiling flag
-        engine_args = self._sweep_make_args
-        make_args = f"{engine_args} {JEMALLOC_PROF_CONFIGURE_OPTS}" if engine_args else JEMALLOC_PROF_CONFIGURE_OPTS
         return MemTaskData(
             source=self._sweep_source,
             specifier=sweep_task.commit,
-            make_args=make_args,
+            make_args=with_jemalloc_prof(self._sweep_make_args),
             topology=TopologySpec.standalone(),
             note=f"[memory-sweep:{self._workload.label}] {sweep_task.reason}",
             requirements={},

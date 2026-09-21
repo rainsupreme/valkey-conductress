@@ -7,6 +7,7 @@ import pytest
 from conductress.heap_profiler import (
     CATEGORIES,
     CATEGORY_NAMES,
+    JEMALLOC_PROF_CONFIGURE_OPTS,
     _categorize_stack,
     _is_jemalloc_frame,
     _parse_stacks,
@@ -15,6 +16,7 @@ from conductress.heap_profiler import (
     cleanup_heap_dumps,
     collect_heap_profile,
     recategorize_from_stacks,
+    with_jemalloc_prof,
 )
 
 # =============================================================================
@@ -958,3 +960,20 @@ class TestRecategorizeFromStacks:
         result = recategorize_from_stacks([], num_keys=1000)
         assert all(v == 0.0 for v in result.values())
         assert "other" in result
+
+
+class TestWithJemallocProf:
+    """with_jemalloc_prof makes any make_args string build with heap profiling."""
+
+    def test_empty_make_args_becomes_prof_flag(self):
+        assert with_jemalloc_prof("") == JEMALLOC_PROF_CONFIGURE_OPTS
+
+    def test_existing_make_args_are_preserved_and_flag_appended(self):
+        result = with_jemalloc_prof("MALLOC=jemalloc")
+        assert result.startswith("MALLOC=jemalloc ")
+        assert result.endswith(JEMALLOC_PROF_CONFIGURE_OPTS)
+
+    def test_idempotent(self):
+        once = with_jemalloc_prof("MALLOC=jemalloc")
+        assert with_jemalloc_prof(once) == once
+        assert once.count(JEMALLOC_PROF_CONFIGURE_OPTS) == 1

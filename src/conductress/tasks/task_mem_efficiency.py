@@ -21,7 +21,13 @@ from conductress.config import (
     should_profile_internals,
 )
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.heap_profiler import JEMALLOC_PROF_ENV, HeapProfileResult, cleanup_heap_dumps, collect_heap_profile
+from conductress.heap_profiler import (
+    JEMALLOC_PROF_CONFIGURE_OPTS,
+    JEMALLOC_PROF_ENV,
+    HeapProfileResult,
+    cleanup_heap_dumps,
+    collect_heap_profile,
+)
 from conductress.server import Server
 from conductress.sweep.populator import populate
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -378,6 +384,16 @@ class MemTaskRunner(BaseTaskRunner):
                     breakdown = profile_result.breakdown
                     raw_stacks = profile_result.raw_stacks
                     self.logger.info("Memory breakdown collected: %s", breakdown)
+                else:
+                    self.logger.warning(
+                        "Profiling was enabled but no heap breakdown was collected for %s v=%d; "
+                        "recording breakdown=None. Most likely the binary was built without "
+                        "%s (make_args=%r).",
+                        self.test,
+                        val_size,
+                        JEMALLOC_PROF_CONFIGURE_OPTS,
+                        self.make_args,
+                    )
                 await cleanup_heap_dumps(valkey)
 
             # User data per item from workload config

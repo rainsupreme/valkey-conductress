@@ -178,6 +178,20 @@ JEMALLOC_PROF_MAKE_ARGS = 'JEMALLOC_CONFIGURE_OPTS="--enable-prof"'
 # Engine-agnostic jemalloc profiling flag (combine with engine.make_args)
 JEMALLOC_PROF_CONFIGURE_OPTS = 'JEMALLOC_CONFIGURE_OPTS="--enable-prof"'
 
+
+def with_jemalloc_prof(make_args: str) -> str:
+    """Return make args with jemalloc heap profiling compiled in.
+
+    A memory task with enable_profiling=True only produces a per-struct breakdown
+    when the server binary was built with --enable-prof; without it jemalloc writes
+    no heap dump and the task silently records breakdown=None. Every path that
+    queues a profiling memory task must build through this helper. Idempotent.
+    """
+    if JEMALLOC_PROF_CONFIGURE_OPTS in make_args:
+        return make_args
+    return f"{make_args} {JEMALLOC_PROF_CONFIGURE_OPTS}" if make_args else JEMALLOC_PROF_CONFIGURE_OPTS
+
+
 # Heap dump location prefix (matches prof_prefix above)
 HEAP_DUMP_PREFIX = "/tmp/valkey-heap"
 
