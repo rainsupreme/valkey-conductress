@@ -265,6 +265,19 @@ SWEEP_V3_LATENCY_MAX_REPS = 10
 # server restarts than throughput does, so the bound is wider.
 SWEEP_V3_LATENCY_TARGET_CV = 2.0
 
+# v3 large-value GET workload.  Same identity as the canonical GET series except
+# the value: 1024 bytes is a raw (non-embstr) encoding whose reply is dominated
+# by buffer copies rather than dispatch, so it moves on reply-path changes that
+# a 16-byte value cannot see (measured Sep 20 2026 on graviton4: PR #2078 Reply
+# Copy Avoidance +54% at v1024 vs -1.7% at v16; PR #2516 embstr-only -6.4% at
+# v16 vs -1.2% at v1024).  The series exists to catch reply-buffer and large-value
+# encoding regressions going forward, so it does not backfill the whole
+# history: its commit range starts at the merge-base of this tag with the sweep
+# ref.  A series floor overrides the engine floor for that one series; a
+# comparison engine measured at release-and-tip never reads it.
+SWEEP_V3_LARGE_VAL_SIZE = 1024
+SWEEP_V3_LARGE_VALUE_FLOOR_TAG = "9.0.0"
+
 # Epochs a generator-independent series belongs to.  Memory overhead is read
 # from the server's own INFO after Conductress fills it through its populator;
 # no load generator is involved, so one memory series is valid in every epoch
@@ -276,12 +289,18 @@ SWEEP_GENERATOR_INDEPENDENT_EPOCHS: tuple[str, ...] = ("v3", "v1")
 # publishing the history it already holds but never queues another task, so
 # the replacement is the only one still measuring.  Keyed "metric:workload";
 # built below once the engines and workload roster are defined.
-_V1_RETIRED_VALKEY_SERIES: frozenset[str] = frozenset(
-    {
-        "throughput:get-k16-v16-t7-p10",  # replaced by the v3 GET sweep
-        "latency:get-k16-v16",  # replaced by the v3 latency sweep
-    }
-)
+#
+# Valkey throughput is measured only in the v3 epoch, so every v1 Valkey
+# throughput series is retired: the ones with a v3 counterpart because that
+# counterpart replaces them, the rest (extra value sizes, platform-optimal
+# thread/pipeline shapes) because their history moved with their neighbours
+# and they carried no independent signal.  Rather than
+# hand-list the labels (which drift the moment the roster changes), derive them
+# from the same roster data that defines the v1 series: the default GET series
+# plus every entry in SWEEP_THROUGHPUT_WORKLOADS.  The v1 latency series is
+# retired by name because it has no entry in that roster.  The Valkey-only
+# retired set is completed below with the engine-mirror derivation once the
+# engines are defined.
 
 # Epoch registry: id -> dashboard metadata.  The publisher advertises these in
 # every manifest so old URLs keep working while new dashboards can discover
@@ -465,11 +484,36 @@ def _v1_engine_mirror_series(engine: "SweepEngine") -> frozenset[str]:
     return frozenset(f"throughput:{label}" for label in labels)
 
 
+def _v1_retired_valkey_series() -> frozenset[str]:
+    """The Valkey epoch-1 series that no longer queue.
+
+    Derived from the same roster data that defines the v1 series so the two can
+    never drift: every v1 Valkey throughput series (the default GET series plus
+    every entry in ``SWEEP_THROUGHPUT_WORKLOADS``) is retired, whether a v3
+    series replaces it or it was dropped as redundant, and the v1 latency
+    series -- which has no roster entry -- is retired by name.  Passing ``engine=None`` yields the unprefixed Valkey
+    labels, exactly the reverse of ``_v1_engine_mirror_series`` for a prefixed
+    comparison engine.
+    """
+    throughput = {sweep_throughput_label(engine=None)}
+    for wl in SWEEP_THROUGHPUT_WORKLOADS:
+        throughput.add(
+            sweep_throughput_label(
+                test=wl.get("test", SWEEP_TEST),
+                val_size=wl["val_size"],
+                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                engine=None,
+            )
+        )
+    return frozenset({f"throughput:{label}" for label in throughput} | {"latency:get-k16-v16"})
+
+
 # The full registry: the Valkey series a v3 series replaced, plus every
 # epoch-1 throughput mirror of a comparison engine (Redis).  Those mirrors are
 # replaced by the engine's v3 series, which measure only what the comparison
 # reads (release and tip), so no new epoch-1 Redis data is produced.
-SWEEP_V1_RETIRED_SERIES: frozenset[str] = _V1_RETIRED_VALKEY_SERIES.union(
+SWEEP_V1_RETIRED_SERIES: frozenset[str] = _v1_retired_valkey_series().union(
     *(_v1_engine_mirror_series(e) for e in SWEEP_ENGINES if e.source != "valkey")
 )
 

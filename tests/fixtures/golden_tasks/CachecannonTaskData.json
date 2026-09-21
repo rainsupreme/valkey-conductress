@@ -43,5 +43,6 @@
   "rate_limit": 0,
   "perf_stat_enabled": false,
   "info_sections": "",
-  "score_metric": "throughput"
+  "score_metric": "throughput",
+  "score_aggregate": "mean"
 }

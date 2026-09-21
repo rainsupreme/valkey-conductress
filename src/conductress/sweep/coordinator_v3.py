@@ -32,7 +32,7 @@ import json
 import logging
 from pathlib import Path
 from statistics import stdev
-from typing import Optional
+from typing import Literal, Optional
 
 from conductress import config
 from conductress.config import (
@@ -47,6 +47,8 @@ from conductress.config import (
     SWEEP_V3_EPOCH_ID,
     SWEEP_V3_IO_THREADS,
     SWEEP_V3_KEYSPACE,
+    SWEEP_V3_LARGE_VAL_SIZE,
+    SWEEP_V3_LARGE_VALUE_FLOOR_TAG,
     SWEEP_V3_LATENCY_MAX_REPS,
     SWEEP_V3_LATENCY_PIPELINING,
     SWEEP_V3_LATENCY_RATE,
@@ -104,10 +106,12 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         distribution: str = SWEEP_V3_DISTRIBUTION,
         rate_limit: int = 0,
         score_metric: str = "throughput",
+        score_aggregate: Literal["mean", "median"] = "mean",
         repetitions: int = SWEEP_V3_REPETITIONS,
         max_reps: int = SWEEP_V3_MAX_REPS,
         target_cv: float = SWEEP_V3_TARGET_CV,
         engine: Optional[config.SweepEngine] = None,
+        floor_tag: Optional[str] = None,
     ):
         self._test = test
         self._set_ratio = set_ratio
@@ -119,6 +123,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         self._distribution = distribution
         self._rate_limit = rate_limit
         self._score_metric = score_metric
+        self._score_aggregate = score_aggregate
         self._repetitions = repetitions
         self._max_reps = max_reps
         self._target_cv = target_cv
@@ -128,7 +133,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
 
         _ensure_v3_state_dir()
         state_file = V3_STATE_DIR / f"state_cachecannon-v3_{self._label}.json"
-        super().__init__(repo_path, state_file, engine=engine)
+        super().__init__(repo_path, state_file, engine=engine, floor_tag=floor_tag)
 
     @property
     def epoch_id(self) -> str:
@@ -162,6 +167,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             target_cv=self._target_cv,
             rate_limit=self._rate_limit,
             score_metric=self._score_metric,
+            score_aggregate=self._score_aggregate,
             # Per-thread hardware counters every rep and a CPU flamegraph on the
             # last rep, as the v1 sweep has always collected. Counting-mode perf
             # stat costs well under 1% and is what feeds the dashboard's IPC,
@@ -205,6 +211,43 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         entry = self._find_task_entry(task)
         return perf_counters_from_entry(entry) if entry else None
 
+    def _record_score_bounds(self, task: BaseTaskData) -> None:
+        """Copy the recorded per-rep score min/max onto this task's point.
+
+        The min/max come straight from the result row (``score_min`` /
+        ``score_max``, written for every cachecannon task) so the v3 exporter
+        can publish the between-restart spread the score was drawn from.  A row
+        without them (a cell queued before the fields existed) leaves the point
+        untouched.
+        """
+        entry = self._find_task_entry(task)
+        if not entry:
+            return
+        commit = getattr(task, "sweep_commit", "")
+        point = self.state.points.get(commit) if commit else None
+        if point is None:
+            return
+        data = entry.get("data", {})
+        smin = data.get("score_min")
+        smax = data.get("score_max")
+        if smin is None and smax is None:
+            return
+        point.score_min = smin
+        point.score_max = smax
+        self.state.save(self.state_file)
+
+    def on_task_completed(self, task: BaseTaskData) -> None:
+        """Record the result as the base does, then lift the score spread.
+
+        ``super().on_task_completed`` records value/cv/reps, perf counters and
+        CPU stacks; the score min/max are the only v3-specific point fields, and
+        they are set afterward so a point exists to attach them to.
+        """
+        if not self._is_my_task(task):
+            return
+        super().on_task_completed(task)
+        self._record_score_bounds(task)
+
     def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
         entry = self._find_task_entry(task)
         if entry:
@@ -243,7 +286,9 @@ class CachecannonThroughputSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3)
         connections: int = SWEEP_V3_CONNECTIONS,
         threads: int = SWEEP_V3_CLIENT_THREADS,
         distribution: str = SWEEP_V3_DISTRIBUTION,
+        score_aggregate: Literal["mean", "median"] = "mean",
         engine: Optional[config.SweepEngine] = None,
+        floor_tag: Optional[str] = None,
     ):
         label = f"{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
         if distribution != SWEEP_V3_DISTRIBUTION:
@@ -259,7 +304,9 @@ class CachecannonThroughputSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3)
             connections=connections,
             threads=threads,
             distribution=distribution,
+            score_aggregate=score_aggregate,
             engine=engine,
+            floor_tag=floor_tag,
         )
 
 
@@ -418,14 +465,40 @@ def create_v3_coordinators(
 ) -> list[BaseCachecannonSweepCoordinatorV3]:
     """Build the v3 coordinator roster for one engine.
 
-    The roster is deliberately small: it multiplies directly against a
-    full-history backfill across every platform.  A comparison engine (Redis)
-    gets the same three series under its own prefix, so the engine comparison
-    reads like-for-like cells; its ``scope`` decides how much of its history
-    they measure.
+    Six series, all at the v3 identity (400c / 8t / io7 / 3M keys / 16B unless
+    the series says otherwise):
+
+    * GET throughput at P10 -- the canonical pipelined-read ceiling.
+    * mixed GET/SET throughput at P10 (default 80:20).
+    * SET throughput at P10 -- the write counterpart of the GET series.
+    * GET throughput at P1 -- the unpipelined read path, scored on the MEDIAN
+      of the per-rep series: P1 throughput lands in two distinct modes across
+      server restarts, and the median reports the mode most reps reached where
+      a mean would report a value no rep produced.
+    * GET throughput at P10 with 1024-byte values -- the raw-encoded,
+      copy-dominated reply path, which moves on changes the 16-byte series
+      cannot see.  Its commit range starts at ``SWEEP_V3_LARGE_VALUE_FLOOR_TAG``
+      rather than the fork point: it guards the reply path going forward and
+      does not backfill two years of history at the expense of the other five.
+    * GET latency at P1 at a fixed request rate -- p99, lower is better.
+
+    A comparison engine (Redis) gets the same six series under its own prefix,
+    so the engine comparison reads like-for-like cells; its ``scope`` decides
+    how much of its history they measure and bounds the added cost.  A
+    release-and-tip engine measures only its latest release and its tip, so the
+    large-value floor tag (a Valkey tag) is not applied to it: its own engine
+    floor stands.
     """
+    large_value_floor = SWEEP_V3_LARGE_VALUE_FLOOR_TAG if config.engine_tracks_history(engine) else None
     return [
         CachecannonThroughputSweepCoordinatorV3(repo_path, engine=engine),
         CachecannonMixedSweepCoordinatorV3(repo_path, engine=engine),
+        CachecannonThroughputSweepCoordinatorV3(repo_path, test="set", engine=engine),
+        CachecannonThroughputSweepCoordinatorV3(
+            repo_path, test="get", pipelining=1, score_aggregate="median", engine=engine
+        ),
+        CachecannonThroughputSweepCoordinatorV3(
+            repo_path, test="get", val_size=SWEEP_V3_LARGE_VAL_SIZE, engine=engine, floor_tag=large_value_floor
+        ),
         CachecannonLatencySweepCoordinatorV3(repo_path, engine=engine),
     ]

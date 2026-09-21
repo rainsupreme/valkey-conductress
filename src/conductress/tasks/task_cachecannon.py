@@ -15,8 +15,8 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from statistics import stdev
-from typing import Optional
+from statistics import median, stdev
+from typing import Literal, Optional
 
 from conductress.cachecannon import (  # noqa: F401  (re-exported for callers/tests)
     DEFAULT_CACHECANNON_BINARY,
@@ -58,6 +58,16 @@ logger = logging.getLogger(__name__)
 # (the unit the latency series has always used), for rate-limited runs whose
 # throughput is fixed by configuration.
 SCORE_METRICS = frozenset({"throughput", "p99"})
+
+# How the recorded ``score`` aggregates the per-rep score series.  "mean" (the
+# default, and every existing task's behaviour) records the arithmetic mean;
+# "median" records the median, which reports the mode most reps landed in when
+# a workload is bimodal across server restarts -- unpipelined P1 throughput
+# behaves this way, and a mean of two modes is a value no rep produced.  Either
+# way ``cv`` is still the coefficient of variation of the per-rep series
+# (stdev/mean), so the recorded spread is comparable across both aggregates and
+# a mode split stays visible through ``cv`` and the score bounds.
+SCORE_AGGREGATES = frozenset({"mean", "median"})
 
 
 def score_from_parsed(parsed: dict, score_metric: str) -> float:
@@ -194,6 +204,11 @@ class CachecannonTaskData(BaseTaskData):
     # the dominant command in microseconds).  A rate-limited run measures
     # latency, so its throughput is the configured rate and says nothing.
     score_metric: str = "throughput"
+    # How the recorded ``score`` aggregates the per-rep score series: "mean"
+    # (default, unchanged for every existing task) or "median" (robust to a
+    # single bad server restart).  ``cv`` is the coefficient of variation of the
+    # per-rep series regardless, so the two aggregates carry comparable spread.
+    score_aggregate: Literal["mean", "median"] = "mean"
 
     def __post_init__(self):
         super().__post_init__()
@@ -201,6 +216,8 @@ class CachecannonTaskData(BaseTaskData):
         self.duration = int(self.duration)
         if self.score_metric not in SCORE_METRICS:
             raise ValueError(f"score_metric must be one of {sorted(SCORE_METRICS)}, got {self.score_metric!r}")
+        if self.score_aggregate not in SCORE_AGGREGATES:
+            raise ValueError(f"score_aggregate must be one of {sorted(SCORE_AGGREGATES)}, got {self.score_aggregate!r}")
         # These must be REAL controls. An accepted-but-ignored value is a fake
         # lever: it makes the operator believe they configured a precision
         # target that never took effect. Adaptive stopping can only ever fire
@@ -269,6 +286,7 @@ class CachecannonTaskData(BaseTaskData):
             perf_stat_enabled=self.perf_stat_enabled,
             info_sections=parse_info_sections(self.info_sections),
             score_metric=self.score_metric,
+            score_aggregate=self.score_aggregate,
         )
 
 
@@ -311,12 +329,16 @@ class CachecannonTaskRunner(BaseTaskRunner):
         info_sections: Optional[list[str]] = None,
         topology: Optional[TopologySpec] = None,
         score_metric: str = "throughput",
+        score_aggregate: str = "mean",
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
         if score_metric not in SCORE_METRICS:
             raise ValueError(f"score_metric must be one of {sorted(SCORE_METRICS)}, got {score_metric!r}")
+        if score_aggregate not in SCORE_AGGREGATES:
+            raise ValueError(f"score_aggregate must be one of {sorted(SCORE_AGGREGATES)}, got {score_aggregate!r}")
         self.score_metric = score_metric
+        self.score_aggregate = score_aggregate
 
         self.server_infos = server_infos
         self.topology = topology if topology is not None else TopologySpec.standalone()
@@ -761,13 +783,20 @@ class CachecannonTaskRunner(BaseTaskRunner):
             ci_95 = 0.0
         scores = per_run_scores if per_run_scores is not None else per_run_rps
         if len(scores) >= 2:
-            score, score_ci_95 = _compute_aggregated_stats(scores)
-            cv = (stdev(scores) / score) * 100 if score else 0.0
+            mean_score, score_ci_95 = _compute_aggregated_stats(scores)
+            # cv is the coefficient of variation of the per-rep series and is
+            # always taken against the MEAN, so switching the recorded score to
+            # a median (score_aggregate="median") leaves the reported spread
+            # unchanged -- only the central value differs.
+            cv = (stdev(scores) / mean_score) * 100 if mean_score else 0.0
+            score = median(scores) if self.score_aggregate == "median" else mean_score
         else:
             score = scores[0] if scores else 0
             score_ci_95 = 0.0
             cv = 0.0
         reps = len(scores)
+        score_min = min(scores) if scores else 0
+        score_max = max(scores) if scores else 0
 
         # Build detailed data
         detailed_data = {
@@ -793,6 +822,12 @@ class CachecannonTaskRunner(BaseTaskRunner):
             "mean_rps": mean_rps,
             "ci_95": ci_95,
             "score_metric": self.score_metric,
+            "score_aggregate": self.score_aggregate,
+            # min/max of the per-rep score series, recorded for every cachecannon
+            # task so a reader can see the between-restart spread the score was
+            # drawn from (the v3 exporter publishes these alongside rps/cv/reps).
+            "score_min": score_min,
+            "score_max": score_max,
         }
         if self.score_metric != "throughput":
             # The score series in its own unit, so a reader of the record (and the

@@ -420,13 +420,31 @@ class TestLatencySweepCoordinatorV3:
 
 
 class TestRetiredSeries:
-    def test_registry_names_the_replaced_series(self):
-        # The Valkey series a v3 series replaced, plus every epoch-1 throughput
-        # mirror of a comparison engine (the redis-* set is pinned in
-        # test_engine_release_and_tip.py).
-        assert {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"} <= SWEEP_V1_RETIRED_SERIES
+    def test_registry_names_every_replaced_valkey_series(self):
+        # Every v1 Valkey throughput series now has a v3 counterpart, so the
+        # retired set is the default GET series plus every roster entry, plus
+        # the v1 latency series -- derived from the same roster data that
+        # defines the v1 series, never hand-listed.
+        from conductress.config import (
+            SWEEP_IO_THREADS,
+            SWEEP_PIPELINING,
+            SWEEP_THROUGHPUT_WORKLOADS,
+            sweep_throughput_label,
+        )
+
+        expected = {f"throughput:{sweep_throughput_label()}", "latency:get-k16-v16"}
+        for wl in SWEEP_THROUGHPUT_WORKLOADS:
+            label = sweep_throughput_label(
+                test=wl.get("test", "get"),
+                val_size=wl["val_size"],
+                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+            )
+            expected.add(f"throughput:{label}")
         valkey_only = {s for s in SWEEP_V1_RETIRED_SERIES if not s.split(":", 1)[1].startswith("redis-")}
-        assert valkey_only == {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"}
+        assert valkey_only == expected
+        # The two originally-replaced series are still in the set.
+        assert {"throughput:get-k16-v16-t7-p10", "latency:get-k16-v16"} <= valkey_only
 
     def test_v1_default_get_sweep_is_retired(self, tmp_path):
         from conductress.sweep.coordinator import SweepCoordinator
@@ -436,13 +454,63 @@ class TestRetiredSeries:
         assert coord.workload_id == "get-k16-v16-t7-p10"
         assert coord.retired is True
 
-    def test_other_v1_throughput_workloads_keep_running(self, tmp_path):
+    def test_all_v1_throughput_workloads_are_retired(self, tmp_path):
+        from conductress.config import (
+            SWEEP_IO_THREADS,
+            SWEEP_PIPELINING,
+            SWEEP_TEST,
+            SWEEP_THROUGHPUT_WORKLOADS,
+            SWEEP_VAL_SIZE,
+        )
         from conductress.sweep.coordinator import SweepCoordinator
 
+        rosters = [
+            dict(val_size=SWEEP_VAL_SIZE, test=SWEEP_TEST, io_threads=SWEEP_IO_THREADS, pipelining=SWEEP_PIPELINING)
+        ] + [
+            dict(
+                val_size=wl["val_size"],
+                test=wl.get("test", SWEEP_TEST),
+                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+            )
+            for wl in SWEEP_THROUGHPUT_WORKLOADS
+        ]
         with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_path):
-            assert SweepCoordinator(tmp_path, val_size=64).retired is False
-            assert SweepCoordinator(tmp_path, test="set").retired is False
-            assert SweepCoordinator(tmp_path, pipelining=1).retired is False
+            for kw in rosters:
+                assert SweepCoordinator(tmp_path, **kw).retired is True, kw
+
+    def test_no_v1_valkey_throughput_coordinator_is_schedulable(self, tmp_path):
+        """The behaviour the retirement exists to guarantee: every v1 Valkey
+        throughput coordinator refuses to queue, so only v3 measures."""
+        from conductress.config import (
+            SWEEP_IO_THREADS,
+            SWEEP_PIPELINING,
+            SWEEP_TEST,
+            SWEEP_THROUGHPUT_WORKLOADS,
+            SWEEP_VAL_SIZE,
+        )
+        from conductress.sweep.coordinator import SweepCoordinator
+
+        rosters = [
+            dict(val_size=SWEEP_VAL_SIZE, test=SWEEP_TEST, io_threads=SWEEP_IO_THREADS, pipelining=SWEEP_PIPELINING)
+        ] + [
+            dict(
+                val_size=wl["val_size"],
+                test=wl.get("test", SWEEP_TEST),
+                io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+            )
+            for wl in SWEEP_THROUGHPUT_WORKLOADS
+        ]
+        with patch("conductress.sweep.coordinator.SWEEP_STATE_DIR", tmp_path):
+            for kw in rosters:
+                coord = SweepCoordinator(tmp_path, **kw)
+                with (
+                    patch.object(coord, "_get_next_task") as next_task,
+                    patch("conductress.sweep.coordinator.TaskQueue"),
+                ):
+                    assert coord.queue_next_if_needed() is False, kw
+                next_task.assert_not_called()
 
     def test_v1_latency_sweep_is_retired(self, tmp_path):
         from conductress.sweep.latency_coordinator import LatencySweepCoordinator

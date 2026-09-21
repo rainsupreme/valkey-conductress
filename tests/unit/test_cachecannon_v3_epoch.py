@@ -451,7 +451,7 @@ class TestEpochRegistry:
 
 
 class TestV3Roster:
-    def test_roster_is_get_mixed_and_latency(self, tmp_path: Path):
+    def test_roster_is_get_mixed_set_p1_large_value_and_latency(self, tmp_path: Path):
         from conductress.sweep.coordinator_v3 import create_v3_coordinators
 
         with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
@@ -460,10 +460,63 @@ class TestV3Roster:
         assert [(c.workload_id, c.metric_id) for c in coords] == [
             ("get-k16-v16-t7-p10", "throughput"),
             ("mixed-s20-k16-v16-t7-p10", "throughput"),
+            ("set-k16-v16-t7-p10", "throughput"),
+            ("get-k16-v16-t7-p1", "throughput"),
+            ("get-k16-v1024-t7-p10", "throughput"),
             ("get-k16-v16-t7-p1-r100k", "latency"),
         ]
         assert all(c.epoch_id == "v3" for c in coords)
         assert all(c.epoch_ids == ("v3",) for c in coords)
+
+    def test_p1_get_series_is_scored_on_the_median(self, tmp_path: Path):
+        """The P1 read path is noise-prone; its point is the median, not the mean."""
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = create_v3_coordinators(tmp_path)
+        by_id = {c.workload_id: c for c in coords}
+        p1 = by_id["get-k16-v16-t7-p1"]._create_task(_sweep_task())
+        assert p1.pipelining == 1
+        assert p1.score_aggregate == "median"
+        # The other throughput series keep the mean, unchanged.
+        p10 = by_id["get-k16-v16-t7-p10"]._create_task(_sweep_task())
+        assert p10.pipelining == 10 and p10.score_aggregate == "mean"
+
+    def test_large_value_series_is_the_only_non_16_byte_cell(self, tmp_path: Path):
+        """v1024 is the one deliberate departure from the 16-byte identity."""
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = create_v3_coordinators(tmp_path)
+        sizes = {c.workload_id: c._create_task(_sweep_task()).val_size for c in coords}
+        assert sizes.pop("get-k16-v1024-t7-p10") == 1024
+        assert set(sizes.values()) == {16}
+
+    def test_large_value_series_is_the_only_floored_valkey_series(self, tmp_path: Path):
+        """The other five backfill from the fork point; v1024 starts at the 9.0.0 tag."""
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = create_v3_coordinators(tmp_path)
+        floors = {c.workload_id: c._floor_tag for c in coords}
+        assert floors.pop("get-k16-v1024-t7-p10") == "9.0.0"
+        assert set(floors.values()) == {None}
+
+    def test_large_value_series_differs_from_the_canonical_get_only_in_value_size(self, tmp_path: Path):
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = create_v3_coordinators(tmp_path)
+        by_id = {c.workload_id: c for c in coords}
+        big = by_id["get-k16-v1024-t7-p10"]._create_task(_sweep_task())
+        small = by_id["get-k16-v16-t7-p10"]._create_task(_sweep_task())
+        assert big.val_size == 1024 and small.val_size == 16
+        for field in ("test", "set_ratio", "pipelining", "io_threads", "connections", "threads", "score_aggregate"):
+            assert getattr(big, field) == getattr(small, field), field
 
     def test_no_two_roster_series_own_the_same_cell(self, tmp_path: Path):
         """Every workload-defining field is in the ownership predicate."""

@@ -59,10 +59,42 @@ epoch carries an identifier (`v1`, `v3`, ...). Results are comparable only
 within an epoch, so the `v1`/`v3` shorthand used here and elsewhere names which
 generator-and-parameter identity produced a point. `v1` identifies the sweep
 driven by `valkey-benchmark`, Valkey's stock load generator; `v3` identifies the
-cachecannon-driven sweep, whose roster is GET throughput, mixed GET/SET
-throughput, and GET latency at a fixed request rate (`SWEEP_V3_LATENCY_*`).
+cachecannon-driven sweep.
 
-Two series rules follow from that definition:
+The v3 Valkey roster is six series, all at the v3 identity (400 connections, 8
+client threads, 7 server io-threads, 3M uniform keys, 16-byte keys and values
+unless the series says otherwise):
+
+- **GET throughput at P10** (`get-k16-v16-t7-p10`) — the pipelined-read ceiling.
+- **mixed GET/SET throughput at P10** (`mixed-s20-k16-v16-t7-p10`) — the
+  canonical 80:20 read/write mix.
+- **SET throughput at P10** (`set-k16-v16-t7-p10`) — the write counterpart of
+  the GET series.
+- **GET throughput at P1** (`get-k16-v16-t7-p1`) — the unpipelined read path.
+  Its point is scored on the **median** of the per-rep series rather than the
+  mean, because P1 throughput can land in two distinct modes across server
+  restarts; the median reports the mode most reps reached, where a mean would
+  report a value no rep produced. The coefficient of variation and the
+  published score bounds still show the full between-restart spread, so a mode
+  split is visible rather than hidden.
+- **GET throughput at P10 with 1024-byte values** (`get-k16-v1024-t7-p10`) —
+  the raw-encoded, copy-dominated reply path. A 16-byte value is embstr-encoded
+  and its reply is dispatch-bound; a 1024-byte value is a separate encoding
+  whose reply cost is the buffer copy, so it moves on reply-path changes the
+  16-byte series cannot see (and does not echo embstr-path changes that series
+  does). This series starts at `SWEEP_V3_LARGE_VALUE_FLOOR_TAG` (`9.0.0`)
+  rather than the fork point: it guards the reply path going forward, and a
+  full backfill would slow the other five series for history nobody has asked
+  for. A series floor overrides the engine floor for that one series.
+- **GET latency at P1** (`get-k16-v16-t7-p1-r100k`) — p99 at a fixed request
+  rate (`SWEEP_V3_LATENCY_*`), lower is better.
+
+A cachecannon task chooses how the recorded score aggregates the per-rep series
+through `score_aggregate` (`mean`, the default, or `median`), and always records
+the minimum and maximum of that series; the v3 export publishes those bounds
+beside the score, its coefficient of variation and its repetition count.
+
+Two series rules follow from the epoch definition:
 
 - A series that needs no load generator belongs to every epoch. Memory
   overhead is read from the server's own `INFO` after Conductress fills it
@@ -72,9 +104,16 @@ Two series rules follow from that definition:
 - An epoch-1 series that a newer epoch has replaced is *retired*
   (`SWEEP_V1_RETIRED_SERIES`, keyed `metric:workload`): it keeps its state and
   keeps publishing the history it holds, but never queues another task, so the
-  replacement is the only series still measuring that workload. The
-  `conductress sweep pause` selectors are the runtime lever for everything
-  else; retirement is the permanent one.
+  replacement is the only series still measuring that workload. Every v1 Valkey
+  throughput series — the default GET series and every entry in
+  `SWEEP_THROUGHPUT_WORKLOADS` (the 64- and 128-byte GET series, the SET series,
+  the four P1 variants, and the four platform-optimal series) — is retired, as
+  is the v1 GET latency series; the set is derived from that same roster data
+  rather than hand-listed, so it cannot drift from it. Memory series (which
+  belong to every epoch) and a comparison engine's own series follow the
+  engine's scope and are not retired here. The `conductress sweep pause`
+  selectors are the runtime lever for everything else; retirement is the
+  permanent one.
 
 ### Engines
 

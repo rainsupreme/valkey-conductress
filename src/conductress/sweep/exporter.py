@@ -300,6 +300,13 @@ def export_series(
                 }
             },
         }
+        # v3 points carry the min/max of the per-rep score series; publish them
+        # beside rps/cv/reps so the dashboard can show the between-restart
+        # spread. Absent on v1 series (always None), so the keys are omitted
+        # rather than exported as null.
+        if point.score_min is not None or point.score_max is not None:
+            entry["results"][workload]["score_min"] = point.score_min
+            entry["results"][workload]["score_max"] = point.score_max
         pr = state.commit_prs.get(point.commit) or point.pr
         pr_title = state.commit_titles.get(point.commit)
         if pr is not None:

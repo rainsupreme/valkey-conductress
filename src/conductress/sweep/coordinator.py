@@ -134,10 +134,19 @@ class BaseSweepCoordinator(ABC):
     Subclasses define: task creation, result extraction, task filtering.
     """
 
-    def __init__(self, repo_path: Path, state_file: Path, engine: Optional["config.SweepEngine"] = None):
+    def __init__(
+        self,
+        repo_path: Path,
+        state_file: Path,
+        engine: Optional["config.SweepEngine"] = None,
+        floor_tag: Optional[str] = None,
+    ):
         self.repo_path = repo_path
         self.state_file = state_file
         self.engine = engine
+        # A series floor bounds this one series' commit range; it overrides the
+        # engine floor (which bounds every series of that engine).
+        self.floor_tag = floor_tag
         self.state = SweepState.load(state_file)
         self.planner = self._new_planner()
         self._last_fetch_time: float = 0.0
@@ -149,6 +158,13 @@ class BaseSweepCoordinator(ABC):
             tracks_history=config.engine_tracks_history(self.engine),
             tip_interval_seconds=config.engine_tip_interval_seconds(self.engine),
         )
+
+    @property
+    def _floor_tag(self) -> Optional[str]:
+        """The tag this series' commit range starts from: series floor, else engine floor."""
+        if self.floor_tag:
+            return self.floor_tag
+        return self.engine.floor_tag if self.engine else None
 
     @property
     def _sweep_source(self) -> str:
@@ -510,10 +526,18 @@ class BaseSweepCoordinator(ABC):
 
     def _populate_commits(self) -> None:
         """Populate merge_commits from git history."""
-        if self.engine and self.engine.floor_tag:
+        floor_tag = self._floor_tag
+        if floor_tag:
             from conductress.sweep.git_ops import resolve_floor_commit
 
-            floor_commit = resolve_floor_commit(self.repo_path, self.engine.floor_tag, self._sweep_ref)
+            floor_commit = resolve_floor_commit(self.repo_path, floor_tag, self._sweep_ref)
+            if floor_commit is None:
+                logger.warning(
+                    "Floor tag %s does not resolve against %s in %s; sweeping the whole history",
+                    floor_tag,
+                    self._sweep_ref,
+                    self.repo_path,
+                )
         else:
             from conductress.sweep.git_ops import find_fork_point
 
