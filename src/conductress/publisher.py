@@ -5,7 +5,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from conductress import config
 from conductress.config import engine_repo_slug, should_profile_internals
@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # Series metrics whose cells drive a request stream under perf stat, and so
 # have per-request counter series to publish beside the score series.
 PERF_EXPORT_METRICS = ("throughput", "latency")
+
+# rsync filter pattern for the per-commit raw CPU-stack files
+# (series-<platform>-<workload>-cpu-stacks-<40-hex-commit>.json). The hex
+# class keeps the per-workload cpu-stacks-index.json, which the dashboard
+# reads, out of the match.
+STACKS_FILE_GLOB = "series-*-cpu-stacks-[0-9a-f]*.json"
 
 
 def detect_platform() -> tuple[str, str]:
@@ -56,16 +62,23 @@ class DashboardPublisher:
 
     @staticmethod
     def _prepare_export_dir(path: Path) -> Path:
-        """Return an empty export directory at a fixed path, rebuilt in place.
+        """Return the export directory at a fixed path, kept across restarts.
 
-        Every publish regenerates the whole export from the coordinators' state,
-        so nothing in this directory outlives the process that wrote it. A fixed
-        path replaces a per-process ``mkdtemp`` under the temp directory, which
-        left one full export copy behind for every runner start, on hosts where
-        the temp directory is a RAM-backed tmpfs.
+        The small dashboard files (series, manifests, notable feeds) are
+        regenerated from coordinator state on every publish. The per-commit
+        CPU-stack files are not: each is multi-MB, there are thousands, and
+        their content never changes once written, so they are exported once
+        and thereafter skipped by mtime. Wiping the directory on start-up would
+        regenerate all of them with fresh mtimes and make the next rsync move
+        the whole tree again. Only staging directories left by an interrupted
+        publish are removed here; a fixed path replaces a per-process
+        ``mkdtemp`` under the temp directory, which left one full export copy
+        behind for every runner start, on hosts where the temp directory is a
+        RAM-backed tmpfs.
         """
-        shutil.rmtree(path, ignore_errors=True)
         path.mkdir(parents=True, exist_ok=True)
+        for stale_stage in path.glob(".stage-*"):
+            shutil.rmtree(stale_stage, ignore_errors=True)
         return path
 
     @staticmethod
@@ -214,8 +227,17 @@ class DashboardPublisher:
                     export_cpu_profile(
                         coord.state, export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
                     )
+                    # The stage starts empty every publish, so the exporter's own
+                    # exists() check cannot see what was already promoted; ask it
+                    # to skip files the final epoch-qualified path already holds.
                     export_cpu_stacks_raw(
-                        coord.state, export_dir, self._platform_id, coord.workload_id, repo=repo, branch=branch
+                        coord.state,
+                        export_dir,
+                        self._platform_id,
+                        coord.workload_id,
+                        repo=repo,
+                        branch=branch,
+                        already_published=self._already_published(epoch_id),
                     )
                 if stage is not None:
                     self._promote_epoch_stage(stage, epoch_id)
@@ -253,10 +275,40 @@ class DashboardPublisher:
         except Exception:
             logger.error("Publish failed (non-fatal) — dashboard data may be stale", exc_info=True)
 
+    def _already_published(self, epoch_id: str) -> "Callable[[str], bool]":
+        """Predicate on an exporter file name: does the export dir already hold it?
+
+        Resolves the name the way promotion will, so the answer is about the
+        final epoch-qualified path rather than the empty stage.
+        """
+
+        def exists(filename: str) -> bool:
+            return self._epoch_path(self._export_dir / filename, epoch_id).exists()
+
+        return exists
+
     def _rsync(self) -> None:
-        """Rsync export directory to remote target."""
+        """Rsync the export directory to the remote target in two passes.
+
+        Pass one carries everything the dashboard reads (series, manifests,
+        notable feeds, cpu-stacks indexes): small, and regenerated on every
+        publish. Pass two carries the per-commit cpu-stacks files: the bulk of
+        the tree by bytes, almost all unchanged, and only fetched lazily by a
+        flamegraph page. rsync sends files in name order, so in a single pass a
+        slow stacks transfer would sit ahead of every series file that sorts
+        after it; splitting the passes lets the dashboard data land first and
+        bounds each pass on its own.
+        """
         ssh_cmd = f"ssh -i {self._ssh_key} -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+        common = ["rsync", "-az", "--chmod=D755,F644", "-e", ssh_cmd]
+        source = f"{self._export_dir}/"
         run_rsync(
-            ["rsync", "-az", "--chmod=D755,F644", "-e", ssh_cmd, f"{self._export_dir}/", self.target],
+            common + [f"--exclude={STACKS_FILE_GLOB}", source, self.target],
             self.target,
+            timeout=config.PUBLISH_RSYNC_TIMEOUT_SECONDS,
+        )
+        run_rsync(
+            common + [f"--include={STACKS_FILE_GLOB}", "--exclude=*", source, self.target],
+            self.target,
+            timeout=config.PUBLISH_RSYNC_TIMEOUT_SECONDS,
         )

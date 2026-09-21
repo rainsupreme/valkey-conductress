@@ -261,7 +261,29 @@ that points at the project's default endpoint and an environment override.
 | Setting | Default | Environment override | Notes |
 | --- | --- | --- | --- |
 | `PUBLISH_TARGET` | `ec2-user@data.conductress.rainsupreme.net:/var/www/data` | `CONDUCTRESS_PUBLISH_TARGET` | rsync target for `--publish`. |
+| `PUBLISH_RSYNC_TIMEOUT_SECONDS` | `600` | — | Bound on each of the two publish rsync passes (see below). |
 | control URL | `https://data.conductress.rainsupreme.net/api/v1` | `CONDUCTRESS_CONTROL_URL` | Base URL for the fleet control API. Plain HTTP is rejected except for `localhost`/`127.0.0.1`. |
+
+#### How a publish reaches the data server
+
+At every task boundary the publisher regenerates the dashboard files (series,
+manifests, notable feeds, CPU-stack indexes; ~100 MB per runner) from
+coordinator state into `PUBLISH_EXPORT_DIR` and rsyncs the directory. The
+per-commit raw CPU-stack files (`series-*-cpu-stacks-<commit>.json`, multi-MB
+each, thousands per runner, ~10 GB in total) are different: their content
+never changes once written, so they are exported once and skipped thereafter,
+and the export directory is kept across runner restarts so their mtimes stay
+put and rsync's quick check skips them. Deleting the directory is safe; the
+cost is one full re-export and re-sync.
+
+The rsync runs in two passes, each bounded by `PUBLISH_RSYNC_TIMEOUT_SECONDS`:
+first everything except the per-commit stack files, then the stack files
+alone. rsync sends in name order, so in a single pass a slow stacks transfer
+would sit ahead of every series file that sorts after `cpu-stacks`; the split
+lets the dashboard data land first regardless of how much stack data is
+pending. A pass that hits its bound is logged at ERROR and retried in full at
+the next boundary; rsync has no `--delete`, so nothing already published is
+ever removed.
 
 The fleet client reads several more control-plane variables — see the
 [Fleet-aware CLI](fleet-cli.md) guide for `CONDUCTRESS_CONTROL_TIMEOUT`,

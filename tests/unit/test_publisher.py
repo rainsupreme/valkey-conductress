@@ -51,16 +51,28 @@ class TestDashboardPublisher:
         assert pub._export_dir == tmp_path / "publish-export"
         assert pub._export_dir.is_dir()
 
-    def test_export_dir_is_fixed_and_rebuilt_in_place(self, tmp_path):
-        """A second publisher reuses the same path and starts from an empty directory."""
+    def test_export_dir_is_fixed_and_kept_across_restarts(self, tmp_path):
+        """A second publisher reuses the same path and keeps what the first left.
+
+        The per-commit cpu-stacks files are exported once and skipped by mtime
+        afterwards; wiping the directory on start-up would regenerate all of
+        them with fresh mtimes and make the next rsync move the whole tree.
+        Only staging directories from an interrupted publish are removed.
+        """
         export_dir = tmp_path / "publish-export"
         export_dir.mkdir()
-        (export_dir / "series-stale.json").write_text("{}")
+        stacks = export_dir / "series-arm64-get-k16-v16-t7-p10-cpu-stacks-aaa.epoch-v3.json"
+        stacks.write_text("{}")
+        stale_stage = export_dir / ".stage-v3-get-k16-v16-t7-p10"
+        stale_stage.mkdir()
+        (stale_stage / "series-x.json").write_text("{}")
         first = DashboardPublisher("user@host:/path", [])
         assert first._export_dir == export_dir
-        assert list(export_dir.iterdir()) == []
+        assert stacks.exists()
+        assert not stale_stage.exists()
         second = DashboardPublisher("user@host:/path", [])
         assert second._export_dir == export_dir
+        assert stacks.exists()
         assert not str(export_dir).startswith(str(tmp_path / "tmp")), "export dir must not live under tempdir"
 
     def test_legacy_mkdtemp_export_dirs_are_swept_on_init(self, tmp_path):
@@ -99,7 +111,14 @@ class TestDashboardPublisher:
         pub.on_queue_empty()  # should not raise
 
     @patch("conductress.utility.subprocess.run")
-    def test_publish_calls_rsync(self, mock_run):
+    def test_publish_calls_rsync_in_two_passes_dashboard_files_first(self, mock_run):
+        """Dashboard files sync first, then the per-commit stacks, each pass bounded.
+
+        rsync sends in name order, so a single pass with ~10 GB of stacks files
+        can hit its timeout before reaching series files that sort after them.
+        """
+        from conductress import config as _config
+
         mock_run.return_value = MagicMock(returncode=0)
         coord = MagicMock()
         coord.workload_id = "get16b-t7-p10"
@@ -113,11 +132,34 @@ class TestDashboardPublisher:
             with patch("conductress.sweep.exporter.export_manifest"):
                 pub.on_task_completed(MagicMock())
 
-        # rsync was called
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "rsync"
-        assert "user@host:/path" in call_args[-1]
+        assert mock_run.call_count == 2
+        first, second = (c[0][0] for c in mock_run.call_args_list)
+        assert first[0] == "rsync" and second[0] == "rsync"
+        assert first[-1] == "user@host:/path" and second[-1] == "user@host:/path"
+        assert "--exclude=series-*-cpu-stacks-[0-9a-f]*.json" in first
+        assert "--include=series-*-cpu-stacks-[0-9a-f]*.json" in second
+        assert second.index("--include=series-*-cpu-stacks-[0-9a-f]*.json") < second.index("--exclude=*")
+        for call in mock_run.call_args_list:
+            assert call[1]["timeout"] == _config.PUBLISH_RSYNC_TIMEOUT_SECONDS
+
+    def test_stacks_glob_matches_per_commit_files_but_not_the_index(self):
+        """The filter must leave cpu-stacks-index.json, which the dashboard reads, in pass one."""
+        import fnmatch
+
+        from conductress.publisher import STACKS_FILE_GLOB
+
+        commit = "15aa872383dc34a20cc99a9fa4aca0525a747a03"
+        assert fnmatch.fnmatchcase(f"series-arm64-get-k16-v16-t7-p10-cpu-stacks-{commit}.json", STACKS_FILE_GLOB)
+        assert fnmatch.fnmatchcase(
+            f"series-arm64-get-k16-v16-t7-p10-cpu-stacks-{commit}.epoch-v3.json", STACKS_FILE_GLOB
+        )
+        assert not fnmatch.fnmatchcase("series-arm64-get-k16-v16-t7-p10-cpu-stacks-index.json", STACKS_FILE_GLOB)
+        assert not fnmatch.fnmatchcase(
+            "series-arm64-get-k16-v16-t7-p10-cpu-stacks-index.epoch-v3.json", STACKS_FILE_GLOB
+        )
+        assert not fnmatch.fnmatchcase("series-arm64-get-k16-v16-t7-p10-cpu-main.epoch-v3.json", STACKS_FILE_GLOB)
+        assert not fnmatch.fnmatchcase("series-arm64-get-k16-v16-t7-p10-throughput.epoch-v3.json", STACKS_FILE_GLOB)
+        assert not fnmatch.fnmatchcase("manifest-arm64.epoch-v3.json", STACKS_FILE_GLOB)
 
     @patch("conductress.utility.subprocess.run")
     def test_publish_failure_does_not_raise(self, mock_run):
@@ -291,3 +333,98 @@ def test_publish_writes_isolated_v1_v2_series_and_manifests(tmp_path):
     v2_manifest = json.loads((tmp_path / f"manifest-{platform}.epoch-v2.json").read_text())
     assert [epoch["id"] for epoch in base_manifest["epochs"]] == ["v1", "v2"]
     assert v2_manifest["epoch"] == "v2"
+
+
+def _v3_coord_with_stacks():
+    """A v3 throughput coordinator over a real SweepState with stacks on one point."""
+    from conductress.sweep.planner import BenchmarkPoint, PointStatus, SweepState
+
+    state = SweepState(merge_commits=["aaa", "bbb"], commit_dates={"aaa": "2024-01-01", "bbb": "2024-02-01"})
+    state.points["aaa"] = BenchmarkPoint(
+        commit="aaa",
+        date="2024-01-01",
+        value=2_000_000.0,
+        status=PointStatus.COMPLETED,
+        cpu_stacks_main=[["valkey-server;main;aeMain", 2000]],
+        cpu_stacks_io=[["io_thd_1;IOThreadMain", 6000]],
+    )
+    state.points["bbb"] = BenchmarkPoint(
+        commit="bbb", date="2024-02-01", value=2_100_000.0, status=PointStatus.COMPLETED
+    )
+
+    coord = MagicMock()
+    coord.epoch_id = "v3"
+    coord.workload_id = "get-k16-v16-t7-p10"
+    coord.metric_id = "throughput"
+    coord.lower_is_better = False
+    coord.state = state
+    coord._sweep_ref = "origin/unstable"
+    coord.engine = MagicMock(source="valkey", profile_internals=True)
+
+    def export(path, platform):
+        path.write_text('{"metadata": {}, "points": []}')
+        return 2
+
+    coord.export.side_effect = export
+    return coord
+
+
+def test_second_publish_does_not_rewrite_promoted_stacks_files(tmp_path):
+    """Regression: every publish regenerated every per-commit stacks file.
+
+    The v3 export goes through a staging directory that is emptied each
+    publish, so the exporter's own exists() check never saw the files it had
+    already promoted. It rewrote all of them (multi-MB each, thousands per
+    runner), promotion gave them fresh mtimes, and the publish rsync moved the
+    whole tree again every boundary, hitting its timeout before reaching the
+    series files that sort after them. The promoted file must keep its mtime
+    across a second publish, and the series file must still be refreshed.
+    """
+    import os
+    import time
+
+    publisher = DashboardPublisher("user@host:/path", [_v3_coord_with_stacks()])
+    publisher._export_dir = tmp_path
+    platform = publisher._platform_id
+    stacks = tmp_path / f"series-{platform}-get-k16-v16-t7-p10-cpu-stacks-aaa.epoch-v3.json"
+    series = tmp_path / f"series-{platform}-get-k16-v16-t7-p10-throughput.epoch-v3.json"
+
+    with patch("conductress.publisher.run_rsync"), patch("conductress.sweep.exporter.export_perf_metrics"):
+        publisher.on_task_completed(MagicMock())
+        assert stacks.exists() and series.exists()
+        old_time = 1_600_000_000
+        os.utime(stacks, (old_time, old_time))
+        os.utime(series, (old_time, old_time))
+        time.sleep(0.01)
+        publisher.on_task_completed(MagicMock())
+
+    assert int(stacks.stat().st_mtime) == old_time, "promoted stacks file was regenerated"
+    assert int(series.stat().st_mtime) != old_time, "series file must be refreshed every publish"
+    assert not list(tmp_path.glob(".stage-*")), "stage must be cleaned up after promotion"
+
+
+def test_new_stacks_point_is_exported_when_older_ones_are_already_published(tmp_path):
+    """The skip is per file: a point that gains stacks later is still exported."""
+    from conductress.sweep.planner import BenchmarkPoint, PointStatus
+
+    coord = _v3_coord_with_stacks()
+    publisher = DashboardPublisher("user@host:/path", [coord])
+    publisher._export_dir = tmp_path
+    platform = publisher._platform_id
+
+    with patch("conductress.publisher.run_rsync"), patch("conductress.sweep.exporter.export_perf_metrics"):
+        publisher.on_task_completed(MagicMock())
+        coord.state.points["bbb"] = BenchmarkPoint(
+            commit="bbb",
+            date="2024-02-01",
+            value=2_100_000.0,
+            status=PointStatus.COMPLETED,
+            cpu_stacks_main=[["valkey-server;main;aeMain", 10]],
+            cpu_stacks_io=[],
+        )
+        publisher.on_task_completed(MagicMock())
+
+    assert (tmp_path / f"series-{platform}-get-k16-v16-t7-p10-cpu-stacks-aaa.epoch-v3.json").exists()
+    assert (tmp_path / f"series-{platform}-get-k16-v16-t7-p10-cpu-stacks-bbb.epoch-v3.json").exists()
+    index = json.loads((tmp_path / f"series-{platform}-get-k16-v16-t7-p10-cpu-stacks-index.epoch-v3.json").read_text())
+    assert [entry["commit"] for entry in index["commits"]] == ["aaa", "bbb"]

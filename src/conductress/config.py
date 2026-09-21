@@ -594,12 +594,21 @@ TLS_CERT_DIR = PROJECT_ROOT / "tls"
 
 CONDUCTRESS_QUEUE = PROJECT_ROOT / "benchmark_queue"
 CONDUCTRESS_TMP = PROJECT_ROOT / "tmp"
-# Staging directory the dashboard publisher rebuilds on every publish. Kept on
-# the project disk rather than under tempfile.gettempdir(): on many hosts that
-# is a RAM-backed tmpfs, and a full export copy is large enough that staging
-# it there competes with the benchmark for memory and can fill the filesystem
-# that perf and other scratch writers also depend on.
+# Export directory the dashboard publisher writes on every publish and rsyncs
+# from. Kept on the project disk rather than under tempfile.gettempdir(): on
+# many hosts that is a RAM-backed tmpfs, and a full export copy is large enough
+# that staging it there competes with the benchmark for memory and can fill the
+# filesystem that perf and other scratch writers also depend on. The directory
+# persists across runner restarts so the per-commit CPU-stack files (the bulk
+# of the export, multi-MB each) keep their mtimes and rsync's quick check skips
+# them; it is safe to delete, at the cost of one full re-export and re-sync.
 PUBLISH_EXPORT_DIR = CONDUCTRESS_TMP / "publish-export"
+# Wall-clock bound on each publish rsync pass. The dashboard files (series,
+# manifests, notable feeds; ~100 MB) and the CPU-stack files (~10 GB, mostly
+# unchanged) are synced in separate passes so a slow stacks pass cannot hold
+# back the files the dashboard reads. A publish runs at a task boundary with no
+# measurement in flight, so the bound protects the queue, not a measurement.
+PUBLISH_RSYNC_TIMEOUT_SECONDS = 600
 CONDUCTRESS_FAILED_LOG = PROJECT_ROOT / "failed_tasks.jsonl"
 CONDUCTRESS_FAILED_DIR = PROJECT_ROOT / "failed"
 

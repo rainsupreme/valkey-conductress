@@ -180,6 +180,32 @@ class TestExportCpuStacksRaw:
         result = export_cpu_stacks_raw(state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD)
         assert result == {"files_written": 0, "indexed": 2}
 
+    def test_already_published_predicate_skips_files_absent_from_the_stage(self, state_with_cpu, tmp_path):
+        """A staged export skips files the caller says are already published, per file.
+
+        The publisher exports into an empty staging directory, so the exists()
+        check above cannot see promoted files; the predicate stands in for it.
+        The index still lists every point with stacks.
+        """
+        seen: list[str] = []
+
+        def published(filename: str) -> bool:
+            seen.append(filename)
+            return filename.endswith("-cpu-stacks-aaa.json")
+
+        result = export_cpu_stacks_raw(
+            state_with_cpu, tmp_path, platform="arm64", workload=self.WORKLOAD, already_published=published
+        )
+        assert result == {"files_written": 1, "indexed": 2}
+        assert not (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json").exists()
+        assert (tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-bbb.json").exists()
+        assert seen == [
+            f"series-arm64-{self.WORKLOAD}-cpu-stacks-aaa.json",
+            f"series-arm64-{self.WORKLOAD}-cpu-stacks-bbb.json",
+        ]
+        index = json.loads((tmp_path / f"series-arm64-{self.WORKLOAD}-cpu-stacks-index.json").read_text())
+        assert [entry["commit"] for entry in index["commits"]] == ["aaa", "bbb"]
+
     def test_no_data_produces_no_files(self, tmp_path):
         empty = SweepState(merge_commits=[], commit_dates={}, commit_prs={}, commit_titles={}, landmarks=[])
         result = export_cpu_stacks_raw(empty, tmp_path, platform="arm64", workload=self.WORKLOAD)
