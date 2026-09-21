@@ -261,6 +261,8 @@ def export_series(
     branch: str = "unstable",
     include_breakdown: bool = True,
     engine: Optional["SweepEngine"] = None,
+    connections: Optional[int] = None,
+    client_threads: Optional[int] = None,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -275,6 +277,13 @@ def export_series(
         engine: The engine this series measures; names it and its scope in ``metadata`` so a
             reader can tell a full-history series from a release-and-tip one.  None is the
             default Valkey sweep.
+        connections: Total client connections the series was measured at; recorded in
+            ``metadata`` when provided so a reader knows the client budget the line was
+            produced under.  None omits the key (legacy callers).
+        client_threads: Client worker threads the series was measured at; recorded in
+            ``metadata`` when provided.  The P1 GET series runs 16, the rest 8, and a
+            series' client budget is part of its identity -- publishing it lets a reader
+            tell the two client shapes apart.  None omits the key.
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -360,6 +369,15 @@ def export_series(
         from conductress.heap_profiler import CATEGORY_NAMES
 
         series["metadata"]["categories"] = CATEGORY_NAMES
+
+    # Record the client budget the series was measured at, when the caller knows
+    # it. A series' connections and client-thread count are part of its identity
+    # (the P1 GET series runs 16 threads, the rest 8), so publishing them lets a
+    # reader tell two client shapes apart on the dashboard.
+    if connections is not None:
+        series["metadata"]["connections"] = connections
+    if client_threads is not None:
+        series["metadata"]["client_threads"] = client_threads
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))
@@ -651,6 +669,8 @@ def export_latency(
     repo: str = "valkey-io/valkey",
     branch: str = "unstable",
     tool: str = "memtier_benchmark",
+    connections: Optional[int] = None,
+    client_threads: Optional[int] = None,
 ) -> int:
     """Export latency sweep data to a dashboard-ready series file.
 
@@ -730,6 +750,14 @@ def export_latency(
         "landmarks": landmarks,
         "annotations": annotations,
     }
+
+    # Record the client budget the latency series was measured at, when known.
+    # The latency series runs the default 8 client threads, but publishing the
+    # budget keeps every v3 series' metadata uniform and self-describing.
+    if connections is not None:
+        series["metadata"]["connections"] = connections
+    if client_threads is not None:
+        series["metadata"]["client_threads"] = client_threads
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))

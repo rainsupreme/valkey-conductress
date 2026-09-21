@@ -654,3 +654,120 @@ class TestV3Profiling:
         assert point.value == pytest.approx(2_000_000.0)
         assert point.perf_counters is None
         assert point.cpu_stacks_main is None
+
+
+def _v3_roster(tmp_path: Path):
+    from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+    with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+        with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+            return {c.workload_id: c for c in create_v3_coordinators(tmp_path)}
+
+
+class TestV3P1ClientBudget:
+    """The P1 GET throughput series runs 16 client threads; the rest run 8."""
+
+    def test_constant_is_sixteen(self):
+        from conductress.config import SWEEP_V3_P1_CLIENT_THREADS
+
+        assert SWEEP_V3_P1_CLIENT_THREADS == 16
+
+    def test_p1_get_throughput_cell_uses_sixteen_threads(self, tmp_path: Path):
+        from conductress.config import SWEEP_V3_P1_CLIENT_THREADS
+
+        roster = _v3_roster(tmp_path)
+        p1 = roster["get-k16-v16-t7-p1"]._create_task(_sweep_task())
+        assert p1.threads == SWEEP_V3_P1_CLIENT_THREADS == 16
+        assert p1.connections == 400
+
+    def test_p10_throughput_series_stay_at_eight_threads(self, tmp_path: Path):
+        roster = _v3_roster(tmp_path)
+        for wid in ("get-k16-v16-t7-p10", "mixed-s20-k16-v16-t7-p10", "set-k16-v16-t7-p10", "get-k16-v1024-t7-p10"):
+            assert roster[wid]._create_task(_sweep_task()).threads == 8, wid
+
+    def test_p1_latency_series_stays_at_eight_threads(self, tmp_path: Path):
+        """The latency series is rate-held at 100k/s, so the client is idle: no budget bump."""
+        roster = _v3_roster(tmp_path)
+        assert roster["get-k16-v16-t7-p1-r100k"]._create_task(_sweep_task()).threads == 8
+
+    def test_redis_p1_series_inherits_the_sixteen_thread_budget(self, tmp_path: Path, monkeypatch):
+        """The budget is part of the identity, so the comparison engine's P1 cell gets it too."""
+        import conductress.config as cfg
+        from conductress.config import SWEEP_V3_P1_CLIENT_THREADS, SweepEngine
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        if "redis" not in cfg.REPO_NAMES:
+            monkeypatch.setattr(cfg, "REPO_NAMES", cfg.REPO_NAMES + ["redis"])
+
+        engine = SweepEngine(source="redis", ref="origin/unstable", binary_name="redis-server", scope="release-and-tip")
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = {c.workload_id: c for c in create_v3_coordinators(tmp_path, engine=engine)}
+        p1 = coords["redis-get-k16-v16-t7-p1"]._create_task(_sweep_task())
+        assert p1.threads == SWEEP_V3_P1_CLIENT_THREADS == 16
+
+
+class TestV3IdentityGuard:
+    """A completed cell whose shape drifted from the series is refused, not recorded."""
+
+    def _run_completion(self, coord, task, tmp_path, monkeypatch, threads):
+        import json
+
+        from conductress.sweep import coordinator_v3
+        from conductress.sweep.planner import BenchmarkPoint
+
+        results = tmp_path / "results"
+        results.mkdir(exist_ok=True)
+        monkeypatch.setattr(coordinator_v3, "CONDUCTRESS_RESULTS", results)
+
+        commit = task.sweep_commit
+        coord.state.merge_commits = [commit]
+        coord.state.commit_dates = {commit: "2026-01-01"}
+        coord.state.points[commit] = BenchmarkPoint(commit=commit, date="2026-01-01")
+        row = {"task_id": task.task_id, "score": 1_200_000.0, "data": {"per_run_rps": [1_200_000.0] * 5}}
+        (results / "output.jsonl").write_text(json.dumps(row) + "\n")
+        with patch("conductress.sweep.coordinator.get_head", return_value="z" * 40):
+            coord.on_task_completed(task)
+        return coord.state.points[commit]
+
+    def test_stale_eight_thread_cell_is_refused_with_a_warning(self, tmp_path: Path, monkeypatch, caplog):
+        """A cell queued at the old 8-thread budget must not land on the 16-thread line."""
+        import logging
+
+        roster = _v3_roster(tmp_path)
+        coord = roster["get-k16-v16-t7-p1"]  # 16-thread series
+        stale = coord._create_task(_sweep_task())
+        stale.sweep_commit = "a" * 40
+        stale.threads = 8  # the pre-deploy client budget
+
+        with caplog.at_level(logging.WARNING, logger="conductress.sweep.coordinator_v3"):
+            point = self._run_completion(coord, stale, tmp_path, monkeypatch, threads=8)
+
+        assert point.value is None, "stale cell must not be recorded"
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "threads" in messages
+        assert "8" in messages and "16" in messages
+
+    def test_matching_cell_records_normally(self, tmp_path: Path, monkeypatch):
+        roster = _v3_roster(tmp_path)
+        coord = roster["get-k16-v16-t7-p1"]
+        good = coord._create_task(_sweep_task())
+        good.sweep_commit = "c" * 40
+        assert good.threads == 16
+
+        point = self._run_completion(coord, good, tmp_path, monkeypatch, threads=16)
+        assert point.value == pytest.approx(1_200_000.0)
+
+    def test_identity_mismatch_names_the_field_and_both_values(self, tmp_path: Path):
+        roster = _v3_roster(tmp_path)
+        coord = roster["get-k16-v16-t7-p1"]
+        stale = coord._create_task(_sweep_task())
+        stale.threads = 8
+        mismatch = coord._identity_mismatch(stale)
+        assert mismatch == ("threads", 8, 16)
+
+    def test_matching_task_has_no_identity_mismatch(self, tmp_path: Path):
+        roster = _v3_roster(tmp_path)
+        coord = roster["get-k16-v16-t7-p1"]
+        good = coord._create_task(_sweep_task())
+        assert coord._identity_mismatch(good) is None
