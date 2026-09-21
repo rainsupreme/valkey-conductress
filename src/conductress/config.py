@@ -233,6 +233,21 @@ SWEEP_V3_WARMUP = 10
 SWEEP_V3_DURATION = 30
 SWEEP_V3_CONNECTIONS = 400
 SWEEP_V3_CLIENT_THREADS = 8  # 50 connections per client thread at 400c
+# Client budget for the unpipelined P1 GET throughput series only.  P10 sends
+# one syscall per ten requests; P1 sends one per request, so cachecannon spends
+# 4-5x more CPU per request and the 8-thread client saturates well below the
+# server's ceiling.  Measured Sep 21 2026 from live v3 P1 backfill points:
+# Graviton3 1,221,594 GET/s at client utilization 0.941, saturated=True (the
+# series was measuring the client, not the server, on that commit); Graviton4
+# 1,317,049 at 0.653; intel 779,797 at 0.724; AMD 468,790 at 0.728 (headroom
+# 1.24-1.38x elsewhere, zero on Graviton3).  P10 series sit at 0.27-0.51 and
+# stay at 8 threads.  16 client threads (25 connections per thread at 400c)
+# gives Graviton3 the headroom to measure the server.  A series' client budget
+# is part of its identity and never changes within the series (the same rule
+# as its floor tag): changing it defines a new workload, so the P1 series
+# history is cleared and restarted rather than mixing two client shapes on one
+# line.
+SWEEP_V3_P1_CLIENT_THREADS = 16
 SWEEP_V3_IO_THREADS = 7  # server io-threads
 SWEEP_V3_PIPELINING = 10
 SWEEP_V3_VAL_SIZE = 16

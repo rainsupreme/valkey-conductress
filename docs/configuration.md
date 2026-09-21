@@ -71,12 +71,21 @@ unless the series says otherwise):
 - **SET throughput at P10** (`set-k16-v16-t7-p10`) — the write counterpart of
   the GET series.
 - **GET throughput at P1** (`get-k16-v16-t7-p1`) — the unpipelined read path.
-  Its point is scored on the **median** of the per-rep series rather than the
-  mean, because P1 throughput can land in two distinct modes across server
-  restarts; the median reports the mode most reps reached, where a mean would
-  report a value no rep produced. The coefficient of variation and the
-  published score bounds still show the full between-restart spread, so a mode
-  split is visible rather than hidden.
+  It runs a **16-client-thread** budget (`SWEEP_V3_P1_CLIENT_THREADS`), not the
+  8 the other throughput series use: at P1 cachecannon issues one syscall per
+  request instead of one per ten, so it spends 4–5x more CPU per request and 8
+  client threads saturate the client below the server's ceiling — on Graviton3
+  the 8-thread P1 backfill hit client utilization 0.941, meaning it was
+  measuring the client rather than the server. 16 threads (25 connections per
+  thread at 400c) restores the headroom. The client budget is part of the
+  series identity and never changes within the series, so the P1 series history
+  was cleared and restarted at 16 threads rather than mixing two client shapes
+  on one line. Its point is scored on the **median** of the per-rep series
+  rather than the mean, because P1 throughput can land in two distinct modes
+  across server restarts; the median reports the mode most reps reached, where a
+  mean would report a value no rep produced. The coefficient of variation and
+  the published score bounds still show the full between-restart spread, so a
+  mode split is visible rather than hidden.
 - **GET throughput at P10 with 1024-byte values** (`get-k16-v1024-t7-p10`) —
   the raw-encoded, copy-dominated reply path. A 16-byte value is embstr-encoded
   and its reply is dispatch-bound; a 1024-byte value is a separate encoding
@@ -92,7 +101,10 @@ unless the series says otherwise):
 A cachecannon task chooses how the recorded score aggregates the per-rep series
 through `score_aggregate` (`mean`, the default, or `median`), and always records
 the minimum and maximum of that series; the v3 export publishes those bounds
-beside the score, its coefficient of variation and its repetition count.
+beside the score, its coefficient of variation and its repetition count. The
+export also records each series' client budget — `connections` and
+`client_threads` — in the series `metadata`, so a reader can tell the 16-thread
+P1 line apart from the 8-thread P10 lines.
 
 Two series rules follow from the epoch definition:
 
@@ -114,6 +126,49 @@ Two series rules follow from the epoch definition:
   engine's scope and are not retired here. The `conductress sweep pause`
   selectors are the runtime lever for everything else; retirement is the
   permanent one.
+
+### Resetting a series
+
+A series' client budget (its connection count and client-thread count) is part
+of its identity, so a change to it — like the P1 GET series moving from 8 to 16
+client threads — must clear the old points rather than mix two client shapes on
+one chart line. `conductress sweep reset-series` clears one series' history so
+the next boundary publish restarts it fresh:
+
+```
+conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1
+```
+
+It backs up the coordinator's state file to `<file>.bak-<UTC timestamp>` and
+deletes it, then relocates (never deletes) any queued task files whose note
+names the series into a `benchmark_queue/reset-<timestamp>/` folder, so a cell
+queued at the old budget cannot complete after the deploy and land a stale point
+on the fresh line. Pass `--engine redis` to reset a comparison engine's
+prefixed series (e.g. `redis-get-k16-v16-t7-p1`), `--dry-run` to see what it
+would do without touching anything, and `--force` to override its refusal to
+run while `conductress.service` is active (a running runner may be mid-task on
+the series). The coordinator's completion-time identity guard (below) is the
+backstop: a queued 8-thread cell that slips past the reset is refused at
+completion rather than recorded.
+
+The deploy-time procedure is: stop the runner service, reset both the Valkey and
+the Redis P1 series, then start it again —
+
+```
+sudo systemctl stop conductress.service
+conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1
+conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1 --engine redis
+sudo systemctl start conductress.service
+```
+
+The completion-time **identity guard** in the v3 coordinator refuses to record a
+completed cell whose `threads` (or any other identity field) does not match the
+series, logging a WARNING and skipping the point rather than crashing — so a
+stale 8-thread cell that completes after the deploy never contaminates the
+16-thread line. Published per-commit perf and CPU-stack files for the old points
+remain on the data server (the publish `rsync` has no `--delete`); they are
+harmless orphans the dashboard no longer references once the series file is
+rewritten.
 
 ### Engines
 

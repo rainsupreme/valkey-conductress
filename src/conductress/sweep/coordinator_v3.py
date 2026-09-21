@@ -55,6 +55,7 @@ from conductress.config import (
     SWEEP_V3_LATENCY_REPETITIONS,
     SWEEP_V3_LATENCY_TARGET_CV,
     SWEEP_V3_MAX_REPS,
+    SWEEP_V3_P1_CLIENT_THREADS,
     SWEEP_V3_PIPELINING,
     SWEEP_V3_REPETITIONS,
     SWEEP_V3_SET_RATIO,
@@ -242,8 +243,31 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         ``super().on_task_completed`` records value/cv/reps, perf counters and
         CPU stacks; the score min/max are the only v3-specific point fields, and
         they are set afterward so a point exists to attach them to.
+
+        Before any of that, the completed task's workload shape is checked
+        against this coordinator's identity.  ``_is_my_task`` already gates on
+        every identity field but ``threads``; a task that drifted from the
+        series' client budget (a cell queued at the old 8-thread budget
+        completing after a 16-thread deploy) reaches here and is refused with a
+        WARNING naming the field, rather than recorded onto a line measured at a
+        different client budget.  Refusing is not crashing: the point is simply
+        not recorded and the runner carries on.
         """
         if not self._is_my_task(task):
+            return
+        mismatch = self._identity_mismatch(task)
+        if mismatch is not None:
+            field_name, task_value, own_value = mismatch
+            commit = getattr(task, "sweep_commit", "?")
+            logger.warning(
+                "Refusing to record %s %s: task %s=%r does not match series %r; "
+                "stale queued task from a different client budget, point not recorded",
+                self.workload_id,
+                commit[:8],
+                field_name,
+                task_value,
+                own_value,
+            )
             return
         super().on_task_completed(task)
         self._record_score_bounds(task)
@@ -253,7 +277,42 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         if entry:
             self._store_cpu_stacks_from_entry(task, entry)
 
+    def export(self, output_path: Path, platform: str) -> int:
+        """Export this v3 series, tagging its metadata with the client budget.
+
+        The v3 throughput series carry a per-series client budget (the P1 GET
+        series runs 16 threads, the rest 8) that is part of their identity, so
+        the exported ``metadata`` records the connections and client-thread
+        count the line was measured at.  Everything else is the base export.
+        """
+        from conductress import config as _config
+        from conductress.sweep.exporter import export_series
+
+        branch = self._sweep_ref.replace("origin/", "") if self.engine else "unstable"
+        export_series(
+            self.state,
+            output_path,
+            platform=platform,
+            workload=self.workload_id,
+            lower_is_better=self.lower_is_better,
+            repo=_config.engine_repo_slug(self.engine),
+            branch=branch,
+            engine=self.engine,
+            connections=self._connections,
+            client_threads=self._threads,
+        )
+        return sum(1 for p in self.state.points.values() if p.value is not None)
+
     def _is_my_task(self, task: BaseTaskData) -> bool:
+        # Selects the tasks this series owns.  ``threads`` is deliberately NOT
+        # here: it is the one identity field that drifts across a client-budget
+        # change (a task queued at the old 8-thread budget completing after a
+        # 16-thread deploy), and it must reach ``on_task_completed``'s identity
+        # guard to be flagged and skipped rather than silently dropped by this
+        # predicate.  No two v3 series differ only by ``threads`` (P1 throughput
+        # vs P10 GET differ by pipelining; P1 throughput vs P1 latency by
+        # rate_limit and score_metric), so dropping it here causes no
+        # cross-series claiming.
         return (
             isinstance(task, CachecannonTaskData)
             # A manually queued cachecannon cell carries no sweep_commit and must
@@ -266,11 +325,40 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             and task.io_threads == self._io_threads
             and task.pipelining == self._pipelining
             and task.connections == self._connections
-            and task.threads == self._threads
             and task.distribution == self._distribution
             and task.rate_limit == self._rate_limit
             and task.score_metric == self._score_metric
         )
+
+    # The workload-shape fields that make up a series' identity.  A completed
+    # task must match the coordinator on every one of them before its point is
+    # recorded; ``_is_my_task`` already gates on all of these except
+    # ``threads``, which the identity guard below checks explicitly so a
+    # client-budget drift is flagged rather than silently absorbed.
+    _IDENTITY_FIELDS = (
+        "threads",
+        "connections",
+        "pipelining",
+        "val_size",
+        "io_threads",
+        "test",
+        "set_ratio",
+    )
+
+    def _identity_mismatch(self, task: BaseTaskData) -> Optional[tuple[str, object, object]]:
+        """First identity field where ``task`` disagrees with this coordinator, if any.
+
+        Returns ``(field, task_value, coordinator_value)`` on the first
+        mismatch, or ``None`` when every identity field matches.  The
+        coordinator's own value is read from the private attribute the
+        constructor stored (e.g. ``self._threads`` for ``threads``).
+        """
+        for field_name in self._IDENTITY_FIELDS:
+            task_value = getattr(task, field_name, None)
+            own_value = getattr(self, f"_{field_name}")
+            if task_value != own_value:
+                return (field_name, task_value, own_value)
+        return None
 
 
 class CachecannonThroughputSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
@@ -457,6 +545,8 @@ class CachecannonLatencySweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3):
             target_rps=self._rate_limit,
             tool="cachecannon",
             tool_version=SWEEP_V3_CACHECANNON_COMMIT[:8],
+            connections=self._connections,
+            client_threads=self._threads,
         )
 
 
@@ -465,8 +555,8 @@ def create_v3_coordinators(
 ) -> list[BaseCachecannonSweepCoordinatorV3]:
     """Build the v3 coordinator roster for one engine.
 
-    Six series, all at the v3 identity (400c / 8t / io7 / 3M keys / 16B unless
-    the series says otherwise):
+    Six series, all at the v3 identity (400c / io7 / 3M keys / 16B and 8 client
+    threads unless the series says otherwise):
 
     * GET throughput at P10 -- the canonical pipelined-read ceiling.
     * mixed GET/SET throughput at P10 (default 80:20).
@@ -474,13 +564,21 @@ def create_v3_coordinators(
     * GET throughput at P1 -- the unpipelined read path, scored on the MEDIAN
       of the per-rep series: P1 throughput lands in two distinct modes across
       server restarts, and the median reports the mode most reps reached where
-      a mean would report a value no rep produced.
+      a mean would report a value no rep produced.  This series runs a
+      16-client-thread budget (``SWEEP_V3_P1_CLIENT_THREADS``), not the 8 the
+      P10 series use: at P1 cachecannon spends 4-5x more CPU per request and 8
+      threads saturate the client below the server's ceiling (Graviton3 hit
+      client utilization 0.941 at 8t).  The budget is part of the series
+      identity, so the same factory applies it to the Redis comparison engine's
+      P1 series and it never changes within the series.
     * GET throughput at P10 with 1024-byte values -- the raw-encoded,
       copy-dominated reply path, which moves on changes the 16-byte series
       cannot see.  Its commit range starts at ``SWEEP_V3_LARGE_VALUE_FLOOR_TAG``
       rather than the fork point: it guards the reply path going forward and
       does not backfill two years of history at the expense of the other five.
-    * GET latency at P1 at a fixed request rate -- p99, lower is better.
+    * GET latency at P1 at a fixed request rate -- p99, lower is better.  It
+      stays at 8 client threads: rate-held at 100k/s, the client is under no
+      pressure.
 
     A comparison engine (Redis) gets the same six series under its own prefix,
     so the engine comparison reads like-for-like cells; its ``scope`` decides
@@ -495,7 +593,12 @@ def create_v3_coordinators(
         CachecannonMixedSweepCoordinatorV3(repo_path, engine=engine),
         CachecannonThroughputSweepCoordinatorV3(repo_path, test="set", engine=engine),
         CachecannonThroughputSweepCoordinatorV3(
-            repo_path, test="get", pipelining=1, score_aggregate="median", engine=engine
+            repo_path,
+            test="get",
+            pipelining=1,
+            threads=SWEEP_V3_P1_CLIENT_THREADS,
+            score_aggregate="median",
+            engine=engine,
         ),
         CachecannonThroughputSweepCoordinatorV3(
             repo_path, test="get", val_size=SWEEP_V3_LARGE_VAL_SIZE, engine=engine, floor_tag=large_value_floor

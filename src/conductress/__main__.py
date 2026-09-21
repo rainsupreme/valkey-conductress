@@ -132,6 +132,36 @@ def main() -> None:
     sweep_sub.add_parser("resume", help="Resume all sweeps (remove focus/pause)")
     sweep_sub.add_parser("list", help="List all workload IDs and current scheduling config")
 
+    reset_series_parser = sweep_sub.add_parser(
+        "reset-series",
+        help="Clear one series' history: back up and delete its state file and relocate its queued task files",
+    )
+    reset_series_parser.add_argument(
+        "--epoch",
+        default="v3",
+        help="Epoch the series belongs to (only 'v3' is supported)",
+    )
+    reset_series_parser.add_argument(
+        "--workload",
+        required=True,
+        help="Workload label, e.g. get-k16-v16-t7-p1 (unprefixed; --engine adds the engine prefix)",
+    )
+    reset_series_parser.add_argument(
+        "--engine",
+        default=None,
+        help="Comparison engine source whose prefixed series to reset (e.g. redis); omit for the default Valkey series",
+    )
+    reset_series_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would happen without touching any file",
+    )
+    reset_series_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset even if the runner service appears active (unsafe: the runner may be mid-task on this series)",
+    )
+
     args, remaining = parser.parse_known_args()
     if args.command == "run" and args.management_settle is not None and args.management_settle < 0:
         parser.error("--management-settle must not be negative")
@@ -464,6 +494,25 @@ def main() -> None:
                 "\nWorkload ids are shared across epochs, so a bare selector pauses every epoch."
                 "\nQualify a selector to target one: 'v1:<workload>', or 'v1:*' for a whole epoch."
             )
+
+        elif args.sweep_command == "reset-series":
+            from conductress.sweep.reset_series import reset_series
+
+            try:
+                reset_result = reset_series(
+                    args.workload,
+                    epoch=args.epoch,
+                    engine=args.engine,
+                    dry_run=args.dry_run,
+                    force=args.force,
+                )
+            except ValueError as exc:
+                print(f"error: {exc}")
+                sys.exit(2)
+            for line in reset_result.summary_lines():
+                print(line)
+            if reset_result.refused_reason:
+                sys.exit(1)
 
         else:
             sweep_parser.print_usage()

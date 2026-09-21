@@ -346,3 +346,52 @@ class TestEpochManifestExport:
         payload = json.loads(path.read_text())
         assert payload["epoch"] == "v2"
         assert payload["throughput_workloads"] == ["mixed-s20-k16-v16-t7-p10"]
+
+
+class TestClientBudgetMetadata:
+    """The v3 export records the client budget (connections + client_threads)."""
+
+    def test_export_series_records_client_budget_when_supplied(self, tmp_path):
+        state = make_state_with_results()
+        output = tmp_path / "series.json"
+        export_series(state, output, connections=400, client_threads=16)
+        meta = json.loads(output.read_text())["metadata"]
+        assert meta["connections"] == 400
+        assert meta["client_threads"] == 16
+
+    def test_export_series_omits_budget_keys_when_not_supplied(self, tmp_path):
+        state = make_state_with_results()
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        meta = json.loads(output.read_text())["metadata"]
+        assert "connections" not in meta
+        assert "client_threads" not in meta
+
+    def _export_roster_series(self, tmp_path, workload_id):
+        from unittest.mock import patch as _patch
+
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus
+
+        with _patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with _patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = {c.workload_id: c for c in create_v3_coordinators(tmp_path)}
+        coord = coords[workload_id]
+        coord.state.merge_commits = ["a"]
+        coord.state.commit_dates = {"a": "2026-01-01"}
+        coord.state.points["a"] = BenchmarkPoint(
+            commit="a", date="2026-01-01", value=1_000_000.0, cv=0.3, status=PointStatus.COMPLETED
+        )
+        output = tmp_path / f"series-{workload_id}.json"
+        coord.export(output, platform="arm64/c7g.metal/graviton3")
+        return json.loads(output.read_text())["metadata"]
+
+    def test_p1_get_series_exports_sixteen_client_threads(self, tmp_path):
+        meta = self._export_roster_series(tmp_path, "get-k16-v16-t7-p1")
+        assert meta["client_threads"] == 16
+        assert meta["connections"] == 400
+
+    def test_p10_get_series_exports_eight_client_threads(self, tmp_path):
+        meta = self._export_roster_series(tmp_path, "get-k16-v16-t7-p10")
+        assert meta["client_threads"] == 8
+        assert meta["connections"] == 400
