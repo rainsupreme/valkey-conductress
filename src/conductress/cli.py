@@ -1821,6 +1821,7 @@ def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
 
 def handle_queue_add_memory(args: argparse.Namespace) -> int:
     """Handle 'queue add-memory': submit memory efficiency tasks."""
+    from conductress.heap_profiler import with_jemalloc_prof
     from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
     from conductress.tasks.task_mem_efficiency import MemTaskData
 
@@ -1869,7 +1870,9 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
         task = MemTaskData(
             source=args.source,
             specifier=args.specifier,
-            make_args=args.make_args,
+            # enable_profiling below is only effective when the binary is built with
+            # jemalloc profiling; without this the task silently records breakdown=None.
+            make_args=with_jemalloc_prof(args.make_args),
             topology=TopologySpec.standalone(),
             note=args.note or f"manual mem-{wl.command}",
             requirements={},

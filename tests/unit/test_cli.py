@@ -537,6 +537,51 @@ class TestQueueAddMemorySubcommand:
         assert task.user_data_bytes == task.key_size + 100
 
     @patch("conductress.cli.TaskQueue")
+    def test_add_memory_builds_with_jemalloc_prof(self, mock_queue_cls):
+        """enable_profiling=True is only useful if the binary is built with --enable-prof.
+
+        Regression: add-memory used to forward bare --make-args, so jemalloc wrote no heap
+        dump and every manual memory task recorded breakdown=None.
+        """
+        from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
+
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set"])
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.enable_profiling is True
+        assert JEMALLOC_PROF_CONFIGURE_OPTS in task.make_args
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_user_make_args_kept_alongside_prof_flag(self, mock_queue_cls):
+        """A user-supplied --make-args is preserved, with the profiling flag added once."""
+        from conductress.heap_profiler import JEMALLOC_PROF_CONFIGURE_OPTS
+
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add-memory",
+                "--source",
+                "repo1",
+                "--specifier",
+                "x",
+                "--types",
+                "set",
+                "--make-args",
+                "MALLOC=jemalloc",
+            ]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.make_args.startswith("MALLOC=jemalloc")
+        assert task.make_args.count(JEMALLOC_PROF_CONFIGURE_OPTS) == 1
+
+    @patch("conductress.cli.TaskQueue")
     def test_add_memory_custom_sizes_with_expire(self, mock_queue_cls):
         """--sizes composes with --expire (expire variants also get each size)."""
         mock_queue = MagicMock()
