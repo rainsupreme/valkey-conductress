@@ -214,7 +214,24 @@ def _remote_show(client: FleetClient, args: argparse.Namespace) -> int:
     print(f"Submitted:   {task['submitted_at']} by {task['submitted_by']}")
     print(f"Task type:   {task['envelope']['task']['task_type']}")
     if task.get("outcome"):
-        print(f"Outcome:     {task['outcome']['state']} at {task['outcome']['completed_at']}")
+        outcome = task["outcome"]
+        print(f"Outcome:     {outcome['state']} at {outcome['completed_at']}")
+        result = outcome.get("result") or {}
+        score = result.get("score")
+        if isinstance(score, (int, float)):
+            print(f"Score:       {int(score):,} rps")
+        elif score is not None:
+            print(f"Score:       {score}")
+        cv = result.get("cv")
+        if isinstance(cv, (int, float)):
+            print(f"CV:          {cv:.4f}")
+        reps = result.get("reps")
+        if reps is not None:
+            print(f"Reps:        {reps}")
+        smin = result.get("score_min")
+        smax = result.get("score_max")
+        if isinstance(smin, (int, float)) and isinstance(smax, (int, float)):
+            print(f"Score range: {int(smin):,} - {int(smax):,} rps")
     return 0
 
 

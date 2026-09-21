@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conductress.tail_reader import tail_lines
+from conductress.tail_reader import find_record_by_task_id, tail_lines
 
 
 class TestTailLinesBasic:
@@ -166,3 +166,86 @@ class TestTailLinesPerformanceContract:
         # Verify last entry
         last = json.loads(json_lines[-1])
         assert last["task_id"] == "t9999"
+
+
+class TestFindRecordByTaskId:
+    """Byte-capped reverse search for a completed task's row."""
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert find_record_by_task_id(tmp_path / "nope.jsonl", "t1") is None
+
+    def test_empty_file_returns_none(self, tmp_path):
+        f = tmp_path / "empty.jsonl"
+        f.write_bytes(b"")
+        assert find_record_by_task_id(f, "t1") is None
+
+    def test_finds_only_row(self, tmp_path):
+        f = tmp_path / "one.jsonl"
+        f.write_text(json.dumps({"task_id": "t1", "score": 42}) + "\n")
+        rec = find_record_by_task_id(f, "t1")
+        assert rec is not None and rec["score"] == 42
+
+    def test_finds_row_with_no_trailing_newline(self, tmp_path):
+        f = tmp_path / "nolf.jsonl"
+        f.write_bytes(json.dumps({"task_id": "t1", "score": 7}).encode())
+        rec = find_record_by_task_id(f, "t1")
+        assert rec is not None and rec["score"] == 7
+
+    def test_finds_when_several_later_rows_follow(self, tmp_path):
+        f = tmp_path / "many.jsonl"
+        with f.open("w") as fh:
+            fh.write(json.dumps({"task_id": "target", "score": 99}) + "\n")
+            for i in range(50):
+                fh.write(json.dumps({"task_id": f"later{i}", "score": i}) + "\n")
+        rec = find_record_by_task_id(f, "target")
+        assert rec is not None and rec["score"] == 99
+
+    def test_returns_newest_match_when_task_id_repeats(self, tmp_path):
+        f = tmp_path / "dup.jsonl"
+        f.write_text(
+            json.dumps({"task_id": "t1", "score": 1}) + "\n" + json.dumps({"task_id": "t1", "score": 2}) + "\n"
+        )
+        rec = find_record_by_task_id(f, "t1")
+        assert rec is not None and rec["score"] == 2
+
+    def test_finds_row_larger_than_one_megabyte(self, tmp_path):
+        """A ~2.5 MB perf-stat row is found even though a 1 MB window never held it."""
+        f = tmp_path / "huge.jsonl"
+        big = {"task_id": "t1", "score": 5, "data": {"cpu_stacks_main": "x" * (2_500_000)}}
+        f.write_bytes((json.dumps(big) + "\n").encode())
+        rec = find_record_by_task_id(f, "t1")
+        assert rec is not None and rec["score"] == 5
+        assert len(rec["data"]["cpu_stacks_main"]) == 2_500_000
+
+    def test_returns_none_when_match_lies_beyond_byte_cap(self, tmp_path):
+        f = tmp_path / "capped.jsonl"
+        with f.open("w") as fh:
+            fh.write(json.dumps({"task_id": "old", "score": 1}) + "\n")
+            # Push the "old" row well outside a tiny byte cap with filler rows.
+            for i in range(200):
+                fh.write(json.dumps({"task_id": f"new{i}", "pad": "y" * 100}) + "\n")
+        assert find_record_by_task_id(f, "old", max_bytes=2048) is None
+
+    def test_row_straddling_chunk_boundary_is_reassembled(self, tmp_path):
+        f = tmp_path / "straddle.jsonl"
+        # Row well larger than the tiny chunk size, plus later rows, forces the
+        # target to span multiple reverse-read chunks.
+        target = {"task_id": "t1", "pad": "z" * 500}
+        with f.open("w") as fh:
+            fh.write(json.dumps(target) + "\n")
+            for i in range(10):
+                fh.write(json.dumps({"task_id": f"n{i}", "pad": "w" * 50}) + "\n")
+        rec = find_record_by_task_id(f, "t1", chunk_size=16)
+        assert rec is not None and rec["pad"] == "z" * 500
+
+    def test_zero_chunk_size_rejected(self, tmp_path):
+        f = tmp_path / "x.jsonl"
+        f.write_text(json.dumps({"task_id": "t1"}) + "\n")
+        with pytest.raises(ValueError, match="chunk_size"):
+            find_record_by_task_id(f, "t1", chunk_size=0)
+
+    def test_skips_non_json_lines(self, tmp_path):
+        f = tmp_path / "mixed.jsonl"
+        f.write_text("not json\n" + json.dumps({"task_id": "t1", "score": 3}) + "\ngarbage\n")
+        rec = find_record_by_task_id(f, "t1")
+        assert rec is not None and rec["score"] == 3

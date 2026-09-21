@@ -220,3 +220,117 @@ def test_recovered_result_is_staged_before_queue_removal(tmp_path, monkeypatch):
         restarted.reconcile(queue)
     assert queue.has_task(task.task_id)
     assert restarted.journal.active["stage"] == "accepted"
+
+
+def _rich_result(task_id):
+    """A v3-cachecannon-shaped row: rich stats plus large excludable fields."""
+    return {
+        "task_id": task_id,
+        "method": "cachecannon",
+        "score": 5_663_000,
+        "commit_hash": "abc123",
+        "end_time": "2026.09.21_00.01.00.000000",
+        "cv": 0.0123,
+        "reps": 5,
+        "score_min": 5_600_000,
+        "score_max": 5_720_000,
+        "score_aggregate": 5_663_000,
+        "runner_id": "armbench",
+        "platform": "AWS Graviton 3",
+        "data": {
+            "per_run_rps": [5.6e6, 5.7e6, 5.66e6],
+            "mean_rps": 5_663_000,
+            "ci_95": [5.61e6, 5.71e6],
+            "client_cpu": {"cores_busy_per_rep": [7.9], "saturated": False},
+            "perf_counters": {"cycles_per_req": 12.3},
+            "perf_counters_scope": "user+kernel",
+            "perf_duration_seconds": 30,
+            "perf_rep_count": 5,
+            "latency": {"p99_us": 220},
+            "io-threads": 7,
+            "connections": 512,
+            # Large fields that MUST NOT be published:
+            "cpu_stacks_main": "x" * 1_200_000,
+            "cpu_stacks_io": "y" * 1_000_000,
+            "toml_config": "z" * 5_000,
+            "lscpu": "l" * 5_000,
+            "per_rep_results": [{"big": "q" * 1000}],
+            "topology": {"nodes": 2},
+            "cachecannon_binary": "/opt/bin/cachecannon",
+        },
+    }
+
+
+def test_success_summary_carries_stats_and_excludes_large_fields(tmp_path):
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+
+    mailbox.stage_success(task, result=_rich_result(task.task_id))
+    queue.finish_task(task)
+    assert mailbox.flush_pending_outcome() is True
+
+    published = client.outcomes[0][1]["result"]
+    # Top-level stats now published (#185/#238 fields):
+    assert published["cv"] == 0.0123
+    assert published["reps"] == 5
+    assert published["score_min"] == 5_600_000
+    assert published["score_max"] == 5_720_000
+    assert published["score_aggregate"] == 5_663_000
+    # Bounded data allowlist present:
+    data = published["data"]
+    assert data["mean_rps"] == 5_663_000
+    assert data["perf_counters_scope"] == "user+kernel"
+    assert data["client_cpu"]["saturated"] is False
+    assert data["io-threads"] == 7
+    # Large / excluded fields never travel to the control plane:
+    for banned in (
+        "cpu_stacks_main",
+        "cpu_stacks_io",
+        "toml_config",
+        "lscpu",
+        "per_rep_results",
+        "topology",
+        "cachecannon_binary",
+    ):
+        assert banned not in data
+    # And the published outcome stays small.
+    assert len(json.dumps(client.outcomes[0][1])) < 100_000
+
+
+def test_restart_finds_multi_megabyte_result_row(tmp_path):
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+
+    # A ~2.5 MB perf-stat row: no fixed 1 MB window could hold it whole.
+    output = tmp_path / "output.jsonl"
+    row = _rich_result(task.task_id)
+    row["data"]["cpu_stacks_main"] = "x" * 2_500_000
+    output.write_text(json.dumps(row) + "\n")
+
+    restarted = make_mailbox(tmp_path, client)
+    assert restarted.reconcile(queue) is None
+    assert not queue.has_task(task.task_id)
+    published = client.outcomes[0][1]["result"]
+    assert published["score"] == 5_663_000
+    assert published["cv"] == 0.0123
+    assert "cpu_stacks_main" not in published.get("data", {})
+
+
+def test_find_failure_locates_large_failure_row(tmp_path):
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+
+    failed = tmp_path / "failed.jsonl"
+    failed.write_text(json.dumps({"task_id": task.task_id, "error": "boom", "pad": "p" * 1_500_000}) + "\n")
+
+    restarted = make_mailbox(tmp_path, client)
+    assert restarted.reconcile(queue) is None
+    assert not queue.has_task(task.task_id)
+    assert client.outcomes[0][1]["state"] == "failed"
+    assert client.outcomes[0][1]["error"] == "boom"

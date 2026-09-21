@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +11,7 @@ from .config import CONDUCTRESS_FAILED_LOG, CONDUCTRESS_OUTPUT
 from .delivery_journal import DeliveryJournal
 from .fleet_client import FleetClient, FleetClientError
 from .runner_identity import get_runner_config
+from .tail_reader import find_record_by_task_id
 from .task_queue import BaseTaskData, TaskQueue
 
 
@@ -167,27 +167,75 @@ class RunnerMailbox:
         self.journal.update_stats(last_poll_result="claimed")
         return self.reconcile(queue)
 
+    # Top-level result keys always published to the control plane.
+    _RESULT_SUMMARY_KEYS = (
+        "task_id",
+        "method",
+        "score",
+        "commit_hash",
+        "end_time",
+        "note",
+        "expected_duration_sec",
+        "observed_duration_sec",
+        "provenance_schema_version",
+        "runner_id",
+        "platform",
+        "environment",
+        # Added by #185/#238: dispersion and per-rep aggregate stats. Present on
+        # fixed-rep and adaptive cells alike; previously dropped so remote show
+        # rendered a bare score.
+        "cv",
+        "reps",
+        "score_min",
+        "score_max",
+        "score_aggregate",
+    )
+
+    # Small allowlist of keys copied out of the row's ``data`` sub-dict. The
+    # outcome travels to the control plane over HTTP and is stored per task, so
+    # this MUST stay well under ~100 KB: the large flamegraph stacks
+    # (cpu_stacks_main/cpu_stacks_io), toml_config, lscpu, per_rep_results,
+    # topology and cachecannon_binary are deliberately EXCLUDED.
+    _RESULT_DATA_KEYS = (
+        "per_run_rps",
+        "mean_rps",
+        "ci_95",
+        "client_cpu",
+        "score_aggregate",
+        "score_min",
+        "score_max",
+        "perf_counters",
+        "perf_counters_scope",
+        "perf_duration_seconds",
+        "perf_rep_count",
+        "latency",
+        "latency_get",
+        "latency_set",
+        "connections",
+        "pipeline",
+        "threads",
+        "io-threads",
+        "size",
+        "keyspace_count",
+        "repetitions",
+        "warmup",
+        "duration",
+    )
+
+    @classmethod
+    def _summarize_result(cls, result: dict[str, Any]) -> dict[str, Any]:
+        summary = {key: result.get(key) for key in cls._RESULT_SUMMARY_KEYS if result.get(key) is not None}
+        raw_data = result.get("data")
+        if isinstance(raw_data, dict):
+            data_summary = {key: raw_data.get(key) for key in cls._RESULT_DATA_KEYS if raw_data.get(key) is not None}
+            if data_summary:
+                summary["data"] = data_summary
+        return summary
+
     def stage_success(self, task: BaseTaskData, *, result: Optional[dict[str, Any]] = None) -> None:
         self._require_active(task.task_id)
         result = result or self._find_result(task.task_id) or {"task_id": task.task_id}
-        summary = {
-            key: result.get(key)
-            for key in (
-                "task_id",
-                "method",
-                "score",
-                "commit_hash",
-                "end_time",
-                "note",
-                "expected_duration_sec",
-                "observed_duration_sec",
-                "provenance_schema_version",
-                "runner_id",
-                "platform",
-                "environment",
-            )
-            if result.get(key) is not None
-        }
+        summary = self._summarize_result(result)
         outcome = {
             "schema_version": 1,
             "task_id": task.task_id,
@@ -259,42 +307,9 @@ class RunnerMailbox:
         return active
 
     @staticmethod
-    def _recent_lines(path: Path, max_bytes: int = 1024 * 1024) -> list[str]:
-        if not path.exists():
-            return []
-        with path.open("rb") as stream:
-            stream.seek(0, 2)
-            end = stream.tell()
-            start = max(0, end - max_bytes)
-            stream.seek(start)
-            data = stream.read()
-        lines = data.splitlines()
-        if start > 0 and lines:
-            lines = lines[1:]
-        return [line.decode("utf-8", errors="replace") for line in lines]
-
-    @staticmethod
     def _find_result(task_id: str) -> Optional[dict[str, Any]]:
-        if not CONDUCTRESS_OUTPUT.exists():
-            return None
-        for line in reversed(RunnerMailbox._recent_lines(CONDUCTRESS_OUTPUT)):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("task_id") == task_id:
-                return record
-        return None
+        return find_record_by_task_id(CONDUCTRESS_OUTPUT, task_id)
 
     @staticmethod
     def _find_failure(task_id: str) -> Optional[dict[str, Any]]:
-        if not CONDUCTRESS_FAILED_LOG.exists():
-            return None
-        for line in reversed(RunnerMailbox._recent_lines(CONDUCTRESS_FAILED_LOG)):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("task_id") == task_id:
-                return record
-        return None
+        return find_record_by_task_id(CONDUCTRESS_FAILED_LOG, task_id)
