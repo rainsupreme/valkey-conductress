@@ -20,6 +20,34 @@ Runners talk to the control service only between jobs. Between one task finishin
 
 Details: [Fleet-aware CLI](docs/fleet-cli.md) for the operator side, [Fleet control service](docs/control-service.md) for deploying the service, and [Runner fleet mailbox](docs/runner-mailbox.md) for how a runner claims and reports work.
 
+A fleet's sweep results can be published as static JSON series and browsed with the [Valkey performance dashboard](https://github.com/valkey-rainfall/valkey-perf-dashboard), a separate repository. A [live instance](https://valkey-rainfall.github.io/valkey-perf-dashboard/) tracks the Valkey `unstable` branch across several hardware platforms.
+
+## Runner requirements
+
+A runner is a dedicated Linux machine. `conductress setup` installs everything it can; the properties below belong to the machine itself and have to be chosen before provisioning.
+
+**Operating system.** Amazon Linux 2023, Red Hat Enterprise Linux 9, or Ubuntu (setup picks the package list from `/etc/os-release`), running systemd, with passwordless `sudo`. Setup raises the open-file limit to 1,048,576, enables io_uring where the distribution ships it disabled, installs the C build toolchain for Valkey, and installs Rust to build the cachecannon load generator.
+
+**Hardware performance counters.** The sweep's per-request hardware counter columns and the perf-instrumented tasks count `cycles`, `instructions`, `L1-dcache-load-misses`, `branch-misses`, and `stalled-cycles-frontend` per server thread with `perf stat` (plus top-down groups on x86), and the `--cpu-profile` options sample stacks with `perf record`. Both need the CPU's performance monitoring unit exposed to the operating system. Bare metal exposes it fully. On a virtual machine the hypervisor decides: cloud instances that own a whole socket generally expose the full set, smaller sizes of recent generations expose a reduced set, and older or small instances expose none, in which case those columns read `<not supported>` and only software events such as `context-switches` count. Check before provisioning:
+
+```bash
+perf stat -e cycles,instructions,L1-dcache-load-misses,branch-misses -- sleep 1
+```
+
+Throughput, latency, memory, and replica-read scores do not depend on the counters; only the hardware counter columns and CPU profiles do.
+
+**Cores.** Every measured thread gets a core of its own. The runner pins the server's main thread and each I/O thread to one core, confines each load generator to its own core set, and keeps one core for itself (`RUNNER_MANAGEMENT_CPUS`). Allocation fails with `Insufficient CPUs` instead of oversubscribing. Core budgets at the default task shapes, with the server on the runner itself:
+
+| Task at its defaults | Server | Generators | Runner | Cores |
+|---|---|---|---|---|
+| GET, SET, or mixed throughput: `--io-threads 7`, 8 client threads | 7 | 8 | 1 | 16 |
+| Same shape at pipeline depth 1 with 16 client threads | 7 | 16 | 1 | 24 |
+| Replica-read: primary and replica at `--io-threads 8`, 8 reader and 4 writer threads | 16 | 12 | 1 | 29 |
+
+Count physical cores. The allocator packs a server into as few L3 cache groups as it can, so on a chiplet CPU the server needs a whole cache group free, not the same number of cores scattered across the package. A remote server target in `servers.json` moves the server column onto that host. The memory-efficiency task adapts, running as many server instances in parallel as the cores allow, up to nine. In practice, 32 physical cores run every task at its defaults on one machine, and 16 cover the throughput sweeps.
+
+**Nothing else running.** A measurement is only as quiet as the host. The replica-read task samples every core during the scored window and reports a `host` verdict, rather than `server`, when a claimed core saw work from outside the benchmark; other tasks have no such check, and interference there shows up as run-to-run variance. Periodic timers, monitoring agents, and unattended package updates all count as interference on a runner.
+
 ## Installation
 
 Conductress installs as a Python package and exposes two console scripts, `conductress` and `conductress-control`.
@@ -39,7 +67,7 @@ Requires Python 3.9 or newer. The `control` extra pulls in the fleet control ser
 1. **Install** as above, inside an activated virtualenv.
 2. **Configure the runner.** Copy `runner.default.json` to the ignored local `runner.json` and set a stable `runner_id` for this installation.
 3. **Configure servers (optional).** Copy `servers.default.json` to `servers.json` to add remote server targets. Without it, localhost is used. For remote servers, place an SSH key at `server-keyfile.pem` in the project root.
-4. **Provision the runner.** This step turns the machine into a benchmark runner: it uses `sudo` to upgrade and install system packages, raises file-descriptor limits, enables io_uring, builds the load generators, and installs a systemd service, on this host and on every host in `servers.json`. Skip it if you only want to work on the code or run the tests.
+4. **Provision the runner.** Check [Runner requirements](#runner-requirements) first. This step turns the machine into a benchmark runner: it uses `sudo` to upgrade and install system packages, raises file-descriptor limits, enables io_uring, builds the load generators, and installs a systemd service, on this host and on every host in `servers.json`. Skip it if you only want to work on the code or run the tests.
    ```bash
    conductress setup
    ```
