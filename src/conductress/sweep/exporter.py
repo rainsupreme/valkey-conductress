@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from conductress.config import ANNOTATION_THRESHOLD
 from conductress.heap_profiler import recategorize_from_stacks
@@ -871,6 +871,7 @@ def export_cpu_stacks_raw(
     workload: str,
     repo: str = "valkey-io/valkey",
     branch: str = "unstable",
+    already_published: Optional[Callable[[str], bool]] = None,
 ) -> dict[str, int]:
     """Export raw per-commit CPU collapsed stacks for future flamegraph drill-down.
 
@@ -892,7 +893,11 @@ def export_cpu_stacks_raw(
 
     Forward-only/sparse: points without stacks are skipped. Idempotent: per-commit
     files that already exist are not rewritten (raw IO arrays are multi-MB, so
-    re-serializing the full history every publish would be wasteful). The index is
+    re-serializing the full history every publish would be wasteful). A caller
+    that exports into a fresh staging directory passes ``already_published``,
+    a predicate on the file name that says whether the final destination
+    already holds the file; without it a staged export would regenerate every
+    file every time, since the staging directory is always empty. The index is
     always rebuilt from the points that have stacks.
 
     Returns ``{"files_written": n, "indexed": m}``.
@@ -915,8 +920,11 @@ def export_cpu_stacks_raw(
 
         filename = f"series-{platform}-{workload}-cpu-stacks-{point.commit}.json"
         file_path = output_dir / filename
-        # Idempotent: raw IO arrays are multi-MB; never rewrite an existing file.
+        # Idempotent: raw IO arrays are multi-MB; never rewrite an existing file,
+        # here or at the final destination the caller publishes from.
         if file_path.exists():
+            continue
+        if already_published is not None and already_published(filename):
             continue
 
         metadata: dict[str, Any] = {
