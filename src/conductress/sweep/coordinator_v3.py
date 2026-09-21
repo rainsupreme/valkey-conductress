@@ -237,12 +237,56 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         point.score_max = smax
         self.state.save(self.state_file)
 
+    def _record_client_cpu(self, task: BaseTaskData) -> None:
+        """Copy the load-generator CPU utilization onto this task's point.
+
+        The result row's ``data.client_cpu`` block (built by
+        ``utility.summarize_client_cpu``) reports the generator process tree's
+        cores kept busy per rep, its allocated core budget, and -- when the
+        budget is known -- utilization and a saturation flag.  Lifting the block
+        onto the point lets the published series say whether a point measured the
+        server or the client.  ``client_cores_busy`` is the max over reps of
+        cores kept busy, matching how ``summarize_client_cpu`` defines
+        utilization.  A row without a ``client_cpu`` block (a cell queued before
+        the field existed) leaves the point untouched.
+
+        A saturated point is logged at WARNING: it is the runner-side signal
+        that a series line is measuring the load generator rather than the
+        server.
+        """
+        entry = self._find_task_entry(task)
+        if not entry:
+            return
+        commit = getattr(task, "sweep_commit", "")
+        point = self.state.points.get(commit) if commit else None
+        if point is None:
+            return
+        client_cpu = entry.get("data", {}).get("client_cpu")
+        if not client_cpu:
+            return
+        cores_busy_per_rep = client_cpu.get("cores_busy_per_rep") or []
+        point.client_cores_busy = max(cores_busy_per_rep) if cores_busy_per_rep else None
+        point.client_allocated_cores = client_cpu.get("allocated_cores")
+        point.client_utilization = client_cpu.get("utilization")
+        point.client_saturated = client_cpu.get("saturated")
+        self.state.save(self.state_file)
+        if point.client_saturated:
+            logger.warning(
+                "%s %s measured a saturated client: utilization %s of %s allocated cores; "
+                "the throughput reflects the load generator's capacity, not the server's",
+                self.workload_id,
+                commit[:8],
+                point.client_utilization,
+                point.client_allocated_cores,
+            )
+
     def on_task_completed(self, task: BaseTaskData) -> None:
         """Record the result as the base does, then lift the score spread.
 
         ``super().on_task_completed`` records value/cv/reps, perf counters and
-        CPU stacks; the score min/max are the only v3-specific point fields, and
-        they are set afterward so a point exists to attach them to.
+        CPU stacks; the score min/max and the load-generator CPU utilization are
+        the v3-specific point fields, and they are set afterward so a point
+        exists to attach them to.
 
         Before any of that, the completed task's workload shape is checked
         against this coordinator's identity.  ``_is_my_task`` already gates on
@@ -271,6 +315,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             return
         super().on_task_completed(task)
         self._record_score_bounds(task)
+        self._record_client_cpu(task)
 
     def _extract_cpu_stacks(self, task: BaseTaskData) -> None:
         entry = self._find_task_entry(task)

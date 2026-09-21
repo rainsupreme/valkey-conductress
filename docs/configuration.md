@@ -106,6 +106,18 @@ export also records each series' client budget — `connections` and
 `client_threads` — in the series `metadata`, so a reader can tell the 16-thread
 P1 line apart from the 8-thread P10 lines.
 
+Every v3 point also carries the load generator's CPU utilization, lifted from
+the result row's `client_cpu` block, and the export publishes it beside the
+score: `client_utilization` (peak cores busy over the point's reps divided by
+the generator's allocated cores), `client_saturated`, `client_cores_busy` (the
+peak cores-busy value itself) and `client_allocated_cores`. `client_saturated`
+is true when the generator ran at or above 90% of its allocated cores
+(`CLIENT_CPU_SATURATION_THRESHOLD`): a saturated point measured the *client's*
+capacity, not the server's, so a saturated point on an otherwise flat line is
+the signal that the load generator, not the server, was the binding constraint.
+The keys are omitted (never exported as null) on v1 series and on points
+recorded before the fields existed.
+
 Two series rules follow from the epoch definition:
 
 - A series that needs no load generator belongs to every epoch. Memory

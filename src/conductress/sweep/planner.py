@@ -55,6 +55,17 @@ class BenchmarkPoint:
     # points recorded before the fields existed.
     score_min: Optional[float] = None
     score_max: Optional[float] = None
+    # Load-generator (client) CPU utilization behind ``value``.  Populated for
+    # cachecannon v3 points from the result row's ``client_cpu`` block so the
+    # published series can say whether a point measured the server or the load
+    # generator; None on every other series and on points recorded before the
+    # fields existed.  ``client_saturated`` is true when the generator ran at or
+    # above CLIENT_CPU_SATURATION_THRESHOLD of its allocated cores, i.e. the
+    # measured throughput reflects the client's capacity, not the server's.
+    client_cores_busy: Optional[float] = None
+    client_allocated_cores: Optional[int] = None
+    client_utilization: Optional[float] = None
+    client_saturated: Optional[bool] = None
     pr: Optional[int] = None
     pr_title: Optional[str] = None
     perf_counters: Optional[dict[str, int]] = None  # raw perf stat counters (process-wide)
@@ -218,6 +229,10 @@ class SweepState:
                     "reps": p.reps,
                     "score_min": p.score_min,
                     "score_max": p.score_max,
+                    "client_cores_busy": p.client_cores_busy,
+                    "client_allocated_cores": p.client_allocated_cores,
+                    "client_utilization": p.client_utilization,
+                    "client_saturated": p.client_saturated,
                     "pr": p.pr,
                     "pr_title": p.pr_title,
                     "perf_counters": p.perf_counters,
@@ -278,6 +293,10 @@ class SweepState:
                 reps=p_data.get("reps", 3),
                 score_min=p_data.get("score_min"),
                 score_max=p_data.get("score_max"),
+                client_cores_busy=p_data.get("client_cores_busy"),
+                client_allocated_cores=p_data.get("client_allocated_cores"),
+                client_utilization=p_data.get("client_utilization"),
+                client_saturated=p_data.get("client_saturated"),
                 pr=p_data.get("pr"),
                 pr_title=p_data.get("pr_title"),
                 perf_counters=p_data.get("perf_counters"),

@@ -316,6 +316,19 @@ def export_series(
         if point.score_min is not None or point.score_max is not None:
             entry["results"][workload]["score_min"] = point.score_min
             entry["results"][workload]["score_max"] = point.score_max
+        # Load-generator CPU utilization behind the point.  Published so a reader
+        # can tell a server measurement from one that was bound by the client;
+        # a saturated point measured the generator, not the server.  Absent on
+        # v1 series (always None), so each key is omitted rather than exported
+        # as null.
+        if point.client_utilization is not None:
+            entry["results"][workload]["client_utilization"] = point.client_utilization
+        if point.client_saturated is not None:
+            entry["results"][workload]["client_saturated"] = point.client_saturated
+        if point.client_cores_busy is not None:
+            entry["results"][workload]["client_cores_busy"] = point.client_cores_busy
+        if point.client_allocated_cores is not None:
+            entry["results"][workload]["client_allocated_cores"] = point.client_allocated_cores
         pr = state.commit_prs.get(point.commit) or point.pr
         pr_title = state.commit_titles.get(point.commit)
         if pr is not None:
@@ -707,6 +720,18 @@ def export_latency(
             entry["actual_rps"] = point.latency_data.get("actual_rps")
             if point.latency_data.get("histogram") is not None:
                 entry["histogram"] = point.latency_data["histogram"]
+        # Load-generator CPU utilization behind the point, same as the v3
+        # throughput series.  A rate-held latency cell runs the client well
+        # under its budget, but the schema stays uniform across every v3 series;
+        # keys are omitted when None (v1 / legacy points), never exported null.
+        if point.client_utilization is not None:
+            entry["client_utilization"] = point.client_utilization
+        if point.client_saturated is not None:
+            entry["client_saturated"] = point.client_saturated
+        if point.client_cores_busy is not None:
+            entry["client_cores_busy"] = point.client_cores_busy
+        if point.client_allocated_cores is not None:
+            entry["client_allocated_cores"] = point.client_allocated_cores
         pr = state.commit_prs.get(point.commit) or point.pr
         pr_title = state.commit_titles.get(point.commit) or point.pr_title
         if pr is not None:
