@@ -61,7 +61,7 @@ generator-and-parameter identity produced a point. `v1` identifies the sweep
 driven by `valkey-benchmark`, Valkey's stock load generator; `v3` identifies the
 cachecannon-driven sweep.
 
-The v3 Valkey roster is six series, all at the v3 identity (400 connections, 8
+The v3 Valkey roster is seven series, all at the v3 identity (400 connections, 8
 client threads, 7 server io-threads, 3M uniform keys, 16-byte keys and values
 unless the series says otherwise):
 
@@ -97,6 +97,25 @@ unless the series says otherwise):
   for. A series floor overrides the engine floor for that one series.
 - **GET latency at P1** (`get-k16-v16-t7-p1-r100k`) — p99 at a fixed request
   rate (`SWEEP_V3_LATENCY_*`), lower is better.
+- **GET throughput at P10 over TLS** (`get-k16-v16-t7-p10-tls`) — the encrypted
+  read path. Same identity as the canonical GET series except the transport:
+  the server opens a TLS listener on `SWEEP_V3_TLS_PORT` with the bootstrap test
+  certificates (a CA plus a `127.0.0.1`/`localhost` server certificate,
+  generated once per runner by `bootstrap.ensure_tls_test_certs`) and cachecannon
+  connects over it (`[target] tls = true`, `tls_verify = true`,
+  `tls_hostname`/`tls_ca_file` pointed at the loopback address and that CA). The
+  plaintext port keeps serving the server's own housekeeping. A TLS cell needs a
+  `BUILD_TLS=yes` binary — Valkey compiles TLS out by default — so the task
+  appends `BUILD_TLS=yes` to the build's make arguments; the build cache is keyed
+  by the make arguments, so a TLS binary and a plaintext binary of the same
+  commit occupy distinct cache entries and neither is ever served to the other
+  transport. Like the large-value series it starts at
+  `SWEEP_V3_TLS_FLOOR_TAG` (`9.0.0`) rather than the fork point: it guards the
+  TLS path going forward without slowing the other six for two years of history.
+  A series floor overrides the engine floor for that one series; a comparison
+  engine measured at release-and-tip never reads it. The export records `tls` in
+  the series `metadata` so a reader can tell the TLS GET line apart from the
+  plaintext GET line.
 
 A cachecannon task chooses how the recorded score aggregates the per-rep series
 through `score_aggregate` (`mean`, the default, or `median`), and always records

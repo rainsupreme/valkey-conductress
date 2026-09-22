@@ -44,5 +44,6 @@
   "perf_stat_enabled": false,
   "info_sections": "",
   "score_metric": "throughput",
-  "score_aggregate": "mean"
+  "score_aggregate": "mean",
+  "tls": false
 }

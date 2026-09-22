@@ -263,6 +263,7 @@ def export_series(
     engine: Optional["SweepEngine"] = None,
     connections: Optional[int] = None,
     client_threads: Optional[int] = None,
+    tls: Optional[bool] = None,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -284,6 +285,10 @@ def export_series(
             ``metadata`` when provided.  The P1 GET series runs 16, the rest 8, and a
             series' client budget is part of its identity -- publishing it lets a reader
             tell the two client shapes apart.  None omits the key.
+        tls: Whether the series measured the encrypted (TLS) transport; recorded in
+            ``metadata`` when provided so a reader can tell the TLS GET line apart from
+            the plaintext GET line of the same shape.  None omits the key (legacy
+            callers and every non-TLS series).
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -391,6 +396,12 @@ def export_series(
         series["metadata"]["connections"] = connections
     if client_threads is not None:
         series["metadata"]["client_threads"] = client_threads
+    # The transport the series measured.  A TLS GET series and a plaintext GET
+    # series of the same shape publish under different workload labels, so this
+    # tells them apart on the dashboard.  None omits the key (every non-TLS
+    # series and legacy callers).
+    if tls is not None:
+        series["metadata"]["tls"] = tls
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))
