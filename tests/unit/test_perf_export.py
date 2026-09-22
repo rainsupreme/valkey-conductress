@@ -341,9 +341,14 @@ class TestKernelMetrics:
             export_manifest(tmp_path, platforms=["amd64"], workloads=[("get16b-t7-p10", "throughput")])
         data = json.loads((tmp_path / "manifest-amd64.json").read_text())
         groups = {g["id"]: g for g in data["groups"]}
-        assert groups["kernel"]["series"] == ["syscalls-per-req", "context-switches-per-sec"]
-        assert groups["kernel-main"]["series"] == ["syscalls-per-req-main", "context-switches-per-sec-main"]
-        assert groups["kernel-io"]["per_thread"] == "io"
+        assert groups["syscalls"]["series"] == ["syscalls-per-req"]
+        assert groups["context-switches"]["series"] == ["context-switches-per-sec"]
+        assert groups["syscalls-main"]["series"] == ["syscalls-per-req-main"]
+        assert groups["context-switches-main"]["series"] == ["context-switches-per-sec-main"]
+        assert groups["syscalls-io"]["per_thread"] == "io"
+        assert groups["context-switches-io"]["per_thread"] == "io"
+        # No longer a combined 'kernel' group; the two metrics live on their own charts.
+        assert "kernel" not in groups
         for metric_id in ("syscalls-per-req", "context-switches-per-sec"):
             assert metric_id in PERF_METRICS
 

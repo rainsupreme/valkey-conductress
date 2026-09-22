@@ -182,14 +182,22 @@ PERF_GROUPS: list[dict[str, Any]] = [
         "series": ["branch-mpki"],
         "y_axes": [{"id": "left", "label": "misses per 1K instructions", "series": ["branch-mpki"]}],
     },
+    # Kernel interaction, split into two single-metric groups so that each pairs
+    # cleanly main-vs-io side by side. Syscalls/request is per-request (cancels the
+    # rep factor, comparable across commits); context-switches/s is a per-second
+    # rate on a different scale — bundling the two on one dual-axis chart broke the
+    # visual main/io pairing, so they are now separate groups.
     {
-        "id": "kernel",
-        "title": "Kernel Interaction",
-        "series": ["syscalls-per-req", "context-switches-per-sec"],
-        "y_axes": [
-            {"id": "left", "label": "syscalls/request", "series": ["syscalls-per-req"]},
-            {"id": "right", "label": "context switches/s", "series": ["context-switches-per-sec"]},
-        ],
+        "id": "syscalls",
+        "title": "Syscalls",
+        "series": ["syscalls-per-req"],
+        "y_axes": [{"id": "left", "label": "syscalls/request", "series": ["syscalls-per-req"]}],
+    },
+    {
+        "id": "context-switches",
+        "title": "Context Switches",
+        "series": ["context-switches-per-sec"],
+        "y_axes": [{"id": "left", "label": "context switches/s", "series": ["context-switches-per-sec"]}],
     },
     {
         "id": "cpu-main",
@@ -209,7 +217,7 @@ PERF_GROUPS: list[dict[str, Any]] = [
 
 # Counter-based groups that can be split by thread (everything except the
 # cpu-main/cpu-io flamegraph groups, which are already thread-specific).
-_PER_THREAD_BASE_GROUP_IDS = ("efficiency", "cache", "pipeline", "tma", "branching", "kernel")
+_PER_THREAD_BASE_GROUP_IDS = ("efficiency", "cache", "pipeline", "tma", "branching", "syscalls", "context-switches")
 _PER_THREAD_SUFFIXES = (("-main", "Main Thread"), ("-io", "IO Threads"))
 
 
