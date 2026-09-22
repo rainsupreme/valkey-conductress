@@ -81,9 +81,12 @@ class TestExportArchivedEpoch:
         # The primary GET series is written under its legacy unqualified name.
         series = out_dir / "series-graviton4-get-k16-v16-t7-p10-throughput.json"
         assert series.exists()
-        # The v1 manifest keeps its legacy name and advertises v1 as available.
+        # The v1 manifest keeps its legacy name and advertises the same epoch
+        # list a live publish writes: live epochs first, then archived, each
+        # flagged, so the dashboard defaults to a live epoch from this file too.
         manifest = out_dir / "manifest-graviton4.json"
         assert manifest.exists()
         data = json.loads(manifest.read_text())
         assert data["epoch"] == "v1"
-        assert "v1" in [e["id"] for e in data["epochs"]]
+        assert [e["id"] for e in data["epochs"]] == ["v3", "v1"]
+        assert {e["id"]: e["archived"] for e in data["epochs"]} == {"v3": False, "v1": True}
