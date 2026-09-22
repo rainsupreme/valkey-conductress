@@ -193,7 +193,26 @@ def _env_epoch_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return items
 
 
-# Scheduling precedence between measurement epochs, highest priority first.
+# Archived measurement epochs: their history keeps rendering on the dashboard,
+# but the runner builds no coordinator for them, loads none of their state, and
+# never schedules them.  v1 is archived: its state files are 1.2-1.5 GB each
+# (points embed perf stacks) and loading all of them at every runner start cost
+# 6-7 GB of resident memory for data that never changes again.  The already
+# exported v1 dashboard files persist in the publish export dir (see
+# PUBLISH_EXPORT_DIR) and are re-synced as-is, and the publisher advertises an
+# archived epoch in every manifest so the dashboard's epoch selector keeps
+# offering v1 history.  A one-time `conductress sweep export-archived --epoch v1`
+# regenerates those files on a runner whose export dir was wiped, without the
+# service ever paying the load cost.  Override with CONDUCTRESS_SWEEP_ARCHIVED_EPOCHS.
+SWEEP_ARCHIVED_EPOCHS = _env_epoch_list("CONDUCTRESS_SWEEP_ARCHIVED_EPOCHS", ("v1",))
+
+
+def epoch_is_archived(epoch_id: str) -> bool:
+    """Whether an epoch is archived (renders history, never builds/loads/schedules)."""
+    return epoch_id in SWEEP_ARCHIVED_EPOCHS
+
+
+# Scheduling precedence between LIVE measurement epochs, highest priority first.
 #
 # Before this existed, a newly added epoch outranked (or was outranked by) the
 # legacy coordinators purely as a side effect of the order in which TaskRunner
@@ -202,14 +221,29 @@ def _env_epoch_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 #
 # It matters because NIGHTLY (untested HEAD) has absolute priority and returns on
 # the FIRST matching coordinator, so whichever epoch is scanned first measures
-# each new HEAD first.  With "v3" ahead of "v1", v3 becomes the primary epoch and
-# v1 continues to run one cell later per HEAD -- deprioritized, not paused, so no
-# v1 coverage is lost.
+# each new HEAD first.  v3 is the only live epoch, so it measures every HEAD; v1
+# is archived and no longer scheduled at all.
 #
 # Epochs absent from this list are scanned after every listed epoch, preserving
 # their existing relative order.  Override without a deploy via
-# CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE (e.g. "v1,v3" restores v1-first).
-SWEEP_EPOCH_PRECEDENCE = _env_epoch_list("CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE", ("v3", "v1"))
+# CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE.  An archived epoch listed here is dropped
+# with a log line rather than scheduled -- an archived epoch has no coordinators
+# to order, so a stale "v3,v1" override cannot resurrect v1 scheduling.
+def _resolve_epoch_precedence(raw: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop archived epochs from a precedence list, logging any that were dropped."""
+    live = tuple(e for e in raw if not epoch_is_archived(e))
+    dropped = tuple(e for e in raw if epoch_is_archived(e))
+    if dropped:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Ignoring archived epoch(s) %s in sweep precedence; archived epochs are not scheduled",
+            ", ".join(dropped),
+        )
+    return live
+
+
+SWEEP_EPOCH_PRECEDENCE = _resolve_epoch_precedence(_env_epoch_list("CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE", ("v3",)))
 
 # ---------------------------------------------------------------------------
 # cachecannon-v3 sweep protocol
@@ -297,8 +331,10 @@ SWEEP_V3_LARGE_VALUE_FLOOR_TAG = "9.0.0"
 # from the server's own INFO after Conductress fills it through its populator;
 # no load generator is involved, so one memory series is valid in every epoch
 # and is published under each of these.  The first entry is the epoch the
-# series schedules and pauses under.
-SWEEP_GENERATOR_INDEPENDENT_EPOCHS: tuple[str, ...] = ("v3", "v1")
+# series schedules and pauses under.  v1 is archived, so memory now publishes
+# only under v3; the v1-named memory files already on the data server stay as
+# archived copies (preserved by the publish export dir, see PUBLISH_EXPORT_DIR).
+SWEEP_GENERATOR_INDEPENDENT_EPOCHS: tuple[str, ...] = ("v3",)
 
 # Epoch-1 series that a v3 series has replaced.  A retired series keeps
 # publishing the history it already holds but never queues another task, so

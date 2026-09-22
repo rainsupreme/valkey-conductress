@@ -111,6 +111,30 @@ def main() -> None:
     )
     sweep_sub.add_parser("status", help="Show sweep progress summary")
 
+    export_archived_parser = sweep_sub.add_parser(
+        "export-archived",
+        help="One-time: load an archived epoch's state files, export its dashboard files to the "
+        "persistent publish export dir, and exit. Run once on a runner whose export dir was wiped; "
+        "the runner service never loads archived state itself.",
+    )
+    export_archived_parser.add_argument(
+        "--epoch",
+        default="v1",
+        help="Archived epoch to regenerate (only 'v1' is supported)",
+    )
+    export_archived_parser.add_argument(
+        "--repo",
+        type=str,
+        default=None,
+        help="Path to valkey git repo (default: ~/valkey)",
+    )
+    export_archived_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to export into (default: the persistent publish export dir)",
+    )
+
     # Sweep control commands
     focus_parser = sweep_sub.add_parser("focus", help="Focus on a single workload (others paused)")
     focus_parser.add_argument(
@@ -437,6 +461,21 @@ def main() -> None:
                     print(f"Pushed to {repo_path}")
                 else:
                     print("No changes to push (data unchanged)")
+
+        elif args.sweep_command == "export-archived":
+            from conductress.sweep.archived_export import export_archived_epoch
+
+            repo_path = Path(args.repo) if getattr(args, "repo", None) else None
+            output_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else None
+            try:
+                written = export_archived_epoch(args.epoch, repo_path=repo_path, output_dir=output_dir)
+            except ValueError as exc:
+                print(f"error: {exc}")
+                sys.exit(2)
+            if written == 0:
+                print(f"No {args.epoch} state found; nothing exported.")
+                sys.exit(1)
+            print(f"Exported {written} {args.epoch} series to the publish export dir.")
 
         elif args.sweep_command == "status":
             state = SweepState.load(SWEEP_STATE_FILE)

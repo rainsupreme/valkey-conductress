@@ -79,31 +79,44 @@ class TaskRunner:
         if self._management_settle_seconds < 0:
             raise ValueError("management_settle_seconds must not be negative")
         if sweep:
-            from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_THROUGHPUT_WORKLOADS
+            from conductress.config import (
+                SWEEP_IO_THREADS,
+                SWEEP_PIPELINING,
+                SWEEP_THROUGHPUT_WORKLOADS,
+                epoch_is_archived,
+            )
             from conductress.platform import get_local_platform_tag
             from conductress.sweep.coordinator import SweepCoordinator
 
             if repo_path is None:
                 repo_path = Path.home() / "valkey"
-            coordinator = SweepCoordinator(repo_path)
-            coordinator.initialize()
-            self._subscribers.append(coordinator)
 
-            # Additional throughput workloads (e.g. 64B values, platform-optimal configs)
+            # v1 is an archived epoch: its history keeps publishing from files
+            # already on the data server, but the runner builds no v1
+            # coordinator and loads none of its 1.2-1.5 GB state files. Only the
+            # live epochs (v3) below are instantiated.
+            v1_archived = epoch_is_archived("v1")
+
             local_platform = get_local_platform_tag()
-            for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                platforms = wl.get("platforms")
-                if platforms and local_platform not in platforms:
-                    continue
-                extra = SweepCoordinator(
-                    repo_path,
-                    val_size=wl["val_size"],
-                    test=wl.get("test", "get"),
-                    io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
-                    pipelining=wl.get("pipelining", SWEEP_PIPELINING),
-                )
-                extra.initialize()
-                self._subscribers.append(extra)
+            if not v1_archived:
+                coordinator = SweepCoordinator(repo_path)
+                coordinator.initialize()
+                self._subscribers.append(coordinator)
+
+                # Additional throughput workloads (e.g. 64B values, platform-optimal configs)
+                for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                    platforms = wl.get("platforms")
+                    if platforms and local_platform not in platforms:
+                        continue
+                    extra = SweepCoordinator(
+                        repo_path,
+                        val_size=wl["val_size"],
+                        test=wl.get("test", "get"),
+                        io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                        pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                    )
+                    extra.initialize()
+                    self._subscribers.append(extra)
 
             # Additive v3 epoch: cachecannon is the canonical generator for
             # GET/SET/DELETE and mixed ratios. Isolated state under sweep_data/v3.
@@ -115,12 +128,16 @@ class TaskRunner:
                     v3_coordinator.initialize()
                     self._subscribers.append(v3_coordinator)
 
-            # Retired epoch-1 latency series: publishes its history, never schedules
-            from conductress.sweep.latency_coordinator import LatencySweepCoordinator
+            # Archived epoch-1 latency series: its history is published from the
+            # archived export files, so no coordinator is built when v1 is
+            # archived. When v1 is live it stays a retired coordinator that
+            # publishes but never schedules.
+            if not v1_archived:
+                from conductress.sweep.latency_coordinator import LatencySweepCoordinator
 
-            latency_coordinator = LatencySweepCoordinator(repo_path)
-            latency_coordinator.initialize()
-            self._subscribers.append(latency_coordinator)
+                latency_coordinator = LatencySweepCoordinator(repo_path)
+                latency_coordinator.initialize()
+                self._subscribers.append(latency_coordinator)
 
             # Memory sweep runs alongside throughput
             from conductress.sweep.memory_coordinator import create_memory_coordinators
@@ -130,9 +147,9 @@ class TaskRunner:
                 self._subscribers.append(mem_coordinator)
 
             # Additional engines (e.g. Redis) -- throughput + memory sweep.
-            # The epoch-1 throughput mirror is registered so its history keeps
-            # publishing; every one of those series is retired, so the engine's
-            # v3 coordinators are the only ones that still measure it.
+            # The epoch-1 throughput mirror publishes a comparison engine's v1
+            # history; when v1 is archived it is not built, exactly as the
+            # Valkey v1 coordinators above are not.
             from conductress.config import SWEEP_ENGINES
 
             for engine in SWEEP_ENGINES:
@@ -142,23 +159,24 @@ class TaskRunner:
                 if not engine_repo.exists():
                     logger.info("Skipping engine %s: repo %s not found", engine.source, engine_repo)
                     continue
-                engine_coord = SweepCoordinator(engine_repo, engine=engine)
-                engine_coord.initialize()
-                self._subscribers.append(engine_coord)
-                for wl in SWEEP_THROUGHPUT_WORKLOADS:
-                    platforms = wl.get("platforms")
-                    if platforms and local_platform not in platforms:
-                        continue
-                    extra = SweepCoordinator(
-                        engine_repo,
-                        val_size=wl["val_size"],
-                        test=wl.get("test", "get"),
-                        io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
-                        pipelining=wl.get("pipelining", SWEEP_PIPELINING),
-                        engine=engine,
-                    )
-                    extra.initialize()
-                    self._subscribers.append(extra)
+                if not v1_archived:
+                    engine_coord = SweepCoordinator(engine_repo, engine=engine)
+                    engine_coord.initialize()
+                    self._subscribers.append(engine_coord)
+                    for wl in SWEEP_THROUGHPUT_WORKLOADS:
+                        platforms = wl.get("platforms")
+                        if platforms and local_platform not in platforms:
+                            continue
+                        extra = SweepCoordinator(
+                            engine_repo,
+                            val_size=wl["val_size"],
+                            test=wl.get("test", "get"),
+                            io_threads=wl.get("io_threads", SWEEP_IO_THREADS),
+                            pipelining=wl.get("pipelining", SWEEP_PIPELINING),
+                            engine=engine,
+                        )
+                        extra.initialize()
+                        self._subscribers.append(extra)
                 if SWEEP_V3_ENABLED:
                     for v3_coordinator in create_v3_coordinators(engine_repo, engine=engine):
                         v3_coordinator.initialize()
