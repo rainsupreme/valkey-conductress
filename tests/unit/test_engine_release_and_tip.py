@@ -180,7 +180,7 @@ class TestRedisV3Roster:
             with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
                 return create_v3_coordinators(tmp_path, engine=REDIS)
 
-    def test_same_six_series_under_the_engine_prefix(self, roster):
+    def test_same_seven_series_under_the_engine_prefix(self, roster):
         assert [c.workload_id for c in roster] == [
             "redis-get-k16-v16-t7-p10",
             "redis-mixed-s20-k16-v16-t7-p10",
@@ -188,6 +188,7 @@ class TestRedisV3Roster:
             "redis-get-k16-v16-t7-p1",
             "redis-get-k16-v1024-t7-p10",
             "redis-get-k16-v16-t7-p1-r100k",
+            "redis-get-k16-v16-t7-p10-tls",
         ]
         assert all(c.epoch_id == "v3" for c in roster)
 
@@ -223,6 +224,7 @@ class TestRedisV3Roster:
             "get-k16-v16-t7-p1",
             "get-k16-v1024-t7-p10",
             "get-k16-v16-t7-p1-r100k",
+            "get-k16-v16-t7-p10-tls",
         ]
         assert all(c.planner.tracks_history for c in coords)
 

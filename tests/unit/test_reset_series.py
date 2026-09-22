@@ -52,6 +52,16 @@ class TestSeriesLabelAndPath:
         path = state_file_for("get-k16-v16-t7-p1", "redis", state_dir=tmp_path)
         assert path.name == "state_cachecannon-v3_redis-get-k16-v16-t7-p1.json"
 
+    def test_tls_series_state_file_name(self, tmp_path):
+        """reset-series must resolve the -tls label's state file, same as any other."""
+        path = state_file_for("get-k16-v16-t7-p10-tls", None, state_dir=tmp_path)
+        assert path.name == "state_cachecannon-v3_get-k16-v16-t7-p10-tls.json"
+
+    def test_tls_series_note_prefix_matches_only_its_own_cells(self):
+        """The TLS series' queued-task note prefix is distinct from the plaintext GET series."""
+        assert _note("get-k16-v16-t7-p10-tls").startswith("[cachecannon-sweep-v3:valkey/get-k16-v16-t7-p10-tls]")
+        assert not _note("get-k16-v16-t7-p10").startswith("[cachecannon-sweep-v3:valkey/get-k16-v16-t7-p10-tls]")
+
 
 class TestStateBackupAndDelete:
     def test_state_file_backed_up_then_deleted(self, tmp_path):

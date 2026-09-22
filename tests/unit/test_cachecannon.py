@@ -1,5 +1,11 @@
 """Unit tests for the cachecannon task type (second-opinion generator instrument)."""
 
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
 from conductress import config
 from conductress.tasks.task_cachecannon import (
     CachecannonTaskData,
@@ -101,6 +107,85 @@ def test_toml_humantime_and_schema_shape():
     assert isinstance(parsed["general"]["warmup"], str)
     assert parsed["general"]["warmup"] == "30s"
     assert parsed["timestamps"] == {"enabled": True, "mode": "userspace"}
+
+
+def _tomllib():
+    try:
+        import tomllib  # Python 3.11+
+
+        return tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # Python <3.11 (pytest dependency chain)
+
+        return tomllib
+
+
+def test_toml_plaintext_omits_all_tls_keys():
+    """The default (non-TLS) config carries no tls keys at all -- falsifies a
+    change that would leak tls into every cell."""
+    toml = generate_toml_config(
+        duration=30,
+        warmup=10,
+        threads=8,
+        cpu_list="",
+        endpoint="127.0.0.1:6379",
+        connections=400,
+        pipeline_depth=10,
+        keyspace_count=3_000_000,
+        val_size=16,
+        test="get",
+    )
+    parsed = _tomllib().loads(toml)
+    assert "tls" not in parsed["target"]
+    assert "tls_ca_file" not in parsed["target"]
+
+
+def test_toml_tls_emits_target_keys():
+    """With tls=True the [target] section carries the cachecannon TLS keys."""
+    toml = generate_toml_config(
+        duration=30,
+        warmup=10,
+        threads=8,
+        cpu_list="",
+        endpoint="127.0.0.1:16379",
+        connections=400,
+        pipeline_depth=10,
+        keyspace_count=3_000_000,
+        val_size=16,
+        test="get",
+        tls=True,
+        tls_hostname="127.0.0.1",
+        tls_ca_file="/home/user/conductress/tls/ca.crt",
+    )
+    parsed = _tomllib().loads(toml)
+    assert parsed["target"]["tls"] is True
+    assert parsed["target"]["tls_verify"] is True
+    assert parsed["target"]["tls_hostname"] == "127.0.0.1"
+    assert parsed["target"]["tls_ca_file"] == "/home/user/conductress/tls/ca.crt"
+    # The endpoint points at the TLS port; no client certificate is sent.
+    assert parsed["target"]["endpoints"] == ["127.0.0.1:16379"]
+    assert "tls_cert_file" not in parsed["target"]
+    assert "tls_key_file" not in parsed["target"]
+
+
+def test_toml_tls_requires_hostname_and_ca():
+    """tls without the verification inputs is rejected, not silently insecure."""
+    base = dict(
+        duration=30,
+        warmup=10,
+        threads=8,
+        cpu_list="",
+        endpoint="127.0.0.1:16379",
+        connections=400,
+        pipeline_depth=10,
+        keyspace_count=3_000_000,
+        val_size=16,
+        test="get",
+    )
+    with pytest.raises(ValueError, match="tls_hostname"):
+        generate_toml_config(**base, tls=True, tls_ca_file="/x/ca.crt")
+    with pytest.raises(ValueError, match="tls_ca_file"):
+        generate_toml_config(**base, tls=True, tls_hostname="127.0.0.1")
 
 
 def test_toml_generation_set_test():
@@ -460,6 +545,121 @@ def test_runner_construction():
     assert runner.test == "get"
     assert runner.val_size == 512
     assert runner.pipelining == 10
+
+
+def test_runner_plaintext_leaves_build_and_server_args_alone():
+    """A non-TLS cell touches neither make_args nor server_args -- falsifies a
+    change that would build TLS for every cell."""
+    import pytest
+
+    from conductress.config import ServerInfo
+
+    task = CachecannonTaskData(
+        source=_valid_source(),
+        specifier="abc123",
+        make_args="",
+        topology=TopologySpec.standalone(),
+        note="",
+        requirements={},
+        server_args="--io-threads 7",
+    )
+    assert task.tls is False
+    runner = task.prepare_task_runner([ServerInfo(ip="127.0.0.1")])
+    assert runner.tls is False
+    assert "BUILD_TLS" not in runner.make_args
+    assert "--tls-port" not in runner.server_args
+
+
+def test_runner_tls_appends_build_flag_and_listener_args():
+    """A TLS cell requests a BUILD_TLS=yes binary and opens a TLS listener with
+    the bootstrap test certs."""
+    from conductress.config import SWEEP_V3_TLS_PORT, TLS_CERT_DIR, ServerInfo
+
+    task = CachecannonTaskData(
+        source=_valid_source(),
+        specifier="abc123",
+        make_args="",
+        topology=TopologySpec.standalone(),
+        note="",
+        requirements={},
+        tls=True,
+    )
+    assert task.tls is True
+    runner = task.prepare_task_runner([ServerInfo(ip="127.0.0.1")])
+    assert runner.tls is True
+    # Distinct build-cache entry: BUILD_TLS is part of make_args, which the cache
+    # keys on, so a TLS binary never serves a plaintext cell.
+    assert "BUILD_TLS=yes" in runner.make_args
+    # The TLS listener is on the dedicated TLS port with the bootstrap certs.
+    assert f"--tls-port {SWEEP_V3_TLS_PORT}" in runner.server_args
+    assert f"--tls-cert-file {TLS_CERT_DIR}/server.crt" in runner.server_args
+    assert f"--tls-key-file {TLS_CERT_DIR}/server.key" in runner.server_args
+    assert f"--tls-ca-cert-file {TLS_CERT_DIR}/ca.crt" in runner.server_args
+    assert "--tls-auth-clients no" in runner.server_args
+    assert runner._tls_port == SWEEP_V3_TLS_PORT
+
+
+def test_runner_tls_does_not_double_append_build_flag():
+    """A make_args that already carries BUILD_TLS=yes is not duplicated."""
+    from conductress.config import ServerInfo
+
+    task = CachecannonTaskData(
+        source=_valid_source(),
+        specifier="abc123",
+        make_args="BUILD_TLS=yes",
+        topology=TopologySpec.standalone(),
+        note="",
+        requirements={},
+        tls=True,
+    )
+    runner = task.prepare_task_runner([ServerInfo(ip="127.0.0.1")])
+    assert runner.make_args.count("BUILD_TLS=yes") == 1
+
+
+def test_tls_is_a_real_dataclass_field_and_survives_roundtrip():
+    """tls must be a dataclass field: asdict() drops a dynamic attribute, so a
+    dynamic flag would deserialize False on the runner and run plaintext."""
+    import json
+    import os
+    import tempfile
+    from dataclasses import fields
+
+    from conductress.task_queue import BaseTaskData
+
+    assert "tls" in {f.name for f in fields(CachecannonTaskData)}
+
+    task = CachecannonTaskData(
+        source=_valid_source(),
+        specifier="abc123",
+        make_args="",
+        topology=TopologySpec.standalone(),
+        note="roundtrip",
+        requirements={},
+        tls=True,
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        task.save_to_file(Path(f.name))
+    reloaded = BaseTaskData.from_file(Path(f.name))
+    os.unlink(f.name)
+    assert isinstance(reloaded, CachecannonTaskData)
+    assert reloaded.tls is True
+
+    legacy = {
+        "source": _valid_source(),
+        "specifier": "abc123",
+        "replicas": 0,
+        "note": "queued before tls",
+        "requirements": {},
+        "make_args": "",
+        "task_type": "CachecannonTaskData",
+        "timestamp": "2026-08-29T00:00:00.123456",
+        "test": "get",
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        f.write(json.dumps(legacy))
+    legacy_task = BaseTaskData.from_file(Path(f.name))
+    os.unlink(f.name)
+    assert legacy_task.tls is False
 
 
 def test_workload_issues_gets_pure_get():

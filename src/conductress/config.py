@@ -327,6 +327,21 @@ SWEEP_V3_LATENCY_TARGET_CV = 2.0
 SWEEP_V3_LARGE_VAL_SIZE = 1024
 SWEEP_V3_LARGE_VALUE_FLOOR_TAG = "9.0.0"
 
+# v3 GET-over-TLS workload.  Same identity as the canonical GET series except
+# the transport: the server opens a TLS listener with the bootstrap test certs
+# and the generator connects over it, so the series measures the encrypted read
+# path (handshake amortized, per-request decrypt/encrypt) rather than the
+# plaintext ceiling.  The TLS listener is a SECOND port so the plaintext port
+# keeps serving the server's own housekeeping; the generator's endpoint is the
+# TLS port.  Like the large-value series it does not backfill the whole history:
+# its commit range starts at SWEEP_V3_TLS_FLOOR_TAG (the release that carries the
+# TLS behaviour worth tracking) rather than the fork point, so a seventh series
+# guards the TLS path going forward without slowing the other six for two years
+# of history.  A series floor overrides the engine floor for that one series; a
+# comparison engine measured at release-and-tip never reads it.
+SWEEP_V3_TLS_PORT = 16379  # server TLS listener; distinct from the plaintext primary and the 9000+ range
+SWEEP_V3_TLS_FLOOR_TAG = "9.0.0"
+
 # Epochs a generator-independent series belongs to.  Memory overhead is read
 # from the server's own INFO after Conductress fills it through its populator;
 # no load generator is involved, so one memory series is valid in every epoch

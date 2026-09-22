@@ -60,6 +60,7 @@ from conductress.config import (
     SWEEP_V3_REPETITIONS,
     SWEEP_V3_SET_RATIO,
     SWEEP_V3_TARGET_CV,
+    SWEEP_V3_TLS_FLOOR_TAG,
     SWEEP_V3_VAL_SIZE,
     SWEEP_V3_WARMUP,
 )
@@ -111,6 +112,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         repetitions: int = SWEEP_V3_REPETITIONS,
         max_reps: int = SWEEP_V3_MAX_REPS,
         target_cv: float = SWEEP_V3_TARGET_CV,
+        tls: bool = False,
         engine: Optional[config.SweepEngine] = None,
         floor_tag: Optional[str] = None,
     ):
@@ -128,6 +130,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         self._repetitions = repetitions
         self._max_reps = max_reps
         self._target_cv = target_cv
+        self._tls = tls
 
         engine_prefix = f"{engine.source}-" if engine and engine.source != "valkey" else ""
         self._label = f"{engine_prefix}{label}"
@@ -169,6 +172,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             rate_limit=self._rate_limit,
             score_metric=self._score_metric,
             score_aggregate=self._score_aggregate,
+            tls=self._tls,
             # Per-thread hardware counters every rep and a CPU flamegraph on the
             # last rep, as the v1 sweep has always collected. Counting-mode perf
             # stat costs well under 1% and is what feeds the dashboard's IPC,
@@ -345,6 +349,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             engine=self.engine,
             connections=self._connections,
             client_threads=self._threads,
+            tls=self._tls,
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
@@ -373,6 +378,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
             and task.distribution == self._distribution
             and task.rate_limit == self._rate_limit
             and task.score_metric == self._score_metric
+            and task.tls == self._tls
         )
 
     # The workload-shape fields that make up a series' identity.  A completed
@@ -388,6 +394,7 @@ class BaseCachecannonSweepCoordinatorV3(BaseSweepCoordinator):
         "io_threads",
         "test",
         "set_ratio",
+        "tls",
     )
 
     def _identity_mismatch(self, task: BaseTaskData) -> Optional[tuple[str, object, object]]:
@@ -420,12 +427,18 @@ class CachecannonThroughputSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3)
         threads: int = SWEEP_V3_CLIENT_THREADS,
         distribution: str = SWEEP_V3_DISTRIBUTION,
         score_aggregate: Literal["mean", "median"] = "mean",
+        tls: bool = False,
         engine: Optional[config.SweepEngine] = None,
         floor_tag: Optional[str] = None,
     ):
         label = f"{test}-k{SWEEP_KEY_SIZE}-v{val_size}-t{io_threads}-p{pipelining}"
         if distribution != SWEEP_V3_DISTRIBUTION:
             label += f"-{distribution}"
+        # The encrypted-transport series carries a -tls suffix so its label,
+        # state file and published series never collide with the plaintext GET
+        # series of the same shape.
+        if tls:
+            label += "-tls"
         super().__init__(
             repo_path,
             label=label,
@@ -438,6 +451,7 @@ class CachecannonThroughputSweepCoordinatorV3(BaseCachecannonSweepCoordinatorV3)
             threads=threads,
             distribution=distribution,
             score_aggregate=score_aggregate,
+            tls=tls,
             engine=engine,
             floor_tag=floor_tag,
         )
@@ -600,7 +614,7 @@ def create_v3_coordinators(
 ) -> list[BaseCachecannonSweepCoordinatorV3]:
     """Build the v3 coordinator roster for one engine.
 
-    Six series, all at the v3 identity (400c / io7 / 3M keys / 16B and 8 client
+    Seven series, all at the v3 identity (400c / io7 / 3M keys / 16B and 8 client
     threads unless the series says otherwise):
 
     * GET throughput at P10 -- the canonical pipelined-read ceiling.
@@ -624,15 +638,25 @@ def create_v3_coordinators(
     * GET latency at P1 at a fixed request rate -- p99, lower is better.  It
       stays at 8 client threads: rate-held at 100k/s, the client is under no
       pressure.
+    * GET throughput at P10 over TLS -- the encrypted read path.  Same identity
+      as the canonical GET series except the transport: the server opens a TLS
+      listener with the bootstrap test certificates and the generator connects
+      over it.  Like the large-value series it does not backfill the whole
+      history: its commit range starts at ``SWEEP_V3_TLS_FLOOR_TAG`` rather than
+      the fork point, so it guards the TLS path going forward without slowing
+      the other six.  A release-and-tip comparison engine does not read the
+      floor (a Valkey tag); its own engine floor stands.
 
-    A comparison engine (Redis) gets the same six series under its own prefix,
+    A comparison engine (Redis) gets the same seven series under its own prefix,
     so the engine comparison reads like-for-like cells; its ``scope`` decides
     how much of its history they measure and bounds the added cost.  A
-    release-and-tip engine measures only its latest release and its tip, so the
-    large-value floor tag (a Valkey tag) is not applied to it: its own engine
-    floor stands.
+    release-and-tip engine measures only its latest release and its tip, so a
+    series floor tag (a Valkey tag) is not applied to it: its own engine floor
+    stands.
     """
-    large_value_floor = SWEEP_V3_LARGE_VALUE_FLOOR_TAG if config.engine_tracks_history(engine) else None
+    history_floor = config.engine_tracks_history(engine)
+    large_value_floor = SWEEP_V3_LARGE_VALUE_FLOOR_TAG if history_floor else None
+    tls_floor = SWEEP_V3_TLS_FLOOR_TAG if history_floor else None
     return [
         CachecannonThroughputSweepCoordinatorV3(repo_path, engine=engine),
         CachecannonMixedSweepCoordinatorV3(repo_path, engine=engine),
@@ -649,4 +673,5 @@ def create_v3_coordinators(
             repo_path, test="get", val_size=SWEEP_V3_LARGE_VAL_SIZE, engine=engine, floor_tag=large_value_floor
         ),
         CachecannonLatencySweepCoordinatorV3(repo_path, engine=engine),
+        CachecannonThroughputSweepCoordinatorV3(repo_path, test="get", tls=True, engine=engine, floor_tag=tls_floor),
     ]

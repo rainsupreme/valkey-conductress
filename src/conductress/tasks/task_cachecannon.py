@@ -33,6 +33,8 @@ from conductress.config import (
     DEFAULT_WARMUP,
     PERF_BENCH_KEYSPACE,
     PERF_BENCH_THREADS,
+    SWEEP_V3_TLS_PORT,
+    TLS_CERT_DIR,
     ServerInfo,
     get_sweep_engine,
     should_profile_internals,
@@ -210,6 +212,17 @@ class CachecannonTaskData(BaseTaskData):
     # per-rep series regardless, so the two aggregates carry comparable spread.
     score_aggregate: Literal["mean", "median"] = "mean"
 
+    # Serve the workload over TLS.  When set, the server opens a TLS listener on
+    # SWEEP_V3_TLS_PORT with the bootstrap test certificates and cachecannon
+    # connects over it (endpoint pointed at the TLS port, [target] tls keys
+    # emitted), so the cell measures the encrypted read path.  It is a real
+    # dataclass field, not a dynamic attribute: the task is serialized through
+    # asdict(), which silently drops any attribute that is not a field, so a
+    # dynamic flag would deserialize to False on the runner and the cell would
+    # run plaintext.  A TLS cell also builds a BUILD_TLS=yes binary (a distinct
+    # build-cache entry, keyed by make_args); see the task runner.
+    tls: bool = False
+
     def __post_init__(self):
         super().__post_init__()
         self.warmup = int(self.warmup)
@@ -287,6 +300,7 @@ class CachecannonTaskData(BaseTaskData):
             info_sections=parse_info_sections(self.info_sections),
             score_metric=self.score_metric,
             score_aggregate=self.score_aggregate,
+            tls=self.tls,
         )
 
 
@@ -330,6 +344,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         topology: Optional[TopologySpec] = None,
         score_metric: str = "throughput",
         score_aggregate: str = "mean",
+        tls: bool = False,
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
@@ -367,6 +382,32 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.rate_limit = rate_limit
         self.perf_stat_enabled = perf_stat_enabled
         self.info_sections = list(info_sections or [])
+        self.tls = tls
+        # TLS transport: the server opens a second listener on the TLS port with
+        # the bootstrap test certificates and the generator connects over it
+        # (endpoint pointed at self._tls_port, [target] tls keys emitted below).
+        # The plaintext port keeps serving the server's own housekeeping.
+        #
+        # A TLS cell needs a BUILD_TLS=yes binary (Valkey and Redis both compile
+        # TLS out by default), so BUILD_TLS=yes is appended to make_args when it
+        # is not already there.  The build cache is keyed by md5(make_args)
+        # (BinaryManager.get_cached_build_path), so a TLS binary and a plaintext
+        # binary of the same commit occupy DISTINCT cache entries and neither is
+        # ever served to the other transport.  Without --tls the make_args are
+        # unchanged, so a plaintext cell of the same commit still builds and
+        # caches its own byte-identical non-TLS binary.
+        self._tls_port = SWEEP_V3_TLS_PORT
+        if tls:
+            tls_flags = (
+                f"--tls-port {self._tls_port} "
+                f"--tls-cert-file {TLS_CERT_DIR}/server.crt "
+                f"--tls-key-file {TLS_CERT_DIR}/server.key "
+                f"--tls-ca-cert-file {TLS_CERT_DIR}/ca.crt "
+                f"--tls-auth-clients no"
+            )
+            self.server_args = " ".join(a for a in (self.server_args, tls_flags) if a)
+            if "BUILD_TLS=yes" not in self.make_args:
+                self.make_args = f"{self.make_args} BUILD_TLS=yes".strip()
         # CPU flamegraph stacks expose the server binary's symbols; skipped for
         # engines that opt out (same gate as the memtier mixed task).
         self._profile_internals = should_profile_internals(get_sweep_engine(source))
@@ -514,7 +555,14 @@ class CachecannonTaskRunner(BaseTaskRunner):
 
                 # Generate TOML config
                 server_port = server.port or 6379
-                endpoint = f"{server.ip}:{server_port}"
+                # Over TLS the generator targets the server's TLS listener (a
+                # second port); the plaintext port keeps serving the server's
+                # own housekeeping.  The CA is the bootstrap test CA; the server
+                # certificate's SAN carries 127.0.0.1/localhost (bootstrap
+                # _TLS_SERVER_EXT), so tls_hostname is the loopback address the
+                # endpoint uses and tls_verify stays on.
+                target_port = self._tls_port if self.tls else server_port
+                endpoint = f"{server.ip}:{target_port}"
 
                 toml_content = generate_toml_config(
                     duration=self.duration,
@@ -530,6 +578,9 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     set_ratio=self.set_ratio,
                     distribution=self.distribution,
                     rate_limit=self.rate_limit,
+                    tls=self.tls,
+                    tls_hostname=server.ip if self.tls else "",
+                    tls_ca_file=f"{TLS_CERT_DIR}/ca.crt" if self.tls else "",
                 )
 
                 # Write TOML to result directory
@@ -813,6 +864,11 @@ class CachecannonTaskRunner(BaseTaskRunner):
             "set_ratio": self.set_ratio,
             "distribution": self.distribution,
             "rate_limit": self.rate_limit,
+            # Whether the cell ran over TLS.  Recorded so a reader of the result
+            # row can tell an encrypted-path cell from a plaintext one without
+            # parsing the TOML; the sweep exporter also publishes it in the
+            # series metadata.
+            "tls": self.tls,
             "cachecannon_binary": self.cachecannon_binary,
             "toml_config": toml_content,
             "lscpu": lscpu_output,

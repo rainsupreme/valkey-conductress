@@ -475,6 +475,7 @@ class TestV3Roster:
             ("get-k16-v16-t7-p1", "throughput"),
             ("get-k16-v1024-t7-p10", "throughput"),
             ("get-k16-v16-t7-p1-r100k", "latency"),
+            ("get-k16-v16-t7-p10-tls", "throughput"),
         ]
         assert all(c.epoch_id == "v3" for c in coords)
         assert all(c.epoch_ids == ("v3",) for c in coords)
@@ -505,8 +506,8 @@ class TestV3Roster:
         assert sizes.pop("get-k16-v1024-t7-p10") == 1024
         assert set(sizes.values()) == {16}
 
-    def test_large_value_series_is_the_only_floored_valkey_series(self, tmp_path: Path):
-        """The other five backfill from the fork point; v1024 starts at the 9.0.0 tag."""
+    def test_large_value_and_tls_series_are_the_only_floored_valkey_series(self, tmp_path: Path):
+        """The other five backfill from the fork point; v1024 and the TLS series start at 9.0.0."""
         from conductress.sweep.coordinator_v3 import create_v3_coordinators
 
         with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
@@ -514,6 +515,7 @@ class TestV3Roster:
                 coords = create_v3_coordinators(tmp_path)
         floors = {c.workload_id: c._floor_tag for c in coords}
         assert floors.pop("get-k16-v1024-t7-p10") == "9.0.0"
+        assert floors.pop("get-k16-v16-t7-p10-tls") == "9.0.0"
         assert set(floors.values()) == {None}
 
     def test_large_value_series_differs_from_the_canonical_get_only_in_value_size(self, tmp_path: Path):
@@ -782,3 +784,120 @@ class TestV3IdentityGuard:
         coord = roster["get-k16-v16-t7-p1"]
         good = coord._create_task(_sweep_task())
         assert coord._identity_mismatch(good) is None
+
+
+class TestV3TlsSeries:
+    """The seventh series: GET P10 over TLS, same identity but the transport."""
+
+    def _tls_coord(self, tmp_path: Path):
+        return _v3_roster(tmp_path)["get-k16-v16-t7-p10-tls"]
+
+    def test_label_carries_the_tls_suffix(self, tmp_path: Path):
+        assert self._tls_coord(tmp_path).workload_id == "get-k16-v16-t7-p10-tls"
+
+    def test_state_file_is_tls_suffixed(self, tmp_path: Path):
+        assert "get-k16-v16-t7-p10-tls" in self._tls_coord(tmp_path).state_file.name
+
+    def test_created_task_requests_tls(self, tmp_path: Path):
+        task = self._tls_coord(tmp_path)._create_task(_sweep_task())
+        assert task.tls is True
+        # Same identity as the canonical GET series in every other field.
+        assert task.test == "get"
+        assert task.pipelining == 10
+        assert task.val_size == 16
+        assert task.io_threads == 7
+        assert task.connections == 400
+        assert task.threads == 8
+        assert task.set_ratio == 0
+
+    def test_plaintext_get_task_is_not_tls(self, tmp_path: Path):
+        task = _v3_get(tmp_path)._create_task(_sweep_task())
+        assert task.tls is False
+
+    def test_tls_series_is_floored_at_nine_zero_zero(self, tmp_path: Path):
+        from conductress.config import SWEEP_V3_TLS_FLOOR_TAG
+
+        assert self._tls_coord(tmp_path)._floor_tag == SWEEP_V3_TLS_FLOOR_TAG == "9.0.0"
+
+    def test_tls_is_part_of_the_identity_fields(self, tmp_path: Path):
+        assert "tls" in self._tls_coord(tmp_path)._IDENTITY_FIELDS
+
+    def test_tls_and_plaintext_get_do_not_claim_each_other(self, tmp_path: Path):
+        roster = _v3_roster(tmp_path)
+        tls_coord = roster["get-k16-v16-t7-p10-tls"]
+        plain_coord = roster["get-k16-v16-t7-p10"]
+        tls_task = tls_coord._create_task(_sweep_task())
+        tls_task.sweep_commit = "a" * 40
+        plain_task = plain_coord._create_task(_sweep_task())
+        plain_task.sweep_commit = "a" * 40
+
+        assert tls_coord._is_my_task(tls_task)
+        assert not tls_coord._is_my_task(plain_task)
+        assert plain_coord._is_my_task(plain_task)
+        assert not plain_coord._is_my_task(tls_task)
+
+    def test_a_plaintext_cell_completing_on_the_tls_line_is_refused(self, tmp_path: Path):
+        """tls is an identity field, so a stale plaintext cell cannot land on the TLS line."""
+        coord = self._tls_coord(tmp_path)
+        stale = coord._create_task(_sweep_task())
+        stale.tls = False
+        assert coord._identity_mismatch(stale) == ("tls", False, True)
+
+    def test_tls_series_stays_at_eight_client_threads(self, tmp_path: Path):
+        assert self._tls_coord(tmp_path)._create_task(_sweep_task()).threads == 8
+
+    def test_redis_tls_series_inherits_the_prefix(self, tmp_path: Path, monkeypatch):
+        import conductress.config as cfg
+        from conductress.config import SweepEngine
+        from conductress.sweep.coordinator_v3 import create_v3_coordinators
+
+        if "redis" not in cfg.REPO_NAMES:
+            monkeypatch.setattr(cfg, "REPO_NAMES", cfg.REPO_NAMES + ["redis"])
+        engine = SweepEngine(source="redis", ref="origin/unstable", binary_name="redis-server", scope="release-and-tip")
+        with patch("conductress.sweep.coordinator_v3._ensure_v3_state_dir"):
+            with patch("conductress.sweep.coordinator_v3.V3_STATE_DIR", tmp_path):
+                coords = {c.workload_id: c for c in create_v3_coordinators(tmp_path, engine=engine)}
+        assert "redis-get-k16-v16-t7-p10-tls" in coords
+        # A release-and-tip engine does not read the Valkey floor tag.
+        assert coords["redis-get-k16-v16-t7-p10-tls"]._floor_tag is None
+
+    def test_tls_series_records_tls_in_export_metadata(self, tmp_path: Path):
+        import json
+
+        from conductress.sweep.planner import BenchmarkPoint
+
+        coord = self._tls_coord(tmp_path)
+        commit = "a" * 40
+        coord.state.merge_commits = [commit]
+        coord.state.commit_dates = {commit: "2026-01-01"}
+        point = BenchmarkPoint(commit=commit, date="2026-01-01")
+        point.value = 2_500_000.0
+        point.cv = 0.3
+        point.reps = 5
+        coord.state.points[commit] = point
+
+        out = tmp_path / "series.json"
+        coord.export(out, platform="arm64")
+        meta = json.loads(out.read_text())["metadata"]
+        assert meta["tls"] is True
+        assert meta["workload"] == "get-k16-v16-t7-p10-tls"
+
+    def test_plaintext_series_records_tls_false_in_export_metadata(self, tmp_path: Path):
+        import json
+
+        from conductress.sweep.planner import BenchmarkPoint
+
+        coord = _v3_get(tmp_path)
+        commit = "b" * 40
+        coord.state.merge_commits = [commit]
+        coord.state.commit_dates = {commit: "2026-01-01"}
+        point = BenchmarkPoint(commit=commit, date="2026-01-01")
+        point.value = 3_100_000.0
+        point.cv = 0.3
+        point.reps = 5
+        coord.state.points[commit] = point
+
+        out = tmp_path / "series.json"
+        coord.export(out, platform="arm64")
+        meta = json.loads(out.read_text())["metadata"]
+        assert meta["tls"] is False

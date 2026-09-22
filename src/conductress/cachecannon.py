@@ -135,6 +135,9 @@ def generate_toml_config(
     distribution: str = "uniform",
     rate_limit: int = 0,
     prefill: bool = True,
+    tls: bool = False,
+    tls_hostname: str = "",
+    tls_ca_file: str = "",
 ) -> str:
     """Generate a cachecannon TOML configuration file.
 
@@ -158,6 +161,15 @@ def generate_toml_config(
         prefill: Write every key once before warmup. Turn off for a generator
             that must not seed the keyspace itself (e.g. a reader aimed at a
             replica, which cannot accept writes).
+        tls: Connect over TLS. When set, the ``[target]`` section emits
+            ``tls = true`` and the client verifies the server against
+            ``tls_ca_file`` using ``tls_hostname``. cachecannon carries a full
+            rustls client; TLS lives below the harness in the engine, so it costs
+            no io_uring change.
+        tls_hostname: Server name the client verifies the certificate against
+            (the endpoint's host). Required when ``tls`` is set.
+        tls_ca_file: Path to the CA certificate that signed the server
+            certificate. Required when ``tls`` is set.
 
     Returns:
         TOML configuration string.
@@ -168,6 +180,10 @@ def generate_toml_config(
         raise ValueError(f"distribution must be 'uniform' or 'zipf', got '{distribution}'")
     if rate_limit < 0:
         raise ValueError(f"rate_limit must be >= 0, got {rate_limit}")
+    if tls and not tls_hostname:
+        raise ValueError("tls requires tls_hostname (the server name the client verifies against)")
+    if tls and not tls_ca_file:
+        raise ValueError("tls requires tls_ca_file (the CA that signed the server certificate)")
 
     # Map test name / set_ratio to cachecannon command weights. ALWAYS write
     # all three weights explicitly: cachecannon applies serde per-field
@@ -184,6 +200,17 @@ def generate_toml_config(
     if rate_limit > 0:
         workload_section += f"\nrate_limit = {rate_limit}"
 
+    # cachecannon's TLS lives on [target]: tls turns it on, tls_verify keeps
+    # server-certificate verification (the default), tls_hostname is the SNI /
+    # verified name and tls_ca_file the CA that signed the server certificate.
+    # No client certificate is sent (the server runs --tls-auth-clients no), so
+    # tls_cert_file / tls_key_file are omitted.
+    target_section = f'endpoints = ["{endpoint}"]\nprotocol = "resp"'
+    if tls:
+        target_section += (
+            "\ntls = true" "\ntls_verify = true" f'\ntls_hostname = "{tls_hostname}"' f'\ntls_ca_file = "{tls_ca_file}"'
+        )
+
     toml = f"""[general]
 duration = "{duration}s"
 warmup = "{warmup}s"
@@ -192,8 +219,7 @@ cpu_list = "{cpu_list}"
 io_engine = "uring"
 
 [target]
-endpoints = ["{endpoint}"]
-protocol = "resp"
+{target_section}
 
 [connection]
 connections = {connections}
