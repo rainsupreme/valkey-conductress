@@ -67,6 +67,8 @@ class TestSubscribers:
     """Tests for the pub/sub task completion pattern."""
 
     def test_subscriber_registered_when_sweep_enabled(self):
+        """With v1 archived (default), sweep builds no v1 coordinator but still
+        registers the generator-independent memory subscribers."""
         with (
             patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
             patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
@@ -75,12 +77,44 @@ class TestSubscribers:
         ):
             MockCoord.return_value.initialize = MagicMock()
             MockLatency.return_value.initialize = MagicMock()
-            mock_mem = MagicMock()
-            mock_mem.initialize = MagicMock()
-            mock_factory.return_value = [mock_mem]
+            mock_factory.return_value = [MagicMock(initialize=MagicMock()) for _ in range(5)]
             runner = TaskRunner(sweep=True)
-            # Should register at least throughput + latency + memory subscribers
-            assert len(runner._subscribers) >= 3
+            # Memory coordinators register; the archived v1 throughput and
+            # latency coordinators are never constructed.
+            assert len(runner._subscribers) == 5
+            MockCoord.assert_not_called()
+            MockLatency.assert_not_called()
+
+    def test_no_v1_coordinator_built_when_archived(self):
+        """The falsifiable core of the shutdown: an archived v1 epoch builds no
+        v1 SweepCoordinator or LatencySweepCoordinator at all. This fails
+        against main, where both are constructed unconditionally."""
+        with (
+            patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
+            patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
+            patch("conductress.sweep.memory_coordinator.create_memory_coordinators", return_value=[]),
+            patch("conductress.platform.get_local_platform_tag", return_value="amd64"),
+            patch("conductress.config.SWEEP_ARCHIVED_EPOCHS", ("v1",)),
+        ):
+            TaskRunner(sweep=True)
+            MockCoord.assert_not_called()
+            MockLatency.assert_not_called()
+
+    def test_v1_coordinator_built_when_not_archived(self):
+        """When v1 is NOT archived, the v1 throughput and latency coordinators
+        are constructed as before, confirming the gate is the only change."""
+        with (
+            patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
+            patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
+            patch("conductress.sweep.memory_coordinator.create_memory_coordinators", return_value=[]),
+            patch("conductress.platform.get_local_platform_tag", return_value="amd64"),
+            patch("conductress.config.SWEEP_ARCHIVED_EPOCHS", ()),
+        ):
+            MockCoord.return_value.initialize = MagicMock()
+            MockLatency.return_value.initialize = MagicMock()
+            TaskRunner(sweep=True)
+            assert MockCoord.called
+            MockLatency.assert_called_once()
 
     def test_no_subscribers_without_sweep(self):
         runner = TaskRunner(sweep=False)

@@ -144,14 +144,20 @@ class DashboardPublisher:
         other epoch's description. The previous binary ``v1``-or-else expression
         would have labelled a v3 series "Scalable v2 (patched generator)", which
         is precisely the provenance confusion the epoch split exists to prevent.
-        """
-        from conductress.config import SWEEP_EPOCHS
 
+        ``archived`` states whether the epoch is still measured. The dashboard
+        uses it to default to a live epoch and to mark archived ones in its
+        selector, instead of inferring liveness from list position, which
+        varies between manifests during a rolling deploy.
+        """
+        from conductress.config import SWEEP_EPOCHS, epoch_is_archived
+
+        archived = epoch_is_archived(epoch_id)
         entry = SWEEP_EPOCHS.get(epoch_id)
         if entry is None:
             logger.warning("Unregistered sweep epoch %r — publishing a generic label", epoch_id)
-            return {"id": epoch_id, "label": f"Epoch {epoch_id}", "generator": "unknown"}
-        return {"id": epoch_id, **entry}
+            return {"id": epoch_id, "label": f"Epoch {epoch_id}", "generator": "unknown", "archived": archived}
+        return {"id": epoch_id, **entry, "archived": archived}
 
     @staticmethod
     def _epoch_path(path: Path, epoch_id: str) -> Path:
@@ -191,7 +197,13 @@ class DashboardPublisher:
 
         try:
             epoch_ids = list(dict.fromkeys(e for c in self.coordinators for e in self._coord_epochs(c)))
-            epoch_defs = [self._epoch_def(epoch_id) for epoch_id in epoch_ids]
+            # Advertise archived epochs (v1) alongside the live ones so the
+            # dashboard's epoch selector keeps offering their history, even
+            # though no coordinator for them is built or exported here. Their
+            # own manifest-<plat>.json persists in the export dir from before
+            # archival; this only adds them to the live manifests' epoch list.
+            advertised_ids = list(dict.fromkeys([*epoch_ids, *config.SWEEP_ARCHIVED_EPOCHS]))
+            epoch_defs = [self._epoch_def(epoch_id) for epoch_id in advertised_ids]
 
             for coord in self.coordinators:
                 base = self._export_dir / f"series-{self._platform_id}-{coord.workload_id}-{coord.metric_id}.json"

@@ -584,7 +584,8 @@ class TestGeneratorIndependentEpochs:
             coords = create_memory_coordinators(tmp_path)
         assert coords, "the memory roster is not empty"
         for coord in coords:
-            assert coord.epoch_ids == SWEEP_GENERATOR_INDEPENDENT_EPOCHS == ("v3", "v1")
+            # v1 is archived, so memory now publishes only under v3.
+            assert coord.epoch_ids == SWEEP_GENERATOR_INDEPENDENT_EPOCHS == ("v3",)
             assert coord.epoch_id == "v3"
             assert coord.retired is False
 
@@ -605,14 +606,18 @@ class TestGeneratorIndependentEpochs:
         assert DashboardPublisher._coord_epochs(v1_only) == ("v1",)
         assert DashboardPublisher._coord_epochs(legacy) == ("v1",)
 
-    def test_publish_writes_memory_series_under_both_epochs_and_both_manifests(self, tmp_path, monkeypatch):
+    def test_publish_writes_memory_series_under_v3_and_advertises_archived_v1(self, tmp_path, monkeypatch):
+        """Memory publishes only under v3 now that v1 is archived, and the
+        publisher does not rewrite the v1 manifest (its file persists from
+        before archival) but advertises v1 in the live manifests' epoch list."""
+        from conductress import config
         from conductress.publisher import DashboardPublisher
 
         def _export(output_path, platform):
             output_path.write_text(json.dumps({"metadata": {}, "points": []}))
             return 0
 
-        memory = MagicMock(workload_id="memory-set-k16-v64", metric_id="memory", epoch_id="v3", epoch_ids=("v3", "v1"))
+        memory = MagicMock(workload_id="memory-set-k16-v64", metric_id="memory", epoch_id="v3", epoch_ids=("v3",))
         memory.export.side_effect = _export
         memory.engine = None
         memory.lower_is_better = True
@@ -632,21 +637,31 @@ class TestGeneratorIndependentEpochs:
             patch("conductress.publisher.detect_platform", return_value=("graviton4", "Graviton 4")),
             patch("conductress.sweep.exporter.export_perf_metrics"),
             patch("conductress.publisher.should_profile_internals", return_value=False),
+            patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)),
         ):
             publisher._publish()
 
-        assert (tmp_path / "series-graviton4-memory-set-k16-v64-memory.json").exists(), "v1 URL keeps working"
+        # Memory is written only under v3; the legacy unqualified name is NOT
+        # regenerated (a persisted archived copy would live there instead).
         assert (tmp_path / "series-graviton4-memory-set-k16-v64-memory.epoch-v3.json").exists()
+        assert not (tmp_path / "series-graviton4-memory-set-k16-v64-memory.json").exists()
         assert (
             json.loads((tmp_path / "series-graviton4-memory-set-k16-v64-memory.epoch-v3.json").read_text())["metadata"][
                 "epoch"
             ]
             == "v3"
         )
+        # Only the v3 manifest is written; the v1 manifest is left to its
+        # persisted archived copy, so the publisher does not create one here.
         v3_manifest = json.loads((tmp_path / "manifest-graviton4.epoch-v3.json").read_text())
-        v1_manifest = json.loads((tmp_path / "manifest-graviton4.json").read_text())
+        assert not (tmp_path / "manifest-graviton4.json").exists()
         assert v3_manifest["memory_workloads"] == ["memory-set-k16-v64"]
         assert v3_manifest["throughput_workloads"] == ["get-k16-v16-t7-p10"]
-        assert v1_manifest["memory_workloads"] == ["memory-set-k16-v64"]
-        assert v1_manifest["throughput_workloads"] == []
+        # The live v3 manifest advertises the archived v1 epoch so the
+        # dashboard's epoch selector keeps offering v1 history.
+        advertised = [e["id"] for e in v3_manifest["epochs"]]
+        assert "v3" in advertised
+        assert "v1" in advertised
+        flags = {e["id"]: e["archived"] for e in v3_manifest["epochs"]}
+        assert flags["v1"] is True and flags["v3"] is False
         publisher._rsync.assert_called_once()

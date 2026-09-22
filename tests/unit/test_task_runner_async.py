@@ -50,6 +50,8 @@ class TestTaskRunnerInit:
         assert len(runner._subscribers) == 0
 
     def test_sweep_registers_subscriber(self):
+        """With v1 archived (default), sweep registers memory subscribers and
+        builds no v1 coordinator."""
         with (
             patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
             patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
@@ -58,12 +60,11 @@ class TestTaskRunnerInit:
         ):
             MockCoord.return_value.initialize = MagicMock()
             MockLatency.return_value.initialize = MagicMock()
-            mock_mem = MagicMock()
-            mock_mem.initialize = MagicMock()
-            mock_factory.return_value = [mock_mem]
+            mock_factory.return_value = [MagicMock(initialize=MagicMock()) for _ in range(5)]
             runner = TaskRunner(sweep=True)
-            # Should register at least throughput + latency + memory subscribers
-            assert len(runner._subscribers) >= 3
+            assert len(runner._subscribers) == 5
+            MockCoord.assert_not_called()
+            MockLatency.assert_not_called()
 
     def test_memory_sweep_standalone(self):
         """--memory-sweep without --sweep still works (backward compat)."""

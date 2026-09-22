@@ -139,6 +139,49 @@ Two series rules follow from the epoch definition:
   selectors are the runtime lever for everything else; retirement is the
   permanent one.
 
+### Archived epochs
+
+Retirement stops a series from *scheduling* but still builds its coordinator
+and loads its state at every runner start so the publisher can re-export it.
+For v1 that load is the whole problem: its state files are 1.2–1.5 GB each
+(points embed perf stacks), several per platform, and their history never
+changes again, so a runner spent 6–7 GB of resident memory reloading dead data
+at every restart. **Archiving** goes one step further than retirement: an
+archived epoch (`SWEEP_ARCHIVED_EPOCHS`, currently `v1`) has *no coordinator
+built and no state loaded* by the runner service, and is dropped from the
+scheduling precedence. v1 history keeps rendering because its exported
+dashboard files (`series-<plat>-*.json` under their legacy unqualified names,
+`notable-<plat>.json`, and `manifest-<plat>.json`) persist in the publish
+export dir (`PUBLISH_EXPORT_DIR`) across restarts and are re-synced as-is, and
+every live manifest advertises the archived epoch so the dashboard's epoch
+selector keeps offering it. Each manifest epoch entry carries an `archived`
+boolean, so the dashboard can default to a live epoch and label archived ones
+without inferring liveness from list order.
+
+Two consequences follow:
+
+- Memory series now publish only under v3 (`SWEEP_GENERATOR_INDEPENDENT_EPOCHS
+  = ("v3",)`). The v1-named memory files already on the data server stay as
+  archived copies.
+- A runner whose export dir was wiped (an old-code restart, a fresh host) has
+  no v1 files to re-sync and, with no v1 coordinator ever loading state,
+  nothing regenerates them. The one-time repair is:
+
+  ```
+  conductress sweep export-archived --epoch v1
+  ```
+
+  It loads the v1 state files once, exports the v1 series, notable and manifest
+  files into the publish export dir, and exits — the runner service never pays
+  that load cost. Run it once on such a host, then the ordinary boundary
+  publishes re-sync the files like any other. It exports nothing (and exits
+  non-zero) when no v1 state files are present.
+
+`SWEEP_V1_RETIRED_SERIES` and the coordinator `retired` flag are unchanged and
+still apply to the coordinators that `conductress sweep export` and
+`export-archived` build; they are simply unreachable from the archived runtime
+path, which builds no v1 coordinator at all.
+
 ### Resetting a series
 
 A series' client budget (its connection count and client-thread count) is part
@@ -223,7 +266,8 @@ silently selecting the wrong epoch.
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `CONDUCTRESS_SWEEP_V3_ENABLED` | `false` | Enable the v3 (cachecannon) sweep coordinators. |
-| `CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE` | `v3,v1` | Comma-separated scheduling precedence, highest priority first. The first-listed epoch measures each new commit first. `v1,v3` restores v1-first. |
+| `CONDUCTRESS_SWEEP_EPOCH_PRECEDENCE` | `v3` | Comma-separated scheduling precedence between LIVE epochs, highest priority first. The first-listed epoch measures each new commit first. Archived epochs (see below) listed here are dropped with a log line rather than scheduled. |
+| `CONDUCTRESS_SWEEP_ARCHIVED_EPOCHS` | `v1` | Comma-separated epochs whose history keeps rendering on the dashboard but which the runner never builds, loads, or schedules. See "Archived epochs" below. |
 
 Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive); any
 other value, including an empty string, is a startup error.

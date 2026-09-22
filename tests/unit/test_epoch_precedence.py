@@ -296,3 +296,41 @@ class TestPrecedenceEnvParsing:
         monkeypatch.setenv("X_PREC", "v3,v1,v3")
         with pytest.raises(ValueError, match="duplicate"):
             _env_epoch_list("X_PREC", ("v3", "v1"))
+
+
+class TestArchivedEpochs:
+    """v1 is an archived epoch: it renders history but never schedules."""
+
+    def test_v1_archived_by_default(self):
+        from conductress import config
+
+        assert config.epoch_is_archived("v1") is True
+        assert config.epoch_is_archived("v3") is False
+
+    def test_default_precedence_is_v3_only(self):
+        """The shipped precedence lists only live epochs; v1 is gone from it."""
+        from conductress.config import SWEEP_EPOCH_PRECEDENCE
+
+        assert SWEEP_EPOCH_PRECEDENCE == ("v3",)
+
+    def test_memory_epochs_are_v3_only(self):
+        from conductress.config import SWEEP_GENERATOR_INDEPENDENT_EPOCHS
+
+        assert SWEEP_GENERATOR_INDEPENDENT_EPOCHS == ("v3",)
+
+    def test_archived_epoch_dropped_from_precedence_with_log(self, caplog):
+        """A stale 'v3,v1' override cannot resurrect v1 scheduling: v1 is
+        filtered out and the drop is logged."""
+        import logging
+
+        from conductress.config import _resolve_epoch_precedence
+
+        with caplog.at_level(logging.INFO):
+            resolved = _resolve_epoch_precedence(("v3", "v1"))
+        assert resolved == ("v3",)
+        assert any("archived" in rec.message.lower() for rec in caplog.records)
+
+    def test_resolve_keeps_all_live_epochs_in_order(self):
+        from conductress.config import _resolve_epoch_precedence
+
+        assert _resolve_epoch_precedence(("v3", "v2")) == ("v3", "v2")

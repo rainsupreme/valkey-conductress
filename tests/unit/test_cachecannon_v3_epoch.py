@@ -434,6 +434,17 @@ class TestEpochRegistry:
         entry = DashboardPublisher._epoch_def("v99")
         assert entry["generator"] == "unknown"
         assert entry["label"] != SWEEP_EPOCHS["v2"]["label"]
+        assert entry["archived"] is False
+
+    def test_epoch_def_carries_archived_flag(self):
+        from conductress import config
+        from conductress.publisher import DashboardPublisher
+
+        with patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)):
+            assert DashboardPublisher._epoch_def("v1")["archived"] is True
+            assert DashboardPublisher._epoch_def("v3")["archived"] is False
+        with patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ()):
+            assert DashboardPublisher._epoch_def("v1")["archived"] is False
 
     def test_v3_series_filename_is_epoch_qualified(self):
         from conductress.publisher import DashboardPublisher

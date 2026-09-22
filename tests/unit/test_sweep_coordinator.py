@@ -316,28 +316,54 @@ class TestTaskRunnerSweepIntegration:
         runner = TaskRunner(sweep=False)
         assert runner._subscribers == []
 
+    @patch("conductress.platform.get_local_platform_tag", return_value="amd64")
+    def test_task_runner_sweep_mode_archives_v1_by_default(self, mock_platform, tmp_dir):
+        """With v1 archived (the default), sweep mode builds no v1 SweepCoordinator
+        or LatencySweepCoordinator; only the generator-independent memory
+        subscribers register (v3 is off by default)."""
+        from unittest.mock import MagicMock
+
+        from conductress.task_runner import TaskRunner
+
+        with (
+            patch("conductress.sweep.coordinator.SweepCoordinator") as MockCoord,
+            patch("conductress.sweep.latency_coordinator.LatencySweepCoordinator") as MockLatency,
+            patch(
+                "conductress.sweep.memory_coordinator.create_memory_coordinators",
+                return_value=[MagicMock(initialize=MagicMock()) for _ in range(5)],
+            ),
+        ):
+            runner = TaskRunner(sweep=True, repo_path=tmp_dir)
+            assert len(runner._subscribers) == 5  # memory only
+            MockCoord.assert_not_called()
+            MockLatency.assert_not_called()
+
     @patch("conductress.sweep.coordinator.SweepCoordinator.initialize")
     @patch("conductress.sweep.coordinator.get_merge_commits", return_value=[])
     @patch("conductress.sweep.coordinator.get_release_branch_points", return_value=[])
     @patch("conductress.platform.get_local_platform_tag", return_value="amd64")
-    def test_task_runner_sweep_mode_creates_sweep_coordinator(
+    def test_task_runner_sweep_mode_builds_v1_roster_when_not_archived(
         self, mock_platform, mock_tags, mock_commits, mock_init, tmp_dir
     ):
+        """When v1 is NOT archived, sweep mode builds the primary + latency +
+        memory subscribers, and Intel/ARM add their platform-specific v1
+        workloads on top of the AMD baseline."""
         from conductress.task_runner import TaskRunner
 
-        runner = TaskRunner(sweep=True, repo_path=tmp_dir)
-        # Should have subscribers (at least primary throughput + latency + memory)
-        assert len(runner._subscribers) >= 3
-        amd_count = len(runner._subscribers)
+        with patch("conductress.config.SWEEP_ARCHIVED_EPOCHS", ()):
+            runner = TaskRunner(sweep=True, repo_path=tmp_dir)
+            # Should have subscribers (at least primary throughput + latency + memory)
+            assert len(runner._subscribers) >= 3
+            amd_count = len(runner._subscribers)
 
-        # Intel and ARM should get additional platform-specific workloads
-        mock_platform.return_value = "intel"
-        runner_intel = TaskRunner(sweep=True, repo_path=tmp_dir)
-        assert len(runner_intel._subscribers) > amd_count
+            # Intel and ARM should get additional platform-specific workloads
+            mock_platform.return_value = "intel"
+            runner_intel = TaskRunner(sweep=True, repo_path=tmp_dir)
+            assert len(runner_intel._subscribers) > amd_count
 
-        mock_platform.return_value = "arm64"
-        runner_arm = TaskRunner(sweep=True, repo_path=tmp_dir)
-        assert len(runner_arm._subscribers) > amd_count
+            mock_platform.return_value = "arm64"
+            runner_arm = TaskRunner(sweep=True, repo_path=tmp_dir)
+            assert len(runner_arm._subscribers) > amd_count
 
 
 class TestIsMyTask:
