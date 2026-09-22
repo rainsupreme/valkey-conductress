@@ -665,3 +665,105 @@ class TestGeneratorIndependentEpochs:
         flags = {e["id"]: e["archived"] for e in v3_manifest["epochs"]}
         assert flags["v1"] is True and flags["v3"] is False
         publisher._rsync.assert_called_once()
+
+    @staticmethod
+    def _publisher_with_one_v3_coordinator(tmp_path):
+        from conductress.publisher import DashboardPublisher
+
+        def _export(output_path, platform):
+            output_path.write_text(json.dumps({"metadata": {}, "points": []}))
+            return 0
+
+        v3_get = MagicMock(workload_id="get-k16-v16-t7-p10", metric_id="memory", epoch_id="v3", epoch_ids=("v3",))
+        v3_get.export.side_effect = _export
+        v3_get.engine = None
+        v3_get.lower_is_better = False
+        publisher = DashboardPublisher.__new__(DashboardPublisher)
+        publisher.coordinators = [v3_get]
+        publisher._export_dir = tmp_path
+        publisher._platform_id = "graviton4"
+        publisher._platform_label = "Graviton 4"
+        publisher._rsync = MagicMock()
+        return publisher
+
+    def test_publish_refreshes_epoch_list_in_persisted_archived_manifest(self, tmp_path):
+        """The archived v1 manifest persists from before archival with a stale
+        epoch list (v1 first, no ``archived`` flags). The dashboard reads that
+        manifest to discover epochs before it picks one, so a publish must
+        rewrite its epoch list to match the live manifests while leaving the
+        archived epoch's own workload lists untouched."""
+        from conductress import config
+
+        stale = {
+            "version": 3,
+            "platform": "graviton4",
+            "epoch": "v1",
+            "epochs": [
+                {"id": "v1", "label": "Legacy v1 (stock generator)", "generator": "stock"},
+                {"id": "v3", "label": "Cachecannon v3 (io_uring generator)", "generator": "cachecannon"},
+            ],
+            "throughput_workloads": ["get-k16-v16-t7-p10", "get-k16-v64-t7-p10"],
+            "memory_workloads": ["memory-set-k16-v64"],
+            "latency_workloads": ["get-k16-v16-t7-p1-r100k"],
+            "groups": [{"id": "throughput"}],
+        }
+        legacy = tmp_path / "manifest-graviton4.json"
+        legacy.write_text(json.dumps(stale))
+        publisher = self._publisher_with_one_v3_coordinator(tmp_path)
+
+        with (
+            patch("conductress.publisher.detect_platform", return_value=("graviton4", "Graviton 4")),
+            patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)),
+        ):
+            publisher._publish()
+
+        refreshed = json.loads(legacy.read_text())
+        live = json.loads((tmp_path / "manifest-graviton4.epoch-v3.json").read_text())
+        # Same list, same order, same flags as the live manifest: v3 first.
+        assert refreshed["epochs"] == live["epochs"]
+        assert [e["id"] for e in refreshed["epochs"]] == ["v3", "v1"]
+        assert {e["id"]: e["archived"] for e in refreshed["epochs"]} == {"v1": True, "v3": False}
+        # Everything that describes the archived epoch's own data is untouched.
+        assert refreshed["epoch"] == "v1"
+        assert refreshed["throughput_workloads"] == stale["throughput_workloads"]
+        assert refreshed["memory_workloads"] == stale["memory_workloads"]
+        assert refreshed["latency_workloads"] == stale["latency_workloads"]
+        assert refreshed["groups"] == stale["groups"]
+
+    def test_publish_leaves_absent_archived_manifest_absent(self, tmp_path):
+        """A wiped export dir has no v1 manifest; the publisher must not invent
+        one (it has no v1 workload lists), leaving that to export-archived."""
+        from conductress import config
+
+        publisher = self._publisher_with_one_v3_coordinator(tmp_path)
+        with (
+            patch("conductress.publisher.detect_platform", return_value=("graviton4", "Graviton 4")),
+            patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)),
+        ):
+            publisher._publish()
+        assert not (tmp_path / "manifest-graviton4.json").exists()
+        assert (tmp_path / "manifest-graviton4.epoch-v3.json").exists()
+
+    def test_publish_does_not_rewrite_archived_manifest_already_current(self, tmp_path):
+        """An archived manifest whose epoch list already matches is left with
+        its mtime intact, so rsync's quick check skips it."""
+        import os
+        import time
+
+        from conductress import config
+        from conductress.publisher import DashboardPublisher
+
+        publisher = self._publisher_with_one_v3_coordinator(tmp_path)
+        legacy = tmp_path / "manifest-graviton4.json"
+        with patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)):
+            current = DashboardPublisher.advertised_epoch_defs(["v3"])
+        legacy.write_text(json.dumps({"epoch": "v1", "epochs": current, "throughput_workloads": []}))
+        old = time.time() - 3600
+        os.utime(legacy, (old, old))
+
+        with (
+            patch("conductress.publisher.detect_platform", return_value=("graviton4", "Graviton 4")),
+            patch.object(config, "SWEEP_ARCHIVED_EPOCHS", ("v1",)),
+        ):
+            publisher._publish()
+        assert abs(legacy.stat().st_mtime - old) < 1

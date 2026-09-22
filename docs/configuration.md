@@ -172,10 +172,16 @@ scheduling precedence. v1 history keeps rendering because its exported
 dashboard files (`series-<plat>-*.json` under their legacy unqualified names,
 `notable-<plat>.json`, and `manifest-<plat>.json`) persist in the publish
 export dir (`PUBLISH_EXPORT_DIR`) across restarts and are re-synced as-is, and
-every live manifest advertises the archived epoch so the dashboard's epoch
-selector keeps offering it. Each manifest epoch entry carries an `archived`
-boolean, so the dashboard can default to a live epoch and label archived ones
-without inferring liveness from list order.
+every manifest, live or archived, advertises the same epoch list: live epochs
+first, then archived ones, each entry carrying an `archived` boolean. The
+dashboard reads the legacy `manifest-<plat>.json` to discover which epochs
+exist before it picks one, so the archived manifest cannot be left with the
+list it had when it was last exported: each publish rewrites that one key in
+place (its workload lists, which describe the archived data, are untouched),
+and skips the write when the list already matches so the file's mtime, and
+rsync's quick check, are undisturbed. This is what lets the dashboard default
+to a live epoch and label archived ones without inferring liveness from list
+order.
 
 Two consequences follow:
 

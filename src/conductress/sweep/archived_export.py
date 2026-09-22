@@ -136,13 +136,14 @@ def export_archived_epoch(epoch: str, repo_path: Optional[Path] = None, output_d
     export_notable(notable_sources, export_dir / f"notable-{platform_id}.json", platform_label)
 
     # The archived epoch's manifest keeps its legacy unqualified name so the
-    # dashboard's epoch selector keeps offering it, and advertises every
-    # archived epoch as available.
+    # dashboard's epoch selector keeps offering it, and advertises the same
+    # epoch list (live epochs first, then archived, each with its ``archived``
+    # flag) that a live publish writes, so the dashboard picks the same default
+    # whichever manifest it reads first.
+    from conductress.publisher import DashboardPublisher
+
     workloads = list(dict.fromkeys((c.workload_id, c.metric_id) for c in coordinators))
-    epochs = [
-        {"id": e, **config.SWEEP_EPOCHS.get(e, {"label": f"Epoch {e}", "generator": "unknown"})}
-        for e in config.SWEEP_ARCHIVED_EPOCHS
-    ]
+    epochs = DashboardPublisher.advertised_epoch_defs(config.SWEEP_EPOCH_PRECEDENCE)
     export_manifest(
         export_dir,
         platforms=["amd64", "arm64", "graviton4", "intel"],
