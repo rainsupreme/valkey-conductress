@@ -628,3 +628,122 @@ class TestSettleThreading:
         d.pop("timestamp", None)
         restored = MemTaskData(**d)
         assert restored.settle is True
+
+
+class TestSettleRehash:
+    """Rehash settle-and-assert: read passes until DEBUG HTSTATS shows no rehash."""
+
+    DICT_MID = (
+        "Hash table 0 stats (main hash table):\n table size: 4194304\n number of elements: 2920322\n"
+        "Hash table 1 stats (rehashing target):\n table size: 8388608\n number of elements: 2079678\n"
+    )
+    DICT_DONE = "Hash table 0 stats (main hash table):\n table size: 8388608\n number of elements: 5000000\n"
+    HASHTABLE_MID = (
+        "Hash table 0 stats (main hash table):\n table size: 524288\n number of entries: 3000000\n"
+        "Hash table 1 stats (rehashing target):\n table size: 1048576\n number of entries: 2000000\n"
+    )
+
+    @staticmethod
+    def _seq_stats(values):
+        state = {"i": 0}
+
+        async def _fn():
+            i = state["i"]
+            state["i"] = i + 1
+            return values[i] if i < len(values) else values[-1]
+
+        return _fn
+
+    @staticmethod
+    def _counting_touch(counter):
+        async def _fn():
+            counter["n"] += 1
+            return 5_000_000
+
+        return _fn
+
+    def test_htstats_command_targets_the_filled_table(self):
+        from conductress.tasks.task_mem_efficiency import htstats_command
+
+        assert htstats_command("sadd") == "DEBUG HTSTATS-KEY myset"
+        assert htstats_command("hset") == "DEBUG HTSTATS-KEY myhash"
+        assert htstats_command("zadd") == "DEBUG HTSTATS-KEY myzset"
+        assert htstats_command("set") == "DEBUG HTSTATS 0"
+
+    def test_is_rehashing_reads_both_table_implementations(self):
+        from conductress.tasks.task_mem_efficiency import is_rehashing
+
+        assert is_rehashing(self.DICT_MID)
+        assert is_rehashing(self.HASHTABLE_MID)
+        assert not is_rehashing(self.DICT_DONE)
+
+    def test_is_rehashing_surfaces_debug_failures(self):
+        from conductress.tasks.task_mem_efficiency import is_rehashing
+
+        with pytest.raises(RuntimeError, match="enable-debug-command"):
+            is_rehashing(None)
+        with pytest.raises(RuntimeError, match="DEBUG HTSTATS failed"):
+            is_rehashing("ERR DEBUG command not allowed")
+
+    @pytest.mark.asyncio
+    async def test_already_settled_costs_no_read_pass(self):
+        from conductress.tasks.task_mem_efficiency import settle_rehash
+
+        touches = {"n": 0}
+        passes = await settle_rehash(self._seq_stats([self.DICT_DONE]), self._counting_touch(touches))
+        assert passes == 0
+        assert touches["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_reads_until_rehash_completes(self):
+        from conductress.tasks.task_mem_efficiency import settle_rehash
+
+        touches = {"n": 0}
+        stats = self._seq_stats([self.DICT_MID, self.DICT_MID, self.DICT_DONE])
+        passes = await settle_rehash(stats, self._counting_touch(touches))
+        assert passes == 2
+        assert touches["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_refuses_to_record_a_table_that_never_settles(self):
+        from conductress.tasks.task_mem_efficiency import settle_rehash
+
+        touches = {"n": 0}
+        with pytest.raises(RuntimeError, match="still rehashing after 2"):
+            await settle_rehash(self._seq_stats([self.DICT_MID]), self._counting_touch(touches), max_passes=2)
+        assert touches["n"] == 2
+
+
+class TestTouchOps:
+    """The settle read pass must look up every item by the fill's own naming."""
+
+    def test_one_read_per_item_matching_fill_names(self):
+        from conductress.sweep.populator import _operations, _touch_ops
+
+        fills = list(_operations("sadd", 5, 0, 20, 0, "sequential"))
+        reads = list(_touch_ops("sadd", 5, 0, 20, 0))
+        assert [r[:1] + r[1:2] for r in reads] == [("SISMEMBER", "myset")] * 5
+        assert [r[2] for r in reads] == [f[1] for f in fills]
+
+    def test_command_per_type(self):
+        from conductress.sweep.populator import _touch_ops
+
+        assert next(_touch_ops("set", 1, 16, 16, 0))[0] == "EXISTS"
+        assert next(_touch_ops("hset", 1, 0, 16, 16))[:2] == ("HEXISTS", "myhash")
+        assert next(_touch_ops("zadd", 1, 0, 20, 0))[:2] == ("ZSCORE", "myzset")
+        with pytest.raises(ValueError):
+            next(_touch_ops("lpush", 1, 0, 16, 0))
+
+    def test_touch_pipelines_every_read(self):
+        from conductress.sweep import populator
+
+        pipe = MagicMock()
+        client = MagicMock()
+        client.pipeline.return_value = pipe
+        workload = MagicMock(command="hset", item_count=12, key_size=0, value_size=16, field_size=16, label="t")
+        with patch.object(populator.valkey, "Valkey", return_value=client), patch.object(populator, "BATCH_SIZE", 5):
+            issued = populator.touch("127.0.0.1", 6379, workload)
+        assert issued == 12
+        assert pipe.execute_command.call_count == 12
+        assert pipe.execute.call_count == 3  # two full batches of 5 + the remainder flush
+        client.close.assert_called_once()

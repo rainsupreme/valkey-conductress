@@ -29,7 +29,7 @@ from conductress.heap_profiler import (
     collect_heap_profile,
 )
 from conductress.server import Server
-from conductress.sweep.populator import populate
+from conductress.sweep.populator import populate, touch
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.utility import HumanByte, port_generator, print_pretty_header
 
@@ -90,6 +90,56 @@ async def quiesce_until_stable(
         if len(window) == window.maxlen and _window_stable(list(window), rel_eps):
             break
     return value, elapsed
+
+
+# --- Rehash settle-and-assert (part of `settle`) ------------------------------
+# A bulk fill leaves a hash table mid-rehash: both tables allocated, plus the
+# collision entries of the crowded old table. The keyspace finishes its rehash in
+# the background (activerehashing), but a collection's own table only advances on
+# access, so a memory sample taken right after the fill measures a load-order
+# artifact rather than the structure's steady-state size. When `settle` is on, the
+# task reads every item once (one rehash step each) and asserts via DEBUG HTSTATS
+# that no rehash is still in progress before sampling.
+SETTLE_REHASH_MAX_PASSES = 3
+REHASHING_MARKER = "rehashing target"  # printed by dict.c and hashtable.c stats only mid-rehash
+COLLECTION_KEYS = {"sadd": "myset", "hset": "myhash", "zadd": "myzset"}
+
+
+def htstats_command(test: str) -> str:
+    """DEBUG command whose output names the table(s) the workload fills."""
+    if test in COLLECTION_KEYS:
+        return f"DEBUG HTSTATS-KEY {COLLECTION_KEYS[test]}"
+    return "DEBUG HTSTATS 0"  # keyspace (and expires) of db 0
+
+
+def is_rehashing(stats: Optional[str]) -> bool:
+    """True if a DEBUG HTSTATS / HTSTATS-KEY response shows a rehash in progress."""
+    if stats is None:
+        raise RuntimeError("DEBUG HTSTATS returned nothing; is enable-debug-command set on the test server?")
+    if stats.startswith("ERR"):
+        raise RuntimeError(f"DEBUG HTSTATS failed: {stats}")
+    return REHASHING_MARKER in stats
+
+
+async def settle_rehash(
+    stats_fn: Callable[[], Awaitable[Optional[str]]],
+    touch_fn: Callable[[], Awaitable[int]],
+    *,
+    max_passes: int = SETTLE_REHASH_MAX_PASSES,
+) -> int:
+    """Drive any in-progress rehash to completion; return the number of read passes used.
+
+    Checks first, so an already-settled table costs one DEBUG call. Raises if the
+    table is still rehashing after `max_passes` full read passes, so a partial state
+    is never recorded as settled.
+    """
+    passes = 0
+    while is_rehashing(await stats_fn()):
+        if passes >= max_passes:
+            raise RuntimeError(f"hash table still rehashing after {passes} full read passes")
+        await touch_fn()
+        passes += 1
+    return passes
 
 
 @dataclass
@@ -298,8 +348,15 @@ class MemTaskRunner(BaseTaskRunner):
                 await cleanup_heap_dumps(ssh_host)
                 env_prefix = JEMALLOC_PROF_ENV
 
+            # Settling asserts rehash completion through DEBUG HTSTATS, which the
+            # server only answers when the debug command is enabled at startup.
             valkey = await Server.with_path(
-                self.server_ip, port, self.cached_binary_path, io_threads=1, env_prefix=env_prefix
+                self.server_ip,
+                port,
+                self.cached_binary_path,
+                io_threads=1,
+                env_prefix=env_prefix,
+                server_args="--enable-debug-command yes" if self.settle else "",
             )
             self.commit_hash = valkey.get_build_hash()
 
@@ -323,6 +380,7 @@ class MemTaskRunner(BaseTaskRunner):
 
             # Opt-in: let background memory reclamation (e.g. zset compaction) settle
             # so we sample steady-state memory rather than the post-populate transient.
+            rehash_passes: Optional[int] = None
             if self.settle:
 
                 async def _sample_used_memory() -> int:
@@ -336,6 +394,25 @@ class MemTaskRunner(BaseTaskRunner):
                     settle_secs,
                     port,
                 )
+
+                # Finish any rehash the fill left behind, then assert none remains.
+                async def _stats() -> Optional[str]:
+                    return await valkey.run_valkey_command(htstats_command(self.test))
+
+                async def _touch() -> int:
+                    return await asyncio.to_thread(touch, valkey.ip, valkey.port, workload)
+
+                rehash_passes = await settle_rehash(_stats, _touch)
+                self.logger.info("Rehash settled after %d read pass(es) (port %d)", rehash_passes, port)
+                if rehash_passes:
+                    # Completing a rehash frees the old table; let the sample catch up.
+                    settled_bytes, settle_secs = await quiesce_until_stable(_sample_used_memory)
+                    self.logger.info(
+                        "Post-rehash quiesce: used_memory settled at %d bytes after %.0fs (port %d)",
+                        settled_bytes,
+                        settle_secs,
+                        port,
+                    )
 
             after_memory: dict[str, str] = await valkey.info("memory")
 
@@ -413,6 +490,8 @@ class MemTaskRunner(BaseTaskRunner):
                 "val_size": val_size,
                 "per_key_size": per_key,
                 "per_item_overhead": per_item_overhead,
+                "settled": self.settle,
+                "rehash_passes": rehash_passes,
                 "breakdown": breakdown,
                 "raw_stacks": raw_stacks,
             }

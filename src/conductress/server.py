@@ -178,10 +178,12 @@ class Server:
         return server
 
     @classmethod
-    async def with_path(cls, ip: str, port: int, binary_path: Path, io_threads: int, env_prefix: str = ""):
+    async def with_path(
+        cls, ip: str, port: int, binary_path: Path, io_threads: int, env_prefix: str = "", server_args: str = ""
+    ):
         """Create a server instance running the specified binary"""
         server = cls(ip, port)
-        await server.start(binary_path, io_threads, env_prefix=env_prefix)
+        await server.start(binary_path, io_threads, env_prefix=env_prefix, server_args=server_args)
         return server
 
     # =============================================================================
