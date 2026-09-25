@@ -485,8 +485,10 @@ def build_parser() -> argparse.ArgumentParser:
     mem_parser.add_argument(
         "--settle",
         action="store_true",
-        help="Quiesce until used_memory plateaus before sampling (captures steady-state "
-        "memory after background reclamation, e.g. zset compaction). Default off.",
+        help="Measure steady state instead of the post-fill transient: quiesce until "
+        "used_memory plateaus (background reclamation, e.g. zset compaction), then read "
+        "every item once so any incremental rehash the fill left behind completes, and "
+        "fail the task if DEBUG HTSTATS still shows a rehash in progress. Default off.",
     )
 
     # queue add-mixed

@@ -59,10 +59,13 @@ def _operations(command: str, count: int, key_size: int, value_size: int, field_
                   random-walks and stays ~count (drift ~sqrt(count)); callers
                   must measure the actual cardinality, not assume `count`.
 
-    For hashtable-backed types (set/sadd/hset) sequential vs random insertion
-    order does not affect resident memory, but the modes are supported uniformly
-    (they may matter for other structures/engines, and churn exercises the
-    hashtable's shrink-on-delete behavior for all types).
+    For hashtable-backed types (set/sadd/hset) insertion order does not change the
+    settled table layout (bucket placement depends only on hash values), but it does
+    change the mid-rehash snapshot a bulk fill leaves behind: which keys are still in
+    the old table, and how many collision entries that costs. Sample after `touch`
+    (see the memory task's settle step) when the steady state is what you want. The
+    modes are supported uniformly (they may matter for other structures/engines, and
+    churn exercises the hashtable's shrink-on-delete behavior for all types).
 
     Add tuples carry the full payload; del tuples carry the item identifier:
       set:  ("add", key, value)      / ("del", key)
@@ -192,6 +195,51 @@ def populate(host: str, port: int, workload: "MemoryWorkload") -> None:
 
     client.close()
     logger.info("Population complete: %s", workload.label)
+
+
+def _touch_ops(command: str, count: int, key_size: int, value_size: int, field_size: int):
+    """One read per item index, using the same naming as the fill so every populated
+    item is looked up once. Yields (command_name, key, item) tuples for collections
+    and (command_name, key) for strings.
+
+    Lookups advance incremental rehash one step each (dict and hashtable both step
+    on read), so a full pass finishes any rehash the fill left behind. Reads of items
+    that a churn fill deleted still step the rehash, so the pass is safe in every mode.
+    """
+    for idx in range(count):
+        if command == "set":
+            yield ("EXISTS", _pad_to_size("key", idx, key_size))
+        elif command == "sadd":
+            yield ("SISMEMBER", "myset", _pad_to_size("m", idx, value_size))
+        elif command == "hset":
+            yield ("HEXISTS", "myhash", _pad_to_size("f", idx, field_size))
+        elif command == "zadd":
+            yield ("ZSCORE", "myzset", _pad_to_size("m", idx, value_size))
+        else:
+            raise ValueError(f"Unsupported command: {command}")
+
+
+def touch(host: str, port: int, workload: "MemoryWorkload") -> int:
+    """Read every populated item once (pipelined). Returns the number of reads issued.
+
+    Used after a fill to let incremental rehash run to completion before memory is
+    sampled: a bulk load leaves a collection's table mid-rehash (both tables live,
+    old-table collision entries still allocated), and nothing in the server finishes
+    that without access. One lookup per item is enough steps for any table size.
+    """
+    client = valkey.Valkey(host=host, port=port)
+    pipe = client.pipeline(transaction=False)
+    count = workload.item_count
+    logger.info("Touching %s: %d reads on %s:%d", workload.label, count, host, port)
+    issued = 0
+    for op in _touch_ops(workload.command, count, workload.key_size, workload.value_size, workload.field_size):
+        pipe.execute_command(*op)
+        issued += 1
+        if issued % BATCH_SIZE == 0:
+            pipe.execute()
+    pipe.execute()
+    client.close()
+    return issued
 
 
 def _apply_expire(pipe: valkey.client.Pipeline, client: valkey.Valkey, count: int, workload: "MemoryWorkload") -> None:
