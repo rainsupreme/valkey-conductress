@@ -470,6 +470,36 @@ class TestQueueAddMemorySubcommand:
         assert mock_queue.submit_task.call_count == 1
 
     @patch("conductress.cli.TaskQueue")
+    def test_add_memory_one_task_per_type_despite_roster_shapes(self, mock_queue_cls):
+        """The sweep roster carries several shapes per type; a request for a type queues its first shape only."""
+        from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
+
+        assert sum(1 for wl in MEMORY_WORKLOADS if wl.command == "set" and not wl.has_expire) > 1
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set,hset"])
+        assert exit_code == 0
+        tasks = [c[0][0] for c in mock_queue.submit_task.call_args_list]
+        assert [(t.type, t.key_size, t.field_size, t.val_sizes) for t in tasks] == [
+            ("set", 16, 0, [64]),
+            ("hset", 0, 64, [64]),
+        ]
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_sizes_do_not_multiply_by_roster_shapes(self, mock_queue_cls):
+        """--sizes derives from the one base shape, so two roster string shapes give one task per size."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set", "--sizes", "16,32"]
+        )
+        assert exit_code == 0
+        tasks = [c[0][0] for c in mock_queue.submit_task.call_args_list]
+        assert [t.val_sizes for t in tasks] == [[16], [32]]
+
+    @patch("conductress.cli.TaskQueue")
     def test_add_memory_manually_uploaded(self, mock_queue_cls):
         mock_queue = MagicMock()
         mock_queue_cls.return_value = mock_queue

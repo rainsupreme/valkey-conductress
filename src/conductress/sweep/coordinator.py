@@ -34,7 +34,7 @@ from conductress.config import (
     SWEEP_WARMUP,
 )
 from conductress.sweep.git_ops import fetch_ref, get_head, get_merge_commits, get_release_branch_points
-from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask
+from conductress.sweep.planner import Landmark, SweepPlanner, SweepState, SweepTask, TaskPriority
 from conductress.task_queue import BaseTaskData, TaskQueue
 from conductress.tasks.task_perf_benchmark import PerfTaskData
 from conductress.topology import TopologySpec
@@ -339,6 +339,26 @@ class BaseSweepCoordinator(ABC):
         # For backfill/landmark tasks, use gap width only (no magnitude known yet)
         # Lower priority than bisection but still useful
         return math.log2(max(len(self.state.merge_commits) // max(completed, 1), 2))
+
+    # Whether this series' gap-filling backfill yields to every other series'
+    # pending work.  A subclass sets it for a metric whose flat regions carry no
+    # information anyone is waiting for (memory: deterministic, rarely moves).
+    # Only BACKFILL planner tasks are deferred; nightly HEAD, release landmarks
+    # and bisection compete on urgency like any other series.
+    defer_backfill: bool = False
+
+    def schedule_tier(self) -> int:
+        """Scheduling tier for the runner's urgency sort: 0 normal, 1 deferred.
+
+        The runner sorts candidates by tier first and urgency second, so a
+        tier-1 series queues only when no tier-0 series has a task to queue.
+        A series lands in tier 1 when it defers backfill and the planner's next
+        task is BACKFILL.
+        """
+        if not self.defer_backfill:
+            return 0
+        task = self.planner.get_next_task(current_head=None)
+        return 1 if task is not None and task.priority == TaskPriority.BACKFILL else 0
 
     def has_nightly_task(self) -> bool:
         """Check if this coordinator would produce a NIGHTLY task (HEAD untested).
