@@ -461,6 +461,18 @@ def build_parser() -> argparse.ArgumentParser:
         "score bytes, sadd: member, hset: field+value). Default: sizes from the standard workload "
         "config (set v64, zadd m20, sadd m20, hset f64-v64).",
     )
+    mem_parser.add_argument(
+        "--key-size",
+        default="",
+        help="Key size in bytes for set (e.g., 32). Overrides the standard workload's key size; "
+        "per-item user data is recomputed as key+value. Only affects set.",
+    )
+    mem_parser.add_argument(
+        "--field-size",
+        default="",
+        help="Field name size in bytes for hset (e.g., 16). Overrides the standard workload's "
+        "field size; per-item user data is recomputed as field+value. Only affects hset.",
+    )
     mem_parser.add_argument("--expire", action="store_true", help="Also test with expiration enabled")
     mem_parser.add_argument(
         "--populate-mode",
@@ -1819,6 +1831,41 @@ def _memory_user_data_bytes(workload: "MemoryWorkload", value_size: int) -> int:
     raise ValueError(f"Unknown memory workload command: {workload.command}")
 
 
+def _memory_workload_label(workload: "MemoryWorkload") -> str:
+    """Label naming every user-data dimension of a memory workload (set-k16-v64, hset-f16-v16, zadd-m20)."""
+    if workload.command == "set":
+        label = f"set-k{workload.key_size}-v{workload.value_size}"
+    elif workload.command == "hset":
+        label = f"hset-f{workload.field_size}-v{workload.value_size}"
+    else:
+        label = f"{workload.command}-m{workload.value_size}"
+    return f"{label}-expire" if workload.has_expire else label
+
+
+def _validate_memory_workload_sizes(workload: "MemoryWorkload") -> None:
+    """Reject sizes the populator cannot encode uniquely for MEM_TEST_ITEM_COUNT items.
+
+    Keys, members and fields carry a prefix plus a zero-padded index, so each has a
+    floor below which two items would collide. Values are pure padding and have no floor.
+    """
+    from conductress.sweep.populator import minimum_item_size
+
+    count = config.MEM_TEST_ITEM_COUNT
+    checks: list[tuple[str, str, int]] = []
+    if workload.command == "set":
+        checks.append(("key", "key", workload.key_size))
+    elif workload.command == "hset":
+        checks.append(("field", "f", workload.field_size))
+    else:
+        checks.append(("member", "m", workload.value_size))
+    for name, prefix, size in checks:
+        floor = minimum_item_size(prefix, count)
+        if size < floor:
+            raise ValueError(
+                f"{workload.command} {name} size {size} is below the {floor}-byte minimum for {count:,} unique items"
+            )
+
+
 def handle_queue_add_memory(args: argparse.Namespace) -> int:
     """Handle 'queue add-memory': submit memory efficiency tasks."""
     from conductress.heap_profiler import with_jemalloc_prof
@@ -1844,26 +1891,53 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
         print("Error: No matching workloads found.", file=sys.stderr)
         return 1
 
-    if args.sizes:
+    # Per-type size overrides. --sizes sets the value/member dimension for every type;
+    # set has a second dimension (key) and hset has one too (field), each with its own flag.
+    # Every override is checked against the smallest string the populator can generate
+    # while keeping all MEM_TEST_ITEM_COUNT items unique.
+    def _single_size(raw: str, name: str) -> Optional[int]:
+        if not raw:
+            return None
+        values = _parse_comma_separated_bytes(raw, name)
+        if len(values) != 1:
+            raise ValueError(f"--{name} takes exactly one size")
+        return values[0]
+
+    try:
+        key_size = _single_size(args.key_size, "key-size")
+        field_size = _single_size(args.field_size, "field-size")
+        sizes = _parse_comma_separated_bytes(args.sizes, "sizes") if args.sizes else []
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if key_size is not None:
+        workloads = [replace(wl, key_size=key_size) if wl.command == "set" else wl for wl in workloads]
+    if field_size is not None:
+        workloads = [replace(wl, field_size=field_size) if wl.command == "hset" else wl for wl in workloads]
+
+    if sizes:
+        # Re-derive one workload per (type, size) pair, keeping each type's key/field
+        # sizes and expire variants.
+        workloads = [replace(wl, value_size=size) for wl in workloads for size in sizes]
+
+    if key_size is not None or field_size is not None or sizes:
+        # Recompute the label and per-item user data for every workload whose shape changed.
+        workloads = [
+            replace(
+                wl,
+                label=_memory_workload_label(wl),
+                user_data_bytes=_memory_user_data_bytes(wl, wl.value_size),
+            )
+            for wl in workloads
+        ]
+
+    for wl in workloads:
         try:
-            sizes = _parse_comma_separated_bytes(args.sizes, "sizes")
+            _validate_memory_workload_sizes(wl)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        # Re-derive one workload per (type, size) pair, keeping each type's standard
-        # key/field sizes and expire variants, with per-item user data computed per size.
-        base_workloads = workloads
-        workloads = []
-        for wl in base_workloads:
-            for size in sizes:
-                workloads.append(
-                    replace(
-                        wl,
-                        value_size=size,
-                        label=f"{wl.command}-custom-{size}",
-                        user_data_bytes=_memory_user_data_bytes(wl, size),
-                    )
-                )
 
     queue = _TaskSubmitter(args)
     for wl in workloads:

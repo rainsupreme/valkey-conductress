@@ -38,6 +38,11 @@ def _pad_to_size(prefix: str, index: int, target_bytes: int) -> str:
     return base + "x" * (target_bytes - len(base))
 
 
+def minimum_item_size(prefix: str, count: int) -> int:
+    """Smallest target_bytes that _pad_to_size can encode for every index below count."""
+    return len(f"{prefix}:{count - 1:07d}:")
+
+
 def _operations(command: str, count: int, key_size: int, value_size: int, field_size: int, mode: str):
     """Yield ('add', ...) / ('del', ...) op tuples to build a `count`-item structure
     of the given command type under the given populate mode.
