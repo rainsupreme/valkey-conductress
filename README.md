@@ -149,10 +149,12 @@ conductress queue add --tests get,set,mget --sizes 512,1KB --io-threads 1,9 --pi
 conductress queue add-insertion --specifier my-branch --insertions 20M --key-size 16 --size 16 --maxmemory 8GB --max-rss 12GB
 ```
 
-**`add-memory`** — Queue memory-efficiency tasks that measure per-item overhead across data types. One task per type per size. Add `--expire` to also test with expiration, or `--settle` to sample steady-state memory after background reclamation.
+**`add-memory`** — Queue memory-efficiency tasks that measure per-item overhead across data types. One task per type per size. `--sizes` sets the value/member size for every type; `--key-size` (set) and `--field-size` (hset) set the other user-data dimension, so any shape is queueable (defaults keep each type's standard shape). Keys, fields and members carry a unique index, so each has a small minimum size; values do not. Add `--expire` to also test with expiration, or `--settle` to sample steady-state memory after background reclamation.
 
 ```bash
-conductress queue add-memory --types set,zadd,hset --sizes 8,20,64
+conductress queue add-memory --types set,zadd,hset --sizes 16,20,64
+conductress queue add-memory --types set --key-size 32 --sizes 16 --expire
+conductress queue add-memory --types hset --field-size 16 --sizes 16
 ```
 
 **`add-mixed`** — Queue a mixed GET/SET throughput task driven by cachecannon. `--set-ratio` sets the write percentage (e.g. `20` = 20% SET / 80% GET). Every other default is the epoch-3 mixed sweep's shape (400 connections, 8 client threads, 16 B values, io-threads 7, pipeline 10, 10 s warmup, 30 s scored, 5 repetitions), so a cell queued with only `--set-ratio 20` is comparable with that sweep's points.

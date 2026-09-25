@@ -503,7 +503,7 @@ class TestQueueAddMemorySubcommand:
                 "--types",
                 "zadd,sadd",
                 "--sizes",
-                "8,20,64",
+                "12,20,64",
             ]
         )
         assert exit_code == 0
@@ -535,6 +535,151 @@ class TestQueueAddMemorySubcommand:
         assert exit_code == 0
         task = mock_queue.submit_task.call_args[0][0]
         assert task.user_data_bytes == task.key_size + 100
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_field_size_overrides_hset(self, mock_queue_cls):
+        """--field-size replaces the hset workload's field size and recomputes user data."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "hset", "--field-size", "16"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.field_size == 16
+        assert task.val_sizes == [64]
+        assert task.user_data_bytes == 16 + 64
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_field_size_combines_with_sizes(self, mock_queue_cls):
+        """--field-size and --sizes together give a symmetric hset workload."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add-memory",
+                "--source",
+                "repo1",
+                "--specifier",
+                "x",
+                "--types",
+                "hset",
+                "--field-size",
+                "16",
+                "--sizes",
+                "16",
+            ]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.field_size == 16
+        assert task.val_sizes == [16]
+        assert task.user_data_bytes == 32
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_field_size_ignored_for_non_hset(self, mock_queue_cls):
+        """--field-size leaves set/zadd/sadd workloads unchanged."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set", "--field-size", "16"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.field_size == 0
+        assert task.user_data_bytes == task.key_size + 64
+
+    def test_add_memory_field_size_rejects_list(self):
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "hset", "--field-size", "8,16"]
+        )
+        assert exit_code == 1
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_key_size_overrides_set(self, mock_queue_cls):
+        """--key-size replaces the set workload's key size and recomputes user data."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "set", "--key-size", "32"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.key_size == 32
+        assert task.val_sizes == [64]
+        assert task.user_data_bytes == 32 + 64
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_key_size_applies_to_expire_variant(self, mock_queue_cls):
+        """--key-size and --sizes shape both the plain and the --expire set workloads."""
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            [
+                "queue",
+                "add-memory",
+                "--source",
+                "repo1",
+                "--specifier",
+                "x",
+                "--types",
+                "set",
+                "--key-size",
+                "24",
+                "--sizes",
+                "8",
+                "--expire",
+            ]
+        )
+        assert exit_code == 0
+        tasks = [c[0][0] for c in mock_queue.submit_task.call_args_list]
+        assert len(tasks) == 2
+        assert {t.has_expire for t in tasks} == {False, True}
+        assert all(t.key_size == 24 and t.val_sizes == [8] and t.user_data_bytes == 32 for t in tasks)
+
+    @patch("conductress.cli.TaskQueue")
+    def test_add_memory_key_size_ignored_for_non_set(self, mock_queue_cls):
+        mock_queue = MagicMock()
+        mock_queue_cls.return_value = mock_queue
+
+        exit_code = main(
+            ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "hset", "--key-size", "32"]
+        )
+        assert exit_code == 0
+        task = mock_queue.submit_task.call_args[0][0]
+        assert task.key_size == 0
+        assert task.field_size == 64
+
+    def test_add_memory_rejects_sizes_below_populator_floor(self):
+        """A key/field/member too short to hold a unique index for every item is refused."""
+        for extra in (
+            ["--types", "set", "--key-size", "8"],
+            ["--types", "hset", "--field-size", "4"],
+            ["--types", "zadd", "--sizes", "6"],
+        ):
+            exit_code = main(["queue", "add-memory", "--source", "repo1", "--specifier", "x", *extra])
+            assert exit_code == 1, extra
+
+    def test_memory_workload_label_names_every_dimension(self):
+        from conductress.cli import _memory_workload_label
+        from conductress.sweep.memory_coordinator import MemoryWorkload
+
+        assert _memory_workload_label(MemoryWorkload(command="set", key_size=16, value_size=16)) == "set-k16-v16"
+        assert (
+            _memory_workload_label(MemoryWorkload(command="set", key_size=16, value_size=16, has_expire=True))
+            == "set-k16-v16-expire"
+        )
+        assert (
+            _memory_workload_label(MemoryWorkload(command="hset", key_size=0, value_size=16, field_size=16))
+            == "hset-f16-v16"
+        )
+        assert _memory_workload_label(MemoryWorkload(command="zadd", key_size=0, value_size=20)) == "zadd-m20"
 
     @patch("conductress.cli.TaskQueue")
     def test_add_memory_builds_with_jemalloc_prof(self, mock_queue_cls):
