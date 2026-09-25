@@ -23,12 +23,13 @@ def mock_config():
         yield config
 
 
-def _make_subscriber(workload_id="get-k16-v16-t7-p10", urgency=1.0, has_nightly=False, queues_task=True):
+def _make_subscriber(workload_id="get-k16-v16-t7-p10", urgency=1.0, has_nightly=False, queues_task=True, tier=0):
     """Create a mock subscriber with configurable behavior."""
     sub = MagicMock()
     sub.workload_id = workload_id
     sub.get_urgency_score = MagicMock(return_value=urgency)
     sub.has_nightly_task = MagicMock(return_value=has_nightly)
+    sub.schedule_tier = MagicMock(return_value=tier)
 
     def on_queue_empty():
         if queues_task:
@@ -183,6 +184,74 @@ class TestScheduleNext:
             runner._schedule_next()  # Should not raise
 
         sub.on_queue_empty.assert_called_once()
+
+
+class TestScheduleTier:
+    """A tier-1 (deferred) series queues only after every tier-0 series has nothing to queue."""
+
+    @staticmethod
+    def _run(runner, queued_by):
+        """Drive _schedule_next; ``queued_by`` names the subscribers whose on_queue_empty queues a task."""
+        state = {"queued": False}
+
+        def make_side_effect(sub):
+            def on_queue_empty():
+                if sub in queued_by:
+                    state["queued"] = True
+
+            return on_queue_empty
+
+        for sub in runner._subscribers:
+            sub.on_queue_empty = MagicMock(side_effect=make_side_effect(sub))
+        with patch("conductress.task_runner.TaskQueue") as MockQueue:
+            queue = MagicMock()
+            queue.get_all_tasks.side_effect = lambda: [MagicMock()] if state["queued"] else []
+            MockQueue.return_value = queue
+            runner._schedule_next()
+
+    def test_deferred_series_yields_to_lower_urgency_normal_series(self, runner, mock_config):
+        perf = _make_subscriber("get-k16-v16-t7-p10", urgency=0.5, tier=0)
+        memory = _make_subscriber("memory-sadd-m20", urgency=float("inf"), tier=1)
+        runner._subscribers = [memory, perf]
+
+        self._run(runner, queued_by={perf})
+
+        perf.on_queue_empty.assert_called_once()
+        memory.on_queue_empty.assert_not_called()
+
+    def test_deferred_series_runs_when_normal_series_have_nothing(self, runner, mock_config):
+        perf = _make_subscriber("get-k16-v16-t7-p10", urgency=0.0, tier=0)
+        memory = _make_subscriber("memory-sadd-m20", urgency=2.0, tier=1)
+        runner._subscribers = [memory, perf]
+
+        self._run(runner, queued_by={memory})
+
+        # perf was asked first (tier 0) and queued nothing; memory then ran.
+        perf.on_queue_empty.assert_called_once()
+        memory.on_queue_empty.assert_called_once()
+
+    def test_tier_zero_memory_task_competes_on_urgency(self, runner, mock_config):
+        """A memory bisection (tier 0) still outranks a lower-urgency throughput series."""
+        perf = _make_subscriber("get-k16-v16-t7-p10", urgency=1.0, tier=0)
+        memory = _make_subscriber("memory-sadd-m20", urgency=50.0, tier=0)
+        runner._subscribers = [perf, memory]
+
+        self._run(runner, queued_by={memory})
+
+        memory.on_queue_empty.assert_called_once()
+        perf.on_queue_empty.assert_not_called()
+
+    def test_subscriber_without_tier_is_normal(self, runner, mock_config):
+        """Duck-typed subscribers that predate tiers schedule as tier 0."""
+        legacy = _make_subscriber("get-k16-v16-t7-p10", urgency=1.0)
+        del legacy.schedule_tier
+        memory = _make_subscriber("memory-sadd-m20", urgency=float("inf"), tier=1)
+        runner._subscribers = [memory, legacy]
+
+        self._run(runner, queued_by={legacy})
+
+        legacy.on_queue_empty.assert_called_once()
+        memory.on_queue_empty.assert_not_called()
 
 
 class TestUrgencyTierOrdering:

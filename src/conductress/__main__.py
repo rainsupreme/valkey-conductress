@@ -158,17 +158,25 @@ def main() -> None:
 
     reset_series_parser = sweep_sub.add_parser(
         "reset-series",
-        help="Clear one series' history: back up and delete its state file and relocate its queued task files",
+        help="Clear a series' history: back up and delete its state file and relocate its queued task files",
     )
     reset_series_parser.add_argument(
         "--epoch",
         default="v3",
         help="Epoch the series belongs to (only 'v3' is supported)",
     )
-    reset_series_parser.add_argument(
+    reset_series_target = reset_series_parser.add_mutually_exclusive_group(required=True)
+    reset_series_target.add_argument(
         "--workload",
-        required=True,
-        help="Workload label, e.g. get-k16-v16-t7-p1 (unprefixed; --engine adds the engine prefix)",
+        help=(
+            "Workload label: a throughput series such as get-k16-v16-t7-p1, or a memory series such as "
+            "memory-sadd-m20 (unprefixed; --engine adds the engine prefix)"
+        ),
+    )
+    reset_series_target.add_argument(
+        "--all-memory",
+        action="store_true",
+        help="Reset every memory series on the roster for the given engine, under one timestamp",
     )
     reset_series_parser.add_argument(
         "--engine",
@@ -535,22 +543,21 @@ def main() -> None:
             )
 
         elif args.sweep_command == "reset-series":
-            from conductress.sweep.reset_series import reset_series
+            from conductress.sweep.reset_series import reset_all_memory_series, reset_series
 
-            try:
-                reset_result = reset_series(
-                    args.workload,
-                    epoch=args.epoch,
-                    engine=args.engine,
-                    dry_run=args.dry_run,
-                    force=args.force,
-                )
-            except ValueError as exc:
-                print(f"error: {exc}")
+            if args.epoch != "v3":
+                print(f"error: only the v3 epoch is supported, got {args.epoch!r}")
                 sys.exit(2)
-            for line in reset_result.summary_lines():
-                print(line)
-            if reset_result.refused_reason:
+            if args.all_memory:
+                reset_results = reset_all_memory_series(engine=args.engine, dry_run=args.dry_run, force=args.force)
+            else:
+                reset_results = [
+                    reset_series(args.workload, engine=args.engine, dry_run=args.dry_run, force=args.force)
+                ]
+            for reset_result in reset_results:
+                for line in reset_result.summary_lines():
+                    print(line)
+            if any(r.refused_reason for r in reset_results):
                 sys.exit(1)
 
         else:

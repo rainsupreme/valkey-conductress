@@ -1868,6 +1868,17 @@ def _validate_memory_workload_sizes(workload: "MemoryWorkload") -> None:
             )
 
 
+def _default_memory_shapes(roster: list, types: list[str], *, has_expire: bool) -> list:
+    """The first roster shape for each requested type at the given expire setting, in roster order."""
+    seen: set[str] = set()
+    shapes = []
+    for wl in roster:
+        if wl.command in types and wl.has_expire == has_expire and wl.command not in seen:
+            seen.add(wl.command)
+            shapes.append(wl)
+    return shapes
+
+
 def handle_queue_add_memory(args: argparse.Namespace) -> int:
     """Handle 'queue add-memory': submit memory efficiency tasks."""
     from conductress.heap_profiler import with_jemalloc_prof
@@ -1884,10 +1895,14 @@ def handle_queue_add_memory(args: argparse.Namespace) -> int:
             print(f"Error: Invalid type '{t}'. Valid: {', '.join(valid_types)}", file=sys.stderr)
             return 1
 
-    # Match workloads from MEMORY_WORKLOADS config
-    workloads = [w for w in MEMORY_WORKLOADS if w.command in types and not w.has_expire]
+    # One base shape per requested type, taken from the sweep roster: the first
+    # roster entry for each (type, expire) pair.  The roster carries several
+    # shapes per type (a 64-byte and a 16-byte string, for instance); the size
+    # flags below derive the others from this base, so a request for a type
+    # yields one task, not one per roster shape.
+    workloads = _default_memory_shapes(MEMORY_WORKLOADS, types, has_expire=False)
     if args.expire:
-        workloads += [w for w in MEMORY_WORKLOADS if w.command in types and w.has_expire]
+        workloads += _default_memory_shapes(MEMORY_WORKLOADS, types, has_expire=True)
 
     if not workloads:
         print("Error: No matching workloads found.", file=sys.stderr)

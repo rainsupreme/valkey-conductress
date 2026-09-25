@@ -379,7 +379,9 @@ class TaskRunner:
 
         Called after every task completion/failure. Each coordinator proposes
         its next task via urgency scoring. NIGHTLY (untested HEAD) gets
-        absolute priority over all urgency scores.
+        absolute priority over all urgency scores; below that, a coordinator's
+        ``schedule_tier`` groups candidates before urgency orders them, so a
+        deferred series (memory backfill) waits for every normal series.
         """
         if not self._subscribers:
             return
@@ -407,12 +409,18 @@ class TaskRunner:
             if wid and not config.is_allowed(wid, getattr(sub, "epoch_id", "v1")):
                 continue
             score = getattr(sub, "get_urgency_score", lambda: 0.0)()
-            candidates.append((score, sub))
-        # Sort by urgency (highest first) and let the winner queue. The sort is
-        # stable over an epoch-ordered list, so equal urgency breaks toward the
-        # higher-precedence epoch instead of registration order.
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        for _score, sub in candidates:
+            tier = getattr(sub, "schedule_tier", lambda: 0)()
+            if not isinstance(tier, int):  # subscribers are duck-typed; an absent tier is normal
+                tier = 0
+            candidates.append((tier, score, sub))
+        # Tier first, then urgency (highest first), and let the winner queue.  A
+        # deferred series (tier 1: a memory series whose next task is gap-filling
+        # backfill) queues only once every tier-0 series has nothing to queue.
+        # The sort is stable over an epoch-ordered list, so equal tier and
+        # urgency break toward the higher-precedence epoch instead of
+        # registration order.
+        candidates.sort(key=lambda x: (x[0], -x[1]))
+        for _tier, _score, sub in candidates:
             sub.on_queue_empty()
             queue = TaskQueue()
             if queue.get_all_tasks():
