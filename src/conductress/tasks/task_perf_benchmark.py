@@ -26,7 +26,13 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, MetricData
-from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    reset_memory_peaks,
+    servers_by_role,
+)
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec
@@ -777,15 +783,18 @@ class PerfTaskRunner(BaseTaskRunner):
                 # the cell; a failed connect leaves sample_errors set.
                 mem_sampler = MemorySampler(server.ip, server.port)
                 mem_sampler.start()
+                servers = servers_by_role(server, topology_group.replicas)
                 try:
-                    avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
+                    avg_rps = await self._execute_benchmark_loop(
+                        command_string, server, rep, effective_reps, reset_servers=servers
+                    )
                 finally:
                     mem_sampler.stop()
                 # After the scored window, before the server is stopped: read
                 # INFO memory per server and assemble this rep's data.memory.
+                # The peaks were re-armed at warmup end (self._memory_resets).
                 try:
-                    servers = servers_by_role(server, topology_group.replicas)
-                    memory_records.append(await collect_memory_after(servers, mem_sampler))
+                    memory_records.append(await collect_memory_after(servers, mem_sampler, self._memory_resets))
                 except Exception as exc:  # capture must never fail the cell
                     self.logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
                 per_run_rps.append(avg_rps)
@@ -969,11 +978,24 @@ class PerfTaskRunner(BaseTaskRunner):
                 f"--threads {self.bench_threads}{seed_arg} -q {iteration_args} {self.test_command}"
             )
 
-    async def _execute_benchmark_loop(self, command_string: str, server: "Server", rep: int, total_reps: int) -> float:
-        """Execute one benchmark run (warmup + measurement). Returns avg RPS."""
+    async def _execute_benchmark_loop(
+        self,
+        command_string: str,
+        server: "Server",
+        rep: int,
+        total_reps: int,
+        reset_servers: Optional[dict[str, Any]] = None,
+    ) -> float:
+        """Execute one benchmark run (warmup + measurement). Returns avg RPS.
+
+        ``reset_servers`` (role -> Server) has its memory peaks re-armed the
+        moment warmup ends, so ``data.memory`` describes the scored window
+        only; the reset records land in ``self._memory_resets``.
+        """
         benchmark_update_interval = BENCHMARK_UPDATE_INTERVAL
         self._current_rep = rep
         self.rps_data = []
+        self._memory_resets: Optional[dict[str, dict[str, Any]]] = None
 
         command = RealtimeCommand(command_string)
         self.logger.info(
@@ -1029,6 +1051,12 @@ class PerfTaskRunner(BaseTaskRunner):
             elif warming_up and now >= test_start_time:
                 self.rps_data = []
                 warming_up = False
+                # Scored window opens: reset the kernel/cgroup peaks and record
+                # the engine floors so data.memory excludes prefill and warmup.
+                # Done before perf stat arms so the INFO round-trip is not
+                # counted in the profiled window.
+                if reset_servers:
+                    self._memory_resets = await reset_memory_peaks(reset_servers)
                 if command.p is not None:
                     client_cpu_start = sample_process_tree_cpu(command.p.pid)
                     client_cpu_start_time = time.monotonic()

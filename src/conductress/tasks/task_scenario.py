@@ -36,7 +36,13 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
-from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    reset_memory_peaks,
+    servers_by_role,
+)
 from conductress.memtier import (
     MEMTIER_CLIENTS,
     MEMTIER_KEYSPACE,
@@ -1529,6 +1535,19 @@ class ScenarioTaskRunner(BaseTaskRunner):
                 self.status.steps_completed = rep * 3 + 1
                 self.file_protocol.write_status(self.status)
 
+                # Prefill is done: reset the kernel/cgroup peaks and record the
+                # engine floors on every server so data.memory describes the
+                # scenario (overlay + background load), not the prefill's own
+                # transient. The scenario has no warmup of its own; the whole
+                # overlay window is the measured event.
+                mem_servers: Dict[str, Any] = {}
+                memory_resets: Optional[Dict[str, Dict[str, Any]]] = None
+                try:
+                    mem_servers = servers_by_role(server, topology_group.replicas)
+                    memory_resets = await reset_memory_peaks(mem_servers)
+                except Exception as exc:  # capture must never fail the cell
+                    logger.warning("memory peak reset failed on rep %d: %s", rep + 1, exc)
+
                 try:
                     # Perf stat: start before measurement
                     if self.perf_stat_enabled:
@@ -1610,8 +1629,7 @@ class ScenarioTaskRunner(BaseTaskRunner):
                     if mem_sampler is not None:
                         mem_sampler.stop()
                     try:
-                        servers = servers_by_role(server, topology_group.replicas)
-                        memory_records.append(await collect_memory_after(servers, mem_sampler))
+                        memory_records.append(await collect_memory_after(mem_servers, mem_sampler, memory_resets))
                     except Exception as exc:  # capture must never fail the cell
                         logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
 

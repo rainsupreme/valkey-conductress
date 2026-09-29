@@ -16,7 +16,7 @@ import logging
 import time
 from dataclasses import dataclass
 from statistics import median, stdev
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from conductress.cachecannon import (  # noqa: F401  (re-exported for callers/tests)
     DEFAULT_CACHECANNON_BINARY,
@@ -41,7 +41,13 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    reset_memory_peaks,
+    servers_by_role,
+)
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec
@@ -620,6 +626,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 info_t1_time: Optional[float] = None
                 output_lines: list[str] = []
                 mem_sampler: Optional[MemorySampler] = None
+                memory_resets: Optional[dict[str, dict[str, Any]]] = None
                 try:
                     # Launch cachecannon -- it handles its own prefill and warmup
                     command = RealtimeCommand(command_string)
@@ -638,10 +645,16 @@ class CachecannonTaskRunner(BaseTaskRunner):
                             output_lines.append(line)
                             if not window_started and is_scored_sample_line(line):
                                 window_started = True
-                                # Scored window just opened: begin 1 Hz memory
-                                # sampling on its own connection (independent of
-                                # the perf/info opt-ins below).
+                                # Scored window just opened: reset the kernel/
+                                # cgroup peaks and record the engine floors so
+                                # data.memory excludes cachecannon's prefill and
+                                # warmup, then begin 1 Hz memory sampling on its
+                                # own connection (independent of the perf/info
+                                # opt-ins below).
                                 if mem_sampler is None:
+                                    memory_resets = await reset_memory_peaks(
+                                        servers_by_role(server, topology_group.replicas)
+                                    )
                                     mem_sampler = MemorySampler(server.ip, server.port)
                                     mem_sampler.start()
                             line, _ = command.poll_output()
@@ -678,7 +691,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                         mem_sampler.stop()
                     try:
                         servers = servers_by_role(server, topology_group.replicas)
-                        memory_records.append(await collect_memory_after(servers, mem_sampler))
+                        memory_records.append(await collect_memory_after(servers, mem_sampler, memory_resets))
                     except Exception as exc:  # capture must never fail the cell
                         self.logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
 

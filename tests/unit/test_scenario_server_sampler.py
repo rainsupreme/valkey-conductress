@@ -339,6 +339,7 @@ class _FakeTopologyGroup:
 
     def __init__(self, *args, **kwargs):  # pylint: disable=unused-argument
         self.primary = _FakeTopologyGroup.server
+        self.replicas = []
 
     @classmethod
     def for_task(cls, *args, **kwargs):  # pylint: disable=unused-argument

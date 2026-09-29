@@ -19,6 +19,34 @@ consumer can pick the number that matches the question:
 Every reader returns ``None`` rather than raising when a field or file is
 absent (older Valkey, a remote host, a kernel without ``memory.peak``): a
 missing number must never fail a benchmark cell.
+
+Window
+------
+All three peaks are monotonic since server start, and after a multi-million
+key prefill the largest allocation the server ever sees is usually the prefill
+itself (hashtable rehash holds two tables at once), so an un-reset peak says
+nothing about the load. :func:`reset_memory_peaks` runs at the start of the
+scored window (after the generator's warmup) so the recorded numbers describe
+the measured load only:
+
+* kernel: writing ``5`` to ``/proc/<pid>/clear_refs`` resets ``VmHWM`` to the
+  current ``VmRSS`` (Linux >= 4.0, same uid, no root). Exact and unsampled;
+  this is the primary windowed number. ``vm_rss_at_reset`` is kept so
+  ``rss_hwm - vm_rss_at_reset`` is the transient.
+* engine: ``used_memory_peak`` CANNOT be reset over the wire (``CONFIG
+  RESETSTAT`` does not touch ``stat_peak_memory``; only ``initServer`` zeroes
+  it). Instead ``used_memory_peak_at_reset`` is recorded and the window's
+  engine peak is derived: if the end-of-run peak exceeds the floor, the window
+  set a new peak and ``used_memory_peak`` is it (10 Hz cron-sampled); otherwise
+  the window never rose above prefill and the best estimate is the 1 Hz
+  sampler's max ``used_memory`` over the window. ``used_memory_window_peak``
+  plus ``used_memory_window_peak_source`` (``engine`` / ``sampler``) carry that.
+* cgroup: ``memory.peak`` is writable only on Linux >= 6.12 and only when the
+  cgroup is writable by this user; in Stage 1 that is often false, so the
+  field stays best-effort and ``reset.cgroup_peak`` records whether it took.
+
+Each server's record carries a ``reset`` sub-dict saying which resets
+succeeded and when, or ``None`` when the task did not reset (whole-run peak).
 """
 
 from __future__ import annotations
@@ -35,7 +63,9 @@ logger = logging.getLogger(__name__)
 
 # The current shape of the ``data.memory`` sub-dict. Bump when the layout
 # changes so a downstream consumer can branch on it.
-MEMORY_SCHEMA_VERSION = 1
+#   1: per-server peaks + 1 Hz samples, whole-run window
+#   2: + per-server ``reset`` record (peaks re-armed at scored-window start)
+MEMORY_SCHEMA_VERSION = 2
 
 # INFO memory fields captured into the per-server record. Absent keys (older
 # Valkey, or a build without the allocator section) are recorded as None.
@@ -60,7 +90,7 @@ _SAMPLE_INT_FIELDS = (
 )
 
 # Peak fields that are reduced by max() when folding multiple reps together.
-PEAK_FIELDS = ("used_memory_peak", "rss_hwm", "vm_rss", "used_memory_rss", "cgroup_peak")
+PEAK_FIELDS = ("used_memory_peak", "used_memory_window_peak", "rss_hwm", "vm_rss", "used_memory_rss", "cgroup_peak")
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
 
@@ -318,9 +348,8 @@ class MemorySampler:
     def start(self) -> None:
         try:
             self._client = self._client_factory()
-            connect = getattr(self._client, "connect", None)
-            if callable(connect):
-                connect()
+            if hasattr(self._client, "connect"):
+                self._client.connect()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("MemorySampler could not connect to %s:%s: %s", self.host, self.port, exc)
             self.sample_errors += 1
@@ -371,12 +400,19 @@ class MemorySampler:
         return downsample(self._rows, self.max_points)
 
 
-def build_server_memory_record(role: str, pid: Optional[int], info_fields: Dict[str, str]) -> Dict[str, Any]:
+def build_server_memory_record(
+    role: str,
+    pid: Optional[int],
+    info_fields: Dict[str, str],
+    reset: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Assemble one server's memory record from an INFO dict + /proc + cgroup.
 
     ``info_fields`` is the parsed ``INFO memory`` dict read after the scored
     window. ``pid`` is the server's main pid (the /proc and cgroup reads are
-    skipped when it is ``None``, e.g. a remote host).
+    skipped when it is ``None``, e.g. a remote host). ``reset`` is the record
+    :func:`reset_memory_peaks` produced for this server at window start, or
+    ``None`` when the peaks were not re-armed (whole-run window).
     """
     info = parse_info_memory(info_fields)
     record: Dict[str, Any] = {
@@ -393,6 +429,7 @@ def build_server_memory_record(role: str, pid: Optional[int], info_fields: Dict[
         "allocator_resident": info["allocator_resident"],
         "allocator_active": info["allocator_active"],
         "allocator_frag_ratio": info["allocator_frag_ratio"],
+        "reset": reset,
     }
     if pid is not None and pid > 0:
         hwm = read_vm_hwm(pid)
@@ -404,10 +441,40 @@ def build_server_memory_record(role: str, pid: Optional[int], info_fields: Dict[
     return record
 
 
+def window_engine_peak(
+    used_memory_peak: Optional[float],
+    reset: Optional[Dict[str, Any]],
+    samples: List[Dict[str, Any]],
+) -> tuple:
+    """Best estimate of the engine's ``used_memory`` peak inside the scored window.
+
+    ``used_memory_peak`` cannot be reset over the wire, so: if the end-of-run
+    peak exceeds the peak recorded at window start, the window set it and the
+    engine's own (cron-sampled) number is returned with source ``engine``. If
+    not, the window never rose above the prefill's high-water mark, and the max
+    of the 1 Hz sampler's ``used_memory`` at or after the reset time is returned
+    with source ``sampler`` (``None`` when there are no such samples). With no
+    reset record the whole-run peak is returned as-is (source ``engine``).
+    """
+    if reset is None:
+        return used_memory_peak, "engine" if used_memory_peak is not None else None
+    floor = reset.get("used_memory_peak_at_reset")
+    if used_memory_peak is not None and (floor is None or used_memory_peak > floor):
+        return used_memory_peak, "engine"
+    t0 = reset.get("t") or 0.0
+    values = [
+        row["used_memory"] for row in samples if row.get("used_memory") is not None and (row.get("t") or 0.0) >= t0
+    ]
+    if values:
+        return max(values), "sampler"
+    return None, None
+
+
 def collect_memory_record(
     servers: Dict[str, Any],
     sampler: Optional[MemorySampler],
     info_by_role: Dict[str, Dict[str, str]],
+    resets: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build the ``data.memory`` sub-dict.
 
@@ -416,6 +483,8 @@ def collect_memory_record(
     task read after the scored window (one INFO round-trip per server, reused
     here so this function issues no I/O to the engine). ``sampler`` supplies the
     1 Hz series and its error count; ``None`` records an empty series.
+    ``resets`` maps role -> the :func:`reset_memory_peaks` record for that
+    server (absent role or ``None`` -> whole-run window for that server).
     """
     server_records: Dict[str, Any] = {}
     for role, server in servers.items():
@@ -423,7 +492,12 @@ def collect_memory_record(
         if pid is not None and pid < 0:
             pid = None
         info_fields = info_by_role.get(role, {})
-        server_records[role] = build_server_memory_record(role, pid, info_fields)
+        reset = (resets or {}).get(role)
+        record = build_server_memory_record(role, pid, info_fields, reset)
+        record["used_memory_window_peak"], record["used_memory_window_peak_source"] = window_engine_peak(
+            record["used_memory_peak"], reset, sampler.raw_samples() if sampler is not None else []
+        )
+        server_records[role] = record
     return {
         "schema": MEMORY_SCHEMA_VERSION,
         "servers": server_records,
@@ -489,13 +563,18 @@ def servers_by_role(primary: Any, replicas: Optional[List[Any]] = None) -> Dict[
     return servers
 
 
-async def collect_memory_after(servers: Dict[str, Any], sampler: Optional["MemorySampler"]) -> Dict[str, Any]:
+async def collect_memory_after(
+    servers: Dict[str, Any],
+    sampler: Optional["MemorySampler"],
+    resets: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Read ``INFO memory`` once per server and assemble ``data.memory``.
 
     Call this after the scored window and before stopping the servers. Each
     server must expose an async ``info("memory")`` and a ``valkey_pid``. A
     server whose INFO read fails contributes an empty field set (all null)
-    rather than failing the cell.
+    rather than failing the cell. ``resets`` is what :func:`reset_memory_peaks`
+    returned at window start (or ``None`` if the task did not reset).
     """
     info_by_role: Dict[str, Dict[str, str]] = {}
     for role, server in servers.items():
@@ -504,4 +583,96 @@ async def collect_memory_after(servers: Dict[str, Any], sampler: Optional["Memor
         except Exception as exc:  # a failed INFO must not fail the cell
             logger.warning("INFO memory failed for %s: %s", role, exc)
             info_by_role[role] = {}
-    return collect_memory_record(servers, sampler, info_by_role)
+    return collect_memory_record(servers, sampler, info_by_role, resets)
+
+
+# Shell snippet run on the server's host to re-arm the kernel high-water mark
+# and report the RSS it was reset to. ``clear_refs`` = 5 resets VmHWM to the
+# current VmRSS (Linux >= 4.0); the write needs the same uid as the process,
+# which the runner has. Prints ``CLEAR_REFS_OK`` only when the write took.
+_CLEAR_REFS_CMD = (
+    "sh -c 'echo 5 > /proc/{pid}/clear_refs && echo CLEAR_REFS_OK; grep -E \"^Vm(RSS|HWM):\" /proc/{pid}/status'"
+)
+
+# Best-effort cgroup v2 ``memory.peak`` reset (Linux >= 6.12, cgroup must be
+# writable by this user). Resolves the pid's unified cgroup path on the host.
+_CGROUP_RESET_CMD = (
+    'sh -c \'p=$(sed -n "s/^0:://p" /proc/{pid}/cgroup); '
+    'f="/sys/fs/cgroup${{p}}/memory.peak"; '
+    '[ -n "$p" ] && [ -w "$f" ] && echo reset > "$f" && echo CGROUP_OK\''
+)
+
+
+def _parse_clear_refs_output(stdout: str) -> Dict[str, Any]:
+    """Pull ``clear_refs`` success and the post-reset VmRSS/VmHWM from the snippet output."""
+    result: Dict[str, Any] = {"clear_refs": False, "vm_rss_at_reset": None, "vm_hwm_at_reset": None}
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if line == "CLEAR_REFS_OK":
+            result["clear_refs"] = True
+        elif line.startswith("VmRSS:"):
+            result["vm_rss_at_reset"] = _kb_line_to_bytes(line)
+        elif line.startswith("VmHWM:"):
+            result["vm_hwm_at_reset"] = _kb_line_to_bytes(line)
+    return result
+
+
+async def reset_server_memory_peaks(server: Any, clock: Callable[[], float] = time.time) -> Dict[str, Any]:
+    """Re-arm the resettable peaks on one server and record the floors of the rest.
+
+    Writes ``/proc/<pid>/clear_refs`` on the server's host (kernel ``VmHWM``),
+    tries the cgroup ``memory.peak`` reset, and reads ``INFO memory`` for the
+    engine floors (``used_memory_peak`` cannot be reset over the wire). Each
+    step is best-effort and independently recorded; nothing here raises into
+    the cell. The returned record is stored under the server's ``reset`` key::
+
+        {"t": wall, "clear_refs": bool, "cgroup_peak": bool,
+         "used_memory_at_reset": int|None, "used_memory_peak_at_reset": int|None,
+         "vm_rss_at_reset": int|None, "vm_hwm_at_reset": int|None}
+    """
+    record: Dict[str, Any] = {
+        "t": clock(),
+        "clear_refs": False,
+        "cgroup_peak": False,
+        "used_memory_at_reset": None,
+        "used_memory_peak_at_reset": None,
+        "vm_rss_at_reset": None,
+        "vm_hwm_at_reset": None,
+    }
+    # Engine floors: current usage and the (unresettable) peak so far.
+    try:
+        fields = await server.info("memory")
+        record["used_memory_at_reset"] = _to_int(fields.get("used_memory"))
+        record["used_memory_peak_at_reset"] = _to_int(fields.get("used_memory_peak"))
+    except Exception as exc:  # never fail the cell
+        logger.warning("INFO memory at reset failed on %s: %s", getattr(server, "port", "?"), exc)
+    # Kernel and cgroup peaks need the pid on the server's host.
+    pid = getattr(server, "valkey_pid", None)
+    if pid is None or pid <= 0:
+        return record
+    try:
+        stdout, _ = await server.run_host_command(_CLEAR_REFS_CMD.format(pid=pid), check=False)
+        record.update(_parse_clear_refs_output(stdout))
+    except Exception as exc:
+        logger.warning("clear_refs failed for pid %s: %s", pid, exc)
+    try:
+        stdout, _ = await server.run_host_command(_CGROUP_RESET_CMD.format(pid=pid), check=False)
+        record["cgroup_peak"] = "CGROUP_OK" in (stdout or "")
+    except Exception as exc:
+        logger.debug("cgroup memory.peak reset failed for pid %s: %s", pid, exc)
+    return record
+
+
+async def reset_memory_peaks(servers: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Re-arm the peaks on every server in ``servers`` (role -> Server).
+
+    Call at the start of the scored window (after the generator's warmup) and
+    hand the result to :func:`collect_memory_after` as ``resets``. Never raises.
+    """
+    resets: Dict[str, Dict[str, Any]] = {}
+    for role, server in servers.items():
+        try:
+            resets[role] = await reset_server_memory_peaks(server)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("memory peak reset failed for %s: %s", role, exc)
+    return resets

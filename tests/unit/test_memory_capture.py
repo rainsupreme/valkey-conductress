@@ -9,6 +9,7 @@ import pytest
 from conductress.memory_capture import (
     MEMORY_SCHEMA_VERSION,
     MemorySampler,
+    _parse_clear_refs_output,
     build_server_memory_record,
     collect_memory_record,
     downsample,
@@ -18,6 +19,9 @@ from conductress.memory_capture import (
     read_cgroup_memory_peak,
     read_info_memory,
     read_vm_hwm,
+    reset_memory_peaks,
+    reset_server_memory_peaks,
+    window_engine_peak,
 )
 
 # --- INFO parsing ---------------------------------------------------------
@@ -300,3 +304,151 @@ def test_memory_sampler_counts_errors_and_never_raises():
     _t.sleep(0.05)
     sampler.stop()
     assert sampler.sample_errors >= 1
+
+
+# --- peak reset (scored-window semantics) ----------------------------------
+
+
+class FakeResetServer:
+    """A Server stand-in recording the reset calls the helper makes."""
+
+    def __init__(self, pid=4242, info_ok=True, clear_refs_ok=True, cgroup_ok=False, port=6379):
+        self.valkey_pid = pid
+        self.port = port
+        self.ip = "127.0.0.1"
+        self.commands: list = []
+        self.host_commands: list = []
+        self._info_ok = info_ok
+        self._clear_refs_ok = clear_refs_ok
+        self._cgroup_ok = cgroup_ok
+
+    async def run_valkey_command(self, command):
+        self.commands.append(command)
+        return "OK"
+
+    async def info(self, section):
+        assert section == "memory"
+        if not self._info_ok:
+            raise RuntimeError("INFO failed")
+        return parse_info_blob(FULL_INFO)
+
+    async def run_host_command(self, command, check=True, pin_cpus=""):
+        self.host_commands.append(command)
+        if "clear_refs" in command:
+            head = "CLEAR_REFS_OK\n" if self._clear_refs_ok else "sh: cannot create: Permission denied\n"
+            return head + "VmHWM:\t  20480 kB\nVmRSS:\t  10240 kB\n", ""
+        if "memory.peak" in command:
+            return ("CGROUP_OK\n" if self._cgroup_ok else ""), ""
+        raise AssertionError(command)
+
+
+def test_parse_clear_refs_output_success_and_failure():
+    ok = _parse_clear_refs_output("CLEAR_REFS_OK\nVmHWM:\t  20480 kB\nVmRSS:\t  10240 kB\n")
+    assert ok == {"clear_refs": True, "vm_rss_at_reset": 10240 * 1024, "vm_hwm_at_reset": 20480 * 1024}
+    denied = _parse_clear_refs_output("sh: 1: cannot create /proc/1/clear_refs: Permission denied\nVmRSS:\t 5 kB\n")
+    assert denied["clear_refs"] is False
+    assert denied["vm_rss_at_reset"] == 5 * 1024
+    assert denied["vm_hwm_at_reset"] is None
+    assert _parse_clear_refs_output("") == {"clear_refs": False, "vm_rss_at_reset": None, "vm_hwm_at_reset": None}
+
+
+@pytest.mark.asyncio
+async def test_reset_server_memory_peaks_records_floors_and_resets():
+    server = FakeResetServer(cgroup_ok=True)
+    rec = await reset_server_memory_peaks(server, clock=lambda: 1234.5)
+    # No CONFIG RESETSTAT: it does not reset used_memory_peak and would zero
+    # every other INFO stats counter mid-window.
+    assert server.commands == []
+    assert rec["t"] == 1234.5
+    assert rec["used_memory_at_reset"] == 1048576
+    assert rec["used_memory_peak_at_reset"] == 2097152
+    assert rec["clear_refs"] is True
+    assert rec["vm_rss_at_reset"] == 10240 * 1024
+    assert rec["cgroup_peak"] is True
+    # Both host commands name the server pid, never ours.
+    assert all("/proc/4242/" in cmd for cmd in server.host_commands)
+
+
+@pytest.mark.asyncio
+async def test_reset_server_memory_peaks_partial_failures_are_recorded_not_raised():
+    server = FakeResetServer(info_ok=False, clear_refs_ok=False, cgroup_ok=False)
+    rec = await reset_server_memory_peaks(server)
+    assert rec["used_memory_at_reset"] is None
+    assert rec["used_memory_peak_at_reset"] is None
+    assert rec["clear_refs"] is False
+    assert rec["vm_rss_at_reset"] == 10240 * 1024  # the floor is still reported
+    assert rec["cgroup_peak"] is False
+
+
+@pytest.mark.asyncio
+async def test_reset_server_memory_peaks_skips_proc_without_pid():
+    server = FakeResetServer(pid=-1)
+    rec = await reset_server_memory_peaks(server)
+    assert rec["used_memory_peak_at_reset"] == 2097152
+    assert server.host_commands == []
+    assert rec["clear_refs"] is False and rec["vm_rss_at_reset"] is None
+
+
+def test_window_engine_peak_prefers_engine_when_window_set_a_new_peak():
+    reset = {"t": 100.0, "used_memory_peak_at_reset": 2_000_000}
+    assert window_engine_peak(2_500_000, reset, []) == (2_500_000, "engine")
+
+
+def test_window_engine_peak_falls_back_to_sampler_when_prefill_peak_stands():
+    reset = {"t": 100.0, "used_memory_peak_at_reset": 2_000_000}
+    samples = [
+        {"t": 99.0, "used_memory": 1_990_000},  # before the window: ignored
+        {"t": 100.5, "used_memory": 1_700_000},
+        {"t": 101.5, "used_memory": 1_800_000},
+        {"t": 102.5, "used_memory": None},
+    ]
+    assert window_engine_peak(2_000_000, reset, samples) == (1_800_000, "sampler")
+    assert window_engine_peak(2_000_000, reset, []) == (None, None)
+
+
+def test_window_engine_peak_without_reset_is_whole_run():
+    assert window_engine_peak(2_000_000, None, []) == (2_000_000, "engine")
+    assert window_engine_peak(None, None, []) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_reset_memory_peaks_per_role_and_threads_into_record():
+    servers = {"primary": FakeResetServer(pid=11), "replica0": FakeResetServer(pid=22)}
+    resets = await reset_memory_peaks(servers)
+    assert set(resets) == {"primary", "replica0"}
+    info_by_role = {role: parse_info_blob(FULL_INFO) for role in servers}
+    # Peaks not re-armed -> reset is None, window peak is the whole-run engine peak.
+    plain = collect_memory_record(servers, sampler=None, info_by_role=info_by_role)
+    assert plain["servers"]["primary"]["reset"] is None
+    assert plain["servers"]["primary"]["used_memory_window_peak"] == 2097152
+    assert plain["servers"]["primary"]["used_memory_window_peak_source"] == "engine"
+    # Re-armed, end-of-run peak equals the floor -> no samples -> window peak unknown.
+    out = collect_memory_record(servers, sampler=None, info_by_role=info_by_role, resets=resets)
+    assert out["schema"] == MEMORY_SCHEMA_VERSION == 2
+    assert out["servers"]["replica0"]["reset"]["clear_refs"] is True
+    assert out["servers"]["replica0"]["reset"]["vm_rss_at_reset"] == 10240 * 1024
+    assert out["servers"]["replica0"]["used_memory_window_peak"] is None
+    assert out["servers"]["replica0"]["used_memory_window_peak_source"] is None
+
+
+def test_fold_memory_records_keeps_last_rep_reset_and_maxes_window_peak():
+    def rep(t, peak, window, hwm):
+        return {
+            "schema": MEMORY_SCHEMA_VERSION,
+            "servers": {
+                "primary": {
+                    "used_memory_peak": peak,
+                    "used_memory_window_peak": window,
+                    "rss_hwm": hwm,
+                    "reset": {"t": t, "clear_refs": True},
+                }
+            },
+            "samples": [],
+            "sample_errors": 0,
+        }
+
+    folded = fold_memory_records([rep(1.0, 10, 7, 50), rep(2.0, 8, 9, 60)])
+    assert folded["servers"]["primary"]["used_memory_peak"] == 10
+    assert folded["servers"]["primary"]["used_memory_window_peak"] == 9
+    assert folded["servers"]["primary"]["rss_hwm"] == 60
+    assert folded["servers"]["primary"]["reset"]["t"] == 2.0

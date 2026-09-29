@@ -80,7 +80,13 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    reset_memory_peaks,
+    servers_by_role,
+)
 from conductress.rate_search import Done, Probe, RateSearch
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
@@ -619,8 +625,12 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             replica.cpu_profile_start(task.duration, delay_seconds=task.warmup)
         # 1 Hz peak-memory sampler on the measured replica, over the reader
         # window; INFO is read on both primary and replica after it closes.
+        # The peaks on both servers are re-armed when the reader's warmup ends
+        # so data.memory covers the scored window only.
+        mem_servers = servers_by_role(primary, [replica])
         mem_sampler = MemorySampler(replica.ip, replica.port)
         mem_sampler.start()
+        reset_task = asyncio.create_task(self._reset_peaks_after(task.warmup, mem_servers))
         sampler = asyncio.create_task(
             self._sample_loop(group, samples, reader_cmd, writer_cmd, pin_cpus=placement.runner_cpus)
         )
@@ -634,9 +644,13 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             except asyncio.CancelledError:
                 pass
             mem_sampler.stop()
+            memory_resets: Optional[dict] = None
+            if reset_task.done() and not reset_task.cancelled():
+                memory_resets = reset_task.result()
+            else:  # reader ended before its warmup did: no scored window, no reset
+                reset_task.cancel()
             try:
-                servers = servers_by_role(primary, [replica])
-                memory_record = await collect_memory_after(servers, mem_sampler)
+                memory_record = await collect_memory_after(mem_servers, mem_sampler, memory_resets)
             except Exception as exc:  # capture must never fail the cell
                 self.logger.warning("memory capture failed on rep %d: %s", rep, exc)
             if profiling:
@@ -930,6 +944,16 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         for extra in group.replicas[1:]:
             allocated[f"replica:{extra.port}"] = list(extra.server_cpus)
         return allocated
+
+    async def _reset_peaks_after(self, delay_s: float, servers: dict) -> dict:
+        """Sleep through the reader's warmup, then re-arm the memory peaks on ``servers``.
+
+        Returns the per-role reset records for ``collect_memory_after``. Runs
+        as a task alongside the sample loop; a cancelled sleep (reader ended
+        early) simply means no reset was made.
+        """
+        await asyncio.sleep(max(0.0, float(delay_s)))
+        return await reset_memory_peaks(servers)
 
     async def _sample_loop(
         self,
