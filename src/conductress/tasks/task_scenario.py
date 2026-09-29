@@ -36,6 +36,12 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    servers_by_role,
+)
 from conductress.memtier import (
     MEMTIER_CLIENTS,
     MEMTIER_KEYSPACE,
@@ -1468,12 +1474,14 @@ class ScenarioTaskRunner(BaseTaskRunner):
         per_run_rps: List[float] = []
         per_run_scenario_metrics: List[Dict[str, Any]] = []
         perf_counters: Optional[dict] = None
+        memory_records: List[Dict[str, Any]] = []
 
         try:
             for rep in range(self.repetitions):
                 overlay_handle: Any = None
                 sampler: Optional[ServerSampler] = None
                 sampler_task: Optional["asyncio.Task"] = None
+                mem_sampler: Optional[MemorySampler] = None
 
                 # Between-rep housekeeping
                 if rep > 0:
@@ -1547,6 +1555,12 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         )
                         sampler_task = asyncio.ensure_future(sampler.run())
 
+                    # 1 Hz peak-memory sampler on its own connection, spanning
+                    # the overlay + background measurement window. Independent of
+                    # the ServerSampler opt-in; never raises into the cell.
+                    mem_sampler = MemorySampler(server.ip, server.port)
+                    mem_sampler.start()
+
                     # Start overlay driver (CommandOverlay for the shell-command
                     # scenarios; StormOverlay for connection-storm). The offset
                     # of the overlay start relative to the background RPS series
@@ -1595,6 +1609,16 @@ class ScenarioTaskRunner(BaseTaskRunner):
                         except asyncio.CancelledError:
                             pass
                         server_timeline = sampler.rows
+
+                    # Peak-memory: stop the 1 Hz sampler and read INFO memory per
+                    # server while it is still up (before the topology stop).
+                    if mem_sampler is not None:
+                        mem_sampler.stop()
+                    try:
+                        servers = servers_by_role(server, topology_group.replicas)
+                        memory_records.append(await collect_memory_after(servers, mem_sampler))
+                    except Exception as exc:  # capture must never fail the cell
+                        logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
 
                     # Stop the overlay and collect its result
                     overlay_result = await self._overlay.finish(server, overlay_handle)
@@ -1700,6 +1724,11 @@ class ScenarioTaskRunner(BaseTaskRunner):
                             await sampler_task
                         except (asyncio.CancelledError, Exception):  # pylint: disable=broad-except
                             pass
+                    if mem_sampler is not None:
+                        try:
+                            mem_sampler.stop()  # idempotent; no-op if already stopped
+                        except Exception:  # pylint: disable=broad-except
+                            pass
                     # Ensure the overlay is always torn down, even on failure.
                     if overlay_handle is not None:
                         await self._overlay.abort(server, overlay_handle)
@@ -1769,6 +1798,10 @@ class ScenarioTaskRunner(BaseTaskRunner):
                 detailed_data["perf_counters_scope"] = self._perf_stat_scope
             detailed_data["perf_duration_seconds"] = float(self.duration)
             detailed_data["perf_rep_count"] = len(per_run_rps)
+
+        folded_memory = fold_memory_records(memory_records) if memory_records else None
+        if folded_memory is not None:
+            detailed_data["memory"] = folded_memory
 
         results = BenchmarkResults(
             method=f"scenario-{self.scenario}",

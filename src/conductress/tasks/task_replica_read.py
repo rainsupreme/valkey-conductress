@@ -81,6 +81,7 @@ from conductress.config import (
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
 from conductress.rate_search import Done, Probe, RateSearch
+from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import DEFAULT_BASE_PORT, TopologyGroup, TopologySpec, replication_lag_stats
@@ -306,6 +307,7 @@ class _Measurement:
     reader_started: float  # monotonic; the verdict window opens at reader_started + warmup
     reader_toml: str
     writer_toml: str
+    memory: Optional[dict] = None  # data.memory for this measure phase (primary + replica)
 
 
 def _primary_and_replica(group: TopologyGroup) -> tuple:
@@ -440,6 +442,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
         group = TopologyGroup(self.host, self.spec, task.source, task.specifier, task.make_args)
         reps: list = []
         last: Optional[_Measurement] = None
+        memory_records: list = []
         try:
             for rep in range(1, task.repetitions + 1):
                 await self._bring_up(group, first=rep == 1)
@@ -450,9 +453,11 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 else:
                     last = await self._measure(group, rep, placement)
                     entry = self._judge(group, rep, placement, last)
+                if last is not None and last.memory is not None:
+                    memory_records.append(last.memory)
                 reps.append(entry)
             assert last is not None
-            await self._record_result(group, reps, last.reader_toml, last.writer_toml)
+            await self._record_result(group, reps, last.reader_toml, last.writer_toml, memory_records)
             self.status.state = "completed"
             self.status.end_time = time.time()
             self.status.steps_completed = self.status.steps_total
@@ -612,9 +617,14 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             # perf record on the replica for the scored window only: it sleeps
             # through the reader's warmup, then records ``duration`` seconds.
             replica.cpu_profile_start(task.duration, delay_seconds=task.warmup)
+        # 1 Hz peak-memory sampler on the measured replica, over the reader
+        # window; INFO is read on both primary and replica after it closes.
+        mem_sampler = MemorySampler(replica.ip, replica.port)
+        mem_sampler.start()
         sampler = asyncio.create_task(
             self._sample_loop(group, samples, reader_cmd, writer_cmd, pin_cpus=placement.runner_cpus)
         )
+        memory_record: Optional[dict] = None
         try:
             reader = await self._wait_and_parse(reader_cmd, "reader")
         finally:
@@ -623,6 +633,12 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
                 await sampler
             except asyncio.CancelledError:
                 pass
+            mem_sampler.stop()
+            try:
+                servers = servers_by_role(primary, [replica])
+                memory_record = await collect_memory_after(servers, mem_sampler)
+            except Exception as exc:  # capture must never fail the cell
+                self.logger.warning("memory capture failed on rep %d: %s", rep, exc)
             if profiling:
                 await self._collect_cpu_profile(replica)
         writer = await self._wait_and_parse(writer_cmd, "writer")
@@ -633,6 +649,7 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             reader_started=reader_started,
             reader_toml=reader_toml,
             writer_toml=writer_toml,
+            memory=memory_record,
         )
 
     def _profile_this_rep(self, rep: int) -> bool:
@@ -987,7 +1004,14 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             "reader_max_thread_util": max(reader_peaks, default=None),
         }
 
-    async def _record_result(self, group: TopologyGroup, reps: list, reader_toml: str, writer_toml: str) -> None:
+    async def _record_result(
+        self,
+        group: TopologyGroup,
+        reps: list,
+        reader_toml: str,
+        writer_toml: str,
+        memory_records: Optional[list] = None,
+    ) -> None:
         task = self.task
         completion_time = datetime.datetime.now()
         assert group.primary is not None
@@ -1061,6 +1085,10 @@ class ReplicaReadTaskRunner(BaseTaskRunner):
             detailed["cpu_profile_rep"] = task.repetitions
             detailed["cpu_stacks_main"] = self._cpu_stacks_main
             detailed["cpu_stacks_io"] = self._cpu_stacks_io
+
+        folded_memory = fold_memory_records(memory_records) if memory_records else None
+        if folded_memory is not None:
+            detailed["memory"] = folded_memory
 
         results = BenchmarkResults(
             method=METHOD,
