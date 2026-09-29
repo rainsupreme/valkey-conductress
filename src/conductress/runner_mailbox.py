@@ -220,6 +220,9 @@ class RunnerMailbox:
         "repetitions",
         "warmup",
         "duration",
+        # Peak-memory capture (feat/peak-memory-capture): a small folded record
+        # (per-role scalars + <=60 downsampled samples), well under the budget.
+        "memory",
     )
 
     @classmethod
