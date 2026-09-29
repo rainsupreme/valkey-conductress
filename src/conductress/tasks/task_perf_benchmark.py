@@ -26,6 +26,12 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, MetricData
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    servers_by_role,
+)
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec
@@ -536,12 +542,19 @@ class PerfTaskRunner(BaseTaskRunner):
             detailed_data["perf_counters_io"] = io_counters
 
     async def __record_result(
-        self, server, per_run_rps: Optional[list[float]] = None, perf_counters: Optional[dict] = None
+        self,
+        server,
+        per_run_rps: Optional[list[float]] = None,
+        perf_counters: Optional[dict] = None,
+        memory_records: Optional[list[dict]] = None,
     ):
         completion_time = datetime.datetime.now()
 
         if len(self.rps_data) == 0 and not per_run_rps:
             raise RuntimeError("No results recorded")
+
+        # Fold per-rep memory records (peak fields -> max) into one data.memory.
+        folded_memory = fold_memory_records(memory_records) if memory_records else None
 
         # Get system information
         lscpu_output, _ = await server.run_host_command("lscpu")
@@ -586,6 +599,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 detailed_data["bench_binary"] = self.bench_binary
             if self._generator_provenance:
                 detailed_data["generator_provenance"] = self._generator_provenance
+            if folded_memory is not None:
+                detailed_data["memory"] = folded_memory
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -635,6 +650,8 @@ class PerfTaskRunner(BaseTaskRunner):
                 detailed_data["bench_binary"] = self.bench_binary
             if self._generator_provenance:
                 detailed_data["generator_provenance"] = self._generator_provenance
+            if folded_memory is not None:
+                detailed_data["memory"] = folded_memory
 
             results = BenchmarkResults(
                 method=f"perf-{self.test.name}",
@@ -692,6 +709,7 @@ class PerfTaskRunner(BaseTaskRunner):
         server = None
         per_run_rps: list[float] = []
         perf_counters: Optional[dict] = None
+        memory_records: list[dict[str, Any]] = []
 
         try:
             for rep in range(effective_reps):
@@ -759,7 +777,22 @@ class PerfTaskRunner(BaseTaskRunner):
                 # Build and execute benchmark command
                 command_string = self._build_benchmark_command(client, server.ip, benchmark_alloc_tag)
                 self._is_last_rep = rep == effective_reps - 1
-                avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
+                # 1 Hz peak-memory sampler on its own connection, spanning the
+                # generator run (warmup + scored window). It never raises into
+                # the cell; a failed connect leaves sample_errors set.
+                mem_sampler = MemorySampler(server.ip, server.port)
+                mem_sampler.start()
+                try:
+                    avg_rps = await self._execute_benchmark_loop(command_string, server, rep, effective_reps)
+                finally:
+                    mem_sampler.stop()
+                # After the scored window, before the server is stopped: read
+                # INFO memory per server and assemble this rep's data.memory.
+                try:
+                    servers = servers_by_role(server, topology_group.replicas)
+                    memory_records.append(await collect_memory_after(servers, mem_sampler))
+                except Exception as exc:  # capture must never fail the cell
+                    self.logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
                 per_run_rps.append(avg_rps)
                 self.logger.info("Repetition %d/%d avg RPS: %.1f", rep + 1, effective_reps, avg_rps)
 
@@ -811,9 +844,11 @@ class PerfTaskRunner(BaseTaskRunner):
             if server is None:
                 raise RuntimeError("No server available for recording results")
             if effective_reps > 1:
-                await self.__record_result(server, per_run_rps=per_run_rps, perf_counters=perf_counters)
+                await self.__record_result(
+                    server, per_run_rps=per_run_rps, perf_counters=perf_counters, memory_records=memory_records
+                )
             else:
-                await self.__record_result(server, perf_counters=perf_counters)
+                await self.__record_result(server, perf_counters=perf_counters, memory_records=memory_records)
 
             # Write final status
             self.status.state = "completed"

@@ -469,3 +469,39 @@ def fold_memory_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 base[field] = max(values)
         folded["servers"][role] = base
     return folded
+
+
+# --- task-side helpers ----------------------------------------------------
+
+
+def servers_by_role(primary: Any, replicas: Optional[List[Any]] = None) -> Dict[str, Any]:
+    """Map a cell's servers to role labels: ``primary``, ``replica0``, ....
+
+    Accepts the primary Server and its replica Servers (a ``TopologyGroup``
+    exposes ``.primary`` and ``.replicas``). A ``None`` primary yields an empty
+    map so a caller need not special-case a failed start.
+    """
+    servers: Dict[str, Any] = {}
+    if primary is not None:
+        servers["primary"] = primary
+    for i, replica in enumerate(replicas or []):
+        servers[f"replica{i}"] = replica
+    return servers
+
+
+async def collect_memory_after(servers: Dict[str, Any], sampler: Optional["MemorySampler"]) -> Dict[str, Any]:
+    """Read ``INFO memory`` once per server and assemble ``data.memory``.
+
+    Call this after the scored window and before stopping the servers. Each
+    server must expose an async ``info("memory")`` and a ``valkey_pid``. A
+    server whose INFO read fails contributes an empty field set (all null)
+    rather than failing the cell.
+    """
+    info_by_role: Dict[str, Dict[str, str]] = {}
+    for role, server in servers.items():
+        try:
+            info_by_role[role] = await server.info("memory")
+        except Exception as exc:  # a failed INFO must not fail the cell
+            logger.warning("INFO memory failed for %s: %s", role, exc)
+            info_by_role[role] = {}
+    return collect_memory_record(servers, sampler, info_by_role)

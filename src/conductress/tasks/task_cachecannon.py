@@ -41,6 +41,12 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
+from conductress.memory_capture import (
+    MemorySampler,
+    collect_memory_after,
+    fold_memory_records,
+    servers_by_role,
+)
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec
@@ -514,6 +520,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         per_run_scores: list[float] = []  # the score_metric measurement, one per rep
         all_results: list[dict] = []
         perf_counters: Optional[dict] = None
+        memory_records: list[dict] = []
 
         try:
             effective_reps = self.max_reps if self.max_reps > 0 else self.repetitions
@@ -617,6 +624,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 info_t1: Optional[dict[str, dict[str, str]]] = None
                 info_t1_time: Optional[float] = None
                 output_lines: list[str] = []
+                mem_sampler: Optional[MemorySampler] = None
                 try:
                     # Launch cachecannon -- it handles its own prefill and warmup
                     command = RealtimeCommand(command_string)
@@ -635,6 +643,12 @@ class CachecannonTaskRunner(BaseTaskRunner):
                             output_lines.append(line)
                             if not window_started and is_scored_sample_line(line):
                                 window_started = True
+                                # Scored window just opened: begin 1 Hz memory
+                                # sampling on its own connection (independent of
+                                # the perf/info opt-ins below).
+                                if mem_sampler is None:
+                                    mem_sampler = MemorySampler(server.ip, server.port)
+                                    mem_sampler.start()
                             line, _ = command.poll_output()
                         if command.p:
                             sample = sample_process_tree_cpu(command.p.pid)
@@ -662,6 +676,16 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     if self.info_sections and info_t0 is not None:
                         info_t1 = await snapshot_info(server, self.info_sections)
                         info_t1_time = time.monotonic()
+
+                    # Peak-memory: stop the sampler and read INFO memory per
+                    # server while it is still up (before topology stop).
+                    if mem_sampler is not None:
+                        mem_sampler.stop()
+                    try:
+                        servers = servers_by_role(server, topology_group.replicas)
+                        memory_records.append(await collect_memory_after(servers, mem_sampler))
+                    except Exception as exc:  # capture must never fail the cell
+                        self.logger.warning("memory capture failed on rep %d: %s", rep + 1, exc)
 
                     # Perf stat: stop counting (scored phase is over).
                     if perf_armed:
@@ -716,6 +740,11 @@ class CachecannonTaskRunner(BaseTaskRunner):
                     if cpu_profile_armed:
                         try:
                             server.cpu_profile_cancel()
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            pass
+                    if mem_sampler is not None:
+                        try:
+                            mem_sampler.stop()  # idempotent; no-op if already stopped
                         except Exception:  # pylint: disable=broad-exception-caught
                             pass
 
@@ -794,7 +823,9 @@ class CachecannonTaskRunner(BaseTaskRunner):
             # Record aggregated results
             if server is None:
                 raise RuntimeError("No server available for recording results")
-            await self._record_result(server, per_run_rps, all_results, toml_content, perf_counters, per_run_scores)
+            await self._record_result(
+                server, per_run_rps, all_results, toml_content, perf_counters, per_run_scores, memory_records
+            )
 
             # Final status
             self.status.state = "completed"
@@ -815,6 +846,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         toml_content: str,
         perf_counters: Optional[dict] = None,
         per_run_scores: Optional[list[float]] = None,
+        memory_records: Optional[list[dict]] = None,
     ):
         """Record the final benchmark result.
 
@@ -942,6 +974,10 @@ class CachecannonTaskRunner(BaseTaskRunner):
         if self._info_deltas_per_rep:
             detailed_data["info_sections"] = self.info_sections
             detailed_data["info_deltas_per_rep"] = self._info_deltas_per_rep
+
+        folded_memory = fold_memory_records(memory_records) if memory_records else None
+        if folded_memory is not None:
+            detailed_data["memory"] = folded_memory
 
         results = BenchmarkResults(
             method=f"cachecannon-{self.workload.replace(' ', '-')}",
