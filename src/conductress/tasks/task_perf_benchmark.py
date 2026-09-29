@@ -26,12 +26,7 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, MetricData
-from conductress.memory_capture import (
-    MemorySampler,
-    collect_memory_after,
-    fold_memory_records,
-    servers_by_role,
-)
+from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import TopologyGroup, TopologySpec

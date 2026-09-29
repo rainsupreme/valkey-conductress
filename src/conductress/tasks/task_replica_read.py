@@ -80,8 +80,8 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus
-from conductress.rate_search import Done, Probe, RateSearch
 from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
+from conductress.rate_search import Done, Probe, RateSearch
 from conductress.server import Server
 from conductress.task_queue import BaseTaskData, BaseTaskRunner
 from conductress.topology import DEFAULT_BASE_PORT, TopologyGroup, TopologySpec, replication_lag_stats

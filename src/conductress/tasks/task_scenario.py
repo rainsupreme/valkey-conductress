@@ -36,12 +36,7 @@ from conductress.config import (
 )
 from conductress.cpu_allocator import AllocationTag
 from conductress.file_protocol import BenchmarkResults, BenchmarkStatus, FileProtocol, MetricData
-from conductress.memory_capture import (
-    MemorySampler,
-    collect_memory_after,
-    fold_memory_records,
-    servers_by_role,
-)
+from conductress.memory_capture import MemorySampler, collect_memory_after, fold_memory_records, servers_by_role
 from conductress.memtier import (
     MEMTIER_CLIENTS,
     MEMTIER_KEYSPACE,
