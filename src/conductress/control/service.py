@@ -31,6 +31,14 @@ def _validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(load_schema(name), format_checker=FormatChecker())
 
 
+def _default_notifier(request: Any) -> None:
+    """Send the approval webhook request with a short timeout."""
+    import urllib.request  # local import keeps module import light
+
+    with urllib.request.urlopen(request, timeout=5):  # nosec - control-plane egress to a configured URL
+        return
+
+
 def _fork_repos(user: User) -> list[str]:
     """Return the fork repositories a user's own account is trusted to supply.
 
@@ -60,12 +68,17 @@ class ControlService:
         canary_profiles: Optional[CanaryProfileRegistry] = None,
         user_directory: Optional[UserDirectory] = None,
         provenance_gate: Optional[ProvenanceGate] = None,
+        notification_url: Optional[str] = None,
+        notifier: Optional[Any] = None,
     ):
         self.database = database
         self.registry = registry
         self.claim_lease_seconds = claim_lease_seconds
         self.user_directory = user_directory
         self.provenance_gate = provenance_gate
+        self.notification_url = notification_url
+        # Injectable HTTP delivery for the approval webhook; defaults to urlopen.
+        self._notifier = notifier or _default_notifier
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")
@@ -109,6 +122,8 @@ class ControlService:
             "submitted_at": row["submitted_at"],
             "submitted_by": row["submitted_by"],
             "canary_id": row["canary_id"],
+            "batch_id": row["batch_id"],
+            "submitter_login": row["submitter_login"],
             "claimed_at": row["claimed_at"],
             "lease_expires": row["lease_expires"],
             "accepted_at": row["accepted_at"],
@@ -161,6 +176,100 @@ class ControlService:
         allow_bypass = owner_bypass and submitter is not None and submitter.is_owner
         return gate.evaluate(envelope.get("provenance"), owner_bypass=allow_bypass)
 
+    def _approval_decision(
+        self, envelope: dict[str, Any], submitter: Optional[User], identity_login: Optional[str]
+    ) -> tuple[str, Optional[str]]:
+        """Return the initial task state and an optional reason.
+
+        An operator token (no login presented) is trusted and queues directly.
+        A directory user queues unless it is over its daily quota. A submission
+        whose presented login is not in the directory is held for an approver.
+        Canary and sweep classes are system-generated and never held.
+        """
+        if envelope.get("task_class") in {"canary", "sweep"}:
+            return "queued", None
+        # No user directory configured: preserve trusted-operator behaviour.
+        if self.user_directory is None:
+            return "queued", None
+        # An operator/runner token presents no login and is trusted.
+        presented_login = identity_login
+        if presented_login is None:
+            submitter_block = envelope.get("submitter")
+            if isinstance(submitter_block, dict):
+                presented_login = submitter_block.get("login")
+        if presented_login is None:
+            return "queued", None
+        if submitter is None:
+            # A login was presented but is not in the directory.
+            return "pending-approval", "submitter is not a known user"
+        estimated = estimate_task_duration_seconds(envelope.get("task", {}))
+        if self._over_quota(submitter, additional_seconds=estimated):
+            return "pending-approval", "submitter is over the daily runner-minute quota"
+        return "queued", None
+
+    def _over_quota(self, submitter: User, *, additional_seconds: float) -> bool:
+        """Return True if adding a task would exceed the account's daily quota.
+
+        Usage is charged to the submitter's GitHub account (an agent draws on
+        its sponsor's account). A quota of zero means unlimited.
+        """
+        if self.user_directory is None:
+            return False
+        quota_minutes = self.user_directory.quota_minutes(submitter.login)
+        if quota_minutes <= 0:
+            return False
+        account = self.user_directory.quota_account(submitter.login)
+        logins = [
+            u.login for u in self.user_directory.users.values() if self.user_directory.quota_account(u.login) == account
+        ]
+        day_start = utc_now().strftime("%Y-%m-%d")
+        used_seconds = 0.0
+        placeholders = ",".join("?" for _ in logins)
+        with self.database.read() as connection:
+            rows = connection.execute(
+                f"SELECT envelope_json FROM tasks WHERE submitter_login IN ({placeholders}) "
+                "AND state NOT IN ('cancelled', 'failed') AND substr(created_at, 1, 10) = ?",
+                (*logins, day_start),
+            ).fetchall()
+        for row in rows:
+            try:
+                task_body = json.loads(row["envelope_json"]).get("task", {})
+            except (json.JSONDecodeError, TypeError):
+                continue
+            used_seconds += estimate_task_duration_seconds(task_body)
+        return (used_seconds + additional_seconds) > quota_minutes * 60
+
+    def _notify_pending_approval(self, task: dict[str, Any], reason: Optional[str]) -> None:
+        """POST a small JSON notice to the configured approval webhook, if any.
+
+        Best-effort: a delivery failure is logged and never blocks submission.
+        The payload is documented in docs/control-service.md.
+        """
+        if not self.notification_url:
+            return
+        payload = {
+            "schema_version": 1,
+            "event": "task.pending_approval",
+            "task_id": task["task_id"],
+            "batch_id": task.get("batch_id"),
+            "runner_id": task["runner_id"],
+            "submitter_login": task.get("submitter_login"),
+            "submitted_by": task.get("submitted_by"),
+            "reason": reason,
+        }
+        try:
+            import urllib.request  # local import keeps module import light
+
+            request = urllib.request.Request(
+                self.notification_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            self._notifier(request)
+        except Exception:  # pragma: no cover - defensive, never blocks submit
+            logger.warning("approval notification failed for task %s", task["task_id"], exc_info=True)
+
     def submit_task(
         self,
         envelope: dict[str, Any],
@@ -183,6 +292,9 @@ class ControlService:
             provenance = dict(envelope.get("provenance") or {})
             provenance["pr"] = verdict.pull_request
             envelope = {**envelope, "provenance": provenance}
+        initial_state, approval_reason = self._approval_decision(envelope, submitter, identity_login)
+        batch_id = envelope.get("batch_id")
+        submitter_login = submitter.login if submitter is not None else identity_login
         canonical = self._canonical(envelope)
         audits = []
         with self.database.transaction(immediate=True) as connection:
@@ -206,16 +318,20 @@ class ControlService:
             now = utc_text()
             connection.execute(
                 "INSERT INTO tasks(task_id, runner_id, task_class, priority, state, submitted_at, "
-                "submitted_by, canary_id, envelope_json, idempotency_key, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+                "submitted_by, canary_id, batch_id, submitter_login, envelope_json, idempotency_key, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     envelope["task_id"],
                     envelope["runner_id"],
                     envelope["task_class"],
                     envelope["priority"],
+                    initial_state,
                     envelope["submitted_at"],
                     envelope["submitted_by"],
                     envelope.get("canary_id"),
+                    batch_id,
+                    submitter_login,
                     canonical,
                     idempotency_key,
                     now,
@@ -229,12 +345,15 @@ class ControlService:
                     action="task.submit",
                     task_id=envelope["task_id"],
                     runner_id=envelope["runner_id"],
-                    new_state="queued",
+                    new_state=initial_state,
+                    detail={"reason": approval_reason} if approval_reason else None,
                 )
             )
             row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (envelope["task_id"],)).fetchone()
         for audit in audits:
             self.database.append_audit_jsonl(audit)
+        if initial_state == "pending-approval":
+            self._notify_pending_approval(self._task_from_row(row), approval_reason)
         return self._task_from_row(row), True
 
     def get_task(self, task_id: str) -> dict[str, Any]:
@@ -243,6 +362,16 @@ class ControlService:
         if row is None:
             raise NotFoundError("TASK_NOT_FOUND", f"unknown task: {task_id}")
         return self._task_from_row(row)
+
+    def get_batch(self, batch_id: str) -> dict[str, Any]:
+        """Return the tasks that share a batch ID, most recent first."""
+        with self.database.read() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE batch_id = ? ORDER BY created_at DESC", (batch_id,)
+            ).fetchall()
+        if not rows:
+            raise NotFoundError("BATCH_NOT_FOUND", f"unknown batch: {batch_id}")
+        return {"batch_id": batch_id, "tasks": [self._task_from_row(row) for row in rows]}
 
     def list_tasks(
         self,
@@ -316,34 +445,142 @@ class ControlService:
                 )
         return {"generated_at": utc_text(), "runners": runners}
 
-    def cancel_task(self, task_id: str, *, actor: str) -> tuple[dict[str, Any], bool]:
-        audit = None
+    # States a caller may still cancel outright (nothing has been handed to a
+    # runner yet). Others require the softer cancel-requested path.
+    _UNCLAIMED_CANCELLABLE = ("queued", "pending-approval")
+
+    def cancel_task(
+        self,
+        selector: str,
+        *,
+        actor: str,
+        identity_login: Optional[str] = None,
+        is_owner: bool = True,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Cancel a caller's tasks by task ID or batch ID.
+
+        A caller cancels their own tasks; an owner (or an operator, the default)
+        may cancel anyone's. An unclaimed task (queued or pending-approval) is
+        cancelled outright; a task already handed to a runner (claimed,
+        accepted) is marked cancel-requested so the runner stops at its next
+        boundary. Terminal tasks are left unchanged. Returns the affected task
+        rows and a count of state changes.
+        """
+        audits = []
+        changed = 0
         with self.database.transaction(immediate=True) as connection:
-            row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-            if row is None:
-                raise NotFoundError("TASK_NOT_FOUND", f"unknown task: {task_id}")
-            if row["state"] == "cancelled":
-                return self._task_from_row(row), False
-            if row["state"] != "queued":
-                raise ConflictError("TASK_NOT_CANCELLABLE", "only queued tasks can be cancelled")
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ? OR batch_id = ?", (selector, selector)
+            ).fetchall()
+            if not rows:
+                raise NotFoundError("TASK_NOT_FOUND", f"unknown task or batch: {selector}")
+            affected: list[str] = []
             now = utc_text()
-            connection.execute(
-                "UPDATE tasks SET state='cancelled', updated_at=? WHERE task_id=? AND state='queued'",
-                (now, task_id),
-            )
-            audit = self.database.insert_audit(
-                connection,
-                actor=actor,
-                action="task.cancel",
-                task_id=task_id,
-                runner_id=row["runner_id"],
-                old_state="queued",
-                new_state="cancelled",
-            )
-            updated = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-        if audit:
+            for row in rows:
+                if not is_owner and identity_login is not None and row["submitter_login"] != identity_login:
+                    # A non-owner may only cancel their own tasks; skip others in a batch.
+                    continue
+                state = row["state"]
+                if state in self._UNCLAIMED_CANCELLABLE:
+                    new_state = "cancelled"
+                elif state in {"claimed", "accepted"}:
+                    new_state = "cancel-requested"
+                else:
+                    # cancelled, cancel-requested, completed, failed: nothing to do.
+                    continue
+                connection.execute(
+                    "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state=?",
+                    (new_state, now, row["task_id"], state),
+                )
+                audits.append(
+                    self.database.insert_audit(
+                        connection,
+                        actor=actor,
+                        action="task.cancel" if new_state == "cancelled" else "task.cancel_requested",
+                        task_id=row["task_id"],
+                        runner_id=row["runner_id"],
+                        old_state=state,
+                        new_state=new_state,
+                    )
+                )
+                affected.append(row["task_id"])
+                changed += 1
+            placeholders = ",".join("?" for _ in {row["task_id"] for row in rows})
+            updated_rows = connection.execute(
+                f"SELECT * FROM tasks WHERE task_id IN ({placeholders})",
+                tuple({row["task_id"] for row in rows}),
+            ).fetchall()
+        for audit in audits:
             self.database.append_audit_jsonl(audit)
-        return self._task_from_row(updated), True
+        return [self._task_from_row(row) for row in updated_rows], changed
+
+    def list_mine(self, login: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return the tasks a login submitted, most recent first."""
+        if limit < 1 or limit > 250:
+            raise ControlError("PAGINATION_INVALID", "limit must be 1-250")
+        with self.database.read() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE submitter_login = ? ORDER BY created_at DESC LIMIT ?",
+                (login, limit),
+            ).fetchall()
+        return [self._task_from_row(row, include_envelope=False) for row in rows]
+
+    def pending_tasks(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return tasks awaiting approval, oldest first."""
+        with self.database.read() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE state='pending-approval' ORDER BY created_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def approve_tasks(self, selector: str, *, actor: str) -> tuple[list[dict[str, Any]], int]:
+        """Move pending-approval tasks (by task or batch ID) into the queue."""
+        return self._resolve_approval(selector, actor=actor, decision="approve")
+
+    def reject_tasks(self, selector: str, *, actor: str) -> tuple[list[dict[str, Any]], int]:
+        """Reject pending-approval tasks (by task or batch ID)."""
+        return self._resolve_approval(selector, actor=actor, decision="reject")
+
+    def _resolve_approval(self, selector: str, *, actor: str, decision: str) -> tuple[list[dict[str, Any]], int]:
+        new_state = "queued" if decision == "approve" else "cancelled"
+        action = "task.approve" if decision == "approve" else "task.reject"
+        audits = []
+        changed = 0
+        with self.database.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE (task_id = ? OR batch_id = ?) AND state='pending-approval'",
+                (selector, selector),
+            ).fetchall()
+            if not rows:
+                raise NotFoundError("PENDING_NOT_FOUND", f"no pending-approval task or batch: {selector}")
+            now = utc_text()
+            ids = []
+            for row in rows:
+                connection.execute(
+                    "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state='pending-approval'",
+                    (new_state, now, row["task_id"]),
+                )
+                audits.append(
+                    self.database.insert_audit(
+                        connection,
+                        actor=actor,
+                        action=action,
+                        task_id=row["task_id"],
+                        runner_id=row["runner_id"],
+                        old_state="pending-approval",
+                        new_state=new_state,
+                    )
+                )
+                ids.append(row["task_id"])
+                changed += 1
+            placeholders = ",".join("?" for _ in ids)
+            updated_rows = connection.execute(
+                f"SELECT * FROM tasks WHERE task_id IN ({placeholders})", tuple(ids)
+            ).fetchall()
+        for audit in audits:
+            self.database.append_audit_jsonl(audit)
+        return [self._task_from_row(row) for row in updated_rows], changed
 
     def _expire_stale_claims_in_transaction(
         self, connection: sqlite3.Connection, *, actor: str, now_text: str
@@ -501,7 +738,7 @@ class ControlService:
                 if row["state"] == terminal and row["outcome_json"] == canonical:
                     return self._task_from_row(row), False
                 raise ConflictError("OUTCOME_CONFLICT", "task already has a different terminal outcome")
-            if row["state"] != "accepted":
+            if row["state"] not in {"accepted", "cancel-requested"}:
                 raise ConflictError("TASK_NOT_ACCEPTED", "task must be accepted before reporting outcome")
             now = outcome["completed_at"]
             connection.execute(

@@ -383,3 +383,36 @@ def test_unloadable_envelope_outcome_survives_offline_control(tmp_path):
     assert recovered.reconcile(queue) is None
     assert recovered.journal.active is None
     assert client.outcomes[0][1]["state"] == "failed"
+
+
+def test_cancel_requested_reads_control_task_state(tmp_path):
+    """A runner honours a cancel-requested task it owns at a boundary."""
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+
+    # Control reports the owned task as cancel-requested.
+    client.task = lambda task_id: {"task": {"task_id": task_id, "state": "cancel-requested"}}
+    assert mailbox.cancel_requested(task.task_id) is True
+
+    # A different state is not a cancel request.
+    client.task = lambda task_id: {"task": {"task_id": task_id, "state": "accepted"}}
+    assert mailbox.cancel_requested(task.task_id) is False
+
+    # A task the mailbox does not own is never cancel-requested.
+    assert mailbox.cancel_requested("some-other-task") is False
+
+
+def test_cancel_requested_false_when_control_unreachable(tmp_path):
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+
+    def unreachable(_task_id):
+        raise FleetClientError("CONTROL_UNREACHABLE", "offline", 3)
+
+    client.task = unreachable
+    # A transient control outage must not abort a running benchmark.
+    assert mailbox.cancel_requested(task.task_id) is False

@@ -99,20 +99,30 @@ def test_fail_outcome_and_wrong_runner_rejected(control_env):
     assert failed["state"] == "failed"
 
 
-def test_cancel_only_before_claim(control_env):
+def test_cancel_unclaimed_and_claimed(control_env):
     service = control_env["service"]
     service.submit_task(task_envelope(), actor="operator:test")
-    cancelled, changed = service.cancel_task("task-1", actor="operator:test")
+    tasks, changed = service.cancel_task("task-1", actor="operator:test")
     replay, replay_changed = service.cancel_task("task-1", actor="operator:test")
-    assert changed is True
-    assert replay_changed is False
-    assert cancelled["state"] == replay["state"] == "cancelled"
+    assert changed == 1
+    assert replay_changed == 0  # already cancelled, nothing to change
+    assert tasks[0]["state"] == "cancelled"
+    assert replay[0]["state"] == "cancelled"
 
+    # A claimed task is not cancelled outright: it is marked cancel-requested so
+    # the runner stops at its next boundary.
     service.submit_task(task_envelope("task-2"), actor="operator:test")
     service.claim_task("armbench", actor="runner:armbench")
-    with pytest.raises(ConflictError) as conflict:
-        service.cancel_task("task-2", actor="operator:test")
-    assert conflict.value.code == "TASK_NOT_CANCELLABLE"
+    tasks2, changed2 = service.cancel_task("task-2", actor="operator:test")
+    assert changed2 == 1
+    assert tasks2[0]["state"] == "cancel-requested"
+
+
+def test_cancel_unknown_selector_raises(control_env):
+    service = control_env["service"]
+    with pytest.raises(Exception) as missing:
+        service.cancel_task("nope", actor="operator:test")
+    assert missing.value.code == "TASK_NOT_FOUND"
 
 
 def test_expired_claim_requeues_but_accepted_task_never_does(control_env):

@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import sys
+import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
@@ -327,6 +328,12 @@ def _add_remote_routing_args(parser: argparse.ArgumentParser) -> None:
     routing.add_argument("--runner", help="Submit to a specific fleet runner instead of the local queue")
     routing.add_argument("--platform", help="Submit to the unique enabled runner matching this platform")
     parser.add_argument("--priority", type=int, default=100, help="Remote queue priority (default: 100)")
+    parser.add_argument(
+        "--batch",
+        dest="batch_id",
+        default=None,
+        help="Group this submission's tasks under a batch id (for remote cancel/status)",
+    )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable submission output")
 
 
@@ -349,9 +356,12 @@ def _submit_tasks(tasks: List[BaseTaskData], args: argparse.Namespace) -> dict:
 
     client = FleetClient.from_env()
     runner_id = resolve_runner(client, runner_id=runner_arg, platform=platform_arg)
+    # Every remote submission belongs to a batch so a sequence can be cancelled
+    # or inspected as a unit. Honour an explicit --batch; otherwise mint one.
+    batch_id = getattr(args, "batch_id", None) or f"batch-{uuid.uuid4().hex[:16]}"
     submitted: list[dict[str, Any]] = []
     for task in tasks:
-        envelope = build_task_envelope(task, runner_id=runner_id, priority=args.priority)
+        envelope = build_task_envelope(task, runner_id=runner_id, priority=args.priority, batch_id=batch_id)
         try:
             document = client.submit_task(envelope, idempotency_key=f"{runner_id}:{task.task_id}")
         except FleetClientError as exc:
@@ -374,7 +384,7 @@ def _submit_tasks(tasks: List[BaseTaskData], args: argparse.Namespace) -> dict:
                 "state": remote_task["state"],
             }
         )
-    return {"destination": "remote", "runner_id": runner_id, "tasks": submitted}
+    return {"destination": "remote", "runner_id": runner_id, "batch_id": batch_id, "tasks": submitted}
 
 
 def _finish_submission(result: dict, args: argparse.Namespace) -> bool:
@@ -386,7 +396,9 @@ def _finish_submission(result: dict, args: argparse.Namespace) -> bool:
         created = sum(1 for task in result["tasks"] if task["created"])
         replayed = len(result["tasks"]) - created
         suffix = f" ({replayed} idempotent replay)" if replayed else ""
-        print(f"Remote destination: {result['runner_id']} — {created} task(s) submitted{suffix}")
+        batch = result.get("batch_id")
+        batch_note = f" [batch {batch}]" if batch else ""
+        print(f"Remote destination: {result['runner_id']} — {created} task(s) submitted{suffix}{batch_note}")
     return False
 
 
@@ -1048,6 +1060,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     # queue clear
     queue_sub.add_parser("clear", help="Remove all pending tasks from the queue")
+
+    # queue cancel — cancel a remote task or a whole batch
+    cancel_parser = queue_sub.add_parser("cancel", help="Cancel a remote task or batch (by task id or batch id)")
+    cancel_parser.add_argument("selector", help="Task id or batch id to cancel")
+    cancel_parser.add_argument("--json", action="store_true")
+
+    # queue mine — list the caller's remote tasks
+    mine_parser = queue_sub.add_parser("mine", help="List your remote tasks and their state")
+    mine_parser.add_argument("--limit", type=int, default=100)
+    mine_parser.add_argument("--json", action="store_true")
+
+    # queue pending — list tasks awaiting approval (approver only)
+    pending_parser = queue_sub.add_parser("pending", help="List remote tasks awaiting approval")
+    pending_parser.add_argument("--json", action="store_true")
+
+    # queue approve / reject — resolve a pending task or batch (approver only)
+    approve_parser = queue_sub.add_parser("approve", help="Approve a pending task or batch")
+    approve_parser.add_argument("selector", help="Task id or batch id to approve")
+    approve_parser.add_argument("--json", action="store_true")
+    reject_parser = queue_sub.add_parser("reject", help="Reject a pending task or batch")
+    reject_parser.add_argument("selector", help="Task id or batch id to reject")
+    reject_parser.add_argument("--json", action="store_true")
 
     # plot subcommand
     plot_parser = subparsers.add_parser("plot", help="Render a figure from a task's results")
@@ -2021,6 +2055,86 @@ def handle_queue_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def _remote_client():
+    from .fleet_client import FleetClient
+
+    return FleetClient.from_env()
+
+
+def _emit_json(command: str, document: dict) -> None:
+    print(json.dumps({"schema_version": 1, "command": command, "data": document}, indent=2, sort_keys=True))
+
+
+def handle_queue_cancel(args: argparse.Namespace) -> int:
+    """Handle 'queue cancel': cancel a remote task or batch."""
+    document = _remote_client().cancel_task(args.selector)
+    if args.json:
+        _emit_json("queue.cancel", document)
+        return 0
+    changed = document.get("changed", 0)
+    print(f"Cancel {args.selector}: {changed} task(s) changed")
+    for task in document.get("tasks", []):
+        print(f"  {task['task_id']}: {task['state']}")
+    return 0
+
+
+def handle_queue_mine(args: argparse.Namespace) -> int:
+    """Handle 'queue mine': list the caller's remote tasks."""
+    document = _remote_client().list_mine(limit=args.limit)
+    if args.json:
+        _emit_json("queue.mine", document)
+        return 0
+    tasks = document.get("tasks", [])
+    if not tasks:
+        print("No remote tasks found for your account.")
+        return 0
+    print(f"{'TASK ID':<31} {'STATE':<17} {'BATCH':<22} SUBMITTED")
+    for task in tasks:
+        print(
+            f"{task['task_id']:<31} {task['state']:<17} " f"{(task.get('batch_id') or '-'):<22} {task['submitted_at']}"
+        )
+    return 0
+
+
+def handle_queue_pending(args: argparse.Namespace) -> int:
+    """Handle 'queue pending': list tasks awaiting approval."""
+    document = _remote_client().list_pending()
+    if args.json:
+        _emit_json("queue.pending", document)
+        return 0
+    tasks = document.get("tasks", [])
+    if not tasks:
+        print("No tasks awaiting approval.")
+        return 0
+    print(f"{'TASK ID':<31} {'RUNNER':<14} {'SUBMITTER':<16} {'BATCH':<22} SUBMITTED")
+    for task in tasks:
+        print(
+            f"{task['task_id']:<31} {task['runner_id']:<14} "
+            f"{(task.get('submitter_login') or '-'):<16} {(task.get('batch_id') or '-'):<22} {task['submitted_at']}"
+        )
+    return 0
+
+
+def handle_queue_approve(args: argparse.Namespace) -> int:
+    """Handle 'queue approve': approve a pending task or batch."""
+    document = _remote_client().approve_tasks(args.selector)
+    if args.json:
+        _emit_json("queue.approve", document)
+        return 0
+    print(f"Approve {args.selector}: {document.get('changed', 0)} task(s) queued")
+    return 0
+
+
+def handle_queue_reject(args: argparse.Namespace) -> int:
+    """Handle 'queue reject': reject a pending task or batch."""
+    document = _remote_client().reject_tasks(args.selector)
+    if args.json:
+        _emit_json("queue.reject", document)
+        return 0
+    print(f"Reject {args.selector}: {document.get('changed', 0)} task(s) rejected")
+    return 0
+
+
 def parse_xrange(spec: Optional[str]) -> Optional[Tuple[float, float]]:
     """Parse an ``--xrange`` spec like ``-3:8`` into ``(lo, hi)`` or None.
 
@@ -2113,6 +2227,16 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return handle_queue_remove(args)
         if args.queue_command == "clear":
             return handle_queue_clear(args)
+        if args.queue_command == "cancel":
+            return handle_queue_cancel(args)
+        if args.queue_command == "mine":
+            return handle_queue_mine(args)
+        if args.queue_command == "pending":
+            return handle_queue_pending(args)
+        if args.queue_command == "approve":
+            return handle_queue_approve(args)
+        if args.queue_command == "reject":
+            return handle_queue_reject(args)
     if args.command == "plot":
         return handle_plot(args, parser)
     parser.print_usage()

@@ -120,7 +120,9 @@ async def test_list_show_cancel_and_fleet(api_client, auth_headers):
     assert (await shown.json())["task"]["envelope"]["task_id"] == "task-1"
 
     cancelled = await api_client.delete("/api/v1/tasks/task-1", headers=auth_headers["operator"])
-    assert (await cancelled.json())["task"]["state"] == "cancelled"
+    body = await cancelled.json()
+    assert body["changed"] == 1
+    assert body["tasks"][0]["state"] == "cancelled"
 
     fleet = await api_client.get("/api/v1/fleet", headers=auth_headers["operator"])
     runner_ids = {runner["runner_id"] for runner in (await fleet.json())["runners"]}
@@ -159,3 +161,39 @@ async def test_content_type_schema_and_body_size_fail_closed(api_client, auth_he
     )
     assert response.status == 413
     assert (await response.json())["code"] == "BODY_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_batch_endpoint_returns_member_tasks(api_client, auth_headers):
+    for task_id in ("b-1", "b-2"):
+        envelope = task_envelope(task_id)
+        envelope["batch_id"] = "batch-x"
+        await api_client.post("/api/v1/tasks", json=envelope, headers=auth_headers["operator"])
+    response = await api_client.get("/api/v1/batches/batch-x", headers=auth_headers["operator"])
+    assert response.status == 200
+    body = await response.json()
+    assert body["batch"]["batch_id"] == "batch-x"
+    assert {t["task_id"] for t in body["batch"]["tasks"]} == {"b-1", "b-2"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_by_batch_marks_all_members(api_client, auth_headers):
+    for task_id in ("c-1", "c-2"):
+        envelope = task_envelope(task_id)
+        envelope["batch_id"] = "batch-c"
+        await api_client.post("/api/v1/tasks", json=envelope, headers=auth_headers["operator"])
+    response = await api_client.delete("/api/v1/tasks/batch-c", headers=auth_headers["operator"])
+    body = await response.json()
+    assert body["changed"] == 2
+    assert {t["state"] for t in body["tasks"]} == {"cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_pending_requires_approver_role(api_client, auth_headers):
+    # A runner token is neither operator nor approver.
+    response = await api_client.get("/api/v1/tasks/pending", headers=auth_headers["arm"])
+    assert response.status == 403
+    assert (await response.json())["code"] == "APPROVER_REQUIRED"
+    # An operator may list pending tasks.
+    ok = await api_client.get("/api/v1/tasks/pending", headers=auth_headers["operator"])
+    assert ok.status == 200

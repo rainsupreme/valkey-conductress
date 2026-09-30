@@ -315,6 +315,25 @@ class RunnerMailbox:
             return False
         return True
 
+    def cancel_requested(self, task_id: str) -> bool:
+        """Return True if the control plane has asked this task to stop.
+
+        A claimed or accepted task can be marked ``cancel-requested`` on the
+        control plane while the runner owns it. The runner calls this at a
+        rep/cell boundary and, when it is True, stops the task and reports the
+        partial outcome. Any control-plane error is treated as "not requested"
+        so a transient outage never aborts a running benchmark; the check is
+        re-evaluated at the next boundary, so it is restart-safe.
+        """
+        if not self.enabled or not self.owns(task_id):
+            return False
+        try:
+            document = self._contact(lambda client: client.task(task_id))
+        except FleetClientError:
+            return False
+        task = (document or {}).get("task") or {}
+        return task.get("state") == "cancel-requested"
+
     def status(self) -> dict[str, Any]:
         active = self.journal.active
         stats = self.journal.stats
