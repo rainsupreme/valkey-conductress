@@ -2,7 +2,10 @@ import threading
 
 import pytest
 
-from conductress.control.errors import ConflictError, ControlError
+from conductress.control.errors import AuthorizationError, ConflictError, ControlError
+from conductress.control.provenance import ProvenanceGate
+from conductress.control.service import ControlService
+from conductress.control.users import UserDirectory
 
 from .helpers import runner_status, task_envelope, task_outcome
 
@@ -250,3 +253,114 @@ def test_invalid_datetime_format_fails_closed(control_env):
     with pytest.raises(ControlError) as error:
         service.submit_task(invalid, actor="operator:test")
     assert error.value.code == "SCHEMA_INVALID"
+
+
+class _FakeGitHub:
+    def __init__(self, *, commits=None, open_pr_heads=None):
+        self.commits = set(commits or set())
+        self.open_pr_heads = dict(open_pr_heads or {})
+
+    def commit_in_repo(self, repo, sha):
+        return (repo, sha) in self.commits
+
+    def open_pull_request_for_head(self, sha):
+        return self.open_pr_heads.get(sha)
+
+
+def _user_directory():
+    return UserDirectory.from_dict(
+        {
+            "users": [
+                {
+                    "login": "rain",
+                    "github": "rainsupreme",
+                    "kind": "human",
+                    "role": "owner",
+                    "quota_runner_minutes_per_day": 1440,
+                    "sources": ["valkey", "valkey-rainfall"],
+                },
+                {
+                    "login": "dante",
+                    "github": "xdk-amz",
+                    "kind": "human",
+                    "role": "collaborator",
+                    "quota_runner_minutes_per_day": 240,
+                },
+            ]
+        }
+    )
+
+
+def _gated_service(control_env, github, *, directory=None):
+    return ControlService(
+        control_env["database"],
+        control_env["registry"],
+        control_env["config"].claim_lease_seconds,
+        canary_profiles=control_env["canary_profiles"],
+        user_directory=directory,
+        provenance_gate=ProvenanceGate(github),
+    )
+
+
+def _provenance_envelope(task_id="task-1", repo="valkey-io/valkey", sha="abc123", pr=None):
+    envelope = task_envelope(task_id)
+    envelope["provenance"] = {"repo": repo, "sha": sha, "recipe": None, "pr": pr}
+    return envelope
+
+
+def test_submit_accepts_allowlisted_provenance(control_env):
+    service = _gated_service(control_env, _FakeGitHub(commits={("valkey-io/valkey", "abc123")}))
+    task, created = service.submit_task(_provenance_envelope(), actor="operator:test")
+    assert created is True
+    assert task["envelope"]["provenance"]["repo"] == "valkey-io/valkey"
+
+
+def test_submit_rejects_unverifiable_provenance(control_env):
+    service = _gated_service(control_env, _FakeGitHub())
+    with pytest.raises(AuthorizationError) as rejected:
+        service.submit_task(_provenance_envelope(sha="ghost"), actor="operator:test")
+    assert rejected.value.code == "PROVENANCE_REJECTED"
+
+
+def test_submit_stores_resolved_pull_request(control_env):
+    github = _FakeGitHub(open_pr_heads={"headsha": {"repo": "valkey-io/valkey", "number": 9, "head_sha": "headsha"}})
+    service = _gated_service(control_env, github)
+    envelope = _provenance_envelope(repo="fork/valkey", sha="headsha")
+    task, _ = service.submit_task(envelope, actor="operator:test")
+    assert task["envelope"]["provenance"]["pr"] == {"repo": "valkey-io/valkey", "number": 9, "head_sha": "headsha"}
+
+
+def test_owner_may_bypass_provenance_gate(control_env):
+    directory = _user_directory()
+    service = _gated_service(control_env, _FakeGitHub(), directory=directory)
+    envelope = _provenance_envelope(repo="random/repo", sha="unknown")
+    # Owner login with explicit bypass is accepted despite unverifiable sha.
+    task, created = service.submit_task(envelope, actor="user:rain", identity_login="rain", owner_bypass=True)
+    assert created is True
+
+
+def test_non_owner_cannot_bypass_provenance_gate(control_env):
+    directory = _user_directory()
+    service = _gated_service(control_env, _FakeGitHub(), directory=directory)
+    envelope = _provenance_envelope(repo="random/repo", sha="unknown")
+    with pytest.raises(AuthorizationError) as rejected:
+        service.submit_task(envelope, actor="user:dante", identity_login="dante", owner_bypass=True)
+    assert rejected.value.code == "PROVENANCE_REJECTED"
+
+
+def test_user_fork_source_extends_allowlist(control_env):
+    directory = _user_directory()
+    # dante's fork is xdk-amz/valkey; a sha reachable there is accepted.
+    github = _FakeGitHub(commits={("xdk-amz/valkey", "forksha")})
+    service = _gated_service(control_env, github, directory=directory)
+    envelope = _provenance_envelope(repo="xdk-amz/valkey", sha="forksha")
+    task, created = service.submit_task(envelope, actor="user:dante", identity_login="dante")
+    assert created is True
+
+
+def test_submit_without_gate_ignores_provenance(control_env):
+    # The stock control_env service has no provenance gate; provenance is stored
+    # but not verified, so a deployment without GitHub reachability still works.
+    service = control_env["service"]
+    task, created = service.submit_task(_provenance_envelope(sha="whatever"), actor="operator:test")
+    assert created is True

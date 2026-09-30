@@ -48,7 +48,7 @@ async def test_public_dashboard_feed_is_get_only_and_sanitized(api_client, auth_
 async def test_api_enforces_operator_and_runner_roles(api_client, auth_headers):
     response = await api_client.post("/api/v1/tasks", json=task_envelope(), headers=auth_headers["arm"])
     assert response.status == 403
-    assert (await response.json())["code"] == "OPERATOR_REQUIRED"
+    assert (await response.json())["code"] == "SUBMITTER_REQUIRED"
 
     response = await api_client.post("/api/v1/runners/armbench/claim", headers=auth_headers["operator"])
     assert response.status == 403

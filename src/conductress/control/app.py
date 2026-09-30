@@ -16,6 +16,7 @@ from .config import ControlConfig
 from .db import ControlDatabase
 from .errors import AuthorizationError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
+from .provenance import ProvenanceGate, RestGitHubLookup
 from .service import ControlService
 from .users import UserDirectory
 
@@ -38,6 +39,14 @@ def _require_operator(request: web.Request) -> AuthIdentity:
     identity: AuthIdentity = request["auth"]
     if identity.role != "operator":
         raise AuthorizationError("OPERATOR_REQUIRED", "operator token required")
+    return identity
+
+
+def _require_submitter(request: web.Request) -> AuthIdentity:
+    """Allow an operator or a directory user to submit and manage tasks."""
+    identity: AuthIdentity = request["auth"]
+    if identity.role not in {"operator", "user"}:
+        raise AuthorizationError("SUBMITTER_REQUIRED", "operator or user token required")
     return identity
 
 
@@ -124,6 +133,7 @@ def create_app(
     token_store: Optional[TokenStore] = None,
     canary_profiles: Optional[CanaryProfileRegistry] = None,
     user_directory: Optional[UserDirectory] = None,
+    provenance_gate: Optional[ProvenanceGate] = None,
 ) -> web.Application:
     config.validate()
     database = database or ControlDatabase(config.database_path, config.audit_jsonl_path)
@@ -133,12 +143,15 @@ def create_app(
     canary_profiles = canary_profiles or CanaryProfileRegistry.from_directory(config.canary_profiles_dir)
     if user_directory is None and config.users_path is not None and config.users_path.exists():
         user_directory = UserDirectory.from_file(config.users_path)
+    if provenance_gate is None and config.github_verification_enabled:
+        provenance_gate = ProvenanceGate(RestGitHubLookup(token=config.github_token))
     service = ControlService(
         database,
         registry,
         config.claim_lease_seconds,
         canary_profiles=canary_profiles,
         user_directory=user_directory,
+        provenance_gate=provenance_gate,
     )
     service.expire_stale_claims(actor="system:startup")
     scheduler = CanaryScheduler(database, registry, canary_profiles)
@@ -208,11 +221,14 @@ async def _health(request: web.Request) -> web.Response:
 
 
 async def _submit_task(request: web.Request) -> web.Response:
-    identity = _require_operator(request)
+    identity = _require_submitter(request)
+    bypass = request.query.get("bypass_provenance", "").lower() in {"1", "true", "yes"}
     task, created = request.app[SERVICE_KEY].submit_task(
         await _json_body(request),
         actor=_actor(identity),
         idempotency_key=request.headers.get("Idempotency-Key"),
+        identity_login=identity.login,
+        owner_bypass=bypass,
     )
     return _response(task=task, created=created, http_status=201 if created else 200)
 

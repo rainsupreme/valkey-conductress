@@ -16,10 +16,11 @@ from ..duration_estimator import estimate_task_duration_seconds
 from .canary_profiles import CanaryProfileRegistry
 from .db import ControlDatabase, parse_utc, utc_now, utc_text
 from .drift_analyzer import DriftAnalyzer
-from .errors import ConflictError, ControlError, NotFoundError
+from .errors import AuthorizationError, ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
+from .provenance import ProvenanceGate, ProvenanceVerdict
 from .schema import load_schema
-from .users import UserDirectory
+from .users import User, UserDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,25 @@ PUBLIC_DASHBOARD_TASK_LIMIT = 50
 
 def _validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(load_schema(name), format_checker=FormatChecker())
+
+
+def _fork_repos(user: User) -> list[str]:
+    """Return the fork repositories a user's own account is trusted to supply.
+
+    A user's fork of the project lives under their GitHub account
+    (``{github}/valkey``). Each declared source that is already in
+    ``owner/repo`` form is trusted as written; bare source names name the
+    project fork under the user's account.
+    """
+    repos: list[str] = []
+    for source in user.sources:
+        if "/" in source:
+            repos.append(source)
+        else:
+            repos.append(f"{user.github}/valkey")
+    if not repos:
+        repos.append(f"{user.github}/valkey")
+    return list(dict.fromkeys(repos))
 
 
 class ControlService:
@@ -39,11 +59,13 @@ class ControlService:
         *,
         canary_profiles: Optional[CanaryProfileRegistry] = None,
         user_directory: Optional[UserDirectory] = None,
+        provenance_gate: Optional[ProvenanceGate] = None,
     ):
         self.database = database
         self.registry = registry
         self.claim_lease_seconds = claim_lease_seconds
         self.user_directory = user_directory
+        self.provenance_gate = provenance_gate
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")
@@ -99,16 +121,68 @@ class ControlService:
             task["outcome"] = json.loads(row["outcome_json"]) if row["outcome_json"] else None
         return task
 
+    def _resolve_submitter(self, envelope: dict[str, Any], identity_login: Optional[str]) -> Optional[User]:
+        """Return the directory user this submission is charged to, if known.
+
+        Prefers the authenticated token login; falls back to the envelope's
+        submitter login. Returns None when no directory is configured or the
+        login is not present in it.
+        """
+        if self.user_directory is None:
+            return None
+        login = identity_login
+        if login is None:
+            submitter = envelope.get("submitter")
+            if isinstance(submitter, dict):
+                login = submitter.get("login")
+        if not login:
+            return None
+        return self.user_directory.get(login)
+
+    def _evaluate_provenance(
+        self,
+        envelope: dict[str, Any],
+        *,
+        submitter: Optional[User],
+        owner_bypass: bool,
+    ) -> ProvenanceVerdict:
+        """Run the provenance gate for a submission and return its verdict.
+
+        When no gate is configured the submission is accepted unchanged so a
+        deployment without GitHub reachability keeps working. A submitter's
+        declared sources extend the trusted repository allowlist so their own
+        forks are accepted.
+        """
+        if self.provenance_gate is None:
+            return ProvenanceVerdict(True, "provenance gate not configured")
+        gate = self.provenance_gate
+        if submitter is not None:
+            gate = gate.with_extra_repos(tuple(_fork_repos(submitter)))
+        allow_bypass = owner_bypass and submitter is not None and submitter.is_owner
+        return gate.evaluate(envelope.get("provenance"), owner_bypass=allow_bypass)
+
     def submit_task(
         self,
         envelope: dict[str, Any],
         *,
         actor: str,
         idempotency_key: Optional[str] = None,
+        identity_login: Optional[str] = None,
+        owner_bypass: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         self._validate(self.task_validator, envelope, "task envelope")
         self._validate_datetime(envelope["submitted_at"], "submitted_at")
         self.registry.get_runner(envelope["runner_id"])
+        submitter = self._resolve_submitter(envelope, identity_login)
+        verdict = self._evaluate_provenance(envelope, submitter=submitter, owner_bypass=owner_bypass)
+        if not verdict.accepted:
+            raise AuthorizationError("PROVENANCE_REJECTED", verdict.reason)
+        # Store the resolved pull-request block on the envelope so downstream
+        # consumers see the verified PR identity rather than a claimed one.
+        if verdict.pull_request is not None:
+            provenance = dict(envelope.get("provenance") or {})
+            provenance["pr"] = verdict.pull_request
+            envelope = {**envelope, "provenance": provenance}
         canonical = self._canonical(envelope)
         audits = []
         with self.database.transaction(immediate=True) as connection:
