@@ -146,7 +146,7 @@ Task submission supports an `Idempotency-Key` header. Replaying the same key and
 
 ## Identity, provenance, and approval
 
-A directory of users and agents (`users.toml`, path from `USERS_PATH`) maps a bearer-token login to a GitHub account, a role (`owner`, `collaborator`, `approver`), a daily runner-minute quota, and allowed sources. An agent draws on its human sponsor's account and quota. Tokens carry a `user` role and a `login`; operator and runner tokens are unchanged.
+A directory of users and agents (`users.toml`, path from `USERS_PATH`) maps a bearer-token login to a GitHub account, a role (`owner`, `collaborator`, `approver`), a daily runner-minute quota, and allowed sources. There is one account per GitHub user: an agent entry names only its login and its human `sponsor`, and inherits the sponsor's GitHub account, role, quota and sources at load time (setting any of them on the agent is rejected). The agent's own login exists so it holds its own token and each task records which of the two submitted it. Tokens carry a `user` role and a `login`; operator and runner tokens are unchanged.
 
 When provenance verification is enabled (`PROVENANCE_VERIFICATION=true`, with a `GITHUB_TOKEN` for a higher rate limit), a submission's `provenance.sha` is accepted only if it is reachable from an allowlisted repository (the two project repositories plus the submitter's own fork) or is the head of an open pull request against the upstream project; the verified pull-request identity is stored on the envelope. An owner may bypass with `?bypass_provenance=true`. A rejected sha returns `PROVENANCE_REJECTED`.
 

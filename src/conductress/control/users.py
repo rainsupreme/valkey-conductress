@@ -1,13 +1,17 @@
 """User and agent identity directory read from a control-plane-local TOML file.
 
-The directory maps a login to a person or agent, the GitHub account it acts
-under, its role, its daily runner-minute quota, and the build sources it may
-name. Bearer tokens (see :mod:`conductress.control.auth`) reference a login;
-this module turns that login into the caller's full identity so the submit
-path can apply the provenance gate, quota, and approval rules.
+The directory maps a login to a person or agent. A human entry carries the
+GitHub account it acts under, its role, its daily runner-minute quota, and the
+build sources it may name. Bearer tokens (see :mod:`conductress.control.auth`)
+reference a login; this module turns that login into the caller's full identity
+so the submit path can apply the provenance gate, quota, and approval rules.
 
-Quota is keyed on the GitHub account, not the login: an agent draws on its
-sponsor's account, so an agent and the human it acts for share one budget.
+An agent is not a separate account. Its entry names only a login and the human
+it acts for (``sponsor``); the GitHub account, role, quota and sources are
+inherited from the sponsor at load time and may not be set on the agent entry.
+The separate login exists so the agent holds its own bearer token and every
+task records which of the two actually submitted it. Quota is therefore keyed
+on the GitHub account: an agent and its sponsor share one budget.
 """
 
 from __future__ import annotations
@@ -65,13 +69,32 @@ class UserDirectory:
         raw_users = data.get("users")
         if not isinstance(raw_users, list):
             raise ValueError("users file must contain a [[users]] array")
-        users: dict[str, User] = {}
+        humans: dict[str, User] = {}
+        agents: dict[str, str] = {}  # agent login -> sponsor login
         for record in raw_users:
-            user = _parse_user(record)
-            if user.login in users:
-                raise ValueError(f"duplicate user login: {user.login}")
-            users[user.login] = user
-        _validate_sponsors(users)
+            login, kind = _parse_login_and_kind(record)
+            if login in humans or login in agents:
+                raise ValueError(f"duplicate user login: {login}")
+            if kind == "human":
+                humans[login] = _parse_human(record, login)
+            else:
+                agents[login] = _parse_agent(record, login)
+        users: dict[str, User] = dict(humans)
+        for login, sponsor_login in agents.items():
+            sponsor = humans.get(sponsor_login)
+            if sponsor is None:
+                if sponsor_login in agents:
+                    raise ValueError(f"user {login}: sponsor {sponsor_login} must be a human account")
+                raise ValueError(f"user {login}: sponsor {sponsor_login} is not a known user")
+            users[login] = User(
+                login=login,
+                github=sponsor.github,
+                kind="agent",
+                role=sponsor.role,
+                quota_runner_minutes_per_day=sponsor.quota_runner_minutes_per_day,
+                sources=sponsor.sources,
+                sponsor=sponsor.login,
+            )
         return cls(users=users)
 
     def get(self, login: str) -> Optional[User]:
@@ -86,80 +109,80 @@ class UserDirectory:
     def quota_account(self, login: str) -> str:
         """Return the GitHub account a login's runner-minutes are charged to.
 
-        An agent's usage is charged to its sponsor's GitHub account; a human's
-        usage is charged to its own. The sponsor chain is one level deep (an
-        agent's sponsor must be a human), enforced at load time.
+        An agent inherits its sponsor's GitHub account at load time, so this is
+        the sponsor's account for an agent and the user's own for a human.
         """
-        user = self.require(login)
-        if user.kind == "agent" and user.sponsor is not None:
-            return self.require(user.sponsor).github
-        return user.github
+        return self.require(login).github
 
     def quota_minutes(self, login: str) -> int:
         """Return the daily runner-minute quota for a login's charging account."""
-        user = self.require(login)
-        if user.kind == "agent" and user.sponsor is not None:
-            return self.require(user.sponsor).quota_runner_minutes_per_day
-        return user.quota_runner_minutes_per_day
+        return self.require(login).quota_runner_minutes_per_day
 
 
-def _parse_user(record: object) -> User:
+_COMMON_FIELDS = {"login", "kind"}
+_HUMAN_FIELDS = _COMMON_FIELDS | {"github", "role", "quota_runner_minutes_per_day", "sources"}
+_AGENT_FIELDS = _COMMON_FIELDS | {"sponsor"}
+
+
+def _parse_login_and_kind(record: object) -> tuple[str, str]:
     if not isinstance(record, dict):
         raise ValueError("each user entry must be a table")
-    allowed = {
-        "login",
-        "github",
-        "kind",
-        "role",
-        "quota_runner_minutes_per_day",
-        "sources",
-        "sponsor",
-    }
-    unknown = set(record) - allowed
-    if unknown:
-        raise ValueError(f"unknown user fields: {', '.join(sorted(unknown))}")
     login = record.get("login")
-    github = record.get("github")
     kind = record.get("kind")
+    if not isinstance(login, str) or not login:
+        raise ValueError("user login must be a non-empty string")
+    if kind not in VALID_KINDS:
+        raise ValueError(f"user {login}: kind must be one of {sorted(VALID_KINDS)}")
+    return login, kind
+
+
+def _parse_human(record: dict, login: str) -> User:
+    unknown = set(record) - _HUMAN_FIELDS
+    if unknown:
+        if "sponsor" in unknown:
+            raise ValueError(f"user {login}: a human must not name a sponsor")
+        raise ValueError(f"user {login}: unknown user fields: {', '.join(sorted(unknown))}")
+    github = record.get("github")
     role = record.get("role")
     quota = record.get("quota_runner_minutes_per_day")
     sources = record.get("sources", [])
-    sponsor = record.get("sponsor")
-    if not isinstance(login, str) or not login:
-        raise ValueError("user login must be a non-empty string")
     if not isinstance(github, str) or not github:
         raise ValueError(f"user {login}: github must be a non-empty string")
-    if kind not in VALID_KINDS:
-        raise ValueError(f"user {login}: kind must be one of {sorted(VALID_KINDS)}")
     if role not in VALID_ROLES:
         raise ValueError(f"user {login}: role must be one of {sorted(VALID_ROLES)}")
     if not isinstance(quota, int) or isinstance(quota, bool) or quota < 0:
         raise ValueError(f"user {login}: quota_runner_minutes_per_day must be a non-negative integer")
     if not isinstance(sources, list) or not all(isinstance(item, str) for item in sources):
         raise ValueError(f"user {login}: sources must be a list of strings")
-    if kind == "agent" and not sponsor:
-        raise ValueError(f"user {login}: an agent must name a sponsor")
-    if kind == "human" and sponsor is not None:
-        raise ValueError(f"user {login}: a human must not name a sponsor")
-    if sponsor is not None and not isinstance(sponsor, str):
-        raise ValueError(f"user {login}: sponsor must be a string")
     return User(
         login=login,
         github=github,
-        kind=kind,
+        kind="human",
         role=role,
         quota_runner_minutes_per_day=quota,
         sources=tuple(sources),
-        sponsor=sponsor,
+        sponsor=None,
     )
 
 
-def _validate_sponsors(users: dict[str, User]) -> None:
-    for user in users.values():
-        if user.sponsor is None:
-            continue
-        sponsor = users.get(user.sponsor)
-        if sponsor is None:
-            raise ValueError(f"user {user.login}: sponsor {user.sponsor} is not a known user")
-        if sponsor.kind != "human":
-            raise ValueError(f"user {user.login}: sponsor {user.sponsor} must be a human account")
+def _parse_agent(record: dict, login: str) -> str:
+    """Validate an agent entry and return its sponsor login.
+
+    An agent acts in its sponsor's name: it may not declare its own GitHub
+    account, role, quota or sources, so any of those fields is rejected rather
+    than silently ignored.
+    """
+    unknown = set(record) - _AGENT_FIELDS
+    if unknown:
+        inherited = sorted(unknown & (_HUMAN_FIELDS - _COMMON_FIELDS))
+        if inherited:
+            raise ValueError(
+                f"user {login}: an agent inherits {', '.join(inherited)} from its sponsor and must not set them"
+            )
+        raise ValueError(f"user {login}: unknown user fields: {', '.join(sorted(unknown))}")
+    sponsor = record.get("sponsor")
+    if not sponsor:
+        raise ValueError(f"user {login}: an agent must name a sponsor")
+    if not isinstance(sponsor, str):
+        raise ValueError(f"user {login}: sponsor must be a string")
+    return sponsor
