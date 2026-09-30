@@ -334,3 +334,52 @@ def test_find_failure_locates_large_failure_row(tmp_path):
     assert not queue.has_task(task.task_id)
     assert client.outcomes[0][1]["state"] == "failed"
     assert client.outcomes[0][1]["error"] == "boom"
+
+
+def test_unloadable_envelope_fails_task_without_crash_loop(tmp_path):
+    """An envelope this runner cannot deserialize is failed, not raised.
+
+    A task body carrying an unknown ``task_type`` cannot be turned into a
+    runnable task. Reconcile must report it failed to the control plane, drop it
+    from the local queue, and clear the active slot so the runner proceeds.
+    """
+    client = FakeRunnerClient()
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+    assert task is not None
+
+    # Corrupt the journalled envelope so from_dict raises on the next reconcile.
+    active = mailbox.journal.active
+    active["envelope"]["task"]["task_type"] = "NoSuchTaskType"
+    mailbox.journal.set_active(active)
+
+    restarted = make_mailbox(tmp_path, client)
+    assert restarted.reconcile(queue) is None
+    assert restarted.journal.active is None
+    assert not queue.has_task(task.task_id)
+    assert client.outcomes[0][1]["state"] == "failed"
+    assert "NoSuchTaskType" in client.outcomes[0][1]["error"]
+
+
+def test_unloadable_envelope_outcome_survives_offline_control(tmp_path):
+    """If control is unreachable when failing an unloadable task, the outcome
+    stays pending and flushes on a later boundary rather than being lost."""
+    client = FakeRunnerClient(outcome_failures=1)
+    mailbox = make_mailbox(tmp_path, client)
+    queue = TaskQueue(tmp_path / "queue")
+    task = mailbox.poll(queue)
+    active = mailbox.journal.active
+    active["envelope"]["task"]["task_type"] = "NoSuchTaskType"
+    mailbox.journal.set_active(active)
+
+    offline = make_mailbox(tmp_path, client)
+    assert offline.reconcile(queue) is None
+    # Flush failed; outcome held pending.
+    assert offline.journal.active is not None
+    assert offline.journal.active["stage"] == "outcome_pending"
+
+    recovered = make_mailbox(tmp_path, client)
+    assert recovered.reconcile(queue) is None
+    assert recovered.journal.active is None
+    assert client.outcomes[0][1]["state"] == "failed"

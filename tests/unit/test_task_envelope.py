@@ -40,3 +40,44 @@ def test_submitter_falls_back_when_user_lookup_fails(monkeypatch):
 
     monkeypatch.setattr("conductress.task_envelope.getpass.getuser", fail_user_lookup)
     assert _default_submitter() == "unknown"
+
+
+def test_envelope_carries_submitter_provenance_and_batch(monkeypatch):
+    from conductress.task_envelope import build_provenance, build_submitter
+
+    monkeypatch.setattr(task_queue.config, "REPO_NAMES", ["valkey"])
+    task = BaseTaskData.from_file(next(GOLDEN_DIR.glob("*.json")))
+    submitter = build_submitter("rimuru", "agent", sponsor="rainsupreme")
+    provenance = build_provenance(
+        "valkey-io/valkey",
+        "deadbeef",
+        recipe="pr-standard",
+        pr={"repo": "valkey-io/valkey", "number": 42, "head_sha": "deadbeef"},
+    )
+    envelope = build_task_envelope(
+        task,
+        runner_id="armbench",
+        submitter=submitter,
+        provenance=provenance,
+        batch_id="batch-1",
+    )
+    assert envelope["submitter"] == {"login": "rimuru", "kind": "agent", "sponsor": "rainsupreme"}
+    assert envelope["provenance"]["repo"] == "valkey-io/valkey"
+    assert envelope["provenance"]["pr"]["number"] == 42
+    assert envelope["batch_id"] == "batch-1"
+
+
+def test_envelope_defaults_new_fields_to_none(monkeypatch):
+    monkeypatch.setattr(task_queue.config, "REPO_NAMES", ["valkey"])
+    task = BaseTaskData.from_file(next(GOLDEN_DIR.glob("*.json")))
+    envelope = build_task_envelope(task, runner_id="armbench", submitted_by="rain")
+    assert envelope["submitter"] is None
+    assert envelope["provenance"] is None
+    assert envelope["batch_id"] is None
+
+
+def test_build_submitter_rejects_bad_kind():
+    from conductress.task_envelope import build_submitter
+
+    with pytest.raises(ValueError):
+        build_submitter("x", "robot")

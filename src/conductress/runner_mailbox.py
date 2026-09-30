@@ -86,7 +86,17 @@ class RunnerMailbox:
         # Supply the trusted envelope task_id so that the deserialized task
         # carries the authoritative identity (e.g. deterministic canary IDs)
         # rather than the timestamp-derived default from the inner document.
-        task = BaseTaskData.from_dict(task_document, envelope_task_id=task_id)
+        try:
+            task = BaseTaskData.from_dict(task_document, envelope_task_id=task_id)
+        except (ValueError, TypeError) as exc:
+            # The envelope body cannot be turned into a runnable task on this
+            # deployment (unknown task type, or a field this code cannot honour).
+            # Left unhandled the mailbox would raise on every reconcile and wedge
+            # the runner. Report the task as failed, drop it from the local queue,
+            # and clear the active slot so the runner can move on.
+            self._fail_unloadable_task(task_id, str(exc))
+            queue.remove_task(task_id)
+            return None
         if task.task_id != task_id:
             raise ValueError(f"journal task ID mismatch: {task_id} != {task.task_id}")
 
@@ -262,6 +272,28 @@ class RunnerMailbox:
             "error": error,
         }
         self.journal.update_active(stage="outcome_pending", outcome=outcome)
+
+    def _fail_unloadable_task(self, task_id: str, error: str) -> None:
+        """Report a task whose envelope cannot be deserialized as failed.
+
+        Used when the envelope body cannot be turned into a runnable task, so no
+        ``BaseTaskData`` instance exists to pass to :meth:`stage_failure`. Stages
+        the failure outcome directly against the active task and attempts an
+        immediate flush; if the control plane is unreachable the outcome stays
+        pending in the journal and flushes on a later boundary.
+        """
+        self._require_active(task_id)
+        outcome = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "runner_id": self.runner_id,
+            "state": "failed",
+            "completed_at": _utc_text(),
+            "result": None,
+            "error": error,
+        }
+        self.journal.update_active(stage="outcome_pending", outcome=outcome)
+        self.flush_pending_outcome()
 
     def flush_pending_outcome(self) -> bool:
         active = self.journal.active
