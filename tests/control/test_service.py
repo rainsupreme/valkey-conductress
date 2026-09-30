@@ -1,3 +1,4 @@
+import json
 import threading
 
 import pytest
@@ -374,3 +375,28 @@ def test_submit_without_gate_ignores_provenance(control_env):
     service = control_env["service"]
     task, created = service.submit_task(_provenance_envelope(sha="whatever"), actor="operator:test")
     assert created is True
+
+
+def test_record_outcome_publishes_results_jsonl_and_static_json(control_env, tmp_path):
+    published_dir = tmp_path / "published"
+    results_jsonl = tmp_path / "results.jsonl"
+    service = ControlService(
+        control_env["database"],
+        control_env["registry"],
+        control_env["config"].claim_lease_seconds,
+        canary_profiles=control_env["canary_profiles"],
+        published_tasks_dir=published_dir,
+        results_jsonl_path=results_jsonl,
+    )
+    service.submit_task(task_envelope("task-1"), actor="operator:test")
+    claim = service.claim_task("armbench", actor="runner:armbench")
+    service.accept_task("armbench", "task-1", claim["claim_token"], actor="runner:armbench")
+    service.record_outcome("armbench", "task-1", task_outcome("task-1"), actor="runner:armbench")
+
+    static = published_dir / "tasks" / "task-1.json"
+    assert static.exists()
+    published = json.loads(static.read_text(encoding="utf-8"))
+    assert published["task_id"] == "task-1"
+    assert published["outcome"]["result"]["score"] == 123.0
+    lines = results_jsonl.read_text(encoding="utf-8").strip().splitlines()
+    assert json.loads(lines[-1])["task_id"] == "task-1"

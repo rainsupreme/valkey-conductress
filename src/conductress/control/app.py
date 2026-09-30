@@ -184,6 +184,8 @@ def create_app(
         user_directory=user_directory,
         provenance_gate=provenance_gate,
         notification_url=config.notification_url,
+        published_tasks_dir=config.published_tasks_dir,
+        results_jsonl_path=config.results_jsonl_path,
     )
     service.expire_stale_claims(actor="system:startup")
     scheduler = CanaryScheduler(database, registry, canary_profiles)

@@ -182,6 +182,12 @@ When `NOTIFICATION_URL` is set, the control plane POSTs a small JSON notice to t
 }
 ```
 
+## Results on the data host
+
+At completion a runner pushes the full result record, not a truncated summary. The control plane stores it in the task's SQLite row (authoritative). When configured it also mirrors each completed task to an append-only results JSONL (`RESULTS_JSONL_PATH`) and publishes a static per-task JSON under the published tasks directory (`PUBLISHED_TASKS_DIR/tasks/<task_id>.json`), written atomically. The static files carry no auth (results are public) so the dashboard and agents can fetch them directly, and `GET /api/v1/tasks/{task_id}` and `GET /api/v1/batches/{batch_id}` return the same records over the API.
+
+The record keeps every scalar and aggregate, the peak-memory scalars, and the categorized jemalloc `breakdown`. It drops only the unbounded stack arrays: the jemalloc per-frame `raw_stacks` and the collapsed CPU flamegraph stacks (`cpu_stacks_main`, `cpu_stacks_io`). The full stacks remain on the runner and in the runner-published artifacts.
+
 ## Persistence and backup
 
 SQLite uses WAL mode, foreign keys, explicit `BEGIN IMMEDIATE` claim transactions, and a five-second busy timeout. Back up with SQLite's online backup command rather than copying only the main file while WAL files are active:

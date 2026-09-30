@@ -70,6 +70,8 @@ class ControlService:
         provenance_gate: Optional[ProvenanceGate] = None,
         notification_url: Optional[str] = None,
         notifier: Optional[Any] = None,
+        published_tasks_dir: Optional[Any] = None,
+        results_jsonl_path: Optional[Any] = None,
     ):
         self.database = database
         self.registry = registry
@@ -77,6 +79,8 @@ class ControlService:
         self.user_directory = user_directory
         self.provenance_gate = provenance_gate
         self.notification_url = notification_url
+        self.published_tasks_dir = published_tasks_dir
+        self.results_jsonl_path = results_jsonl_path
         # Injectable HTTP delivery for the approval webhook; defaults to urlopen.
         self._notifier = notifier or _default_notifier
         self.task_validator = _validator("task-envelope.schema.json")
@@ -766,7 +770,47 @@ class ControlService:
         # Ingest canary observation outside the main transaction
         if canary_metadata:
             self._ingest_canary_observation(task_id, runner_id, outcome, canary_metadata)
+        # Mirror the outcome to the results JSONL and publish a static task JSON
+        # for the dashboard and agents. Both are best effort and never fail the
+        # outcome path.
+        self._publish_outcome(self._task_from_row(updated))
         return self._task_from_row(updated), True
+
+    def _publish_outcome(self, task: dict[str, Any]) -> None:
+        """Persist the completed task as JSONL and a static per-task JSON file.
+
+        The control-plane SQLite row is authoritative; this adds an append-only
+        results mirror and a public static file under the published tasks
+        directory (served without auth, since results are public). Failures are
+        logged and never propagate.
+        """
+        record = {
+            "task_id": task["task_id"],
+            "runner_id": task["runner_id"],
+            "batch_id": task.get("batch_id"),
+            "submitter_login": task.get("submitter_login"),
+            "state": task["state"],
+            "completed_at": task.get("completed_at"),
+            "envelope": task.get("envelope"),
+            "outcome": task.get("outcome"),
+        }
+        if self.results_jsonl_path is not None:
+            try:
+                self.results_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.results_jsonl_path.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
+            except OSError:
+                logger.warning("unable to append results JSONL for task %s", task["task_id"], exc_info=True)
+        if self.published_tasks_dir is not None:
+            try:
+                tasks_dir = self.published_tasks_dir / "tasks"
+                tasks_dir.mkdir(parents=True, exist_ok=True)
+                target = tasks_dir / f"{task['task_id']}.json"
+                temporary = target.with_suffix(".json.tmp")
+                temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+                temporary.replace(target)
+            except OSError:
+                logger.warning("unable to publish task JSON for task %s", task["task_id"], exc_info=True)
 
     def _ingest_canary_observation(
         self,

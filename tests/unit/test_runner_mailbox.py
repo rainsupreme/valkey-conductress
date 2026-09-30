@@ -223,7 +223,7 @@ def test_recovered_result_is_staged_before_queue_removal(tmp_path, monkeypatch):
 
 
 def _rich_result(task_id):
-    """A v3-cachecannon-shaped row: rich stats plus large excludable fields."""
+    """A result row with rich stats, a memory breakdown, and huge raw stacks."""
     return {
         "task_id": task_id,
         "method": "cachecannon",
@@ -244,24 +244,29 @@ def _rich_result(task_id):
             "client_cpu": {"cores_busy_per_rep": [7.9], "saturated": False},
             "perf_counters": {"cycles_per_req": 12.3},
             "perf_counters_scope": "user+kernel",
-            "perf_duration_seconds": 30,
-            "perf_rep_count": 5,
-            "latency": {"p99_us": 220},
             "io-threads": 7,
             "connections": 512,
-            # Large fields that MUST NOT be published:
-            "cpu_stacks_main": "x" * 1_200_000,
-            "cpu_stacks_io": "y" * 1_000_000,
-            "toml_config": "z" * 5_000,
-            "lscpu": "l" * 5_000,
-            "per_rep_results": [{"big": "q" * 1000}],
+            # A memory breakdown MUST travel; per-category totals are small.
+            "results": [
+                {
+                    "breakdown": {"dict": 37.43, "robj_embval": 48.0},
+                    # Resolved per-frame stacks are unbounded and MUST be dropped.
+                    "raw_stacks": ["frame " * 100] * 5000,
+                }
+            ],
+            # Top-level raw_stacks is dropped too.
+            "raw_stacks": ["x" * 1000] * 1000,
+            "cpu_stacks_main": [["main;processCommand", 10]] * 5000,
+            "cpu_stacks_io": [["io;readQuery", 10]] * 5000,
+            "memory": {"rss_hwm": 123456, "used_memory_peak": 654321},
+            # Previously-excluded fields now travel as part of the full record.
+            "toml_config": "save 900 1\nappendonly no\n",
             "topology": {"nodes": 2},
-            "cachecannon_binary": "/opt/bin/cachecannon",
         },
     }
 
 
-def test_success_summary_carries_stats_and_excludes_large_fields(tmp_path):
+def test_success_summary_carries_full_record_without_raw_stacks(tmp_path):
     client = FakeRunnerClient()
     mailbox = make_mailbox(tmp_path, client)
     queue = TaskQueue(tmp_path / "queue")
@@ -272,31 +277,23 @@ def test_success_summary_carries_stats_and_excludes_large_fields(tmp_path):
     assert mailbox.flush_pending_outcome() is True
 
     published = client.outcomes[0][1]["result"]
-    # Top-level stats now published (#185/#238 fields):
+    # Top-level stats present:
     assert published["cv"] == 0.0123
-    assert published["reps"] == 5
-    assert published["score_min"] == 5_600_000
-    assert published["score_max"] == 5_720_000
     assert published["score_aggregate"] == 5_663_000
-    # Bounded data allowlist present:
     data = published["data"]
+    # The full data record travels, including fields the old allowlist dropped.
     assert data["mean_rps"] == 5_663_000
-    assert data["perf_counters_scope"] == "user+kernel"
-    assert data["client_cpu"]["saturated"] is False
-    assert data["io-threads"] == 7
-    # Large / excluded fields never travel to the control plane:
-    for banned in (
-        "cpu_stacks_main",
-        "cpu_stacks_io",
-        "toml_config",
-        "lscpu",
-        "per_rep_results",
-        "topology",
-        "cachecannon_binary",
-    ):
-        assert banned not in data
-    # And the published outcome stays small.
-    assert len(json.dumps(client.outcomes[0][1])) < 100_000
+    assert data["toml_config"].startswith("save")
+    assert data["topology"] == {"nodes": 2}
+    # Memory scalars and the jemalloc breakdown are kept.
+    assert data["memory"]["rss_hwm"] == 123456
+    assert data["results"][0]["breakdown"]["robj_embval"] == 48.0
+    # Only raw_stacks is stripped, top level and per-run.
+    assert "raw_stacks" not in data
+    assert "raw_stacks" not in data["results"][0]
+    # The unbounded CPU flamegraph stacks are stripped too.
+    assert "cpu_stacks_main" not in data
+    assert "cpu_stacks_io" not in data
 
 
 def test_restart_finds_multi_megabyte_result_row(tmp_path):
@@ -305,10 +302,10 @@ def test_restart_finds_multi_megabyte_result_row(tmp_path):
     queue = TaskQueue(tmp_path / "queue")
     task = mailbox.poll(queue)
 
-    # A ~2.5 MB perf-stat row: no fixed 1 MB window could hold it whole.
+    # A ~2.5 MB row dominated by raw stacks: no fixed window holds it whole.
     output = tmp_path / "output.jsonl"
     row = _rich_result(task.task_id)
-    row["data"]["cpu_stacks_main"] = "x" * 2_500_000
+    row["data"]["raw_stacks"] = ["x" * 2_500_000]
     output.write_text(json.dumps(row) + "\n")
 
     restarted = make_mailbox(tmp_path, client)
@@ -317,7 +314,9 @@ def test_restart_finds_multi_megabyte_result_row(tmp_path):
     published = client.outcomes[0][1]["result"]
     assert published["score"] == 5_663_000
     assert published["cv"] == 0.0123
-    assert "cpu_stacks_main" not in published.get("data", {})
+    # The unbounded stacks are gone; the breakdown survives.
+    assert "raw_stacks" not in published.get("data", {})
+    assert published["data"]["results"][0]["breakdown"]["dict"] == 37.43
 
 
 def test_find_failure_locates_large_failure_row(tmp_path):
