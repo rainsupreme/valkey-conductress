@@ -17,6 +17,7 @@ dependencies = [
 control = [
     "aiohttp==3.10.11",
     "jsonschema==4.23.0",
+    "tomli==2.4.1; python_version < '3.11'",
 ]
 plots = [
     "matplotlib>=3.5,<4.0",

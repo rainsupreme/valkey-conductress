@@ -19,6 +19,7 @@ from .drift_analyzer import DriftAnalyzer
 from .errors import ConflictError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .schema import load_schema
+from .users import UserDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,12 @@ class ControlService:
         claim_lease_seconds: int = 300,
         *,
         canary_profiles: Optional[CanaryProfileRegistry] = None,
+        user_directory: Optional[UserDirectory] = None,
     ):
         self.database = database
         self.registry = registry
         self.claim_lease_seconds = claim_lease_seconds
+        self.user_directory = user_directory
         self.task_validator = _validator("task-envelope.schema.json")
         self.status_validator = _validator("runner-status.schema.json")
         self.outcome_validator = _validator("task-outcome.schema.json")

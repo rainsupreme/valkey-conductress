@@ -17,6 +17,7 @@ from .db import ControlDatabase
 from .errors import AuthorizationError, ControlError, NotFoundError
 from .fleet_registry import FleetRegistry
 from .service import ControlService
+from .users import UserDirectory
 
 logger = logging.getLogger(__name__)
 SERVICE_KEY = web.AppKey("service", ControlService)
@@ -122,6 +123,7 @@ def create_app(
     registry: Optional[FleetRegistry] = None,
     token_store: Optional[TokenStore] = None,
     canary_profiles: Optional[CanaryProfileRegistry] = None,
+    user_directory: Optional[UserDirectory] = None,
 ) -> web.Application:
     config.validate()
     database = database or ControlDatabase(config.database_path, config.audit_jsonl_path)
@@ -129,7 +131,15 @@ def create_app(
     registry = registry or FleetRegistry.from_file(config.fleet_manifest_path)
     token_store = token_store or TokenStore(config.tokens_path)
     canary_profiles = canary_profiles or CanaryProfileRegistry.from_directory(config.canary_profiles_dir)
-    service = ControlService(database, registry, config.claim_lease_seconds, canary_profiles=canary_profiles)
+    if user_directory is None and config.users_path is not None and config.users_path.exists():
+        user_directory = UserDirectory.from_file(config.users_path)
+    service = ControlService(
+        database,
+        registry,
+        config.claim_lease_seconds,
+        canary_profiles=canary_profiles,
+        user_directory=user_directory,
+    )
     service.expire_stale_claims(actor="system:startup")
     scheduler = CanaryScheduler(database, registry, canary_profiles)
     scheduler.tick()

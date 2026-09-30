@@ -94,3 +94,57 @@ def test_token_store_rejects_unknown_fields(tmp_path):
     )
     with pytest.raises(ValueError, match="unknown token fields"):
         TokenStore(path)
+
+
+def test_token_store_authenticates_user_login(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tokens": [
+                    {
+                        "token_hash": hash_token("user-secret"),
+                        "role": "user",
+                        "label": "rain",
+                        "login": "rain",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    identity = TokenStore(path).authenticate("Bearer user-secret")
+    assert identity.role == "user"
+    assert identity.login == "rain"
+    assert identity.runner_id is None
+
+
+def test_token_store_rejects_user_token_without_login(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tokens": [{"token_hash": hash_token("x"), "role": "user", "label": "rain"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="user token requires login"):
+        TokenStore(path)
+
+
+def test_token_store_rejects_login_on_non_user_token(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tokens": [{"token_hash": hash_token("x"), "role": "operator", "label": "op", "login": "rain"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="only a user token may set login"):
+        TokenStore(path)

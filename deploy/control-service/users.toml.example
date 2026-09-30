@@ -1,0 +1,44 @@
+# Conductress user directory (example)
+#
+# This file lives on the control-plane host only (suggested path
+# /etc/conductress-control/users.toml, mode 0640 root:conductress). It is NOT
+# tracked in git. Copy it, fill in real GitHub accounts, and set USERS_PATH to
+# point the control service at it.
+#
+# Each entry maps a control-plane login to a person or agent:
+#   login    - the identity a bearer token references (see tokens.json)
+#   github   - the GitHub account this login acts under; quota is charged here
+#   kind     - "human" or "agent"; an agent must name a sponsor
+#   sponsor  - for an agent, the login of the human it acts for (must be human)
+#   role     - "owner" | "collaborator" | "approver"
+#              owner may bypass the provenance gate and cancel anyone's tasks,
+#              and is implicitly an approver; approver may approve/reject
+#              pending submissions; collaborator is a normal allowlisted user
+#   quota_runner_minutes_per_day - daily runner-minute budget for the account
+#   sources  - build sources this login may name (repository short names /
+#              per-user forks). Empty means the built-in default sources only.
+
+[[users]]
+login = "rain"
+github = "rainsupreme"
+kind = "human"
+role = "owner"
+quota_runner_minutes_per_day = 1440
+sources = ["valkey", "valkey-rainfall"]
+
+[[users]]
+login = "dante"
+github = "xdk-amz"
+kind = "human"
+role = "collaborator"
+quota_runner_minutes_per_day = 240
+sources = ["valkey"]
+
+[[users]]
+login = "rimuru"
+github = "rainsupreme"
+kind = "agent"
+sponsor = "rain"
+role = "collaborator"
+quota_runner_minutes_per_day = 1440
+sources = ["valkey", "valkey-rainfall"]
