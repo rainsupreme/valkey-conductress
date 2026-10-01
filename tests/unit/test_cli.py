@@ -769,3 +769,57 @@ class TestQueueAddMemorySubcommand:
             ["queue", "add-memory", "--source", "repo1", "--specifier", "x", "--types", "zadd", "--sizes", "abc"]
         )
         assert exit_code == 1
+
+
+class TestQueueRemoteCommands:
+    """The queue cancel/mine/pending/approve/reject thin clients."""
+
+    def test_queue_cancel_reports_changed_tasks(self, capsys):
+        fake = MagicMock()
+        fake.cancel_task.return_value = {
+            "tasks": [{"task_id": "t1", "state": "cancelled"}],
+            "changed": 1,
+        }
+        with patch("conductress.cli._remote_client", return_value=fake):
+            assert main(["queue", "cancel", "b1"]) == 0
+        fake.cancel_task.assert_called_once_with("b1")
+        assert "1 task(s) changed" in capsys.readouterr().out
+
+    def test_queue_mine_lists_tasks(self, capsys):
+        fake = MagicMock()
+        fake.list_mine.return_value = {
+            "tasks": [{"task_id": "t1", "state": "queued", "batch_id": "b1", "submitted_at": "2026-01-01T00:00:00Z"}]
+        }
+        with patch("conductress.cli._remote_client", return_value=fake):
+            assert main(["queue", "mine"]) == 0
+        assert "t1" in capsys.readouterr().out
+
+    def test_queue_pending_lists_tasks(self, capsys):
+        fake = MagicMock()
+        fake.list_pending.return_value = {
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "runner_id": "armbench",
+                    "submitter_login": "ghost",
+                    "batch_id": None,
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+        with patch("conductress.cli._remote_client", return_value=fake):
+            assert main(["queue", "pending"]) == 0
+        assert "ghost" in capsys.readouterr().out
+
+    def test_queue_approve_and_reject(self, capsys):
+        fake = MagicMock()
+        fake.approve_tasks.return_value = {"changed": 2}
+        fake.reject_tasks.return_value = {"changed": 1}
+        with patch("conductress.cli._remote_client", return_value=fake):
+            assert main(["queue", "approve", "b1"]) == 0
+            assert main(["queue", "reject", "t9"]) == 0
+        fake.approve_tasks.assert_called_once_with("b1")
+        fake.reject_tasks.assert_called_once_with("t9")
+        out = capsys.readouterr().out
+        assert "2 task(s) queued" in out
+        assert "1 task(s) rejected" in out

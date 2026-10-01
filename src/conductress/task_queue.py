@@ -7,6 +7,7 @@ import re
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclasses_fields
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
@@ -55,6 +56,27 @@ def _upgrade_topology_keys(data: dict) -> None:
             raise ValueError(f"Invalid task data: replicas must be an integer, got {replicas!r}") from exc
     else:
         data["topology"] = TopologySpec.standalone()
+
+
+def _drop_unknown_task_fields(task_class: Type["BaseTaskData"], task_type: str, data: dict) -> dict:
+    """Return ``data`` with any keys the task constructor does not accept removed.
+
+    A newer submitter may add envelope-body fields that a task dataclass on an
+    older deployment does not define. Passing them straight to the constructor
+    raises ``TypeError`` and wedges the queue. Instead, keep only the fields the
+    dataclass declares as constructor arguments and warn about the rest, so an
+    unrecognised field degrades to being ignored rather than fatal.
+    """
+    accepted = {field_def.name for field_def in dataclasses_fields(task_class) if field_def.init}
+    unknown = [key for key in data if key not in accepted]
+    if unknown:
+        logger.warning(
+            "task type %s: ignoring unrecognized field(s): %s",
+            task_type,
+            ", ".join(sorted(unknown)),
+        )
+        data = {key: value for key, value in data.items() if key in accepted}
+    return data
 
 
 @dataclass
@@ -168,7 +190,9 @@ class BaseTaskData(ABC):
         if task_type not in BaseTaskData.__task_registry:
             raise ValueError(f"Unknown task type: {task_type}")
         _upgrade_topology_keys(data)
-        result = BaseTaskData.__task_registry[task_type](**data)
+        task_class = BaseTaskData.__task_registry[task_type]
+        data = _drop_unknown_task_fields(task_class, task_type, data)
+        result = task_class(**data)
         result.timestamp = timestamp
         if envelope_task_id is not None:
             result._override_task_id = _validate_envelope_task_id(envelope_task_id)

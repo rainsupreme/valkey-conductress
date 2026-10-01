@@ -26,7 +26,8 @@ async def test_stdlib_client_full_operator_lifecycle(api_client, operator_token)
     shown = await asyncio.to_thread(client.task, "task-1")
     assert shown["task"]["envelope"]["task_id"] == "task-1"
     cancelled = await asyncio.to_thread(client.cancel_task, "task-1")
-    assert cancelled["task"]["state"] == "cancelled"
+    assert cancelled["changed"] == 1
+    assert cancelled["tasks"][0]["state"] == "cancelled"
 
 
 @pytest.mark.asyncio

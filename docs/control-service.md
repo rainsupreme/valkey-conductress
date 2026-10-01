@@ -134,11 +134,59 @@ queued -> claimed -> accepted -> completed
                     \-> accepted -> failed
 claimed --lease expires before accept--> queued
 queued -> cancelled
+pending-approval -> queued        (approved)
+pending-approval -> cancelled     (rejected)
+queued | pending-approval -> cancelled          (caller cancels an unclaimed task)
+claimed | accepted -> cancel-requested          (caller cancels an in-flight task)
 ```
 
 `POST .../claim` is idempotent for a runner while its transfer lease is active: repeated requests return the same task and claim token. The runner persists the task locally, then sends the token to `POST .../accept`. No heartbeat or lease renewal occurs after acceptance.
 
 Task submission supports an `Idempotency-Key` header. Replaying the same key and payload returns the existing task; changing the payload produces `IDEMPOTENCY_CONFLICT`.
+
+## Identity, provenance, and approval
+
+A directory of users and agents (`users.toml`, path from `USERS_PATH`) maps a bearer-token login to a GitHub account, a role (`owner`, `collaborator`, `approver`), a daily runner-minute quota, and allowed sources. There is one account per GitHub user: an agent entry names only its login and its human `sponsor`, and inherits the sponsor's GitHub account, role, quota and sources at load time (setting any of them on the agent is rejected). The agent's own login exists so it holds its own token and each task records which of the two submitted it. Tokens carry a `user` role and a `login`; operator and runner tokens are unchanged.
+
+When provenance verification is enabled (`PROVENANCE_VERIFICATION=true`, with a `GITHUB_TOKEN` for a higher rate limit), a submission's `provenance.sha` is accepted only if it is reachable from an allowlisted repository (the two project repositories plus the submitter's own fork) or is the head of an open pull request against the upstream project; the verified pull-request identity is stored on the envelope. An owner may bypass with `?bypass_provenance=true`. A rejected sha returns `PROVENANCE_REJECTED`.
+
+A submission from a login that is not in the directory, or from a user over its daily quota, is held in `pending-approval` rather than queued. An approver lists held tasks and approves or rejects them by task ID or batch ID.
+
+### Approval, batch, and cancel routes
+
+```text
+GET  /api/v1/tasks/mine            (a user's own tasks)
+GET  /api/v1/tasks/pending         (approver: tasks awaiting approval)
+POST /api/v1/tasks/{selector}/approve   (approver: queue a held task or batch)
+POST /api/v1/tasks/{selector}/reject    (approver: reject a held task or batch)
+GET  /api/v1/batches/{batch_id}    (tasks sharing a batch id)
+DELETE /api/v1/tasks/{selector}    (cancel a task or whole batch)
+```
+
+`selector` is a task ID or a batch ID. Cancelling an unclaimed task (`queued` or `pending-approval`) cancels it outright; cancelling an in-flight task (`claimed` or `accepted`) marks it `cancel-requested`, and the runner stops at its next rep/cell boundary. A non-owner may cancel only their own tasks; an owner or operator may cancel anyone's. The `conductress queue cancel|mine|pending|approve|reject` commands and `queue add* --batch` are thin clients over these routes.
+
+### Approval notification hook
+
+When `NOTIFICATION_URL` is set, the control plane POSTs a small JSON notice to that URL each time a submission lands in `pending-approval`. Delivery is best effort and never blocks submission. The payload is:
+
+```json
+{
+  "schema_version": 1,
+  "event": "task.pending_approval",
+  "task_id": "2026.09.30_20.00.00.000000",
+  "batch_id": "batch-0123456789abcdef",
+  "runner_id": "armbench",
+  "submitter_login": "ghost",
+  "submitted_by": "ghost",
+  "reason": "submitter is not a known user"
+}
+```
+
+## Results on the data host
+
+At completion a runner pushes the full result record, not a truncated summary. The control plane stores it in the task's SQLite row (authoritative). When configured it also mirrors each completed task to an append-only results JSONL (`RESULTS_JSONL_PATH`) and publishes a static per-task JSON under the published tasks directory (`PUBLISHED_TASKS_DIR/tasks/<task_id>.json`), written atomically. The static files carry no auth (results are public) so the dashboard and agents can fetch them directly, and `GET /api/v1/tasks/{task_id}` and `GET /api/v1/batches/{batch_id}` return the same records over the API.
+
+The record keeps every scalar and aggregate, the peak-memory scalars, and the categorized jemalloc `breakdown`. It drops only the unbounded stack arrays: the jemalloc per-frame `raw_stacks` and the collapsed CPU flamegraph stacks (`cpu_stacks_main`, `cpu_stacks_io`). The full stacks remain on the runner and in the runner-published artifacts.
 
 ## Persistence and backup
 

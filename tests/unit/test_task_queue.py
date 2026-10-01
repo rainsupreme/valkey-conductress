@@ -84,6 +84,38 @@ def test_task_save_and_load(temp_dir):
     assert loaded.timestamp == task.timestamp
 
 
+def _mock_document(temp_dir):
+    task = make_task()
+    path = temp_dir / "mock.json"
+    task.save_to_file(path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_from_dict_drops_unknown_fields_with_warning(temp_dir, caplog):
+    """A field the task dataclass does not declare is ignored, not fatal.
+
+    A newer submitter may add envelope-body fields an older task dataclass does
+    not define. Deserialization keeps only known constructor arguments and warns
+    about the rest rather than raising, so an older runner does not wedge.
+    """
+    document = _mock_document(temp_dir)
+    document["future_only_field"] = {"nested": [1, 2, 3]}
+    with caplog.at_level(logging.WARNING):
+        task = task_queue.BaseTaskData.from_dict(document)
+    assert isinstance(task, MockTaskData)
+    assert task.extra_data == "extra_info"
+    assert not hasattr(task, "future_only_field")
+    assert "future_only_field" in caplog.text
+
+
+def test_from_dict_unknown_field_does_not_raise_type_error(temp_dir):
+    document = _mock_document(temp_dir)
+    document["another_unexpected"] = "value"
+    # Must not raise TypeError from the dataclass constructor.
+    task = task_queue.BaseTaskData.from_dict(document)
+    assert isinstance(task, MockTaskData)
+
+
 def test_invalid_repo_fails():
     with pytest.raises(ValueError):
         MockTaskData(

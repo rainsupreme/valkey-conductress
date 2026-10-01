@@ -1,8 +1,12 @@
+import json
 import threading
 
 import pytest
 
-from conductress.control.errors import ConflictError, ControlError
+from conductress.control.errors import AuthorizationError, ConflictError, ControlError
+from conductress.control.provenance import ProvenanceGate
+from conductress.control.service import ControlService
+from conductress.control.users import UserDirectory
 
 from .helpers import runner_status, task_envelope, task_outcome
 
@@ -96,20 +100,30 @@ def test_fail_outcome_and_wrong_runner_rejected(control_env):
     assert failed["state"] == "failed"
 
 
-def test_cancel_only_before_claim(control_env):
+def test_cancel_unclaimed_and_claimed(control_env):
     service = control_env["service"]
     service.submit_task(task_envelope(), actor="operator:test")
-    cancelled, changed = service.cancel_task("task-1", actor="operator:test")
+    tasks, changed = service.cancel_task("task-1", actor="operator:test")
     replay, replay_changed = service.cancel_task("task-1", actor="operator:test")
-    assert changed is True
-    assert replay_changed is False
-    assert cancelled["state"] == replay["state"] == "cancelled"
+    assert changed == 1
+    assert replay_changed == 0  # already cancelled, nothing to change
+    assert tasks[0]["state"] == "cancelled"
+    assert replay[0]["state"] == "cancelled"
 
+    # A claimed task is not cancelled outright: it is marked cancel-requested so
+    # the runner stops at its next boundary.
     service.submit_task(task_envelope("task-2"), actor="operator:test")
     service.claim_task("armbench", actor="runner:armbench")
-    with pytest.raises(ConflictError) as conflict:
-        service.cancel_task("task-2", actor="operator:test")
-    assert conflict.value.code == "TASK_NOT_CANCELLABLE"
+    tasks2, changed2 = service.cancel_task("task-2", actor="operator:test")
+    assert changed2 == 1
+    assert tasks2[0]["state"] == "cancel-requested"
+
+
+def test_cancel_unknown_selector_raises(control_env):
+    service = control_env["service"]
+    with pytest.raises(Exception) as missing:
+        service.cancel_task("nope", actor="operator:test")
+    assert missing.value.code == "TASK_NOT_FOUND"
 
 
 def test_expired_claim_requeues_but_accepted_task_never_does(control_env):
@@ -250,3 +264,139 @@ def test_invalid_datetime_format_fails_closed(control_env):
     with pytest.raises(ControlError) as error:
         service.submit_task(invalid, actor="operator:test")
     assert error.value.code == "SCHEMA_INVALID"
+
+
+class _FakeGitHub:
+    def __init__(self, *, commits=None, open_pr_heads=None):
+        self.commits = set(commits or set())
+        self.open_pr_heads = dict(open_pr_heads or {})
+
+    def commit_in_repo(self, repo, sha):
+        return (repo, sha) in self.commits
+
+    def open_pull_request_for_head(self, sha):
+        return self.open_pr_heads.get(sha)
+
+
+def _user_directory():
+    return UserDirectory.from_dict(
+        {
+            "users": [
+                {
+                    "login": "rain",
+                    "github": "rainsupreme",
+                    "kind": "human",
+                    "role": "owner",
+                    "quota_runner_minutes_per_day": 1440,
+                    "sources": ["valkey", "valkey-rainfall"],
+                },
+                {
+                    "login": "dante",
+                    "github": "xdk-amz",
+                    "kind": "human",
+                    "role": "collaborator",
+                    "quota_runner_minutes_per_day": 240,
+                },
+            ]
+        }
+    )
+
+
+def _gated_service(control_env, github, *, directory=None):
+    return ControlService(
+        control_env["database"],
+        control_env["registry"],
+        control_env["config"].claim_lease_seconds,
+        canary_profiles=control_env["canary_profiles"],
+        user_directory=directory,
+        provenance_gate=ProvenanceGate(github),
+    )
+
+
+def _provenance_envelope(task_id="task-1", repo="valkey-io/valkey", sha="abc123", pr=None):
+    envelope = task_envelope(task_id)
+    envelope["provenance"] = {"repo": repo, "sha": sha, "recipe": None, "pr": pr}
+    return envelope
+
+
+def test_submit_accepts_allowlisted_provenance(control_env):
+    service = _gated_service(control_env, _FakeGitHub(commits={("valkey-io/valkey", "abc123")}))
+    task, created = service.submit_task(_provenance_envelope(), actor="operator:test")
+    assert created is True
+    assert task["envelope"]["provenance"]["repo"] == "valkey-io/valkey"
+
+
+def test_submit_rejects_unverifiable_provenance(control_env):
+    service = _gated_service(control_env, _FakeGitHub())
+    with pytest.raises(AuthorizationError) as rejected:
+        service.submit_task(_provenance_envelope(sha="ghost"), actor="operator:test")
+    assert rejected.value.code == "PROVENANCE_REJECTED"
+
+
+def test_submit_stores_resolved_pull_request(control_env):
+    github = _FakeGitHub(open_pr_heads={"headsha": {"repo": "valkey-io/valkey", "number": 9, "head_sha": "headsha"}})
+    service = _gated_service(control_env, github)
+    envelope = _provenance_envelope(repo="fork/valkey", sha="headsha")
+    task, _ = service.submit_task(envelope, actor="operator:test")
+    assert task["envelope"]["provenance"]["pr"] == {"repo": "valkey-io/valkey", "number": 9, "head_sha": "headsha"}
+
+
+def test_owner_may_bypass_provenance_gate(control_env):
+    directory = _user_directory()
+    service = _gated_service(control_env, _FakeGitHub(), directory=directory)
+    envelope = _provenance_envelope(repo="random/repo", sha="unknown")
+    # Owner login with explicit bypass is accepted despite unverifiable sha.
+    task, created = service.submit_task(envelope, actor="user:rain", identity_login="rain", owner_bypass=True)
+    assert created is True
+
+
+def test_non_owner_cannot_bypass_provenance_gate(control_env):
+    directory = _user_directory()
+    service = _gated_service(control_env, _FakeGitHub(), directory=directory)
+    envelope = _provenance_envelope(repo="random/repo", sha="unknown")
+    with pytest.raises(AuthorizationError) as rejected:
+        service.submit_task(envelope, actor="user:dante", identity_login="dante", owner_bypass=True)
+    assert rejected.value.code == "PROVENANCE_REJECTED"
+
+
+def test_user_fork_source_extends_allowlist(control_env):
+    directory = _user_directory()
+    # dante's fork is xdk-amz/valkey; a sha reachable there is accepted.
+    github = _FakeGitHub(commits={("xdk-amz/valkey", "forksha")})
+    service = _gated_service(control_env, github, directory=directory)
+    envelope = _provenance_envelope(repo="xdk-amz/valkey", sha="forksha")
+    task, created = service.submit_task(envelope, actor="user:dante", identity_login="dante")
+    assert created is True
+
+
+def test_submit_without_gate_ignores_provenance(control_env):
+    # The stock control_env service has no provenance gate; provenance is stored
+    # but not verified, so a deployment without GitHub reachability still works.
+    service = control_env["service"]
+    task, created = service.submit_task(_provenance_envelope(sha="whatever"), actor="operator:test")
+    assert created is True
+
+
+def test_record_outcome_publishes_results_jsonl_and_static_json(control_env, tmp_path):
+    published_dir = tmp_path / "published"
+    results_jsonl = tmp_path / "results.jsonl"
+    service = ControlService(
+        control_env["database"],
+        control_env["registry"],
+        control_env["config"].claim_lease_seconds,
+        canary_profiles=control_env["canary_profiles"],
+        published_tasks_dir=published_dir,
+        results_jsonl_path=results_jsonl,
+    )
+    service.submit_task(task_envelope("task-1"), actor="operator:test")
+    claim = service.claim_task("armbench", actor="runner:armbench")
+    service.accept_task("armbench", "task-1", claim["claim_token"], actor="runner:armbench")
+    service.record_outcome("armbench", "task-1", task_outcome("task-1"), actor="runner:armbench")
+
+    static = published_dir / "tasks" / "task-1.json"
+    assert static.exists()
+    published = json.loads(static.read_text(encoding="utf-8"))
+    assert published["task_id"] == "task-1"
+    assert published["outcome"]["result"]["score"] == 123.0
+    lines = results_jsonl.read_text(encoding="utf-8").strip().splitlines()
+    assert json.loads(lines[-1])["task_id"] == "task-1"

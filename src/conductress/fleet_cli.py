@@ -240,9 +240,11 @@ def _remote_cancel(client: FleetClient, args: argparse.Namespace) -> int:
     if args.json:
         _json_output("remote.cancel", document)
         return 0
-    task = document["task"]
-    changed = "cancelled" if document.get("changed") else "already cancelled"
-    print(f"Remote task {task['task_id']}: {changed}")
+    tasks = document.get("tasks", [])
+    changed = document.get("changed", 0)
+    print(f"Cancel {args.task_id}: {changed} task(s) changed")
+    for task in tasks:
+        print(f"  {task['task_id']}: {task['state']}")
     return 0
 
 

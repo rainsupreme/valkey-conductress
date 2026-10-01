@@ -14,6 +14,37 @@
     "submitted_at": {"type": "string", "format": "date-time"},
     "submitted_by": {"type": "string", "minLength": 1},
     "canary_id": {"type": ["string", "null"]},
+    "batch_id": {"type": ["string", "null"], "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "submitter": {
+      "type": ["object", "null"],
+      "required": ["login", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "login": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["human", "agent"]},
+        "sponsor": {"type": ["string", "null"]}
+      }
+    },
+    "provenance": {
+      "type": ["object", "null"],
+      "required": ["repo", "sha"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": {"type": "string", "minLength": 1},
+        "sha": {"type": "string", "minLength": 1},
+        "recipe": {"type": ["string", "null"]},
+        "pr": {
+          "type": ["object", "null"],
+          "required": ["repo", "number", "head_sha"],
+          "additionalProperties": false,
+          "properties": {
+            "repo": {"type": "string", "minLength": 1},
+            "number": {"type": "integer"},
+            "head_sha": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
     "task": {
       "type": "object",
       "required": ["task_type", "source", "specifier", "timestamp"],

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 4
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -146,6 +146,62 @@ CREATE TABLE IF NOT EXISTS canary_calibration_reports (
 """
 
 
+# Additive task-table changes: batch grouping, the resolved submitter login, and
+# two new lifecycle states (pending-approval, cancel-requested). SQLite cannot
+# alter a CHECK constraint in place, so the state-constraint change requires a
+# table rebuild; the new columns are added in the same rebuild. Foreign keys are
+# disabled around the rebuild so the swap does not trip referential checks, then
+# restored.
+_SCHEMA_V4 = """
+CREATE TABLE tasks_v4 (
+    task_id TEXT PRIMARY KEY,
+    runner_id TEXT NOT NULL,
+    task_class TEXT NOT NULL CHECK (task_class IN ('manual', 'canary', 'sweep')),
+    priority INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN (
+            'queued', 'claimed', 'accepted', 'completed', 'failed', 'cancelled',
+            'pending-approval', 'cancel-requested'
+        )
+    ),
+    submitted_at TEXT NOT NULL,
+    submitted_by TEXT NOT NULL,
+    canary_id TEXT,
+    batch_id TEXT,
+    submitter_login TEXT,
+    envelope_json TEXT NOT NULL,
+    idempotency_key TEXT UNIQUE,
+    claimed_at TEXT,
+    lease_expires TEXT,
+    claim_token TEXT,
+    accepted_at TEXT,
+    completed_at TEXT,
+    outcome_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO tasks_v4 (
+    task_id, runner_id, task_class, priority, state, submitted_at, submitted_by,
+    canary_id, batch_id, submitter_login, envelope_json, idempotency_key,
+    claimed_at, lease_expires, claim_token, accepted_at, completed_at,
+    outcome_json, created_at, updated_at
+)
+SELECT
+    task_id, runner_id, task_class, priority, state, submitted_at, submitted_by,
+    canary_id, NULL, NULL, envelope_json, idempotency_key,
+    claimed_at, lease_expires, claim_token, accepted_at, completed_at,
+    outcome_json, created_at, updated_at
+FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_v4 RENAME TO tasks;
+CREATE INDEX IF NOT EXISTS idx_tasks_runner_state_priority
+    ON tasks(runner_id, state, priority DESC, submitted_at ASC);
+CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
+CREATE INDEX IF NOT EXISTS idx_tasks_batch ON tasks(batch_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_submitter ON tasks(submitter_login);
+"""
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -202,6 +258,12 @@ class ControlDatabase:
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (3, utc_text()),
+                )
+            if version < 4:
+                connection.executescript(_SCHEMA_V4)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (4, utc_text()),
                 )
             connection.commit()
         except Exception:

@@ -86,7 +86,17 @@ class RunnerMailbox:
         # Supply the trusted envelope task_id so that the deserialized task
         # carries the authoritative identity (e.g. deterministic canary IDs)
         # rather than the timestamp-derived default from the inner document.
-        task = BaseTaskData.from_dict(task_document, envelope_task_id=task_id)
+        try:
+            task = BaseTaskData.from_dict(task_document, envelope_task_id=task_id)
+        except (ValueError, TypeError) as exc:
+            # The envelope body cannot be turned into a runnable task on this
+            # deployment (unknown task type, or a field this code cannot honour).
+            # Left unhandled the mailbox would raise on every reconcile and wedge
+            # the runner. Report the task as failed, drop it from the local queue,
+            # and clear the active slot so the runner can move on.
+            self._fail_unloadable_task(task_id, str(exc))
+            queue.remove_task(task_id)
+            return None
         if task.task_id != task_id:
             raise ValueError(f"journal task ID mismatch: {task_id} != {task.task_id}")
 
@@ -167,73 +177,46 @@ class RunnerMailbox:
         self.journal.update_stats(last_poll_result="claimed")
         return self.reconcile(queue)
 
-    # Top-level result keys always published to the control plane.
-    _RESULT_SUMMARY_KEYS = (
-        "task_id",
-        "method",
-        "score",
-        "commit_hash",
-        "end_time",
-        "note",
-        "expected_duration_sec",
-        "observed_duration_sec",
-        "provenance_schema_version",
-        "runner_id",
-        "platform",
-        "environment",
-        # Added by #185/#238: dispersion and per-rep aggregate stats. Present on
-        # fixed-rep and adaptive cells alike; previously dropped so remote show
-        # rendered a bare score.
-        "cv",
-        "reps",
-        "score_min",
-        "score_max",
-        "score_aggregate",
-    )
-
-    # Small allowlist of keys copied out of the row's ``data`` sub-dict. The
-    # outcome travels to the control plane over HTTP and is stored per task, so
-    # this MUST stay well under ~100 KB: the large flamegraph stacks
-    # (cpu_stacks_main/cpu_stacks_io), toml_config, lscpu, per_rep_results,
-    # topology and cachecannon_binary are deliberately EXCLUDED.
-    _RESULT_DATA_KEYS = (
-        "per_run_rps",
-        "mean_rps",
-        "ci_95",
-        "client_cpu",
-        "score_aggregate",
-        "score_min",
-        "score_max",
-        "perf_counters",
-        "perf_counters_scope",
-        "perf_duration_seconds",
-        "perf_rep_count",
-        "latency",
-        "latency_get",
-        "latency_set",
-        "connections",
-        "pipeline",
-        "threads",
-        "io-threads",
-        "size",
-        "keyspace_count",
-        "repetitions",
-        "warmup",
-        "duration",
-        # Peak-memory capture (feat/peak-memory-capture): a small folded record
-        # (per-role scalars + <=60 downsampled samples), well under the budget.
-        "memory",
-    )
+    # Result fields dropped before the outcome is pushed to the control plane.
+    # These are the unbounded stack arrays a result can carry: the jemalloc
+    # per-frame ``raw_stacks`` (hundreds to thousands of frames) and the
+    # collapsed CPU flamegraph stacks. Every scalar, aggregate, the memory
+    # scalars and the categorized ``breakdown`` stay. Dropped both at the top
+    # level and inside each per-run entry under ``data.results``. The full
+    # stacks remain on the runner and in the published artifacts; the control
+    # plane keeps the bounded record.
+    _RESULT_OMIT_KEYS = ("raw_stacks", "cpu_stacks_main", "cpu_stacks_io")
 
     @classmethod
     def _summarize_result(cls, result: dict[str, Any]) -> dict[str, Any]:
-        summary = {key: result.get(key) for key in cls._RESULT_SUMMARY_KEYS if result.get(key) is not None}
-        raw_data = result.get("data")
+        """Return the full result record with only the unbounded stacks removed.
+
+        The control plane is the durable home of the result, so the whole record
+        travels (scalars, per-rep aggregates, the memory scalars and the
+        jemalloc ``breakdown``). Only the unbounded stack arrays -- the jemalloc
+        ``raw_stacks`` and the collapsed CPU flamegraph stacks -- are stripped,
+        top level and within each ``data.results`` entry.
+        """
+        summary = {key: value for key, value in result.items() if key not in cls._RESULT_OMIT_KEYS}
+        raw_data = summary.get("data")
         if isinstance(raw_data, dict):
-            data_summary = {key: raw_data.get(key) for key in cls._RESULT_DATA_KEYS if raw_data.get(key) is not None}
-            if data_summary:
-                summary["data"] = data_summary
+            summary["data"] = cls._strip_raw_stacks(raw_data)
         return summary
+
+    @classmethod
+    def _strip_raw_stacks(cls, data: dict[str, Any]) -> dict[str, Any]:
+        cleaned = {key: value for key, value in data.items() if key not in cls._RESULT_OMIT_KEYS}
+        results = cleaned.get("results")
+        if isinstance(results, list):
+            cleaned["results"] = [
+                (
+                    {key: value for key, value in entry.items() if key not in cls._RESULT_OMIT_KEYS}
+                    if isinstance(entry, dict)
+                    else entry
+                )
+                for entry in results
+            ]
+        return cleaned
 
     def stage_success(self, task: BaseTaskData, *, result: Optional[dict[str, Any]] = None) -> None:
         self._require_active(task.task_id)
@@ -263,6 +246,28 @@ class RunnerMailbox:
         }
         self.journal.update_active(stage="outcome_pending", outcome=outcome)
 
+    def _fail_unloadable_task(self, task_id: str, error: str) -> None:
+        """Report a task whose envelope cannot be deserialized as failed.
+
+        Used when the envelope body cannot be turned into a runnable task, so no
+        ``BaseTaskData`` instance exists to pass to :meth:`stage_failure`. Stages
+        the failure outcome directly against the active task and attempts an
+        immediate flush; if the control plane is unreachable the outcome stays
+        pending in the journal and flushes on a later boundary.
+        """
+        self._require_active(task_id)
+        outcome = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "runner_id": self.runner_id,
+            "state": "failed",
+            "completed_at": _utc_text(),
+            "result": None,
+            "error": error,
+        }
+        self.journal.update_active(stage="outcome_pending", outcome=outcome)
+        self.flush_pending_outcome()
+
     def flush_pending_outcome(self) -> bool:
         active = self.journal.active
         if active is None or active["stage"] != "outcome_pending":
@@ -282,6 +287,25 @@ class RunnerMailbox:
         except FleetClientError:
             return False
         return True
+
+    def cancel_requested(self, task_id: str) -> bool:
+        """Return True if the control plane has asked this task to stop.
+
+        A claimed or accepted task can be marked ``cancel-requested`` on the
+        control plane while the runner owns it. The runner calls this at a
+        rep/cell boundary and, when it is True, stops the task and reports the
+        partial outcome. Any control-plane error is treated as "not requested"
+        so a transient outage never aborts a running benchmark; the check is
+        re-evaluated at the next boundary, so it is restart-safe.
+        """
+        if not self.enabled or not self.owns(task_id):
+            return False
+        try:
+            document = self._contact(lambda client: client.task(task_id))
+        except FleetClientError:
+            return False
+        task = (document or {}).get("task") or {}
+        return task.get("state") == "cancel-requested"
 
     def status(self) -> dict[str, Any]:
         active = self.journal.active

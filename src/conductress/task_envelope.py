@@ -23,15 +23,44 @@ def serialize_task(task: BaseTaskData) -> dict[str, Any]:
     return data
 
 
+def build_submitter(login: str, kind: str, sponsor: Optional[str] = None) -> dict[str, Any]:
+    """Build the envelope ``submitter`` block.
+
+    ``kind`` is ``human`` or ``agent``; an agent names the human account it acts
+    for in ``sponsor`` so quota and provenance resolve to that account.
+    """
+    if kind not in {"human", "agent"}:
+        raise ValueError("submitter kind must be 'human' or 'agent'")
+    return {"login": login, "kind": kind, "sponsor": sponsor}
+
+
+def build_provenance(
+    repo: str,
+    sha: str,
+    *,
+    recipe: Optional[str] = None,
+    pr: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build the envelope ``provenance`` block.
+
+    ``pr`` is either ``None`` or ``{"repo", "number", "head_sha"}`` identifying
+    the open pull request whose head this ``sha`` matches.
+    """
+    return {"repo": repo, "sha": sha, "recipe": recipe, "pr": pr}
+
+
 def build_task_envelope(
     task: BaseTaskData,
     *,
     runner_id: str,
     priority: int = 100,
     submitted_by: Optional[str] = None,
+    submitter: Optional[dict[str, Any]] = None,
+    provenance: Optional[dict[str, Any]] = None,
+    batch_id: Optional[str] = None,
 ) -> dict[str, Any]:
     submitted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    return {
+    envelope: dict[str, Any] = {
         "schema_version": 1,
         "task_id": task.task_id,
         "runner_id": runner_id,
@@ -40,5 +69,9 @@ def build_task_envelope(
         "submitted_at": submitted_at,
         "submitted_by": submitted_by or _default_submitter(),
         "canary_id": None,
+        "batch_id": batch_id,
+        "submitter": submitter,
+        "provenance": provenance,
         "task": serialize_task(task),
     }
+    return envelope

@@ -87,8 +87,8 @@ class FakeClient:
         self.cancelled.append(task_id)
         return {
             "schema_version": 1,
-            "task": {"task_id": task_id, "state": "cancelled"},
-            "changed": True,
+            "tasks": [{"task_id": task_id, "state": "cancelled"}],
+            "changed": 1,
         }
 
     def submit_task(self, envelope, idempotency_key):

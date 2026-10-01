@@ -240,6 +240,35 @@ class FleetClient:
     def cancel_task(self, task_id: str) -> dict[str, Any]:
         return self._request("DELETE", f"tasks/{task_id}") or {}
 
+    def batch(self, batch_id: str) -> dict[str, Any]:
+        return self._request("GET", f"batches/{quote(batch_id, safe='')}") or {}
+
+    def list_mine(self, *, limit: int = 100) -> dict[str, Any]:
+        return self._request("GET", "tasks/mine", query={"limit": limit}) or {}
+
+    def list_pending(self) -> dict[str, Any]:
+        return self._request("GET", "tasks/pending") or {}
+
+    def approve_tasks(self, selector: str) -> dict[str, Any]:
+        return (
+            self._request(
+                "POST",
+                f"tasks/{quote(selector, safe='')}/approve",
+                headers={"Idempotency-Key": f"approve:{selector}"},
+            )
+            or {}
+        )
+
+    def reject_tasks(self, selector: str) -> dict[str, Any]:
+        return (
+            self._request(
+                "POST",
+                f"tasks/{quote(selector, safe='')}/reject",
+                headers={"Idempotency-Key": f"reject:{selector}"},
+            )
+            or {}
+        )
+
     def submit_task(self, envelope: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
         return (
             self._request(
