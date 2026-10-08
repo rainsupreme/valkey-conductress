@@ -52,14 +52,26 @@ class MemoryWorkload:
 
 
 # All memory workloads to sweep. Add new entries here to extend coverage.
+#
+# The 16-byte string and hash shapes sit alongside the 64-byte ones because the
+# per-item structures behave differently at small element sizes: a small value
+# embeds in the key's robj (and moves with robj layout changes), a small
+# field+value pair fits in one hash entry, and a TTL is cheapest to see against
+# the smallest string.  Set and sorted-set members stay at 20 bytes: the
+# populator's member naming needs at least 10, and m20 is the established series.
 MEMORY_WORKLOADS: list[MemoryWorkload] = [
     MemoryWorkload(command="set", key_size=16, value_size=64, label="set-k16-v64", user_data_bytes=80),
     MemoryWorkload(
         command="set", key_size=16, value_size=64, has_expire=True, label="set-k16-v64-expire", user_data_bytes=80
     ),
+    MemoryWorkload(command="set", key_size=16, value_size=16, label="set-k16-v16", user_data_bytes=32),
+    MemoryWorkload(
+        command="set", key_size=16, value_size=16, has_expire=True, label="set-k16-v16-expire", user_data_bytes=32
+    ),
     MemoryWorkload(command="zadd", key_size=0, value_size=20, label="zadd-m20", user_data_bytes=28),
     MemoryWorkload(command="sadd", key_size=0, value_size=20, label="sadd-m20", user_data_bytes=20),
     MemoryWorkload(command="hset", key_size=0, value_size=64, field_size=64, label="hset-f64-v64", user_data_bytes=128),
+    MemoryWorkload(command="hset", key_size=0, value_size=16, field_size=16, label="hset-f16-v16", user_data_bytes=32),
 ]
 
 
@@ -72,6 +84,12 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
 
     metric_unit = "bytes/item"
     lower_is_better = True
+    # Memory is deterministic and its per-item cost moves at a handful of
+    # commits per year, so once the landmarks and change-points are in, filling
+    # the flat regions between them adds no information anyone is waiting for.
+    # Gap-filling backfill therefore yields to every performance series' pending
+    # work; nightly HEAD, release landmarks and bisection still compete normally.
+    defer_backfill = True
 
     def __init__(self, repo_path: Path, workload: MemoryWorkload, engine: Optional[SweepEngine] = None):
         self._workload = workload
@@ -169,6 +187,7 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             include_breakdown=should_profile_internals(self.engine),
             repo=engine_repo_slug(self.engine),
             engine=self.engine,
+            settled=True,
         )
         return sum(1 for p in self.state.points.values() if p.value is not None)
 
@@ -187,10 +206,19 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             key_size=self._workload.key_size,
             field_size=self._workload.field_size,
             user_data_bytes=self._workload.user_data_bytes,
+            # The series measures the structure's settled size: a sequentially
+            # loaded collection is otherwise caught mid-rehash with two tables
+            # live, and the extra table would be recorded as the data type's cost.
+            settle=True,
         )
 
     def _is_my_task(self, task: BaseTaskData) -> bool:
-        """Match only tasks created by THIS workload coordinator."""
+        """Match only tasks created by THIS workload coordinator.
+
+        Every field that defines the series' shape must match, and the task
+        must have been measured settled: a loaded (unsettled) cell measures a
+        different quantity and may not land on the settled line.
+        """
         if not isinstance(task, MemTaskData) or not task.sweep_commit:
             return False
         return (
@@ -198,6 +226,9 @@ class MemorySweepCoordinator(BaseSweepCoordinator):
             and task.type == self._workload.command
             and task.has_expire == self._workload.has_expire
             and task.val_sizes == [self._workload.value_size]
+            and task.key_size == self._workload.key_size
+            and task.field_size == self._workload.field_size
+            and bool(task.settle)
         )
 
     def _extract_result(self, task: BaseTaskData) -> Optional[tuple[float, float, int]]:

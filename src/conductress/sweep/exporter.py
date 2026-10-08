@@ -272,6 +272,7 @@ def export_series(
     connections: Optional[int] = None,
     client_threads: Optional[int] = None,
     tls: Optional[bool] = None,
+    settled: Optional[bool] = None,
 ) -> None:
     """Export sweep state to dashboard-ready series.json.
 
@@ -297,6 +298,9 @@ def export_series(
             ``metadata`` when provided so a reader can tell the TLS GET line apart from
             the plaintext GET line of the same shape.  None omits the key (legacy
             callers and every non-TLS series).
+        settled: Whether the series' memory points were sampled after any in-progress
+            rehash had finished; recorded in ``metadata`` when provided so a reader can
+            tell a settled series from one measured as loaded.  None omits the key.
     """
     if not workload:
         from conductress.config import SWEEP_IO_THREADS, SWEEP_PIPELINING, SWEEP_TEST, SWEEP_VAL_SIZE
@@ -410,6 +414,12 @@ def export_series(
     # series and legacy callers).
     if tls is not None:
         series["metadata"]["tls"] = tls
+    # Whether a memory series' points were taken after the data structures had
+    # finished any in-progress rehash (see the memory task's ``settle``).  A
+    # series that carries no key was measured as loaded, and the two are not
+    # comparable on one line.  None omits the key (throughput series).
+    if settled is not None:
+        series["metadata"]["settled"] = settled
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(series, indent=2))

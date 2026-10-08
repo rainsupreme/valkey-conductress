@@ -1,10 +1,10 @@
 """Clear one v3 sweep series' history so it can restart cleanly at deploy.
 
-A series' client budget (its connection count and client-thread count) is part
-of its identity.  When the budget changes -- for example the P1 GET series
-moving from 8 to 16 client threads -- the old points were measured against a
-different client and must not share a chart line with the new ones.  This module
-resets one series by:
+A series' measurement definition is part of its identity.  When the definition
+changes -- the P1 GET series moving from 8 to 16 client threads, or the memory
+series switching from a loaded to a settled sample -- the old points measured a
+different quantity and must not share a chart line with the new ones.  This
+module resets one series by:
 
 1. backing up and deleting the coordinator's state file, so the next boundary
    publish writes a fresh, empty state file for the series; and
@@ -30,6 +30,8 @@ from typing import Optional
 from conductress import config
 from conductress.sweep.coordinator_v3 import V3_STATE_DIR
 
+MEMORY_WORKLOAD_PREFIX = "memory-"
+
 
 def _utc_stamp() -> str:
     """A filesystem-safe UTC timestamp for backup and relocation names."""
@@ -48,8 +50,34 @@ def series_label(workload: str, engine: Optional[str]) -> str:
     return workload
 
 
-def state_file_for(workload: str, engine: Optional[str], state_dir: Path = V3_STATE_DIR) -> Path:
-    """Path to the v3 coordinator state file for one series."""
+def is_memory_workload(workload: str) -> bool:
+    """Whether a workload label names a memory series (``memory-<shape>``).
+
+    The memory coordinator's ``workload_id`` carries this prefix; throughput
+    series carry none.  It selects the state-file naming and the note prefix
+    below, since the two coordinator families store and label their cells
+    differently.
+    """
+    return workload.startswith(MEMORY_WORKLOAD_PREFIX)
+
+
+def default_state_dir(workload: str) -> Path:
+    """Where a series' coordinator keeps its state file, by metric."""
+    return config.MEMORY_STATE_DIR if is_memory_workload(workload) else V3_STATE_DIR
+
+
+def state_file_for(workload: str, engine: Optional[str], state_dir: Optional[Path] = None) -> Path:
+    """Path to the coordinator state file for one series.
+
+    Throughput series: ``state_cachecannon-v3_<label>.json`` under the v3 state
+    directory.  Memory series: ``memory_state_[<engine>-]<shape>.json`` under the
+    memory state directory, matching ``MemoryWorkload.state_file_for_engine``.
+    """
+    if state_dir is None:
+        state_dir = default_state_dir(workload)
+    if is_memory_workload(workload):
+        shape = workload[len(MEMORY_WORKLOAD_PREFIX) :]
+        return state_dir / f"memory_state_{series_label(shape, engine)}.json"
     return state_dir / f"state_cachecannon-v3_{series_label(workload, engine)}.json"
 
 
@@ -59,20 +87,40 @@ def _note_prefix(workload: str, engine: Optional[str]) -> str:
     ``BaseCachecannonSweepCoordinatorV3._create_task`` writes the note as
     ``[cachecannon-sweep-v3:<source>/<label>] <reason>`` where ``<label>`` is
     the engine-prefixed series label and ``<source>`` is the engine source
-    ('valkey' by default).
+    ('valkey' by default).  ``MemorySweepCoordinator._create_task`` writes
+    ``[memory-sweep:<shape>] <reason>`` with no engine in the note, so a memory
+    cell is matched on the note prefix AND the task's ``source`` field.
     """
+    if is_memory_workload(workload):
+        shape = workload[len(MEMORY_WORKLOAD_PREFIX) :]
+        return f"[memory-sweep:{shape}]"
     source = engine if engine else "valkey"
     return f"[cachecannon-sweep-v3:{source}/{series_label(workload, engine)}]"
 
 
-def _task_note(task_file: Path) -> Optional[str]:
-    """Read the ``note`` field out of a queued task file, or None if unreadable."""
+def _task_fields(task_file: Path) -> tuple[Optional[str], Optional[str]]:
+    """Read the ``note`` and ``source`` fields out of a queued task file.
+
+    Either is None when the file is unreadable or the field is not a string.
+    """
     try:
         doc = json.loads(task_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return None, None
     note = doc.get("note")
-    return note if isinstance(note, str) else None
+    source = doc.get("source")
+    return (note if isinstance(note, str) else None, source if isinstance(source, str) else None)
+
+
+def _task_belongs_to_series(task_file: Path, workload: str, engine: Optional[str]) -> bool:
+    """Whether a queued task file is a cell of the given series."""
+    note, source = _task_fields(task_file)
+    if note is None or not note.startswith(_note_prefix(workload, engine)):
+        return False
+    if is_memory_workload(workload):
+        # The memory note names only the shape; the engine lives in ``source``.
+        return (source or "valkey") == (engine or "valkey")
+    return True
 
 
 def service_is_active(service: str = "conductress.service") -> bool:
@@ -135,7 +183,7 @@ def reset_series(
     engine: Optional[str] = None,
     dry_run: bool = False,
     force: bool = False,
-    state_dir: Path = V3_STATE_DIR,
+    state_dir: Optional[Path] = None,
     queue_dir: Optional[Path] = None,
     stamp: Optional[str] = None,
     service_active: Optional[bool] = None,
@@ -143,12 +191,15 @@ def reset_series(
     """Reset one v3 series' history.  Pure of argparse, so it is unit-testable.
 
     Args:
-        workload: Series workload label, unprefixed (e.g. ``get-k16-v16-t7-p1``).
+        workload: Series workload label, unprefixed by engine: a throughput
+            series such as ``get-k16-v16-t7-p1``, or a memory series such as
+            ``memory-sadd-m20`` (the memory coordinator's ``workload_id``).
         epoch: Sweep epoch; only ``v3`` is supported.
         engine: Comparison engine source (e.g. ``redis``); None for Valkey.
         dry_run: When True, touch nothing -- only report what would happen.
         force: Reset even if the runner service is active.
-        state_dir: Where v3 state files live (overridable for tests).
+        state_dir: Where the series' state file lives; defaults to the metric's
+            own directory (overridable for tests).
         queue_dir: The local task queue directory (defaults to config).
         stamp: UTC timestamp string for backup/relocation names (defaults to now).
         service_active: Override the systemd probe (for tests); None probes.
@@ -161,7 +212,12 @@ def reset_series(
     if epoch != "v3":
         raise ValueError(f"only the v3 epoch is supported, got {epoch!r}")
 
-    label = series_label(workload, engine)
+    if is_memory_workload(workload):
+        # ``memory-redis-sadd-m20``: the engine prefix goes after the metric
+        # prefix, matching the memory coordinator's ``workload_id``.
+        label = MEMORY_WORKLOAD_PREFIX + series_label(workload[len(MEMORY_WORKLOAD_PREFIX) :], engine)
+    else:
+        label = series_label(workload, engine)
     state_file = state_file_for(workload, engine, state_dir=state_dir)
     result = ResetSeriesResult(label=label, state_file=state_file, dry_run=dry_run)
 
@@ -183,13 +239,11 @@ def reset_series(
             shutil.copy2(state_file, backup)
             state_file.unlink()
 
-    # 2. Queued task files: relocate any whose note names this series.
-    prefix = _note_prefix(workload, engine)
+    # 2. Queued task files: relocate any that are cells of this series.
     relocate_dir = queue_dir / f"reset-{stamp}"
     if queue_dir.exists():
         for task_file in sorted(queue_dir.glob("task_*.json")):
-            note = _task_note(task_file)
-            if note is not None and note.startswith(prefix):
+            if _task_belongs_to_series(task_file, workload, engine):
                 result.relocated_tasks.append(task_file)
         if result.relocated_tasks:
             result.relocated_dir = relocate_dir
@@ -199,3 +253,53 @@ def reset_series(
                     task_file.rename(relocate_dir / task_file.name)
 
     return result
+
+
+def memory_series_workloads() -> list[str]:
+    """The ``workload`` argument for every memory series on the roster.
+
+    One entry per ``MEMORY_WORKLOADS`` shape, as ``memory-<shape>``; pass each
+    to :func:`reset_series` with the engine of interest.
+    """
+    from conductress.sweep.memory_coordinator import MEMORY_WORKLOADS
+
+    return [MEMORY_WORKLOAD_PREFIX + wl.label for wl in MEMORY_WORKLOADS]
+
+
+def reset_all_memory_series(
+    *,
+    engine: Optional[str] = None,
+    dry_run: bool = False,
+    force: bool = False,
+    state_dir: Optional[Path] = None,
+    queue_dir: Optional[Path] = None,
+    stamp: Optional[str] = None,
+    service_active: Optional[bool] = None,
+) -> list[ResetSeriesResult]:
+    """Reset every memory series on the roster for one engine.
+
+    A memory definition change (loaded to settled) applies to every memory
+    series at once, so this runs :func:`reset_series` over the roster under a
+    single timestamp: one backup suffix, one relocation folder.  The service
+    check happens once, before anything is touched; a refusal returns one
+    refused result per series and resets nothing.
+    """
+    if force:
+        active = False
+    else:
+        active = service_is_active() if service_active is None else service_active
+    stamp = stamp or _utc_stamp()
+    # The probe already ran: pass its answer down and let each call decide from it.
+    return [
+        reset_series(
+            workload,
+            engine=engine,
+            dry_run=dry_run,
+            force=False,
+            state_dir=state_dir,
+            queue_dir=queue_dir,
+            stamp=stamp,
+            service_active=active,
+        )
+        for workload in memory_series_workloads()
+    ]

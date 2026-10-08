@@ -395,3 +395,38 @@ class TestClientBudgetMetadata:
         meta = self._export_roster_series(tmp_path, "get-k16-v16-t7-p10")
         assert meta["client_threads"] == 8
         assert meta["connections"] == 400
+
+
+class TestSettledMetadata:
+    """A memory series says whether its points were sampled settled."""
+
+    def test_export_series_records_settled_when_supplied(self, tmp_path):
+        state = make_state_with_results()
+        output = tmp_path / "series.json"
+        export_series(state, output, settled=True)
+        assert json.loads(output.read_text())["metadata"]["settled"] is True
+
+    def test_export_series_omits_settled_when_not_supplied(self, tmp_path):
+        state = make_state_with_results()
+        output = tmp_path / "series.json"
+        export_series(state, output)
+        assert "settled" not in json.loads(output.read_text())["metadata"]
+
+    def test_memory_coordinator_export_is_settled(self, tmp_path, monkeypatch):
+        import conductress.config as config
+        import conductress.sweep.memory_coordinator as mc
+        from conductress.sweep.memory_coordinator import MemorySweepCoordinator, MemoryWorkload
+        from conductress.sweep.planner import BenchmarkPoint, PointStatus
+
+        monkeypatch.setattr(config, "REPO_NAMES", ["valkey"])
+        monkeypatch.setattr(mc, "MEMORY_STATE_DIR", tmp_path)
+        wl = MemoryWorkload(command="sadd", key_size=0, value_size=20, label="sadd-m20", user_data_bytes=20)
+        coord = MemorySweepCoordinator(tmp_path / "repo", wl)
+        coord.state.merge_commits = ["a"]
+        coord.state.commit_dates = {"a": "2026-01-01"}
+        coord.state.points["a"] = BenchmarkPoint(
+            commit="a", date="2026-01-01", value=18.93, cv=0.0, status=PointStatus.COMPLETED
+        )
+        output = tmp_path / "series.json"
+        coord.export(output, platform="arm64/c7g.metal/graviton3")
+        assert json.loads(output.read_text())["metadata"]["settled"] is True

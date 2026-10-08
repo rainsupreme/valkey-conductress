@@ -209,15 +209,25 @@ path, which builds no v1 coordinator at all.
 
 ### Resetting a series
 
-A series' client budget (its connection count and client-thread count) is part
-of its identity, so a change to it — like the P1 GET series moving from 8 to 16
-client threads — must clear the old points rather than mix two client shapes on
-one chart line. `conductress sweep reset-series` clears one series' history so
-the next boundary publish restarts it fresh:
+A series' measurement definition is part of its identity, so a change to it —
+the P1 GET series moving from 8 to 16 client threads, or the memory series
+switching from a loaded to a settled sample — must clear the old points rather
+than mix two definitions on one chart line. `conductress sweep reset-series`
+clears a series' history so the next boundary publish restarts it fresh:
 
 ```
 conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1
+conductress sweep reset-series --epoch v3 --workload memory-sadd-m20
+conductress sweep reset-series --epoch v3 --all-memory
 ```
+
+A throughput series is named by its workload label; a memory series by the
+memory coordinator's workload id, `memory-<shape>`, which selects that
+coordinator's state file (`memory_state_[<engine>-]<shape>.json`) and note
+format (`[memory-sweep:<shape>]`, with the engine read from the queued task's
+`source`). `--all-memory` resets every memory series on the roster for one
+engine under a single timestamp, which is the form a memory definition change
+needs: it applies to every memory series at once.
 
 It backs up the coordinator's state file to `<file>.bak-<UTC timestamp>` and
 deletes it, then relocates (never deletes) any queued task files whose note
@@ -231,8 +241,8 @@ the series). The coordinator's completion-time identity guard (below) is the
 backstop: a queued 8-thread cell that slips past the reset is refused at
 completion rather than recorded.
 
-The deploy-time procedure is: stop the runner service, reset both the Valkey and
-the Redis P1 series, then start it again —
+The deploy-time procedure is: stop the runner service, reset the affected
+series for every engine, then start it again —
 
 ```
 sudo systemctl stop conductress.service
@@ -240,6 +250,32 @@ conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1
 conductress sweep reset-series --epoch v3 --workload get-k16-v16-t7-p1 --engine redis
 sudo systemctl start conductress.service
 ```
+
+or, for a memory definition change, `--all-memory` and `--all-memory --engine
+redis` in place of the two `--workload` lines.
+
+### Memory series: settled sample, deferred backfill
+
+The memory series sample each cell **settled**: after the populate, the memory
+task reads every item once (`MemTaskData.settle`) so an in-progress incremental
+rehash finishes, and asserts via `DEBUG HTSTATS-KEY` / `DEBUG HTSTATS` that no
+rehash is still running before it samples. A sequentially loaded collection is
+otherwise caught with two hash tables live, and the extra table is recorded as
+the data type's cost. Series files carry `"settled": true` in `metadata`; a
+memory series file without the key was measured as loaded and is not comparable
+to a settled one, which is why the switch is a series reset rather than a
+continuation. The coordinator's identity guard refuses to record a completed
+cell that was not measured settled.
+
+Memory is deterministic and its per-item cost moves at a handful of commits per
+year, so the memory coordinators defer their **gap-filling backfill**
+(`MemorySweepCoordinator.defer_backfill`): when a memory series' next planner
+task is `BACKFILL`, the runner schedules it only once every throughput and
+latency series has nothing to queue. Nightly HEAD keeps its absolute priority,
+and a memory series' release landmarks and bisections compete on urgency with
+every other series, so a new memory series still gets its landmarks and
+change-points promptly; only its flat regions wait for the performance backfill
+to run out of work.
 
 The completion-time **identity guard** in the v3 coordinator refuses to record a
 completed cell whose `threads` (or any other identity field) does not match the
