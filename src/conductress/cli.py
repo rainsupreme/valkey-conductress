@@ -910,6 +910,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expert: explicit cpulist override for cachecannon client",
     )
+    cc_parser.add_argument(
+        "--client-netns",
+        type=str,
+        default="",
+        help="Expert: run cachecannon inside this network namespace "
+        "(dual-ENI real-NIC hairpin; requires host setup per docs/real-nic-hairpin.md). "
+        "Empty = default namespace (loopback path).",
+    )
     _add_note_and_build_args(cc_parser)
     _add_topology_args(cc_parser)
     cc_parser.add_argument(
@@ -1719,6 +1727,7 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         rate_limit=args.rate,
         perf_stat_enabled=args.perf_stat,
         info_sections=args.info_sections,
+        client_netns=args.client_netns,
     )
     queue.submit_task(task)
     submission = queue.finish()
@@ -1746,6 +1755,8 @@ def handle_queue_add_cachecannon(args: argparse.Namespace) -> int:
         print(f"  server-args: {args.server_args}")
     if args.cachecannon_binary != DEFAULT_CACHECANNON_BINARY:
         print(f"  binary: {args.cachecannon_binary}")
+    if args.client_netns:
+        print(f"  client-netns: {args.client_netns} (real-NIC hairpin path)")
     if args.note:
         print(f"  note: {args.note}")
     return 0
