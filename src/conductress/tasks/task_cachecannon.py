@@ -56,6 +56,7 @@ from conductress.utility import (
     HumanTime,
     RealtimeCommand,
     count_cpu_list,
+    get_primary_interface_ip,
     sample_process_tree_cpu,
     summarize_client_cpu,
 )
@@ -230,10 +231,25 @@ class CachecannonTaskData(BaseTaskData):
     # build-cache entry, keyed by make_args); see the task runner.
     tls: bool = False
 
+    # Run cachecannon inside this network namespace (dual-ENI real-NIC hairpin,
+    # docs/real-nic-hairpin.md).  Empty = default namespace, loopback path.  Same
+    # lever as the valkey-benchmark task's client_netns: the generator is wrapped
+    # in ``sudo ip netns exec`` and a loopback target is rewritten to the primary
+    # ENI's address, so both directions traverse the real driver/IRQ/NAPI path.
+    # Topology is part of the workload definition: a hairpin cell is a separate
+    # series, never compared cell-for-cell against a loopback cell.
+    client_netns: str = ""
+
     def __post_init__(self):
         super().__post_init__()
         self.warmup = int(self.warmup)
         self.duration = int(self.duration)
+        if self.client_netns and self.tls:
+            # The bootstrap server certificate's SAN carries only 127.0.0.1 /
+            # localhost; a hairpin endpoint is the primary ENI's address, so
+            # tls_verify would fail at connect.  Refuse rather than silently
+            # measure a failed-handshake cell.
+            raise ValueError("client_netns and tls cannot be combined: the bootstrap certificate only covers loopback")
         if self.score_metric not in SCORE_METRICS:
             raise ValueError(f"score_metric must be one of {sorted(SCORE_METRICS)}, got {self.score_metric!r}")
         if self.score_aggregate not in SCORE_AGGREGATES:
@@ -269,9 +285,10 @@ class CachecannonTaskData(BaseTaskData):
 
     def short_description(self) -> str:
         rate = f", {self.rate_limit} req/s" if self.rate_limit > 0 else ""
+        netns = f", netns {self.client_netns}" if self.client_netns else ""
         return (
             f"cachecannon {self.workload_label()}, {HumanByte.to_human(self.val_size)} values, "
-            f"P{self.pipelining}, {self.connections}c, {self.threads}t{rate}, "
+            f"P{self.pipelining}, {self.connections}c, {self.threads}t{rate}{netns}, "
             f"{HumanTime.to_human(self.duration)} x{self.repetitions}"
         )
 
@@ -308,6 +325,7 @@ class CachecannonTaskData(BaseTaskData):
             score_metric=self.score_metric,
             score_aggregate=self.score_aggregate,
             tls=self.tls,
+            client_netns=self.client_netns,
         )
 
 
@@ -352,6 +370,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         score_metric: str = "throughput",
         score_aggregate: str = "mean",
         tls: bool = False,
+        client_netns: str = "",
     ):
         super().__init__(task_id)
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{test}")
@@ -390,6 +409,7 @@ class CachecannonTaskRunner(BaseTaskRunner):
         self.perf_stat_enabled = perf_stat_enabled
         self.info_sections = list(info_sections or [])
         self.tls = tls
+        self.client_netns = client_netns
         # TLS transport: the server opens a second listener on the TLS port with
         # the bootstrap test certificates and the generator connects over it
         # (endpoint pointed at self._tls_port, [target] tls keys emitted below).
@@ -487,16 +507,19 @@ class CachecannonTaskRunner(BaseTaskRunner):
         return client.allocated_cpu_list(benchmark_alloc_tag) if benchmark_alloc_tag else ""
 
     def _build_command(self, toml_path: str, cpu_list: str) -> str:
-        """Build the cachecannon launch command."""
+        """Build the cachecannon launch command.
+
+        With ``client_netns`` set the whole invocation is wrapped in
+        ``sudo ip netns exec <ns>`` so the generator's sockets live in the
+        load-generator namespace (dual-ENI hairpin).  CPU pinning is unaffected:
+        a network namespace only scopes the network stack.
+        """
+        netns_prefix = f"sudo ip netns exec {self.client_netns} " if self.client_netns else ""
         if cpu_list:
             # Use numactl for memory binding even though cachecannon pins its own threads
-            from conductress.utility import parse_cpulist
-
-            cpus = parse_cpulist(cpu_list)
-            # Determine NUMA nodes for membind
             numa_node = 0  # sensible default
-            return f"numactl --membind={numa_node} {self.cachecannon_binary} {toml_path}"
-        return f"{self.cachecannon_binary} {toml_path}"
+            return f"{netns_prefix}numactl --membind={numa_node} {self.cachecannon_binary} {toml_path}"
+        return f"{netns_prefix}{self.cachecannon_binary} {toml_path}"
 
     async def run(self):
         """Run the cachecannon benchmark with repetitions."""
@@ -557,6 +580,20 @@ class CachecannonTaskRunner(BaseTaskRunner):
                         self._client_allocated_cores = count_cpu_list(self.benchmark_cpu_override)
                     elif benchmark_alloc_tag is not None:
                         self._client_allocated_cores = self.threads
+                    # Preflight for the dual-ENI hairpin: network namespaces do
+                    # NOT persist across reboots, so fail loudly and point at
+                    # the fix rather than dying later with a cryptic connect
+                    # error from inside cachecannon (docs/real-nic-hairpin.md).
+                    if self.client_netns:
+                        ns_list, _ = await client.run_host_command("ip netns list", check=False)
+                        ns_names = {line.split()[0] for line in ns_list.splitlines() if line.strip()}
+                        if self.client_netns not in ns_names:
+                            raise RuntimeError(
+                                f"client_netns '{self.client_netns}' does not exist on this host "
+                                f"(namespaces do not survive reboots). Run "
+                                f"scripts/setup-loadgen-netns.sh or install the "
+                                f"loadgen-netns systemd unit — see docs/real-nic-hairpin.md."
+                            )
 
                 # Get CPU list for TOML config
                 cpu_list = self._get_cpu_list(client, benchmark_alloc_tag)
@@ -570,7 +607,18 @@ class CachecannonTaskRunner(BaseTaskRunner):
                 # _TLS_SERVER_EXT), so tls_hostname is the loopback address the
                 # endpoint uses and tls_verify stays on.
                 target_port = self._tls_port if self.tls else server_port
-                endpoint = f"{server.ip}:{target_port}"
+                # Hairpin: the load-generator namespace has its own loopback, so
+                # a loopback target is unreachable from inside it.  Point the
+                # generator at the primary ENI's address instead; traffic leaves
+                # via the secondary ENI, crosses the VPC fabric and re-enters via
+                # the primary ENI.  Locality decisions above (CPU allocation)
+                # still use server.ip: the client process runs on this host
+                # either way.  Prefill goes over the hairpin too (correctness
+                # only; only the scored window is measured).
+                target_ip = server.ip
+                if self.client_netns and target_ip in {"127.0.0.1", "localhost", "::1"}:
+                    target_ip = get_primary_interface_ip()
+                endpoint = f"{target_ip}:{target_port}"
 
                 toml_content = generate_toml_config(
                     duration=self.duration,
@@ -909,6 +957,10 @@ class CachecannonTaskRunner(BaseTaskRunner):
             # parsing the TOML; the sweep exporter also publishes it in the
             # series metadata.
             "tls": self.tls,
+            # Network namespace the generator ran in ("" = default namespace,
+            # loopback path).  Non-empty marks a real-NIC hairpin cell; such a
+            # row is a separate series from loopback rows.
+            "client_netns": self.client_netns,
             "cachecannon_binary": self.cachecannon_binary,
             "toml_config": toml_content,
             "lscpu": lscpu_output,
