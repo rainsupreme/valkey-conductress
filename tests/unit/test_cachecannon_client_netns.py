@@ -149,7 +149,5 @@ def test_cli_add_cachecannon_client_netns(queue_path):
     base = ["queue", "add-cachecannon", "--source", "valkey", "--specifier", "unstable", "--keyspace", "4096"]
     assert main(base) == 0
     assert main(base + ["--client-netns", "loadgen"]) == 0
-    tasks = sorted(
-        (json.loads(p.read_text()) for p in queue_path.glob("task_*.json")), key=lambda d: d["client_netns"]
-    )
+    tasks = sorted((json.loads(p.read_text()) for p in queue_path.glob("task_*.json")), key=lambda d: d["client_netns"])
     assert [d["client_netns"] for d in tasks] == ["", "loadgen"]
