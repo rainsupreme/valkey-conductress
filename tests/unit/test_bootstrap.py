@@ -187,6 +187,18 @@ class TestMemtierBuildDeps:
         assert not missing, f"{reqs} missing memtier build deps: {missing}"
 
 
+class TestClangToolchain:
+    """``--make-args CC=clang`` is a documented layout control (docs/layout-noise.md).
+    A runner without clang turns that cell into a build failure, and a fleet where
+    only some runners have it cannot run the same A/B everywhere. Guard that every
+    package list installs it."""
+
+    @pytest.mark.parametrize("reqs", ["amz_requirements", "rhel-requirements", "ubuntu-requirements"])
+    def test_clang_present(self, reqs):
+        pkgs = set(load_requirements(reqs))
+        assert "clang" in pkgs, f"{reqs} does not install clang"
+
+
 class TestHostGetHomePath:
 
     def test_with_username(self):

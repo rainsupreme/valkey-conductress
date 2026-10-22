@@ -1,5 +1,6 @@
 build-essential
 cmake
+clang # second toolchain for layout A/Bs via --make-args CC=clang (see docs/layout-noise.md)
 git
 # js-d3-flame-graph # TODO ensure flame graphs work on ubuntu
 lsof
