@@ -210,7 +210,10 @@ async def update_pip_packages(host: Host):
         await host.run(f"{pip} install -e {target}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install -e {target}")
+        # Same interpreter module as the upgrade above: on a fresh AL2023 host a
+        # bare "pip" in a non-login SSH shell resolves to /usr/bin/pip (3.9's
+        # pip 21), which rejects the quoted "<path>[dev]" editable form.
+        await host.run(f"python3 -m pip install -e {target}")
 
 
 async def update_rhel_packages(host: Host):
