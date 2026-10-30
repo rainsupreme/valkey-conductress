@@ -210,7 +210,10 @@ async def update_pip_packages(host: Host):
         await host.run(f"{pip} install -e {target}")
     else:
         await host.run("python3 -m pip install --upgrade pip")
-        await host.run(f"pip install -e {target}")
+        # Same interpreter module as the upgrade above: on a fresh AL2023 host a
+        # bare "pip" in a non-login SSH shell resolves to /usr/bin/pip (3.9's
+        # pip 21), which rejects the quoted "<path>[dev]" editable form.
+        await host.run(f"python3 -m pip install -e {target}")
 
 
 async def update_rhel_packages(host: Host):
@@ -614,10 +617,12 @@ async def update_host(server_info: config.ServerInfo):
     elif distro == "Amazon Linux":
         await update_amazon_packages(host)
 
+    # The editable pip install below targets ~/conductress, so the checkout
+    # must exist first. On a fresh host nothing else creates it.
+    await ensure_conductress(host, pull=(server_info != "localhost"))
     await update_pip_packages(host)
     await ensure_file_descriptor_limits(host)
     await ensure_io_uring_enabled(host)
-    await ensure_conductress(host, pull=(server_info != "localhost"))
     await ensure_git_repo_cloned(host, "https://github.com/brendangregg/FlameGraph.git", "FlameGraph")
     await ensure_memtier(host)
     await ensure_cachecannon(host)
