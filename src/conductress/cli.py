@@ -301,6 +301,15 @@ def _add_perf_args(parser: argparse.ArgumentParser) -> None:
         help="Expert: valkey-benchmark total connections override (0 = default 1200)",
     )
     parser.add_argument(
+        "--keyspace",
+        type=int,
+        default=0,
+        help=f"Expert: preload and -r keyspace override (0 = default {config.PERF_BENCH_KEYSPACE}). "
+        "A small value builds a hot, cache-resident data set; pair it with --server-args that "
+        "disable compact encodings (for example '--hash-max-listpack-entries 0') when the test "
+        "needs hashtable encoding. Recorded in result metadata; NOT sweep-comparable.",
+    )
+    parser.add_argument(
         "--client-netns",
         type=str,
         default="",
@@ -1258,6 +1267,10 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print("Error: Repetitions must be at least 1", file=sys.stderr)
         return 1
 
+    if args.keyspace < 0:
+        print("Error: --keyspace must not be negative", file=sys.stderr)
+        return 1
+
     # Validate CPU override syntax (reject malformed, don't validate topology)
     try:
         validate_cpulist(args.server_cpus)
@@ -1297,6 +1310,7 @@ def handle_queue_add(args: argparse.Namespace) -> int:
             server_args=args.server_args,
             bench_threads=args.bench_threads,
             bench_clients=args.bench_clients,
+            keyspace=args.keyspace,
             client_netns=args.client_netns,
             bench_binary=args.bench_binary,
         )
@@ -1316,6 +1330,8 @@ def handle_queue_add(args: argparse.Namespace) -> int:
         print(f"  server-args: {args.server_args}")
     if args.bench_threads or args.bench_clients:
         print(f"  bench-threads={args.bench_threads or 'default'} bench-clients={args.bench_clients or 'default'}")
+    if args.keyspace:
+        print(f"  keyspace: {args.keyspace} (NOT sweep-comparable)")
     if args.client_netns:
         print(f"  client-netns: {args.client_netns} (real-NIC hairpin path)")
     if args.bench_binary:
