@@ -137,6 +137,9 @@ class PerfTaskData(BaseTaskData):
     server_args: str = ""  # extra raw args appended to the server command line (override defaults)
     bench_threads: int = 0  # valkey-benchmark --threads override; 0 = PERF_BENCH_THREADS default
     bench_clients: int = 0  # valkey-benchmark -c override; 0 = PERF_BENCH_CLIENTS default
+    keyspace: int = 0  # expert: preload/-r keyspace override; 0 = PERF_BENCH_KEYSPACE. A small
+    # keyspace (for example 128) builds a hot, cache-resident data set; pair it with
+    # --server-args that disable the compact encodings when the test needs hashtable encoding.
     client_netns: str = ""  # run the benchmark client inside this network namespace (dual-ENI
     # real-NIC hairpin topology; see docs/real-nic-hairpin.md). Empty = default namespace.
     bench_binary: str = ""  # expert: absolute path to an alternative benchmark binary. The client
@@ -188,6 +191,7 @@ class PerfTaskData(BaseTaskData):
             server_args=self.server_args,
             bench_threads=self.bench_threads,
             bench_clients=self.bench_clients,
+            keyspace=self.keyspace,
             client_netns=self.client_netns,
             bench_binary=self.bench_binary,
             generator_profile=self.generator_profile,
@@ -231,6 +235,13 @@ class PerfTaskRunner(BaseTaskRunner):
     # the ~3M resident set from draining more than ~25%, so it never empties and
     # ZPOPMIN (O(1)) throughput stays representative.
     ZPOP_APPEND_KEYSPACE = 2_000_000_000
+
+    # Shared pieces of the batched-lookup recipes (see the httl*/geo* entries).
+    # Field TTL is one week so nothing expires during a run.
+    HASH_TTL_PRELOAD = " -- HSETEX myhash EX 604800 FIELDS 1 field:__rand_int__ v"
+    HASH_FIELDS_8 = " ".join(["field:__rand_int__"] * 8)
+    GEO_PRELOAD = " -- GEOADD mygeo 13.361389 38.115556 element:__rand_int__"
+    GEO_MEMBERS_8 = " ".join(["element:__rand_int__"] * 8)
 
     tests: dict[str, Test] = {
         "set": Test(
@@ -317,6 +328,42 @@ class PerfTaskRunner(BaseTaskRunner):
             name="mget",
             preload_command="-t set",
             test_command=" -- MGET key:__rand_int__ key:__rand_int__ key:__rand_int__ key:__rand_int__",
+        ),
+        # Batched-hashtable-lookup recipes (valkey-io/valkey PR 4017 family:
+        # HMGET, then PR 4638 for HTTL/HPTTL/HEXPIRETIME/HPEXPIRETIME, GEOPOS
+        # and GEOHASH). One large hash or geo set holds PERF_BENCH_KEYSPACE
+        # random fields/members; each request looks up N of them. The N=1
+        # recipes are controls: the batched path is gated on N > 1, so the
+        # 1-field code is identical on both sides of such a change and any
+        # measured delta there is layout or noise. HSETEX gives every field
+        # a TTL so the hash uses the volatile hashtable type that HTTL reads.
+        # GEOADD uses one fixed coordinate: the lookup cost is the member
+        # hashtable, not the score, and valkey-benchmark cannot generate
+        # in-range random coordinates.
+        "httl1": Test(
+            name="httl1",
+            preload_command=HASH_TTL_PRELOAD,
+            test_command=" -- HTTL myhash FIELDS 1 field:__rand_int__",
+        ),
+        "httl8": Test(
+            name="httl8",
+            preload_command=HASH_TTL_PRELOAD,
+            test_command=f" -- HTTL myhash FIELDS 8 {HASH_FIELDS_8}",
+        ),
+        "geohash1": Test(
+            name="geohash1",
+            preload_command=GEO_PRELOAD,
+            test_command=" -- GEOHASH mygeo element:__rand_int__",
+        ),
+        "geohash8": Test(
+            name="geohash8",
+            preload_command=GEO_PRELOAD,
+            test_command=f" -- GEOHASH mygeo {GEO_MEMBERS_8}",
+        ),
+        "geopos8": Test(
+            name="geopos8",
+            preload_command=GEO_PRELOAD,
+            test_command=f" -- GEOPOS mygeo {GEO_MEMBERS_8}",
         ),
     }
 
@@ -468,6 +515,11 @@ class PerfTaskRunner(BaseTaskRunner):
                 "zrandmember": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
                 "zrem": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
                 "zpop": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__",
+                "httl1": f" -- HSETEX {padded_key} EX 604800 FIELDS 1 field:__rand_int__ v",
+                "httl8": f" -- HSETEX {padded_key} EX 604800 FIELDS 1 field:__rand_int__ v",
+                "geohash1": f" -- GEOADD {padded_key} 13.361389 38.115556 element:__rand_int__",
+                "geohash8": f" -- GEOADD {padded_key} 13.361389 38.115556 element:__rand_int__",
+                "geopos8": f" -- GEOADD {padded_key} 13.361389 38.115556 element:__rand_int__",
             }
             return preload_map[name]
         else:
@@ -488,6 +540,11 @@ class PerfTaskRunner(BaseTaskRunner):
                 "zrandmember": f" -- ZRANDMEMBER {padded_key} 100",
                 "zrem": f" -- ZADD {padded_key} __rand_int__ element:__rand_int__ ';' ZREM {padded_key} element:__rand_int__",
                 "zpop": f" -- ZPOPMIN {padded_key} ';' ZADD {padded_key} __rand_int__ nm:__rand_int__",
+                "httl1": f" -- HTTL {padded_key} FIELDS 1 field:__rand_int__",
+                "httl8": f" -- HTTL {padded_key} FIELDS 8 {self.HASH_FIELDS_8}",
+                "geohash1": f" -- GEOHASH {padded_key} element:__rand_int__",
+                "geohash8": f" -- GEOHASH {padded_key} {self.GEO_MEMBERS_8}",
+                "geopos8": f" -- GEOPOS {padded_key} {self.GEO_MEMBERS_8}",
             }
             return test_map[name]
 

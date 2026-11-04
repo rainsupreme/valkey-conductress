@@ -234,6 +234,56 @@ class TestZsetBatteryTests:
         assert overriding == {"zpop"}
 
 
+class TestBatchedLookupRecipes:
+    """Recipes for the hashtableFindBatch family (valkey PRs 4017 / 4638):
+    N-field HTTL and N-member GEOHASH/GEOPOS against one large hash or geo set,
+    plus N=1 controls whose code path a batched-lookup change cannot touch."""
+
+    def test_httl_recipes_share_a_ttl_preload(self):
+        """Fields get a one-week TTL via HSETEX so the hash uses the volatile
+        hashtable type and nothing expires inside a run."""
+        one, eight = PerfTaskRunner.tests["httl1"], PerfTaskRunner.tests["httl8"]
+        assert one.preload_command == eight.preload_command
+        assert one.preload_command.startswith(" -- HSETEX myhash EX 604800 FIELDS 1 field:__rand_int__")
+        assert one.test_command == " -- HTTL myhash FIELDS 1 field:__rand_int__"
+        assert eight.test_command.startswith(" -- HTTL myhash FIELDS 8 ")
+        assert eight.test_command.count("field:__rand_int__") == 8
+
+    def test_geo_recipes_share_a_fixed_coordinate_preload(self):
+        """GEOADD at one fixed coordinate: lookup cost is the member hashtable,
+        and valkey-benchmark has no placeholder for in-range coordinates."""
+        preloads = {PerfTaskRunner.tests[n].preload_command for n in ("geohash1", "geohash8", "geopos8")}
+        assert len(preloads) == 1
+        assert preloads.pop() == " -- GEOADD mygeo 13.361389 38.115556 element:__rand_int__"
+        assert PerfTaskRunner.tests["geohash1"].test_command == " -- GEOHASH mygeo element:__rand_int__"
+        for name, cmd in (("geohash8", "GEOHASH"), ("geopos8", "GEOPOS")):
+            tc = PerfTaskRunner.tests[name].test_command
+            assert tc.startswith(f" -- {cmd} mygeo ")
+            assert tc.count("element:__rand_int__") == 8
+
+    @pytest.mark.parametrize("name", ["httl1", "httl8", "geohash1", "geohash8", "geopos8"])
+    def test_padded_key_variants_exist(self, name):
+        """Every recipe has a padded-key form so --key-sizes does not KeyError."""
+        runner = MagicMock(spec=PerfTaskRunner)
+        runner.HASH_FIELDS_8 = PerfTaskRunner.HASH_FIELDS_8
+        runner.GEO_MEMBERS_8 = PerfTaskRunner.GEO_MEMBERS_8
+        test = PerfTaskRunner.tests[name]
+        preload = PerfTaskRunner._build_custom_command(runner, test, "kkkkkkkk", is_preload=True)
+        timed = PerfTaskRunner._build_custom_command(runner, test, "kkkkkkkk", is_preload=False)
+        assert "kkkkkkkk" in preload and "kkkkkkkk" in timed
+        assert "myhash" not in timed and "mygeo" not in timed
+
+    def test_keyspace_override_reaches_the_runner(self):
+        """PerfTaskData.keyspace flows to the runner; 0 keeps the sweep default."""
+        assert _make_perf_task_data(test="httl8").keyspace == 0
+        task = _make_perf_task_data(test="httl8", keyspace=128)
+        assert task.keyspace == 128
+        runner = task.prepare_task_runner([])
+        assert runner.keyspace == 128
+        runner = _make_perf_task_data(test="httl8").prepare_task_runner([])
+        assert runner.keyspace == config.PERF_BENCH_KEYSPACE
+
+
 class TestPerfTaskDataSerialization:
     """Tests for PerfTaskData serialization/deserialization with new test names."""
 
